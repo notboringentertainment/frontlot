@@ -281,6 +281,86 @@ def _stage_requires_approval(pipeline_type: Optional[str], stage: str) -> Option
     return get_stage_human_approval_default(manifest, stage)
 
 
+def _manifest_stage_spec(
+    pipeline_type: Optional[str], stage: str
+) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+    """Return (manifest, stage_spec) for a stage, or (None, None) when the
+    manifest is unavailable. The manifest — not the hard-coded canonical map —
+    is the binding source of truth for what a stage produces and requires."""
+    if not pipeline_type or pipeline_type == "unknown":
+        return None, None
+    try:
+        from lib.pipeline_loader import load_pipeline_readonly
+
+        manifest = load_pipeline_readonly(pipeline_type)
+    except Exception:
+        return None, None
+    for spec in manifest.get("stages", []):
+        if spec.get("name") == stage:
+            return manifest, spec
+    return manifest, None
+
+
+def _enforce_manifest_artifact_contract(
+    pipeline_dir: Path,
+    project_id: str,
+    pipeline_type: Optional[str],
+    stage: str,
+    status: str,
+    artifacts: dict[str, Any],
+    stage_spec: Optional[dict[str, Any]],
+) -> None:
+    """Enforce the manifest's declared stage contract at write time.
+
+    - Every artifact in ``produces`` must be present on completed /
+      awaiting_human checkpoints (the canonical-map check in
+      _validate_artifacts_for_stage remains as the legacy fallback when no
+      manifest is available).
+    - Every artifact in ``required_artifacts_in`` must be available — carried
+      in this checkpoint or produced by a completed predecessor checkpoint.
+    """
+    if status not in {"completed", "awaiting_human"} or stage_spec is None:
+        return
+
+    missing_outputs = [
+        name for name in stage_spec.get("produces") or [] if name not in artifacts
+    ]
+    if missing_outputs:
+        raise CheckpointValidationError(
+            f"Stage {stage!r} with status {status!r} is missing manifest-"
+            f"declared output artifact(s) {missing_outputs} — the "
+            f"{pipeline_type!r} manifest's 'produces' list is a binding "
+            f"contract, not documentation."
+        )
+
+    required_in = stage_spec.get("required_artifacts_in") or []
+    if not required_in:
+        return
+    available = set(artifacts)
+    stages = get_pipeline_stages(pipeline_type)
+    if stage in stages:
+        for predecessor in stages[: stages.index(stage)]:
+            path = _checkpoint_path(pipeline_dir, project_id, predecessor)
+            if not path.exists():
+                continue
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    checkpoint = json.load(handle)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if checkpoint.get("status") == "completed" and isinstance(
+                checkpoint.get("artifacts"), dict
+            ):
+                available.update(checkpoint["artifacts"])
+    missing_inputs = [name for name in required_in if name not in available]
+    if missing_inputs:
+        raise CheckpointValidationError(
+            f"Stage {stage!r} cannot advance: manifest-declared input "
+            f"artifact(s) {missing_inputs} were never produced by a completed "
+            f"predecessor checkpoint (and are not carried in this one)."
+        )
+
+
 def _enforce_stage_prerequisites(
     pipeline_dir: Path,
     project_id: str,
@@ -391,14 +471,19 @@ def _decision_log_path(pipeline_dir: Path, project_id: str) -> Path:
 
 def _merge_decision_log(
     pipeline_dir: Path, project_id: str, new_log: dict[str, Any]
-) -> None:
+) -> tuple[Path, Optional[bytes]]:
     """Append new decisions to the project-level decision log.
 
     Each stage may produce decisions. This function merges them into a
     single cumulative file so reviewers and the bench can inspect the
     full audit trail.
+
+    Returns (log_path, original_bytes_or_None) so the caller can roll the
+    log back if the checkpoint it belongs to fails to commit — the ruling
+    and its checkpoint move together or not at all.
     """
     path = _decision_log_path(pipeline_dir, project_id)
+    original: Optional[bytes] = path.read_bytes() if path.exists() else None
     if path.exists():
         with open(path, encoding="utf-8") as f:
             existing = json.load(f)
@@ -414,9 +499,34 @@ def _merge_decision_log(
         if decision.get("decision_id") not in existing_ids:
             existing["decisions"].append(decision)
 
+    # The cumulative log is audit state: validate the MERGED result before
+    # touching disk, and swap atomically so a failed write can never leave a
+    # truncated or invalid decision log behind.
+    try:
+        validate_artifact("decision_log", existing)
+    except Exception as exc:
+        raise CheckpointValidationError(
+            f"Merged decision log would be invalid — refusing to write: {exc}"
+        ) from exc
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    tmp_path = path.with_suffix(".json.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(existing, f, indent=2)
+    import os
+    os.replace(tmp_path, path)
+    return path, original
+
+
+def _restore_decision_log(path: Path, original: Optional[bytes]) -> None:
+    """Roll the cumulative decision log back to its pre-merge state."""
+    import os
+    if original is None:
+        path.unlink(missing_ok=True)
+        return
+    tmp_path = path.with_suffix(".json.rollback")
+    tmp_path.write_bytes(original)
+    os.replace(tmp_path, path)
 
 
 def write_checkpoint(
@@ -501,6 +611,17 @@ def write_checkpoint(
         status,
     )
 
+    manifest, stage_spec = _manifest_stage_spec(pipeline_type, stage)
+    _enforce_manifest_artifact_contract(
+        pipeline_dir,
+        project_id,
+        pipeline_type,
+        stage,
+        status,
+        artifacts,
+        stage_spec,
+    )
+
     checkpoint = {
         "version": "1.0",
         "project_id": project_id,
@@ -524,15 +645,14 @@ def write_checkpoint(
     if metadata is not None:
         checkpoint["metadata"] = metadata
 
-    # Merge decision_log: if this checkpoint carries new decisions,
-    # append them to the project-level decision log file, then write the
-    # reference back into relevant artifacts so downstream consumers can find it.
-    if "decision_log" in artifacts and isinstance(artifacts["decision_log"], dict):
-        _merge_decision_log(pipeline_dir, project_id, artifacts["decision_log"])
-        log_ref = str(_decision_log_path(pipeline_dir, project_id))
-
+    carries_decisions = "decision_log" in artifacts and isinstance(
+        artifacts["decision_log"], dict
+    )
+    if carries_decisions:
         # Write decision_log_ref into proposal_packet and render_report
-        # artifacts if they are present in this checkpoint.
+        # artifacts if they are present in this checkpoint. The ref path is
+        # deterministic, so it can be injected BEFORE any validation runs.
+        log_ref = str(_decision_log_path(pipeline_dir, project_id))
         for artifact_key in ("proposal_packet", "render_report"):
             if artifact_key in artifacts and isinstance(artifacts[artifact_key], dict):
                 plan_or_top = artifacts[artifact_key]
@@ -544,22 +664,46 @@ def write_checkpoint(
                 else:
                     plan_or_top["decision_log_ref"] = log_ref
 
+    # ALL validation happens before ANY state is persisted. A rejected
+    # checkpoint must leave the project directory exactly as it found it —
+    # previously the cumulative decision log was merged before validation,
+    # so rejected checkpoints could still corrupt the audit trail.
     validate_checkpoint(checkpoint)
+
+    if manifest is not None and manifest.get("validation_profile") == "authored-canon":
+        from lib.canon_enforcement import enforce_authored_canon
+
+        enforce_authored_canon(pipeline_dir, project_id, stage, status, artifacts)
 
     path = _checkpoint_path(pipeline_dir, project_id, stage)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Serialize to a temp file first so a mid-write failure (disk full,
-    # unserializable metadata) can never leave the stage with a truncated
-    # current checkpoint; then archive the superseded file and swap in the
-    # new one atomically.
+    # Serialize the checkpoint to a temp file FIRST — an unserializable
+    # payload or full disk must fail before the decision log moves. Then
+    # commit the decision log, then swap the checkpoint in. If the checkpoint
+    # swap fails after the log committed, roll the log back: a canon ruling
+    # must never exist in the audit trail without the checkpoint that
+    # carried it.
+    import os
     tmp_path = path.with_suffix(".json.tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(checkpoint, f, indent=2)
-    # Preserve run history: a superseded completed/awaiting_human checkpoint
-    # is copied to history/ (stage versioning, gate audit trail, replay).
-    _archive_superseded_checkpoint(path, stage)
-    import os
-    os.replace(tmp_path, path)
+
+    log_rollback: Optional[tuple[Path, Optional[bytes]]] = None
+    if carries_decisions:
+        log_rollback = _merge_decision_log(
+            pipeline_dir, project_id, artifacts["decision_log"]
+        )
+
+    try:
+        # Preserve run history: a superseded completed/awaiting_human
+        # checkpoint is copied to history/ (stage versioning, gate audit
+        # trail, replay).
+        _archive_superseded_checkpoint(path, stage)
+        os.replace(tmp_path, path)
+    except BaseException:
+        if log_rollback is not None:
+            _restore_decision_log(*log_rollback)
+        raise
 
     return path
 

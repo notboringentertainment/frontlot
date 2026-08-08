@@ -31,6 +31,31 @@
           "quality_score": { "type": "number", "minimum": 0, "maximum": 1 },
           "subtype": { "type": "string", "description": "Sub-classification (e.g. 'background', 'stock', 'generated')" },
           "generation_summary": { "type": "string", "description": "Brief summary of how the asset was generated or sourced" },
+          "continuity": {
+            "type": "object",
+            "description": "Structured canon/continuity evidence. Required for visual assets by the authored-canon validation profile: which canon entities this asset depicts and which references and risk mitigations were actually applied.",
+            "required": ["canon_refs", "references_applied", "risk_notes_applied"],
+            "properties": {
+              "canon_refs": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 },
+                "minItems": 1,
+                "description": "Canon packet lock/beat ids or character/location names this asset must stay true to"
+              },
+              "references_applied": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Reference asset paths/URLs actually supplied to generation (may be empty when canon lists none)"
+              },
+              "risk_notes_applied": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Continuity risk notes from the canon packet that were mitigated in the prompt/settings (may be empty when canon lists none)"
+              },
+              "notes": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
           "provider": { "type": "string", "description": "Provider name (e.g. pixabay, google_imagen)" },
           "license": { "type": "string", "description": "License type (e.g. Pixabay License, CC0)" },
           "original_url": { "type": "string", "description": "Source URL if downloaded from a stock service" },

@@ -28,6 +28,12 @@
           "transition_in": { "type": "string" },
           "transition_out": { "type": "string" },
           "overlay_notes": { "type": "string" },
+          "canon_refs": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1,
+            "description": "Canon packet beat/lock ids this scene realizes. Required (per scene) by the authored-canon validation profile so continuity constraints travel with the scene."
+          },
           "shot_language": {
             "type": "object",
             "description": "Structured cinematography vocabulary for this scene",
