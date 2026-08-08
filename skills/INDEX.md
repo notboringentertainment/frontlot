@@ -218,6 +218,24 @@ Stage director skills teach the agent HOW to execute each pipeline stage. Each s
 | Compose Director | `pipelines/cinematic/compose-director.md` | `compose` | Grade and mix finishing, frame-treatment judgment |
 | Publish Director | `pipelines/cinematic/publish-director.md` | `publish` | Hero vs teaser packaging, poster-frame concepts |
 
+### Authored-Film Pipeline (`pipelines/authored-film/`) — v1.0
+
+For stories that were WRITTEN before production began. Canon ingest replaces web
+research; every stage is bound by `canon-guard.md` (locks immutable, protected
+lines verbatim, gaps escalate — never invented).
+
+| Skill | File | Stage | Key Capabilities |
+|-------|------|-------|-----------------|
+| **Executive Producer** | `pipelines/authored-film/executive-producer.md` | `all` | **7-stage serial orchestration, canon-fidelity gates, continuity enforcement, writer handoff record** |
+| Canon Guard | `pipelines/authored-film/canon-guard.md` | `all` | Binding contract: authority ladder, collision procedure, provenance rules |
+| Canon Director | `pipelines/authored-film/canon-director.md` | `canon_ingest` | Reads writer development assets (synopsis/treatment/outline/bible, wayfinder maps, canon atoms, pitch exports) into a schema-valid canon_packet |
+| Proposal Director | `pipelines/authored-film/proposal-director.md` | `proposal` | 3+ visual treatments of the SAME locked story; comps-scoped research only |
+| Script Director | `pipelines/authored-film/script-director.md` | `script` | Adaptation not authorship: beat-mapped sections, verbatim protected lines, full source_ref provenance |
+| Scene Director | `pipelines/authored-film/scene-director.md` | `scene_plan` | Continuity constraints embedded per scene, annex-driven hero moments and styleframes |
+| Asset Director | `pipelines/authored-film/asset-director.md` | `assets` | Reference-driven generation, continuity risks as prompt guards, styleframe-first ordering |
+| Edit Director | `pipelines/authored-film/edit-director.md` | `edit` | Cut on the writer's turns, protected-line audio protection, tone-document pacing |
+| Compose Director | `pipelines/authored-film/compose-director.md` | `compose` | Render + canon pass: locks honored, lines intact, tone verdict |
+
 ### Animation Pipeline (`pipelines/animation/`) — v2.0
 
 | Skill | File | Stage | Key Capabilities |

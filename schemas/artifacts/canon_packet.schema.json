@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openmontage/artifacts/canon_packet",
+  "title": "Canon Packet",
+  "description": "Authored-story canon ingested from the writer's development assets (synopsis, treatment, outline, story bible, wayfinder map, canon atoms, pitch exports). This artifact is the authoritative story source for the authored-film pipeline: downstream stages ADAPT it, they never rewrite it. Locks are immutable within a production run — conflicts escalate to the writer, never resolve silently.",
+  "type": "object",
+  "required": ["version", "project_title", "format", "source_documents", "locks", "tone", "structure", "open_questions"],
+  "properties": {
+    "version": { "type": "string", "const": "1.0" },
+    "project_title": { "type": "string", "minLength": 1 },
+    "format": {
+      "type": "string",
+      "enum": ["feature", "short", "limited_series", "episodic_series", "pilot", "trailer", "proof_of_concept", "ai_film"],
+      "description": "The delivery format of the authored work this production serves"
+    },
+    "target_duration_seconds": { "type": "number", "minimum": 1 },
+    "logline": { "type": "string" },
+    "source_documents": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "doc_type", "authority", "sha256"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "description": "Absolute or project-relative path to the source file as read" },
+          "doc_type": {
+            "type": "string",
+            "enum": ["synopsis", "treatment", "outline", "story_bible", "wayfinder_map", "wayfinder_ticket", "canon_atom", "pitch_export", "screenplay", "sketch", "other"]
+          },
+          "title": { "type": "string" },
+          "authority": {
+            "type": "string",
+            "enum": ["canon", "locked_decision", "writing_document", "groundwork", "reference"],
+            "description": "canon = authoritative story truth (atoms, locked continuity); locked_decision = writer-ratified decisions (wayfinder resolved tickets, MAP Decisions so far); writing_document = the writer's development docs (synopsis/treatment/outline/story bible) — authoritative below locks, above groundwork; groundwork = evidence and research, never story authority; reference = tone/visual reference only"
+          },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Content hash at ingest time — provenance for 'what exactly did production read'. Required: production must be able to prove what it read." },
+          "notes": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "locks": {
+      "type": "array",
+      "description": "Immutable story decisions. Every downstream stage treats these the way the checkpoint writer treats human_approval_default — binding, never re-judged.",
+      "items": {
+        "type": "object",
+        "required": ["id", "decision", "source_path", "source_type"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "description": "Stable id, e.g. lock-001 or the atom filename stem" },
+          "decision": { "type": "string", "minLength": 1, "description": "The locked decision, in the writer's terms — quoted or faithfully compressed, never reinterpreted" },
+          "source_path": { "type": "string", "minLength": 1 },
+          "source_type": {
+            "type": "string",
+            "enum": ["canon_atom", "wayfinder_decision", "continuity_log", "producer_ruling", "writer_statement", "pitch_export"]
+          },
+          "evidence_ref": { "type": "string", "description": "Signed-event hash or other evidence pointer when the source carries one (e.g. atom evidence field)" },
+          "locked_date": { "type": "string" },
+          "scope": { "type": "string", "description": "What this lock governs: premise, ending, character, tone, structure, dialogue, world_rule" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "protected_lines": {
+      "type": "array",
+      "description": "Dialogue or text the writer has protected. Reproduced VERBATIM in any script section that uses them — paraphrase is a canon violation.",
+      "items": {
+        "type": "object",
+        "required": ["line", "source_path"],
+        "properties": {
+          "line": { "type": "string", "minLength": 1 },
+          "context": { "type": "string", "description": "Where in the story this line lives" },
+          "source_path": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "characters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "role": { "type": "string" },
+          "one_line_identity": { "type": "string" },
+          "external_want": { "type": "string" },
+          "internal_need": { "type": "string" },
+          "wound": { "type": "string" },
+          "arc": { "type": "string" },
+          "behavioral_anchors": { "type": "array", "items": { "type": "string" } },
+          "speech_patterns": { "type": "string" },
+          "never_write_as": { "type": "string", "description": "The writer's 'never write them as' rule — a hard constraint on scripting and asset direction" },
+          "continuity_facts": { "type": "array", "items": { "type": "string" } },
+          "visual_continuity_risks": { "type": "array", "items": { "type": "string" }, "description": "From the AI production annex — what generation tends to get wrong about this character" },
+          "reference_assets": { "type": "array", "items": { "type": "string" }, "description": "Paths/URLs to visual references for generation consistency" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "locations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "story_function": { "type": "string" },
+          "visual_identity": { "type": "string" },
+          "rules_of_the_space": { "type": "string" },
+          "continuity_facts": { "type": "array", "items": { "type": "string" } },
+          "visual_continuity_risks": { "type": "array", "items": { "type": "string" } },
+          "reference_assets": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
+      }
+    },
+    "world_rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule"],
+        "properties": {
+          "rule": { "type": "string" },
+          "never_break": { "type": "boolean", "default": false },
+          "source_path": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "tone": {
+      "type": "object",
+      "required": ["tone_words"],
+      "properties": {
+        "tone_words": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "comps": { "type": "array", "items": { "type": "string" }, "description": "Reference works, with what each comp contributes (e.g. 'X is tone, Y is shape')" },
+        "anti_comps": { "type": "array", "items": { "type": "string" } },
+        "visual_style": { "type": "string" },
+        "sound_music_style": { "type": "string" },
+        "pacing_rules": { "type": "string" },
+        "dialogue_style": { "type": "string" },
+        "must_never_feel_like": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "structure": {
+      "type": "object",
+      "required": ["beats"],
+      "properties": {
+        "structure_source": { "type": "string", "description": "Which document the beat structure came from (outline > treatment > synopsis precedence)" },
+        "beats": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "summary"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "summary": { "type": "string", "description": "What happens, in the writer's terms" },
+              "act": { "type": "string" },
+              "turn": { "type": "string", "description": "How this beat turns — the state change it causes" },
+              "characters": { "type": "array", "items": { "type": "string" } },
+              "location": { "type": "string" },
+              "source_path": { "type": "string" },
+              "lock_refs": { "type": "array", "items": { "type": "string" }, "description": "Lock ids that constrain this beat" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ai_production_notes": {
+      "type": "object",
+      "description": "Aggregated from the writing documents' AI production annexes ('AI Production Implications' / 'AI production annex' sections)",
+      "properties": {
+        "key_visual_sequences": { "type": "array", "items": { "type": "string" } },
+        "character_continuity_risks": { "type": "array", "items": { "type": "string" } },
+        "location_continuity_risks": { "type": "array", "items": { "type": "string" } },
+        "generation_challenges": { "type": "array", "items": { "type": "string" } },
+        "reference_assets_needed": { "type": "array", "items": { "type": "string" } },
+        "styleframe_scenes": { "type": "array", "items": { "type": "string" } },
+        "prompt_language_notes": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "open_questions": {
+      "type": "array",
+      "description": "Every [NEEDS DECISION] marker, unresolved wayfinder ticket in scope, and gap the ingest could not fill without inventing canon. Blocking questions stop the pipeline at the next gate until the writer answers.",
+      "items": {
+        "type": "object",
+        "required": ["id", "question", "blocking", "status"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "description": "Stable id, e.g. q-001. canon_ruling decisions reference this via question_id to resolve the question." },
+          "question": { "type": "string", "minLength": 1 },
+          "blocking": { "type": "boolean", "description": "true = production cannot proceed past the next gate without the writer's answer. The checkpoint writer enforces this: no post-ingest stage completes while a blocking question is open and unruled." },
+          "status": { "type": "string", "enum": ["open", "resolved"], "description": "resolved = answered before/at ingest. Questions answered later stay 'open' here and are released by a canon_ruling decision carrying this question's id." },
+          "resolution_ref": { "type": "string", "description": "decision_id of the canon_ruling that resolved this question, when status=resolved" },
+          "source_path": { "type": "string" },
+          "suggested_resolution": { "type": "string", "description": "e.g. 'wayfinder ticket', 'answer at canon gate', 'producer ruling'" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "ingested_at": { "type": "string" },
+        "ingest_notes": { "type": "string" },
+        "documents_declined": { "type": "array", "items": { "type": "string" }, "description": "Files present but deliberately excluded, with why (e.g. sketches — disposable, not canon)" }
+      },
+      "additionalProperties": false
+    },
+    "metadata": { "type": "object" }
+  },
+  "additionalProperties": false
+}
