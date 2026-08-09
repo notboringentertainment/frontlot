@@ -251,18 +251,21 @@ def passing_final_review(canon: dict) -> dict:
     }
 
 
-def make_real_render(project_dir) -> None:
-    """Write a real, ffprobe-valid mp4 at renders/output.mp4."""
+def make_real_render(project_dir, *, audio: str = "audible") -> None:
+    """Write a real, ffprobe-valid mp4 at renders/output.mp4.
+
+    audio: "audible" (default), "silent" (audio track with no signal),
+    or "none" (video-only).
+    """
     out = project_dir / "renders" / "output.mp4"
     out.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x240:d=1",
-            "-pix_fmt", "yuv420p", str(out),
-        ],
-        check=True,
-        capture_output=True,
-    )
+    cmd = ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x240:d=1"]
+    if audio == "audible":
+        cmd += ["-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "aac"]
+    elif audio == "silent":
+        cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=1", "-c:a", "aac"]
+    cmd += ["-pix_fmt", "yuv420p", "-shortest", str(out)]
+    subprocess.run(cmd, check=True, capture_output=True)
 
 
 ffmpeg_available = shutil.which("ffmpeg") is not None
@@ -841,6 +844,42 @@ class TestSecondRoundFindings:
         after = log_path.read_text(encoding="utf-8")
         assert before == after, "decision log must roll back when the checkpoint swap fails"
         assert "d-050" not in after
+
+
+@pytest.mark.skipif(not ffmpeg_available, reason="ffmpeg/ffprobe not installed")
+class TestAudibleDeliverable:
+    """A film whose canon protects a spoken line must DELIVER audio signal.
+
+    Found by the human ear in the shakedown run: the runtime accepted a
+    completed compose whose audio track was digital silence (-91 dB)."""
+
+    def test_silent_audio_track_is_rejected(self, project):
+        pipeline_dir, project_dir = project
+        canon = advance(pipeline_dir, "edit", project_dir=project_dir)
+        make_real_render(project_dir, audio="silent")
+        review = passing_final_review(canon)
+        with pytest.raises(CheckpointValidationError, match="[Ss]ilen"):
+            write_checkpoint(
+                pipeline_dir, "p", "compose", "completed",
+                {"render_report": render_report(), "final_review": review},
+                pipeline_type=PIPELINE,
+            )
+
+    def test_missing_audio_track_is_rejected_when_lines_are_protected(self, project):
+        pipeline_dir, project_dir = project
+        canon = advance(pipeline_dir, "edit", project_dir=project_dir)
+        make_real_render(project_dir, audio="none")
+        review = passing_final_review(canon)
+        with pytest.raises(CheckpointValidationError, match="audio"):
+            write_checkpoint(
+                pipeline_dir, "p", "compose", "completed",
+                {"render_report": render_report(), "final_review": review},
+                pipeline_type=PIPELINE,
+            )
+
+    def test_audible_render_completes(self, project):
+        pipeline_dir, project_dir = project
+        advance(pipeline_dir, "compose", project_dir=project_dir)
 
 
 class TestCanonPacketHardening:

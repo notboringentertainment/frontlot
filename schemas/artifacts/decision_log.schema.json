@@ -41,7 +41,8 @@
               "capability_extension",
               "playbook_override",
               "visual_accuracy_check",
-              "canon_ruling"
+              "canon_ruling",
+              "approval_policy"
             ],
             "description": "What class of decision this is"
           },

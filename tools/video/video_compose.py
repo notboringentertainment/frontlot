@@ -2722,9 +2722,18 @@ class VideoCompose(BaseTool):
         if not input_path.exists():
             return ToolResult(success=False, error=f"Input not found: {input_path}")
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(input_path),
+        # The input schema advertises audio_path as "Mixed audio to mux into
+        # output" — honor it. Without these mappings the input's own (possibly
+        # silent) audio track was re-encoded and the external mix silently
+        # dropped, which shipped a mute film in the authored-film shakedown.
+        audio_path = inputs.get("audio_path")
+        cmd = ["ffmpeg", "-y", "-i", str(input_path)]
+        if audio_path:
+            audio = Path(audio_path)
+            if not audio.exists():
+                return ToolResult(success=False, error=f"audio_path not found: {audio}")
+            cmd += ["-i", str(audio), "-map", "0:v:0", "-map", "1:a:0", "-shortest"]
+        cmd += [
             "-c:v", codec, "-crf", str(crf), "-preset", preset,
             "-c:a", "aac", "-b:a", "192k",
         ]

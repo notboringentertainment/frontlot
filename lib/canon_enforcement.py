@@ -414,7 +414,9 @@ def _check_canon_pass(
             )
 
 
-def _check_render_outputs(project_dir: Path, render_report: dict[str, Any]) -> None:
+def _check_render_outputs(
+    project_dir: Path, render_report: dict[str, Any], canon: dict[str, Any]
+) -> None:
     project_root = project_dir.resolve()
     for output in render_report.get("outputs", []):
         raw = str(output.get("path", ""))
@@ -434,6 +436,42 @@ def _check_render_outputs(project_dir: Path, render_report: dict[str, Any]) -> N
                 f"{candidate} — a completed compose must point at a real render."
             )
         _ffprobe_verify(candidate, raw, output)
+        if canon.get("protected_lines"):
+            _verify_audio_signal(candidate, raw)
+
+
+def _verify_audio_signal(path: Path, raw: str) -> None:
+    """A canon with protected lines promises AUDIBLE dialogue. The deliverable
+    must carry an audio stream with real signal — a silent track passed every
+    structural check in the shakedown until a human ear caught it."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        _fail(
+            f"ffmpeg is not installed, so audio signal in render output {raw!r} "
+            f"cannot be verified. The authored-canon profile fails closed."
+        )
+    result = subprocess.run(
+        [ffmpeg, "-v", "info", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True,
+        text=True,
+    )
+    stderr = result.stderr or ""
+    if "max_volume" not in stderr:
+        _fail(
+            f"render output {raw!r} has no measurable audio stream, but the "
+            f"canon protects spoken lines — the film cannot be silent."
+        )
+    try:
+        max_db = float(stderr.split("max_volume:")[1].split("dB")[0].strip())
+    except (IndexError, ValueError):
+        _fail(f"could not parse audio loudness for render output {raw!r}.")
+        return
+    if max_db <= -60.0:
+        _fail(
+            f"render output {raw!r} audio peaks at {max_db} dB — that is "
+            f"silence, and the canon protects a line that must be audible. "
+            f"Verify the mix was actually muxed into the deliverable."
+        )
 
 
 def _ffprobe_verify(path: Path, raw: str, output: dict[str, Any]) -> None:
@@ -542,5 +580,5 @@ def enforce_authored_canon(
         )
         if status == "completed":
             _check_render_outputs(
-                pipeline_dir / project_id, artifacts.get("render_report", {})
+                pipeline_dir / project_id, artifacts.get("render_report", {}), canon
             )

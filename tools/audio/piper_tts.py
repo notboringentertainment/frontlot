@@ -120,15 +120,28 @@ class PiperTTS(BaseTool):
         output_path = Path(inputs.get("output_path", "tts_output.wav"))
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        cmd = [
+            "piper",
+            "--model", inputs.get("model", "en_US-lessac-medium"),
+            "--speaker", str(inputs.get("speaker_id", 0)),
+            "--length-scale", str(inputs.get("length_scale", 1.0)),
+            "--sentence-silence", str(inputs.get("sentence_silence", 0.3)),
+            "--output_file", str(output_path),
+        ]
+        # Voice models are downloaded via `python -m piper.download_voices
+        # --download-dir <dir>` and the CLI does NOT search that dir unless
+        # told to. Resolve: explicit input > PIPER_DATA_DIR > ~/.piper/models.
+        import os
+        data_dir = (
+            inputs.get("data_dir")
+            or os.environ.get("PIPER_DATA_DIR")
+            or str(Path.home() / ".piper" / "models")
+        )
+        if Path(data_dir).is_dir():
+            cmd += ["--data-dir", str(data_dir)]
+
         proc = subprocess.run(
-            [
-                "piper",
-                "--model", inputs.get("model", "en_US-lessac-medium"),
-                "--speaker", str(inputs.get("speaker_id", 0)),
-                "--length-scale", str(inputs.get("length_scale", 1.0)),
-                "--sentence-silence", str(inputs.get("sentence_silence", 0.3)),
-                "--output_file", str(output_path),
-            ],
+            cmd,
             input=inputs["text"],
             capture_output=True,
             text=True,
