@@ -56,8 +56,12 @@ open questions without a matching `canon_ruling` block completion; script
 sections need canon `source_ref`s and verbatim protected lines; scenes need
 `canon_refs`; visual assets need `continuity` evidence; compose needs a
 passing `canon_pass` and a real, ffprobe-valid render inside the project
-workspace. A rejected checkpoint persists nothing — not even decision-log
-merges. Semantic judgment (tone, feel, voice) remains yours and the writer's.
+workspace; when the proposal locked `motion_required: true`, the deliverable's
+measured motion ratio must clear 25% — a slideshow cannot self-certify as a
+motion-led film. A rejected checkpoint persists nothing — not even
+decision-log merges. Semantic judgment (tone, feel, voice) remains yours and
+the writer's. Verify in the medium: audio with loudness measurement, motion
+with frame deltas — never certify a film from stills alone.
 
 ## Collisions
 

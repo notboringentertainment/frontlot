@@ -2736,6 +2736,10 @@ class VideoCompose(BaseTool):
         cmd += [
             "-c:v", codec, "-crf", str(crf), "-preset", preset,
             "-c:a", "aac", "-b:a", "192k",
+            # moov atom up front — QuickTime can refuse to play (black frame,
+            # no scrub) when the index sits at file end. Parity with
+            # _mux_external_audio, which always wrote +faststart.
+            "-movflags", "+faststart",
         ]
 
         # Apply media profile if specified

@@ -414,6 +414,59 @@ def _check_canon_pass(
             )
 
 
+def _motion_promised(pipeline_dir: Path, project_id: str) -> bool:
+    """True when the proposal locked a motion_required delivery promise."""
+    checkpoint = _read_json(pipeline_dir / project_id / "checkpoint_proposal.json")
+    if not checkpoint:
+        return False
+    promise = (
+        (checkpoint.get("artifacts") or {})
+        .get("proposal_packet", {})
+        .get("production_plan", {})
+        .get("delivery_promise", {})
+    )
+    return isinstance(promise, dict) and promise.get("motion_required") is True
+
+
+def _verify_motion(path: Path, raw: str) -> None:
+    """A motion_required promise is measured on the deliverable, in its own
+    medium: sample frames, compare neighbors, fail when the film is
+    effectively a slideshow. Found the hard way — a 60s render whose frames
+    were ~92% identical self-certified as a motion-led film."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        _fail(f"ffmpeg missing; cannot verify the motion promise on {raw!r}.")
+
+    # Dependency-free: sample 2fps as raw 160x90 grayscale and diff the bytes.
+    W, H = 160, 90
+    result = subprocess.run(
+        [ffmpeg, "-v", "error", "-i", str(path),
+         "-vf", f"fps=2,scale={W}:{H}",
+         "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+        capture_output=True,
+    )
+    data = result.stdout
+    frame_size = W * H
+    n = len(data) // frame_size
+    if n < 3:
+        return  # too short to judge motion honestly
+    frames = [data[i * frame_size:(i + 1) * frame_size] for i in range(n)]
+    diffs = []
+    for a, b in zip(frames, frames[1:]):
+        total = sum(abs(x - y) for x, y in zip(a, b))
+        diffs.append(total / frame_size)
+    moving = sum(1 for d in diffs if d > 2.0)
+    ratio = moving / len(diffs)
+    if ratio < 0.25:
+        _fail(
+            f"render output {raw!r} breaks the motion promise: only "
+            f"{ratio:.0%} of sampled frame pairs show visible change "
+            f"(threshold 25%). The proposal locked motion_required=true — "
+            f"this plays as a slideshow. Add real motion or take a "
+            f"still-led downgrade back to the writer for approval."
+        )
+
+
 def _check_render_outputs(
     project_dir: Path, render_report: dict[str, Any], canon: dict[str, Any]
 ) -> None:
@@ -438,6 +491,8 @@ def _check_render_outputs(
         _ffprobe_verify(candidate, raw, output)
         if canon.get("protected_lines"):
             _verify_audio_signal(candidate, raw)
+        if _motion_promised(project_dir.parent, project_dir.name):
+            _verify_motion(candidate, raw)
 
 
 def _verify_audio_signal(path: Path, raw: str) -> None:

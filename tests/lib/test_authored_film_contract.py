@@ -251,19 +251,27 @@ def passing_final_review(canon: dict) -> dict:
     }
 
 
-def make_real_render(project_dir, *, audio: str = "audible") -> None:
+def make_real_render(project_dir, *, audio: str = "audible",
+                     motion: str = "static", duration: int = 1) -> None:
     """Write a real, ffprobe-valid mp4 at renders/output.mp4.
 
     audio: "audible" (default), "silent" (audio track with no signal),
     or "none" (video-only).
+    motion: "static" (held black frame) or "moving" (testsrc — every frame
+    differs).
     """
     out = project_dir / "renders" / "output.mp4"
     out.parent.mkdir(parents=True, exist_ok=True)
-    cmd = ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x240:d=1"]
+    video_src = (
+        f"testsrc=size=320x240:rate=30:duration={duration}"
+        if motion == "moving"
+        else f"color=c=black:s=320x240:d={duration}"
+    )
+    cmd = ["ffmpeg", "-y", "-f", "lavfi", "-i", video_src]
     if audio == "audible":
-        cmd += ["-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "aac"]
+        cmd += ["-f", "lavfi", "-i", f"sine=frequency=440:duration={duration}", "-c:a", "aac"]
     elif audio == "silent":
-        cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=1", "-c:a", "aac"]
+        cmd += ["-f", "lavfi", "-i", f"anullsrc=r=44100:cl=mono:d={duration}", "-c:a", "aac"]
     cmd += ["-pix_fmt", "yuv420p", "-shortest", str(out)]
     subprocess.run(cmd, check=True, capture_output=True)
 
@@ -879,6 +887,61 @@ class TestAudibleDeliverable:
 
     def test_audible_render_completes(self, project):
         pipeline_dir, project_dir = project
+        advance(pipeline_dir, "compose", project_dir=project_dir)
+
+
+@pytest.mark.skipif(not ffmpeg_available, reason="ffmpeg/ffprobe not installed")
+class TestMotionPromise:
+    """A delivery promise of motion_required must be measured on the
+    deliverable. Found in the first real production: a 60s film whose frames
+    were ~92% identical passed every check — a slideshow self-certified as a
+    motion-led film."""
+
+    def _promise_motion(self, pipeline_dir) -> None:
+        """Rewrite the proposal checkpoint with motion_required: true."""
+        import json as _json
+        path = pipeline_dir / "p" / "checkpoint_proposal.json"
+        cp = _json.loads(path.read_text(encoding="utf-8"))
+        cp["artifacts"]["proposal_packet"]["production_plan"]["delivery_promise"] = {
+            "promise_type": "motion_led",
+            "motion_required": True,
+            "tone_mode": "cinematic",
+            "quality_floor": "presentable",
+        }
+        path.write_text(_json.dumps(cp), encoding="utf-8")
+
+    def test_static_render_breaks_a_motion_promise(self, project):
+        pipeline_dir, project_dir = project
+        canon = advance(pipeline_dir, "edit", project_dir=project_dir)
+        self._promise_motion(pipeline_dir)
+        make_real_render(project_dir, motion="static", duration=3)
+        review = passing_final_review(canon)
+        rr = render_report()
+        rr["outputs"][0]["duration_seconds"] = 3
+        with pytest.raises(CheckpointValidationError, match="[Mm]otion"):
+            write_checkpoint(
+                pipeline_dir, "p", "compose", "completed",
+                {"render_report": rr, "final_review": review},
+                pipeline_type=PIPELINE,
+            )
+
+    def test_moving_render_satisfies_a_motion_promise(self, project):
+        pipeline_dir, project_dir = project
+        canon = advance(pipeline_dir, "edit", project_dir=project_dir)
+        self._promise_motion(pipeline_dir)
+        make_real_render(project_dir, motion="moving", duration=3)
+        review = passing_final_review(canon)
+        rr = render_report()
+        rr["outputs"][0]["duration_seconds"] = 3
+        write_checkpoint(
+            pipeline_dir, "p", "compose", "completed",
+            {"render_report": rr, "final_review": review},
+            pipeline_type=PIPELINE,
+        )
+
+    def test_static_render_is_fine_without_a_motion_promise(self, project):
+        pipeline_dir, project_dir = project
+        # default sample proposal makes no motion promise — static passes
         advance(pipeline_dir, "compose", project_dir=project_dir)
 
 
