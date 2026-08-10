@@ -276,7 +276,9 @@ def make_real_render(project_dir, *, audio: str = "audible",
     subprocess.run(cmd, check=True, capture_output=True)
 
 
-ffmpeg_available = shutil.which("ffmpeg") is not None
+ffmpeg_available = (
+    shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+)
 
 
 @pytest.fixture
@@ -943,6 +945,67 @@ class TestMotionPromise:
         pipeline_dir, project_dir = project
         # default sample proposal makes no motion promise — static passes
         advance(pipeline_dir, "compose", project_dir=project_dir)
+
+
+@pytest.mark.skipif(not ffmpeg_available, reason="ffmpeg/ffprobe not installed")
+class TestCodeRabbitFindings:
+    """Regressions for the CodeRabbit PR review (fork PR #1)."""
+
+    def test_undecodable_render_fails_motion_promise_closed(self, project):
+        import json as _json
+        pipeline_dir, project_dir = project
+        canon = advance(pipeline_dir, "edit", project_dir=project_dir)
+        path = pipeline_dir / "p" / "checkpoint_proposal.json"
+        cp = _json.loads(path.read_text(encoding="utf-8"))
+        cp["artifacts"]["proposal_packet"]["production_plan"]["delivery_promise"] = {
+            "promise_type": "motion_led", "motion_required": True,
+            "tone_mode": "cinematic", "quality_floor": "presentable",
+        }
+        path.write_text(_json.dumps(cp), encoding="utf-8")
+        out = project_dir / "renders" / "output.mp4"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"\x00" * 4096)  # not a video at all
+        review = passing_final_review(canon)
+        with pytest.raises(CheckpointValidationError):
+            write_checkpoint(
+                pipeline_dir, "p", "compose", "completed",
+                {"render_report": render_report(), "final_review": review},
+                pipeline_type=PIPELINE,
+            )
+
+    def test_duplicate_question_ids_rejected_at_ingest(self, project):
+        pipeline_dir, _ = project
+        canon = canon_packet(blocking_question=True)
+        canon["open_questions"].append(dict(canon["open_questions"][0]))
+        with pytest.raises(CheckpointValidationError, match="duplicate"):
+            write_checkpoint(
+                pipeline_dir, "p", "canon_ingest", "completed",
+                {"canon_packet": canon},
+                pipeline_type=PIPELINE, human_approved=True,
+            )
+
+    def test_beat_lock_ref_must_resolve(self, project):
+        pipeline_dir, _ = project
+        canon = canon_packet()
+        canon["structure"]["beats"][0]["lock_refs"] = ["lock-nowhere"]
+        with pytest.raises(CheckpointValidationError, match="lock-nowhere"):
+            write_checkpoint(
+                pipeline_dir, "p", "canon_ingest", "completed",
+                {"canon_packet": canon},
+                pipeline_type=PIPELINE, human_approved=True,
+            )
+
+    def test_non_string_locks_honored_fails_cleanly(self, project):
+        pipeline_dir, _ = project
+        advance(pipeline_dir, "proposal")
+        script = authored_script()
+        script["metadata"]["canon_check"]["locks_honored"] = [{"id": "atom-001"}]
+        with pytest.raises(CheckpointValidationError, match="string"):
+            write_checkpoint(
+                pipeline_dir, "p", "script", "completed",
+                {"script": script},
+                pipeline_type=PIPELINE, human_approved=True,
+            )
 
 
 class TestCanonPacketHardening:

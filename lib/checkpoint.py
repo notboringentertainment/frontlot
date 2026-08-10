@@ -293,8 +293,23 @@ def _manifest_stage_spec(
         from lib.pipeline_loader import load_pipeline_readonly
 
         manifest = load_pipeline_readonly(pipeline_type)
-    except Exception:
-        return None, None
+    except FileNotFoundError:
+        raise CheckpointValidationError(
+            f"Unknown pipeline_type {pipeline_type!r} — cannot resolve the "
+            f"manifest artifact contract. Check the spelling against "
+            f"pipeline_defs/*.yaml."
+        )
+    except Exception as exc:
+        # Fail CLOSED: a manifest that exists but cannot load (YAML error,
+        # schema drift) must not silently turn a binding contract into no
+        # contract. Previously this returned (None, None) and every
+        # manifest-driven check — including the authored-canon profile —
+        # quietly skipped.
+        raise CheckpointValidationError(
+            f"Manifest for pipeline {pipeline_type!r} failed to load, so its "
+            f"artifact contracts cannot be enforced. Refusing to write the "
+            f"checkpoint (fail-closed). Underlying error: {exc}"
+        ) from exc
     for spec in manifest.get("stages", []):
         if spec.get("name") == stage:
             return manifest, spec
@@ -703,6 +718,9 @@ def write_checkpoint(
     except BaseException:
         if log_rollback is not None:
             _restore_decision_log(*log_rollback)
+        # The temp name is fixed per stage — a stale file would be reused by
+        # the next writer for this stage. Clean it up with the rollback.
+        tmp_path.unlink(missing_ok=True)
         raise
 
     return path

@@ -84,6 +84,11 @@ class PiperTTS(BaseTool):
                 "default": 0.3,
             },
             "output_path": {"type": "string"},
+            "data_dir": {
+                "type": "string",
+                "description": "Directory containing downloaded voice models. "
+                               "Falls back to PIPER_DATA_DIR, then ~/.piper/models.",
+            },
         },
     }
 

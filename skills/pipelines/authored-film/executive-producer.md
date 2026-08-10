@@ -53,7 +53,7 @@ later stage — invest in this presentation.
 ## EP-Specific Cross-Stage Checks
 
 ### After CANON_INGEST:
-```
+```text
 CHECK: Completeness against the source tree
   - Was every canon/ atom read? Every resolved ticket? The continuity log?
   - Did any groundwork/sketch material leak into locks[]?
@@ -62,7 +62,7 @@ CHECK: Blocking questions
 ```
 
 ### After PROPOSAL:
-```
+```text
 CHECK: Same-story invariant
   - Do all treatment options tell the identical locked story? Any option that
     changes a beat, an ending, a character fate is malformed — rebuild it.
@@ -71,7 +71,7 @@ CHECK: Tone compliance
 ```
 
 ### After SCRIPT:
-```
+```text
 CHECK: Protected-line diff
   - Mechanical comparison: every protected line used appears verbatim.
 CHECK: Provenance coverage
@@ -83,7 +83,7 @@ CHECK: Lock contradiction sweep
 ```
 
 ### After SCENE_PLAN:
-```
+```text
 CHECK: Continuity binding
   - Tracked characters/locations: does each scene cite the constraints that
     generation must honor?
@@ -93,14 +93,14 @@ CHECK: Annex coverage
 ```
 
 ### After ASSETS:
-```
+```text
 CHECK: Continuity in prompts
   - Spot-check generation records: were reference assets and risk notes
     actually applied, or just listed?
 ```
 
 ### After COMPOSE:
-```
+```text
 CHECK: Canon pass in final_review
   - Locks honored (list), protected lines intact and audible, runtime matches
     approved treatment, must_never_feel_like verdict recorded honestly.

@@ -2732,7 +2732,10 @@ class VideoCompose(BaseTool):
             audio = Path(audio_path)
             if not audio.exists():
                 return ToolResult(success=False, error=f"audio_path not found: {audio}")
-            cmd += ["-i", str(audio), "-map", "0:v:0", "-map", "1:a:0", "-shortest"]
+            # apad + -shortest: pad audio to video length so a short mix can
+            # never truncate the picture (parity with _mux_external_audio).
+            cmd += ["-i", str(audio), "-map", "0:v:0", "-map", "1:a:0",
+                    "-af", "apad", "-shortest"]
         cmd += [
             "-c:v", codec, "-crf", str(crf), "-preset", preset,
             "-c:a", "aac", "-b:a", "192k",

@@ -1,7 +1,7 @@
 # Fix Set Applied — authored-film pipeline (2026-08-08)
 
 Response to `2026-08-08-codex-peer-review.md` and the independent review
-(`~/Desktop/2026-08-08-independent-authored-film-review.md`). All six items of
+(`reviews/2026-08-08-independent-review-round1.md`). All six items of
 the independent review's "minimal fix set before first real production run"
 are implemented, TDD-first: 27 new behavioral tests in
 `tests/lib/test_authored_film_contract.py` reproduce every review probe and
@@ -161,3 +161,8 @@ Verification after round 2: 42/42 contract tests pass; full non-tools suite
 - Render existence/ffprobe checks are authored-profile only, to avoid
   breaking other pipelines' existing test fixtures; promoting them to all
   pipelines is a candidate follow-up.
+
+
+## Post-record note
+
+Test counts above are point-in-time (27 after round 1, 42 after round 2). Final count after the production round and CodeRabbit review: 48 behavioral tests in `tests/lib/test_authored_film_contract.py`.

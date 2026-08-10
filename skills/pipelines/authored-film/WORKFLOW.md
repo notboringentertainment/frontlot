@@ -11,7 +11,7 @@ Written from a live end-to-end shakedown run (2026-08-08, project
    wayfinder MAP + resolved tickets, canon atoms, PitchStudio export.
    The pipeline adapts what exists; it never invents what doesn't.
 2. **A voice source.** The canon pass requires protected lines AUDIBLE in
-   the mix — a machine with zero TTS cannot legally finish a film. Local
+   the mix — a machine with zero TTS cannot pass the canon validation. Local
    free path: `pip install piper-tts` into the repo venv, then
    `python -m piper.download_voices en_US-lessac-medium --download-dir ~/.piper/models`.
    Better voices: put an ElevenLabs/OpenAI key in `.env`.
@@ -50,7 +50,7 @@ and honored as locks from then on.
 
 **Gate 3 — Script.** The adaptation, with per-section provenance back to
 your beat/lock ids, protected lines verbatim, any `[production line]` the
-runtime needed flagged for your veto, and any lock conflict presented as a
+runtime needed to add, flagged for your veto, and any lock conflict presented as a
 tension (never silently resolved).
 
 **Gate 4 — Scene plan.** Scenes with your continuity facts embedded in the

@@ -29,6 +29,10 @@ from typing import Any
 
 VISUAL_ASSET_TYPES = {"image", "video", "animation"}
 
+# Media probes run on the checkpoint-write path against writer-supplied
+# files; a stalled decode must not hang write_checkpoint forever.
+MEDIA_PROBE_TIMEOUT_S = 180
+
 
 def _fail(message: str) -> None:
     from lib.checkpoint import CheckpointValidationError
@@ -153,6 +157,33 @@ def _split_refs(raw: str) -> list[str]:
     return tokens
 
 
+def _check_packet_integrity(canon: dict[str, Any]) -> None:
+    """Referential sanity the JSON schema cannot express: unique ids (a
+    duplicate question id would let one canon_ruling release two blocking
+    questions) and beat lock_refs that resolve to real locks."""
+    lock_ids = [l.get("id") for l in canon.get("locks", []) if l.get("id")]
+    dup_locks = sorted({x for x in lock_ids if lock_ids.count(x) > 1})
+    if dup_locks:
+        _fail(f"canon packet has duplicate lock ids: {dup_locks}")
+
+    q_ids = [q.get("id") for q in canon.get("open_questions", []) if q.get("id")]
+    dup_qs = sorted({x for x in q_ids if q_ids.count(x) > 1})
+    if dup_qs:
+        _fail(
+            f"canon packet has duplicate open_question ids: {dup_qs} — one "
+            f"ruling could silently release multiple blocking questions."
+        )
+
+    known = set(lock_ids)
+    for beat in canon.get("structure", {}).get("beats", []):
+        unknown = [r for r in beat.get("lock_refs", []) if r not in known]
+        if unknown:
+            _fail(
+                f"beat {beat.get('id')!r} lock_refs {unknown} do not resolve "
+                f"to any lock id in the packet."
+            )
+
+
 def _check_blocking_questions(
     canon: dict[str, Any],
     decisions: list[dict[str, Any]],
@@ -208,6 +239,12 @@ def _check_script(
         _fail(
             "script metadata.canon_check with a locks_honored list is required "
             "— the adaptation must state which locks it honored."
+        )
+    non_strings = [x for x in canon_check["locks_honored"] if not isinstance(x, str)]
+    if non_strings:
+        _fail(
+            f"script metadata.canon_check.locks_honored must contain lock id "
+            f"strings; found non-string entries: {non_strings!r}"
         )
 
     lock_ids = {lock.get("id") for lock in canon.get("locks", [])}
@@ -439,12 +476,27 @@ def _verify_motion(path: Path, raw: str) -> None:
 
     # Dependency-free: sample 2fps as raw 160x90 grayscale and diff the bytes.
     W, H = 160, 90
-    result = subprocess.run(
-        [ffmpeg, "-v", "error", "-i", str(path),
-         "-vf", f"fps=2,scale={W}:{H}",
-         "-f", "rawvideo", "-pix_fmt", "gray", "-"],
-        capture_output=True,
-    )
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-v", "error", "-i", str(path),
+             "-vf", f"fps=2,scale={W}:{H}",
+             "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+            capture_output=True,
+            timeout=MEDIA_PROBE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        _fail(
+            f"motion verification of render output {raw!r} timed out after "
+            f"{MEDIA_PROBE_TIMEOUT_S}s — the motion promise cannot be certified."
+        )
+        return
+    if result.returncode != 0:
+        # Fail CLOSED: a file ffmpeg cannot decode must not pass the motion
+        # promise by producing zero frames.
+        _fail(
+            f"ffmpeg could not decode render output {raw!r} for motion "
+            f"verification: {(result.stderr or b'').decode('utf-8', 'replace').strip()[:300]}"
+        )
     data = result.stdout
     frame_size = W * H
     n = len(data) // frame_size
@@ -505,11 +557,19 @@ def _verify_audio_signal(path: Path, raw: str) -> None:
             f"ffmpeg is not installed, so audio signal in render output {raw!r} "
             f"cannot be verified. The authored-canon profile fails closed."
         )
-    result = subprocess.run(
-        [ffmpeg, "-v", "info", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-v", "info", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
+            capture_output=True,
+            text=True,
+            timeout=MEDIA_PROBE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        _fail(
+            f"audio verification of render output {raw!r} timed out after "
+            f"{MEDIA_PROBE_TIMEOUT_S}s — the deliverable cannot be certified."
+        )
+        return
     stderr = result.stderr or ""
     if "max_volume" not in stderr:
         _fail(
@@ -537,14 +597,22 @@ def _ffprobe_verify(path: Path, raw: str, output: dict[str, Any]) -> None:
             f"verified. The authored-canon profile fails closed: install "
             f"ffmpeg/ffprobe before completing compose."
         )
-    result = subprocess.run(
-        [
-            ffprobe, "-v", "error", "-print_format", "json",
-            "-show_format", "-show_streams", str(path),
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                ffprobe, "-v", "error", "-print_format", "json",
+                "-show_format", "-show_streams", str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=MEDIA_PROBE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        _fail(
+            f"ffprobe timed out after {MEDIA_PROBE_TIMEOUT_S}s on render "
+            f"output {raw!r} — the deliverable cannot be certified."
+        )
+        return
     if result.returncode != 0:
         _fail(
             f"ffprobe rejected render output {raw!r}: {result.stderr.strip()}"
@@ -607,7 +675,9 @@ def enforce_authored_canon(
     canon = _load_canon(pipeline_dir, project_id, artifacts)
 
     if stage == "canon_ingest":
-        return  # schema + manifest contracts already validated the packet
+        if canon is not None:
+            _check_packet_integrity(canon)
+        return
 
     if canon is None:
         _fail(

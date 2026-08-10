@@ -13,7 +13,7 @@ New/modified files:
 - `pipeline_defs/authored-film.yaml` — seven stages: canon_ingest → proposal → script → scene_plan → assets → edit → compose. Human approval gates on the first five stages; edit/compose auto-proceed unless a canon collision forces a gate.
 - `schemas/artifacts/canon_packet.schema.json` — new artifact type: locks with evidence hashes, protected lines, characters (incl. never_write_as, continuity risks), locations, world rules, tone doc, beat structure, open questions with blocking flags.
 - `skills/pipelines/authored-film/` — nine director skill files. `canon-guard.md` defines the cross-stage contract (authority ladder: canon atoms > wayfinder locks > writing docs > groundwork > reference; collision escalation; no silent resolution). `canon-director.md` maps the writer's literal source formats into canon_packet.
-- Registrations: `schemas/__init__.py` (artifact registry), `AGENT_GUIDE.md`, `skills/INDEX.md`.
+- Registrations: `schemas/artifacts/__init__.py` (artifact registry), `AGENT_GUIDE.md`, `skills/INDEX.md`.
 
 Relevant runtime (pre-existing, not authored in this change): `lib/checkpoint.py` (checkpoint/gate engine), the pipeline loader, `schemas/artifacts/decision_log.schema.json`, `schemas/artifacts/final_review.schema.json`, and the repo test suite.
 

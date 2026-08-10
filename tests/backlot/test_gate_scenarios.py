@@ -36,7 +36,9 @@ def _approve_predecessors(tmp_path, project_id, pipeline_type, *stages) -> None:
         if stage == "proposal":
             # The manifest declares decision_log as a proposal output;
             # the checkpoint writer enforces the produces contract.
-            artifacts["decision_log"] = sample_artifact("decision_log")
+            log = sample_artifact("decision_log")
+            log["project_id"] = project_id
+            artifacts["decision_log"] = log
         write_checkpoint(
             tmp_path,
             project_id,
