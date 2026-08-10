@@ -947,10 +947,11 @@ class TestMotionPromise:
         advance(pipeline_dir, "compose", project_dir=project_dir)
 
 
-@pytest.mark.skipif(not ffmpeg_available, reason="ffmpeg/ffprobe not installed")
 class TestCodeRabbitFindings:
-    """Regressions for the CodeRabbit PR review (fork PR #1)."""
+    """Regressions for the CodeRabbit PR review (fork PR #1). Only the
+    undecodable-render probe needs media tools; the rest run everywhere."""
 
+    @pytest.mark.skipif(not ffmpeg_available, reason="ffmpeg/ffprobe not installed")
     def test_undecodable_render_fails_motion_promise_closed(self, project):
         import json as _json
         pipeline_dir, project_dir = project

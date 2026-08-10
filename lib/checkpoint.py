@@ -293,12 +293,12 @@ def _manifest_stage_spec(
         from lib.pipeline_loader import load_pipeline_readonly
 
         manifest = load_pipeline_readonly(pipeline_type)
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
         raise CheckpointValidationError(
             f"Unknown pipeline_type {pipeline_type!r} — cannot resolve the "
             f"manifest artifact contract. Check the spelling against "
             f"pipeline_defs/*.yaml."
-        )
+        ) from exc
     except Exception as exc:
         # Fail CLOSED: a manifest that exists but cannot load (YAML error,
         # schema drift) must not silently turn a binding contract into no

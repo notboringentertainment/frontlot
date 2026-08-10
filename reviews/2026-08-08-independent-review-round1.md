@@ -1,7 +1,7 @@
 # Independent Technical Review — `authored-film` pipeline
 
 Date: 2026-08-08  
-Repository: `/Users/ben/Projects/OpenMontage`  
+Repository: OpenMontage (local working copy)  
 Verdict: **REQUEST CHANGES**
 
 ## Executive assessment
