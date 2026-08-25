@@ -694,3 +694,294 @@ def probe_output(path: Path) -> dict[str, Any]:
     except Exception:
         pass
     return info
+
+
+# ---------------------------------------------------------------------------
+# FAL queue helpers (PLAN §0 idempotency, §9 hardening; fixture: tests/fixtures/
+# providers/fal-queue.json). Additive — the legacy inline polling in older
+# tools is untouched.
+# ---------------------------------------------------------------------------
+
+FAL_QUEUE_BASE = "https://queue.fal.run"
+FAL_ALLOWED_HOSTS: tuple[str, ...] = ("fal.run", "queue.fal.run", "fal.media", "v3.fal.media")
+FAL_NO_RETRY_HEADER = {"X-Fal-No-Retry": "1"}
+FAL_TERMINAL_FAILURES = ("FAILED", "CANCELLED", "ERROR")
+
+
+class FalQueueError(RuntimeError):
+    """Submit/poll/result failure reported by the FAL queue."""
+
+
+class FalDeadlineExceeded(FalQueueError):
+    """Hard deadline hit while waiting; a cancel was issued."""
+
+
+class FalDownloadError(RuntimeError):
+    """Download rejected: disallowed host, MIME mismatch, or size cap."""
+
+
+def _fal_headers(api_key: str, *, json_body: bool = False) -> dict[str, str]:
+    headers = {"Authorization": f"Key {api_key}", **FAL_NO_RETRY_HEADER}
+    if json_body:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
+def fal_queue_submit(
+    model_id: str, payload: dict[str, Any], *, api_key: str, timeout_s: float = 30.0
+) -> dict[str, Any]:
+    """POST ``payload`` to ``https://queue.fal.run/{model_id}`` and return the queue response.
+
+    Always sends ``X-Fal-No-Retry: 1`` so the provider never re-runs (and
+    re-bills) a request on 503/504 behind our back. The returned dict carries
+    ``request_id``; callers must persist it immediately (attach_request_id).
+    """
+    import requests
+
+    resp = requests.post(
+        f"{FAL_QUEUE_BASE}/{model_id}",
+        headers=_fal_headers(api_key, json_body=True),
+        json=payload,
+        timeout=timeout_s,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not isinstance(data, dict) or not data.get("request_id"):
+        raise FalQueueError(f"queue submit for {model_id} returned no request_id")
+    return data
+
+
+def fal_request_url(model_id: str, request_id: str, leaf: str) -> str:
+    """Status/response/cancel URL built from the fixture pattern (never from the server)."""
+    return f"{FAL_QUEUE_BASE}/{model_id}/requests/{request_id}/{leaf}"
+
+
+def fal_queue_cancel(model_id: str, request_id: str, *, api_key: str, timeout_s: float = 15.0) -> None:
+    """Best-effort PUT cancel; errors are swallowed (the caller is already failing)."""
+    import requests
+
+    try:
+        requests.put(
+            fal_request_url(model_id, request_id, "cancel"),
+            headers=_fal_headers(api_key),
+            timeout=timeout_s,
+        )
+    except Exception:
+        pass
+
+
+def fal_queue_wait(
+    model_id: str,
+    request_id: str,
+    *,
+    api_key: str,
+    deadline_s: float,
+    poll_s: float = 5.0,
+    _sleep=time.sleep,
+    _clock=time.monotonic,
+) -> dict[str, Any]:
+    """Poll the status URL until COMPLETED, then fetch and return the result JSON.
+
+    URLs are constructed from ``model_id``/``request_id`` per the fixture, never
+    taken from the submit response. On ``deadline_s`` elapsing a cancel PUT is
+    issued and ``FalDeadlineExceeded`` is raised. Terminal failure statuses
+    raise ``FalQueueError``.
+    """
+    import requests
+
+    headers = _fal_headers(api_key)
+    status_url = fal_request_url(model_id, request_id, "status")
+    started = _clock()
+    while True:
+        if _clock() - started > deadline_s:
+            fal_queue_cancel(model_id, request_id, api_key=api_key)
+            raise FalDeadlineExceeded(
+                f"{model_id} request {request_id} exceeded {deadline_s}s; cancel issued"
+            )
+        resp = requests.get(status_url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        body = resp.json() if resp.content else {}
+        status = str(body.get("status", "UNKNOWN")).upper()
+        if status == "COMPLETED":
+            break
+        if status in FAL_TERMINAL_FAILURES:
+            raise FalQueueError(
+                f"{model_id} request {request_id} {status.lower()}: {body.get('error') or ''}".strip()
+            )
+        _sleep(poll_s)
+
+    result = requests.get(fal_request_url(model_id, request_id, "response"), headers=headers, timeout=30)
+    result.raise_for_status()
+    return result.json()
+
+
+def fal_download(
+    url: str,
+    dest_staging_path: Path | str,
+    *,
+    allowed_hosts: tuple[str, ...] | list[str] = FAL_ALLOWED_HOSTS,
+    max_bytes: int,
+    allowed_mime_prefixes: tuple[str, ...] | list[str],
+    timeout_s: float = 120.0,
+) -> dict[str, Any]:
+    """Stream ``url`` into ``dest_staging_path`` with host allowlist, MIME and size checks.
+
+    The host must match ``allowed_hosts`` exactly (https only). The response
+    Content-Type must start with one of ``allowed_mime_prefixes``; the body is
+    streamed and aborted the moment it exceeds ``max_bytes``. Returns
+    ``{"bytes": n, "content_type": ct}``.
+    """
+    from urllib.parse import urlparse
+
+    import requests
+
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or host not in tuple(h.lower() for h in allowed_hosts):
+        raise FalDownloadError(f"download host not allowed: {parsed.scheme}://{host}")
+
+    dest = Path(dest_staging_path)
+    written = 0
+    with requests.get(url, stream=True, timeout=timeout_s, allow_redirects=False) as resp:
+        resp.raise_for_status()
+        content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if not any(content_type.startswith(p.lower()) for p in allowed_mime_prefixes):
+            raise FalDownloadError(f"unexpected content type {content_type!r} for {url}")
+        declared = resp.headers.get("Content-Length")
+        if declared and declared.isdigit() and int(declared) > max_bytes:
+            raise FalDownloadError(f"download of {declared} bytes exceeds cap {max_bytes}")
+        with open(dest, "wb") as fh:
+            for chunk in resp.iter_content(chunk_size=1 << 16):
+                if not chunk:
+                    continue
+                written += len(chunk)
+                if written > max_bytes:
+                    fh.close()
+                    try:
+                        dest.unlink()
+                    except FileNotFoundError:
+                        pass
+                    raise FalDownloadError(f"download exceeded cap of {max_bytes} bytes")
+                fh.write(chunk)
+    return {"bytes": written, "content_type": content_type}
+
+
+# ---------------------------------------------------------------------------
+# Paid-call context: project root + CostTracker for reserve/attach/reconcile.
+# ---------------------------------------------------------------------------
+
+
+class VideoVerificationError(RuntimeError):
+    """ffprobe missing/failed or the file has no decodable video stream."""
+
+
+def verify_video_file(path: Path | str, *, require_audio: bool = False) -> dict[str, Any]:
+    """Fail-closed verification of a downloaded video (inspection #16).
+
+    ``ffprobe`` MUST be installed, exit 0, and report at least one video
+    stream; otherwise ``VideoVerificationError`` is raised and the caller must
+    not move the file into place. When ``require_audio`` is set, at least one
+    audio stream is required too. Returns the same info dict as
+    ``probe_output`` plus ``has_audio``/``audio_codec``.
+    """
+    import json
+
+    path = Path(path)
+    if not path.is_file():
+        raise VideoVerificationError(f"downloaded file missing: {path}")
+    if not shutil.which("ffprobe"):
+        raise VideoVerificationError("ffprobe is not installed; cannot verify the downloaded video")
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise VideoVerificationError(f"ffprobe could not run: {exc}") from exc
+    if proc.returncode != 0:
+        raise VideoVerificationError(f"ffprobe rejected the file: {(proc.stderr or '').strip()[:300]}")
+    try:
+        probe = json.loads(proc.stdout or "{}")
+    except ValueError as exc:
+        raise VideoVerificationError("ffprobe produced unparsable output") from exc
+    streams = probe.get("streams") or []
+    video = [s for s in streams if s.get("codec_type") == "video"]
+    audio = [s for s in streams if s.get("codec_type") == "audio"]
+    if not video:
+        raise VideoVerificationError("ffprobe found no video stream in the downloaded file")
+    if require_audio and not audio:
+        raise VideoVerificationError("generate_audio was requested but the file has no audio stream")
+    fmt = probe.get("format") or {}
+    size = path.stat().st_size
+    info: dict[str, Any] = {
+        "file_size_bytes": size,
+        "file_size_mb": round(size / (1024 * 1024), 2),
+        "duration_seconds": float(fmt.get("duration", 0) or 0),
+        "video_width": int(video[0].get("width", 0) or 0),
+        "video_height": int(video[0].get("height", 0) or 0),
+        "video_codec": video[0].get("codec_name", ""),
+        "has_audio": bool(audio),
+        "audio_codec": audio[0].get("codec_name", "") if audio else None,
+    }
+    return info
+
+
+class PaidCallContextError(RuntimeError):
+    """The paid call cannot be attributed to a registered, approved project."""
+
+
+def paid_call_context(inputs: dict[str, Any], *, check_resume: bool = True) -> tuple[Path, Any, Any]:
+    """Resolve ``(project_root, tracker, config)`` for a paid FAL call (inspection #2).
+
+    The project root is derived ONLY from ``lib.events.infer_project_dir`` and
+    must be a registered project directory under ``lib.paths.PROJECTS_DIR``;
+    arbitrary directories are rejected. Caller-injected trackers/caps are not
+    honored: the CAP-mode CostTracker is built over ``<root>/cost_log.json``
+    from the human-approved ``project.yaml`` (``load_verified_project_config``),
+    which is also returned so callers can ``require_egress(...)`` per content
+    class before any upload. ``resume_check`` runs first: an unreconciled
+    paid call blocks every new one before any upload or reservation
+    (``check_resume=False`` is reserved for scripts/reconcile_paid_calls.py).
+    """
+    from lib.config_model import BudgetMode
+    from lib.events import infer_project_dir
+    from lib.paths import PROJECTS_DIR
+    from lib.project_config import load_verified_project_config
+    from tools.cost_tracker import CostTracker, resume_check
+
+    if not isinstance(inputs, dict) or not inputs.get("project_dir"):
+        raise PaidCallContextError("paid generation requires inputs['project_dir'] (a registered project root)")
+    project_root = infer_project_dir(inputs)
+    if project_root is None:
+        raise PaidCallContextError(
+            f"paid generation requires a registered project under {PROJECTS_DIR}; "
+            f"got project_dir={inputs.get('project_dir')!r}"
+        )
+    project_root = Path(project_root).resolve()
+    try:
+        project_root.relative_to(Path(PROJECTS_DIR).resolve())
+    except ValueError as exc:
+        raise PaidCallContextError(f"{project_root} is not under {PROJECTS_DIR}") from exc
+    if project_root.is_symlink() or not project_root.is_dir():
+        raise PaidCallContextError(f"registered project directory missing or a symlink: {project_root}")
+
+    # Any nonterminal reservation (submitting / pending_billing) means a prior
+    # paid call has no known outcome; refuse to spend again before a human runs
+    # scripts/reconcile_paid_calls.py. Checked before any upload or reservation.
+    # Only the human-run reconciler (which never resubmits) opts out.
+    if check_resume:
+        resume_check(project_root)  # raises IndeterminatePaidCallError
+
+    config = load_verified_project_config(project_root)  # raises ProjectConfigError
+    tracker = CostTracker(
+        budget_total_usd=float(config.budget_usd_cap),
+        reserve_pct=0.0,
+        single_action_approval_usd=float("inf"),
+        require_approval_for_new_paid_tool=False,
+        mode=BudgetMode.CAP,
+        cost_log_path=project_root / "cost_log.json",
+    )
+    return project_root, tracker, config

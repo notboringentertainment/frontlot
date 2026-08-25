@@ -1,7 +1,27 @@
-"""Seedance 2.0 (ByteDance) video generation via fal.ai API.
+"""Seedance (ByteDance) video generation via fal.ai API.
 
 Best for cinematic clips with native audio, director-level camera control,
 and lip-sync from quoted dialogue in prompts.
+
+``model_version`` selects the endpoint family:
+
+- ``"2.0"`` — the original code path (text/image/reference-to-video), kept
+  byte-for-byte in behavior.
+- ``"2.5"`` (default) — ``bytedance/seedance-2.5/reference-to-video`` per
+  ``tests/fixtures/providers/bytedance-seedance-2.5-reference-to-video.json``:
+  prompt-addressable references (``@Image1`` ...), up to 30 images / 10 videos /
+  10 audios, 50 files total, NO start-frame parameter. Every 2.5 call is a
+  paid call routed through the FAL queue helpers with a persisted reservation
+  (reserve → submit → attach request id → wait → download → reconcile).
+
+Trust boundary (inspection #2/#3/#5/#6/#15/#16): the project root comes only
+from ``lib.events.infer_project_dir`` and must be a registered project; the
+budget cap and provider-egress consent come only from the human-approved
+``project.yaml``; a ``shot_visual`` take needs a signed storyboard receipt
+for its ``shot_id``/frame before reservation; no retries on any paid path; a
+failure after the provider accepted the job is reconciled ``pending_billing``
+(reserved amount retained) and only ``scripts/reconcile_paid_calls.py`` may
+settle it; every downloaded file must pass ffprobe before it is moved.
 """
 
 from __future__ import annotations
@@ -82,6 +102,37 @@ class SeedanceVideo(BaseTool):
                 "enum": ["text_to_video", "image_to_video", "reference_to_video"],
                 "default": "text_to_video",
             },
+            "model_version": {
+                "type": "string",
+                "enum": ["2.0", "2.5"],
+                "default": "2.5",
+                "description": (
+                    "2.5 = bytedance/seedance-2.5/reference-to-video (references only, "
+                    "no start frame; needs project_dir + budget). 2.0 = legacy endpoints."
+                ),
+            },
+            "project_dir": {
+                "type": "string",
+                "description": "Project root (required for 2.5): reservations, staging, receipts live here.",
+            },
+            "asset_class": {
+                "type": "string",
+                "description": (
+                    "2.5 only. 'shot_visual' (every shot take the asset director generates) requires "
+                    "shot_id + storyboard_frame_sha256 and a signed storyboard approval covering them."
+                ),
+            },
+            "shot_id": {"type": "string", "description": "Required when asset_class == 'shot_visual'."},
+            "storyboard_frame_sha256": {
+                "type": "string",
+                "description": "sha256 (asset_id) of the approved storyboard frame for shot_id; required for shot_visual.",
+            },
+            "bitrate_mode": {
+                "type": "string",
+                "enum": ["standard", "high"],
+                "default": "standard",
+                "description": "2.5 only.",
+            },
             "model_variant": {
                 "type": "string",
                 "enum": ["standard", "fast"],
@@ -101,8 +152,9 @@ class SeedanceVideo(BaseTool):
             },
             "resolution": {
                 "type": "string",
-                "enum": ["480p", "720p"],
+                "enum": ["480p", "720p", "1080p"],
                 "default": "720p",
+                "description": "1080p is 2.5 only.",
             },
             "generate_audio": {
                 "type": "boolean",
@@ -152,9 +204,12 @@ class SeedanceVideo(BaseTool):
     resource_profile = ResourceProfile(
         cpu_cores=1, ram_mb=512, vram_mb=0, disk_mb=500, network_required=True
     )
-    retry_policy = RetryPolicy(max_retries=2, retryable_errors=["rate_limit", "timeout"])
+    # Paid provider calls are never retried (Act 3 no-retry decision): a retry
+    # can double-bill. Both 2.0 and 2.5 also send X-Fal-No-Retry via the queue helpers.
+    retry_policy = RetryPolicy(max_retries=0)
     idempotency_key_fields = ["prompt", "model_variant", "operation", "duration", "seed"]
     side_effects = ["writes video file to output_path", "calls fal.ai API"]
+    emits_generation_receipt = True
     user_visible_verification = [
         "Watch generated clip for motion coherence, audio sync, and visual quality"
     ]
@@ -168,11 +223,209 @@ class SeedanceVideo(BaseTool):
         return ToolStatus.UNAVAILABLE
 
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
+        if str(inputs.get("model_version", "2.5")) == "2.5":
+            return self._estimate_cost_v25(inputs)
         variant = inputs.get("model_variant", "standard")
         duration = inputs.get("duration", "5")
         secs = 5 if duration == "auto" else int(duration)
         rate = 0.2419 if variant == "fast" else 0.3034
         return round(rate * secs, 2)
+
+    # ---- Seedance 2.5 (fixture-verified) ----
+
+    V25_MODEL_ID = "bytedance/seedance-2.5/reference-to-video"
+    V25_LIMITS = {"images": 30, "videos": 10, "audios": 10, "total": 50}
+    # pricing.usd_per_second from the fixture; 1080p is token-billed (not
+    # per-second) so it is approximated at 2x the 720p rate for reservation.
+    V25_USD_PER_SECOND = {"480p": 0.2205, "720p": 0.4730, "1080p": 0.4730 * 2}
+    V25_VIDEO_INPUT_MULTIPLIER = 0.6
+    V25_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+    V25_DEFAULT_DEADLINE_S = 900.0
+
+    def _estimate_cost_v25(self, inputs: dict[str, Any]) -> float:
+        duration = str(inputs.get("duration", "5"))
+        secs = 5 if duration == "auto" else int(duration)
+        rate = self.V25_USD_PER_SECOND.get(str(inputs.get("resolution", "720p")), 0.4730)
+        cost = rate * secs
+        if inputs.get("reference_video_urls") or inputs.get("reference_video_paths"):
+            cost *= self.V25_VIDEO_INPUT_MULTIPLIER
+        return round(cost, 4)
+
+    def _v25_reference_counts(self, inputs: dict[str, Any]) -> dict[str, int]:
+        images = len(inputs.get("reference_image_urls") or []) + len(inputs.get("reference_image_paths") or [])
+        videos = len(inputs.get("reference_video_urls") or [])
+        audios = len(inputs.get("reference_audio_urls") or [])
+        return {"images": images, "videos": videos, "audios": audios, "total": images + videos + audios}
+
+    def _v25_preflight_error(self, inputs: dict[str, Any]) -> str | None:
+        """Reject over-cap reference sets outright — never truncate silently."""
+        operation = inputs.get("operation", "text_to_video")
+        if operation == "image_to_video" or inputs.get("image_url") or inputs.get("image_path") or inputs.get("end_image_url"):
+            return (
+                "Seedance 2.5 has no start/end-frame parameter; use reference_image_* "
+                "(prompt-addressable @ImageN) or model_version='2.0' for image_to_video"
+            )
+        counts = self._v25_reference_counts(inputs)
+        for key, label in (("images", "reference images"), ("videos", "reference videos"), ("audios", "reference audio clips")):
+            if counts[key] > self.V25_LIMITS[key]:
+                return f"Seedance 2.5 accepts at most {self.V25_LIMITS[key]} {label}; got {counts[key]}"
+        if counts["total"] > self.V25_LIMITS["total"]:
+            return f"Seedance 2.5 accepts at most {self.V25_LIMITS['total']} reference files in total; got {counts['total']}"
+        return None
+
+    def _build_v25_payload(self, inputs: dict[str, Any], image_urls: list[str]) -> dict[str, Any]:
+        payload: dict[str, Any] = {"prompt": inputs["prompt"]}
+        if image_urls:
+            payload["image_urls"] = list(image_urls)
+        if inputs.get("reference_video_urls"):
+            payload["video_urls"] = list(inputs["reference_video_urls"])
+        if inputs.get("reference_audio_urls"):
+            payload["audio_urls"] = list(inputs["reference_audio_urls"])
+        payload["resolution"] = str(inputs.get("resolution", "720p"))
+        payload["duration"] = str(inputs.get("duration", "5"))
+        payload["aspect_ratio"] = str(inputs.get("aspect_ratio", "16:9"))
+        payload["generate_audio"] = bool(inputs.get("generate_audio", True))
+        payload["bitrate_mode"] = str(inputs.get("bitrate_mode", "standard"))
+        return payload
+
+    def _v25_storyboard_preflight(self, inputs: dict[str, Any], project_root: Path) -> None:
+        """A shot take must be covered by a signed storyboard approval (inspection #6).
+
+        The asset director ALWAYS passes ``asset_class="shot_visual"``, ``shot_id``
+        and ``storyboard_frame_sha256`` for shot takes; the receipt check runs
+        before any reservation or network call. ``lib.receipts.require_storyboard_receipt``
+        is imported lazily (track A owns it); its absence fails closed.
+        """
+        if inputs.get("asset_class") != "shot_visual":
+            return
+        shot_id = inputs.get("shot_id")
+        frame_sha = inputs.get("storyboard_frame_sha256")
+        if not shot_id or not frame_sha:
+            raise ValueError("shot_visual takes require inputs['shot_id'] and inputs['storyboard_frame_sha256']")
+        import lib.receipts as receipts_mod
+
+        checker = getattr(receipts_mod, "require_storyboard_receipt", None)
+        if checker is None:
+            raise RuntimeError("lib.receipts.require_storyboard_receipt is unavailable; cannot verify storyboard approval")
+        checker(project_root, str(shot_id), str(frame_sha))
+
+    def _execute_v25(self, inputs: dict[str, Any], api_key: str) -> ToolResult:
+        from lib import pathsafe
+        from lib.state_io import atomic_move
+        from tools.base_tool import normalized_inputs_hash
+        from tools.cost_tracker import attach_request_id, reconcile_paid_call, reserve_paid_call
+        from tools.video import _shared
+
+        start = time.time()
+        error = self._v25_preflight_error(inputs)
+        if error:
+            return ToolResult(success=False, error=error)
+        if not inputs.get("output_path"):
+            return ToolResult(success=False, error="Seedance 2.5 requires an explicit output_path under the project")
+
+        try:
+            project_root, tracker, config = _shared.paid_call_context(inputs)
+            # Prompts always leave the machine; reference images only when consented.
+            config.require_egress("fal", "prompts")
+            local_refs = [pathsafe.resolve_input(p, project_root) for p in inputs.get("reference_image_paths") or []]
+            if local_refs:
+                config.require_egress("fal", "prompts", "reference_images")
+            self._v25_storyboard_preflight(inputs, project_root)
+            output_path = pathsafe.validate_output_parent(inputs["output_path"], project_root)
+            image_urls = list(inputs.get("reference_image_urls") or [])
+            for resolved in local_refs:
+                image_urls.append(_shared.upload_image_fal(str(resolved)))
+            payload = self._build_v25_payload(inputs, image_urls)
+            estimate = self._estimate_cost_v25(inputs)
+            reservation_id = reserve_paid_call(
+                tracker,
+                project_root,
+                tool=self.name,
+                endpoint=self.V25_MODEL_ID,
+                normalized_inputs_hash=normalized_inputs_hash(inputs),
+                reserved_usd=estimate,
+                output_hint={"kind": "video", "output_path": str(output_path),
+                             "generate_audio": bool(payload["generate_audio"])},
+            )
+        except Exception as exc:
+            return ToolResult(success=False, error=f"Seedance 2.5 preflight failed: {exc}")
+
+        request_id: str | None = None
+        request_id_persisted = False
+        state = "failed"
+        actual_usd = 0.0
+        staging: Path | None = None
+        try:
+            submitted = _shared.fal_queue_submit(self.V25_MODEL_ID, payload, api_key=api_key)
+            request_id = str(submitted["request_id"])
+            attach_request_id(project_root, reservation_id, request_id)
+            request_id_persisted = True
+            # From here the provider has accepted (and may bill) the job: any
+            # failure is pending_billing with the reservation retained.
+            state, actual_usd = "pending_billing", estimate
+            data = _shared.fal_queue_wait(
+                self.V25_MODEL_ID,
+                request_id,
+                api_key=api_key,
+                deadline_s=float(inputs.get("deadline_s", self.V25_DEFAULT_DEADLINE_S)),
+                poll_s=float(inputs.get("poll_s", 5.0)),
+            )
+            video_url = data["video"]["url"]
+            staging = pathsafe.staging_file(project_root, ".mp4")
+            _shared.fal_download(
+                video_url,
+                staging,
+                max_bytes=self.V25_MAX_DOWNLOAD_BYTES,
+                allowed_mime_prefixes=("video/", "application/octet-stream"),
+            )
+            probed = _shared.verify_video_file(staging, require_audio=bool(payload["generate_audio"]))
+            atomic_move(staging, output_path)
+            staging = None
+            state = "completed"
+        except Exception as exc:
+            if staging is not None:
+                try:
+                    staging.unlink()
+                except FileNotFoundError:
+                    pass
+            return ToolResult(success=False, error=f"Seedance 2.5 video generation failed: {exc}")
+        finally:
+            # Submit-without-persisted-request-id is INDETERMINATE (the provider
+            # may have accepted the job, or attach_request_id itself failed):
+            # leave the reservation `submitting` so resume_check halts for the
+            # human reconciler instead of marking it failed and inviting a resubmit.
+            if request_id_persisted:
+                reconcile_paid_call(project_root, reservation_id, actual_usd, state, tracker)
+
+        return ToolResult(
+            success=True,
+            data={
+                "provider": "seedance",
+                "model": self.V25_MODEL_ID,
+                "model_version": "2.5",
+                "prompt": inputs["prompt"],
+                "operation": "reference_to_video",
+                "aspect_ratio": payload["aspect_ratio"],
+                "resolution": payload["resolution"],
+                "generate_audio": payload["generate_audio"],
+                "seed": data.get("seed"),
+                "output": str(output_path),
+                "output_path": str(output_path),
+                "format": "mp4",
+                "reservation_id": reservation_id,
+                **probed,
+            },
+            artifacts=[str(output_path)],
+            cost_usd=actual_usd,
+            duration_seconds=round(time.time() - start, 2),
+            seed=data.get("seed"),
+            model=self.V25_MODEL_ID,
+            metadata={
+                "model_endpoint": self.V25_MODEL_ID,
+                "provider_request_id": request_id,
+                "generator_kind": "model",
+            },
+        )
 
     def estimate_runtime(self, inputs: dict[str, Any]) -> float:
         variant = inputs.get("model_variant", "standard")
@@ -186,12 +439,38 @@ class SeedanceVideo(BaseTool):
                 error="FAL_KEY not set. " + self.install_instructions,
             )
 
-        import requests
+        if str(inputs.get("model_version", "2.5")) == "2.5":
+            return self._execute_v25(inputs, api_key)
 
         start = time.time()
         operation = inputs.get("operation", "text_to_video")
         variant = inputs.get("model_variant", "standard")
         operation_path = operation.replace("_", "-")
+
+        # Seedance 2.0 is the ungoverned legacy path (no reservation, no egress
+        # approval, no storyboard receipt). It is refused for any authored-canon
+        # project — one whose inferred root carries project.yaml — and, where a
+        # project root exists at all, it may only upload files inside it.
+        from lib import pathsafe
+        from lib.events import infer_project_dir
+
+        legacy_root = infer_project_dir(inputs)
+        if legacy_root is not None and (Path(legacy_root) / "project.yaml").exists():
+            return ToolResult(
+                success=False,
+                error=(
+                    f"Seedance 2.0 is refused for authored-canon project {Path(legacy_root).name!r} "
+                    f"(project.yaml present): use model_version '2.5', which runs through the "
+                    f"governed budget/egress/storyboard path."
+                ),
+            )
+
+        def _local_upload(local_path: str) -> str:
+            from tools.video._shared import upload_image_fal
+
+            if legacy_root is not None:
+                local_path = str(pathsafe.resolve_input(local_path, legacy_root))
+            return upload_image_fal(local_path)
 
         if variant == "fast":
             model_path = f"bytedance/seedance-2.0/fast/{operation_path}"
@@ -215,16 +494,20 @@ class SeedanceVideo(BaseTool):
             if inputs.get("image_url"):
                 payload["image_url"] = inputs["image_url"]
             elif inputs.get("image_path"):
-                from tools.video._shared import upload_image_fal
-                payload["image_url"] = upload_image_fal(inputs["image_path"])
+                try:
+                    payload["image_url"] = _local_upload(inputs["image_path"])
+                except pathsafe.PathSafetyError as e:
+                    return ToolResult(success=False, error=f"Seedance 2.0 refused to upload image_path: {e}")
             if inputs.get("end_image_url"):
                 payload["end_image_url"] = inputs["end_image_url"]
 
         if operation == "reference_to_video":
             ref_image_urls = list(inputs.get("reference_image_urls") or [])
             for local_path in inputs.get("reference_image_paths") or []:
-                from tools.video._shared import upload_image_fal
-                ref_image_urls.append(upload_image_fal(local_path))
+                try:
+                    ref_image_urls.append(_local_upload(local_path))
+                except pathsafe.PathSafetyError as e:
+                    return ToolResult(success=False, error=f"Seedance 2.0 refused to upload reference image: {e}")
             # Seedance 2.0 reference-to-video ceilings: 9 images + 3 video + 3 audio.
             if len(ref_image_urls) > 9:
                 return ToolResult(
@@ -250,57 +533,47 @@ class SeedanceVideo(BaseTool):
             if ref_audio_urls:
                 payload["reference_audio_urls"] = ref_audio_urls
 
-        headers = {
-            "Authorization": f"Key {api_key}",
-            "Content-Type": "application/json",
-        }
+        # Legacy 2.0 payload and caps are unchanged; the transport now goes
+        # through the hardened queue helpers (X-Fal-No-Retry, fixture-built
+        # status/result URLs, host allowlist, bounded streamed download,
+        # deadline + cancel) and the download must pass ffprobe before it is
+        # moved into place (inspection #15/#16).
+        import uuid
 
+        from lib.state_io import atomic_move
+        from tools.video import _shared
+
+        output_path = Path(inputs.get("output_path", "seedance_output.mp4"))
+        staging = output_path.parent / f".{output_path.name}.{uuid.uuid4().hex}.part"
         try:
-            submit_resp = requests.post(
-                f"https://queue.fal.run/{model_path}",
-                headers=headers,
-                json=payload,
-                timeout=30,
-            )
-            submit_resp.raise_for_status()
-            queue_data = submit_resp.json()
-            status_url = queue_data["status_url"]
-            response_url = queue_data["response_url"]
-
-            while True:
-                time.sleep(5)
-                status_resp = requests.get(status_url, headers=headers, timeout=15)
-                status_resp.raise_for_status()
-                status = status_resp.json().get("status", "UNKNOWN")
-                if status == "COMPLETED":
-                    break
-                if status in ("FAILED", "CANCELLED"):
-                    return ToolResult(
-                        success=False,
-                        error=f"Seedance 2.0 video generation {status.lower()}",
-                    )
-
-            result_resp = requests.get(response_url, headers=headers, timeout=30)
-            result_resp.raise_for_status()
-            data = result_resp.json()
-
-            video_url = data["video"]["url"]
-            video_response = requests.get(video_url, timeout=120)
-            video_response.raise_for_status()
-
-            output_path = Path(inputs.get("output_path", "seedance_output.mp4"))
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_bytes(video_response.content)
-
+            queue_data = _shared.fal_queue_submit(model_path, payload, api_key=api_key)
+            data = _shared.fal_queue_wait(
+                model_path,
+                str(queue_data["request_id"]),
+                api_key=api_key,
+                deadline_s=float(inputs.get("deadline_s", self.V25_DEFAULT_DEADLINE_S)),
+                poll_s=float(inputs.get("poll_s", 5.0)),
+            )
+            video_url = data["video"]["url"]
+            _shared.fal_download(
+                video_url,
+                staging,
+                max_bytes=self.V25_MAX_DOWNLOAD_BYTES,
+                allowed_mime_prefixes=("video/", "application/octet-stream"),
+            )
+            probed = _shared.verify_video_file(staging, require_audio=bool(payload.get("generate_audio", False)))
+            atomic_move(staging, output_path)
         except Exception as e:
+            try:
+                staging.unlink()
+            except FileNotFoundError:
+                pass
             return ToolResult(
                 success=False,
                 error=f"Seedance 2.0 video generation failed: {e}",
             )
 
-        from tools.video._shared import probe_output
-
-        probed = probe_output(output_path)
         return ToolResult(
             success=True,
             data={
@@ -322,4 +595,9 @@ class SeedanceVideo(BaseTool):
             cost_usd=self.estimate_cost(inputs),
             duration_seconds=round(time.time() - start, 2),
             model=model_path,
+            metadata={
+                "model_endpoint": model_path,
+                "provider_request_id": queue_data.get("request_id"),
+                "generator_kind": "model",
+            },
         )

@@ -21,13 +21,26 @@ present, so they do not reject the write.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 VISUAL_ASSET_TYPES = {"image", "video", "animation"}
+
+# Stages at or after visual_bible: paid work happens here, so the project
+# config (budget, cast cap, egress consent) must be human-bound first.
+CONFIG_BOUND_STAGES = {"visual_bible", "script", "scene_plan", "assets", "edit", "compose"}
+PROJECT_CONFIG_FILENAME = "project.yaml"
+CONFIG_ENTITY_ID = "project-config"
+STORYBOARD_BATCH_ENTITY_ID = "storyboard_batch"
+POSTER_ENTITY_ID = "poster"
+CHARACTER_SHEET_ROLES = ("front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")
+CHARACTER_APPROVAL_KINDS = ("sheet", "hero")
+_CONFIG_DIGEST_RE = re.compile(r"config_sha256:\s*([a-f0-9]{64})")
 
 # Media probes run on the checkpoint-write path against writer-supplied
 # files; a stalled decode must not hang write_checkpoint forever.
@@ -320,6 +333,10 @@ def _check_assets(
     ids: set[str],
 ) -> None:
     known_refs = ids | _entity_names(canon)
+    known_refs |= {
+        e.get("id") for e in canon.get("characters", []) + canon.get("locations", [])
+        if e.get("id")
+    }
     entities = _entities_by_name(canon)
     for asset in asset_manifest.get("assets", []):
         if asset.get("type") not in VISUAL_ASSET_TYPES:
@@ -660,6 +677,673 @@ def _ffprobe_verify(path: Path, raw: str, output: dict[str, Any]) -> None:
                 )
 
 
+# ---------------------------------------------------------------------------
+# Visual bible (PLAN §3–§7): approval records, receipts, content addressing
+# ---------------------------------------------------------------------------
+
+def _load_stage_artifact(
+    pipeline_dir: Path, project_id: str, stage: str, name: str, artifacts: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The artifact as recorded by ``stage``'s checkpoint, else the copy carried
+    in the checkpoint being written."""
+    checkpoint = _read_json(pipeline_dir / project_id / f"checkpoint_{stage}.json")
+    if checkpoint and isinstance(checkpoint.get("artifacts"), dict):
+        value = checkpoint["artifacts"].get(name)
+        if isinstance(value, dict):
+            return value
+    value = artifacts.get(name)
+    return value if isinstance(value, dict) else None
+
+
+def _version(artifact: dict[str, Any]) -> str:
+    return str(artifact.get("version") or "1.0")
+
+
+# ---- approval records (the exact bytes a human approved; PLAN §5 D8) ----
+
+def config_approval_record(config_sha256: str) -> dict[str, Any]:
+    """Record hashed into a ``kind='config'`` approval receipt."""
+    return {"config_sha256": config_sha256}
+
+
+def character_approval_record(entry: dict[str, Any], palette: dict[str, Any]) -> dict[str, Any]:
+    assets = {"hero": (entry.get("hero") or {}).get("asset_id")}
+    sheet = entry.get("sheet") or {}
+    for role in CHARACTER_SHEET_ROLES:
+        assets[role] = (sheet.get(role) or {}).get("asset_id")
+    return {
+        "id": entry.get("id"),
+        "assets": assets,
+        "approved_prompt_block": entry.get("approved_prompt_block"),
+        "wardrobe_negative": entry.get("wardrobe_negative"),
+        "palette": palette,
+    }
+
+
+def location_approval_record(entry: dict[str, Any], palette: dict[str, Any]) -> dict[str, Any]:
+    assets = {"establishing": (entry.get("establishing") or {}).get("asset_id")}
+    for i, angle in enumerate(entry.get("angles") or []):
+        assets[f"angle_{i}"] = (angle or {}).get("asset_id")
+    return {
+        "id": entry.get("id"),
+        "assets": assets,
+        "palette": entry.get("palette_override") or palette,
+    }
+
+
+def poster_approval_record(poster: dict[str, Any], palette: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": POSTER_ENTITY_ID,
+        "assets": {
+            role: (poster.get(role) or {}).get("asset_id")
+            for role in ("key_art", "title_card", "poster_final")
+        },
+        "palette": palette,
+    }
+
+
+def storyboard_batch_record(frames: dict[str, str]) -> dict[str, Any]:
+    """Record hashed into a ``kind='storyboard_batch'`` receipt: an ordered
+    map ``shot_id -> sha256`` of every storyboard frame in the batch.
+    Canonical hashing sorts keys, so the approval binds each frame to its
+    shot — frames cannot be swapped between shots after approval."""
+    for shot_id, sha in frames.items():
+        if not isinstance(shot_id, str) or not shot_id or not isinstance(sha, str) or len(sha) != 64:
+            raise ValueError(f"storyboard batch entry {shot_id!r}: {sha!r} is not shot_id -> sha256")
+    return {"storyboard_frames": dict(frames)}
+
+
+# ---- project config binding (PLAN §0) ----
+#
+# One verification path: lib.project_config.load_verified_project_config is
+# what tools use in preflight and what enforcement uses here. Enforcement adds
+# the decision_log ``approval_policy`` requirement (the writer's recorded
+# ruling) on top of the receipt binding.
+
+UPLOADING_STAGES = {"visual_bible", "assets"}
+
+
+def _config_decision_bound(decisions: list[dict[str, Any]], digest: str) -> bool:
+    for d in decisions:
+        if d.get("category") != "approval_policy" or d.get("user_approved") is not True:
+            continue
+        for field in ("subject", "reason", "selected", "question_id"):
+            value = d.get(field)
+            if isinstance(value, str) and digest in _CONFIG_DIGEST_RE.findall(value):
+                return True
+    return False
+
+
+def _require_config_binding(
+    project_dir: Path, decisions: list[dict[str, Any]], stage: str
+) -> "VerifiedProjectConfig":
+    from lib.project_config import (
+        ProjectConfigError,
+        load_verified_project_config,
+        read_project_config,
+    )
+
+    if not (Path(project_dir) / PROJECT_CONFIG_FILENAME).is_file():
+        _fail(
+            f"stage {stage!r} requires {PROJECT_CONFIG_FILENAME} in the project "
+            f"directory (budget_usd_cap, wall_time_minutes, cast_cap, "
+            f"provider_egress, default_video_endpoint) bound to a human "
+            f"approval — none found."
+        )
+    try:
+        _, digest = read_project_config(project_dir)
+    except ProjectConfigError as exc:
+        if stage in UPLOADING_STAGES and "provider_egress" in str(exc):
+            _fail(
+                f"{stage} cannot start: project.yaml has no valid provider_egress "
+                f"ruling. The writer must explicitly consent that prompts and "
+                f"reference images leave the machine for the provider. ({exc})"
+            )
+        _fail(str(exc))
+    if not _config_decision_bound(decisions, digest):
+        _fail(
+            f"project.yaml digest {digest} has no approval: an approval_policy "
+            f"decision_log entry with user_approved=true carrying "
+            f"'config_sha256: {digest}' is required. Changing budget, cast cap "
+            f"or egress requires a new human approval."
+        )
+    try:
+        verified = load_verified_project_config(project_dir)
+    except ProjectConfigError as exc:
+        _fail(
+            f"project.yaml digest {digest} has no verified approval receipt "
+            f"(kind='config', record {{config_sha256: <digest>}}) — the "
+            f"decision_log entry alone is self-attested; the receipt must be "
+            f"recorded through the human gate. ({exc})"
+        )
+    if stage in UPLOADING_STAGES:
+        # Prompts AND reference images leave the machine at these stages.
+        try:
+            verified.require_egress("fal", "prompts", "reference_images")
+        except ProjectConfigError as exc:
+            _fail(
+                f"{stage} cannot start: provider_egress does not cover what "
+                f"the stage uploads — {exc}"
+            )
+    return verified
+
+
+# ---- migrated artifacts need a receipted human review (PLAN §2; fix #10) ----
+
+def artifact_review_digest(artifact: dict[str, Any]) -> str:
+    """Canonical hash of an artifact minus ``migration_status`` — the review
+    receipt survives the director flipping needs_review -> ok."""
+    from lib.canonical_json import record_sha256
+
+    return record_sha256({k: v for k, v in artifact.items() if k != "migration_status"})
+
+
+def _find_artifact_review(project_dir: Path, name: str, artifact: dict[str, Any]) -> dict[str, Any] | None:
+    """Latest verified artifact_review receipt bound to this exact artifact."""
+    from lib import gates
+    from lib.receipts import approvals_path, project_id_for, recover_pending_approvals
+    from lib.state_io import read_jsonl
+
+    recover_pending_approvals(project_dir)
+    digest = artifact_review_digest(artifact)
+    expected_project = project_id_for(project_dir)
+    for row in reversed(list(read_jsonl(approvals_path(project_dir)))):
+        if not isinstance(row, dict) or row.get("kind") != "artifact_review":
+            continue
+        if row.get("project_id") != expected_project:
+            continue
+        if (
+            row.get("artifact_type") == name
+            and row.get("artifact_version") == _version(artifact)
+            and row.get("artifact_digest") == digest
+            and row.get("migration_status") == "reviewed"
+            and gates.verify_receipt(row)
+        ):
+            return row
+    return None
+
+
+def _check_migrated_artifacts(project_dir: Path, artifacts: dict[str, Any]) -> None:
+    """At completion, every produced artifact that came through a migration
+    (carries ``migration_status``) needs an ``artifact_review`` receipt bound
+    to {artifact_type, artifact_version, artifact_digest, migration_status:
+    reviewed}; a still-``needs_review`` artifact is rejected even with the
+    receipt until the director flips it to ``ok``."""
+    for name, artifact in artifacts.items():
+        if not isinstance(artifact, dict) or "migration_status" not in artifact:
+            continue
+        status = artifact.get("migration_status")
+        receipt = _find_artifact_review(project_dir, name, artifact)
+        if receipt is None:
+            _fail(
+                f"{name} was migrated (migration_status={status}) and has no "
+                f"verified artifact_review receipt bound to {{artifact_type: "
+                f"{name!r}, artifact_version: {_version(artifact)!r}, "
+                f"artifact_digest: {artifact_review_digest(artifact)}, "
+                f"migration_status: 'reviewed'}}. A human must review the "
+                f"regenerated artifact at the gate before the stage completes."
+            )
+        if status == "needs_review":
+            _fail(
+                f"{name} is reviewed (receipt {receipt.get('receipt_id')}) but "
+                f"still carries migration_status=needs_review — the director "
+                f"flips it to 'ok' after the review receipt is recorded."
+            )
+
+
+# ---- ImageRef integrity: path safety, content address, synthetic-only ----
+
+def _generation_receipt_rows(project_dir: Path) -> list[dict[str, Any]]:
+    """Only signed + ledgered rows count; a row appended by hand is invisible."""
+    from lib.receipts import verified_generation_receipts
+
+    return verified_generation_receipts(project_dir)
+
+
+def _safe_file_sha256(project_dir: Path, raw_path: str, label: str) -> str:
+    from lib.pathsafe import PathSafetyError, resolve_input, sha256_file
+
+    try:
+        resolved = resolve_input(raw_path, project_dir)
+    except PathSafetyError as exc:
+        _fail(f"{label} path {raw_path!r} is not a safe project-local file: {exc}")
+    if not resolved.is_file():
+        _fail(f"{label} path {raw_path!r} is not a regular file.")
+    return sha256_file(resolved)
+
+
+def _check_image_ref(
+    project_dir: Path, label: str, ref: dict[str, Any], receipts: list[dict[str, Any]]
+) -> None:
+    asset_id = ref.get("asset_id")
+    actual = _safe_file_sha256(project_dir, str(ref.get("path", "")), label)
+    if actual != asset_id:
+        _fail(
+            f"{label} content hash mismatch: file {ref.get('path')!r} hashes to "
+            f"{actual} but asset_id is {asset_id} — canon images are "
+            f"content-addressed; a swapped file is not the approved image."
+        )
+    receipt_id = (ref.get("provenance") or {}).get("generation_receipt_id")
+    matched = [
+        r for r in receipts
+        if r.get("output_sha256") == asset_id and r.get("receipt_id") == receipt_id
+    ]
+    if not matched:
+        _fail(
+            f"{label} has no generation receipt (receipt_id {receipt_id!r}, "
+            f"output_sha256 {asset_id}) in generation-receipts.jsonl — only "
+            f"pipeline-generated (synthetic) images can be canon; an imported "
+            f"image has no receipt and is rejected. Rows without a valid "
+            f"signature and generation-ledger entry do not count."
+        )
+
+
+def _iter_image_refs(bible: dict[str, Any]):
+    for ch in bible.get("characters", []):
+        cid = ch.get("id")
+        yield f"character {cid!r} hero", ch.get("hero") or {}
+        for role in CHARACTER_SHEET_ROLES:
+            yield f"character {cid!r} sheet.{role}", (ch.get("sheet") or {}).get(role) or {}
+    for loc in bible.get("locations", []):
+        lid = loc.get("id")
+        yield f"location {lid!r} establishing", loc.get("establishing") or {}
+        for i, angle in enumerate(loc.get("angles") or []):
+            yield f"location {lid!r} angles[{i}]", angle or {}
+    poster = bible.get("poster")
+    if isinstance(poster, dict):
+        for role in ("key_art", "title_card", "poster_final"):
+            yield f"poster {role}", poster.get(role) or {}
+
+
+def _approved_entries(bible: dict[str, Any], key: str) -> dict[str, dict[str, Any]]:
+    return {
+        e.get("id"): e
+        for e in bible.get(key, [])
+        if isinstance(e, dict) and e.get("status") == "approved" and e.get("id")
+    }
+
+
+def approved_entity_ids(bible: dict[str, Any]) -> set[str]:
+    return set(_approved_entries(bible, "characters")) | set(_approved_entries(bible, "locations"))
+
+
+def approved_image_owners(bible: dict[str, Any]) -> dict[str, str]:
+    """asset_id -> entity id for every ImageRef of an approved character/location."""
+    owners: dict[str, str] = {}
+    for cid, ch in _approved_entries(bible, "characters").items():
+        refs = [ch.get("hero") or {}] + [
+            (ch.get("sheet") or {}).get(role) or {} for role in CHARACTER_SHEET_ROLES
+        ]
+        for ref in refs:
+            if ref.get("asset_id"):
+                owners[ref["asset_id"]] = cid
+    for lid, loc in _approved_entries(bible, "locations").items():
+        for ref in [loc.get("establishing") or {}] + list(loc.get("angles") or []):
+            if ref.get("asset_id"):
+                owners[ref["asset_id"]] = lid
+    return owners
+
+
+def _require_entry_receipt(
+    project_dir: Path, kinds: tuple[str, ...], entity_id: str, record: dict[str, Any],
+    entry: dict[str, Any], label: str,
+) -> None:
+    from lib.canonical_json import record_sha256
+    from lib.receipts import find_approval
+
+    digest = record_sha256(record)
+    receipt = None
+    for kind in kinds:
+        receipt = find_approval(project_dir, kind, entity_id=entity_id, record_sha256=digest)
+        if receipt is not None:
+            break
+    if receipt is None:
+        _fail(
+            f"{label} is marked approved but no verified approval receipt "
+            f"(kind in {list(kinds)}, entity_id {entity_id!r}) matches the "
+            f"current record digest {digest}. Either the human never approved "
+            f"it at a gate, or the record (assets, prompt block, wardrobe "
+            f"negative, palette) changed after approval — re-approve."
+        )
+    if receipt.get("receipt_id") != entry.get("approval_receipt_id"):
+        _fail(
+            f"{label} approval_receipt_id {entry.get('approval_receipt_id')!r} "
+            f"does not name the verified receipt {receipt.get('receipt_id')!r}."
+        )
+
+
+def _canon_entity_ids(canon: dict[str, Any], key: str) -> set[str]:
+    return {
+        e.get("id") for e in canon.get(key, []) if isinstance(e, dict) and e.get("id")
+    }
+
+
+def _check_visual_bible(
+    project_dir: Path,
+    bible: dict[str, Any],
+    proposal: dict[str, Any],
+    canon: dict[str, Any],
+    config: dict[str, Any],
+    decisions: list[dict[str, Any]],
+    status: str,
+) -> None:
+    palette = bible.get("palette") or {}
+    if not palette.get("hues"):
+        _fail("visual_bible.palette.hues is required — the palette is canon.")
+
+    receipts = _generation_receipt_rows(project_dir)
+    for label, ref in _iter_image_refs(bible):
+        _check_image_ref(project_dir, label, ref, receipts)
+
+    if status != "completed":
+        return
+
+    if proposal.get("migration_status") == "needs_review":
+        _fail(
+            "proposal_packet was migrated from 1.0 without a cast "
+            "(migration_status=needs_review); the proposal director must "
+            "re-emit it with cast before the visual bible can complete."
+        )
+    cast = proposal.get("cast") or {}
+    char_ids = list(cast.get("character_ids") or [])
+    loc_ids = list(cast.get("location_ids") or [])
+    cap = config.get("cast_cap") or {}
+    approved_chars = _approved_entries(bible, "characters")
+    approved_locs = _approved_entries(bible, "locations")
+    for kind, count, limit in (
+        ("characters", max(len(char_ids), len(approved_chars)), cap.get("characters")),
+        ("locations", max(len(loc_ids), len(approved_locs)), cap.get("locations")),
+    ):
+        if isinstance(limit, int) and count > limit:
+            _fail(
+                f"cast cap exceeded: {count} {kind} vs project.yaml cast_cap."
+                f"{kind}={limit}. Raising the cap is a new human approval."
+            )
+
+    missing = [c for c in char_ids if c not in approved_chars]
+    missing += [l for l in loc_ids if l not in approved_locs]
+    if missing:
+        _fail(
+            f"visual_bible cannot complete: proposal_packet.cast entities "
+            f"{missing} have no status=approved entry. Every cast member "
+            f"needs an approved sheet."
+        )
+    extra = sorted(set(approved_chars) - set(char_ids)) + sorted(set(approved_locs) - set(loc_ids))
+    if extra:
+        _fail(
+            f"visual_bible cannot complete: approved entries {extra} are not "
+            f"in proposal_packet.cast — the approved set must equal the cast "
+            f"exactly (cast_cap intent); drop them or re-emit the cast."
+        )
+    if (char_ids or loc_ids) and _version(canon) != "1.1":
+        _fail(
+            "visual_bible with a cast requires a 1.1 canon_packet "
+            "(characters/locations carry ids); migrate the packet first."
+        )
+    unknown = sorted(set(char_ids) - _canon_entity_ids(canon, "characters"))
+    unknown += sorted(set(loc_ids) - _canon_entity_ids(canon, "locations"))
+    if unknown:
+        _fail(
+            f"visual_bible cannot complete: ids {unknown} exist in neither "
+            f"canon_packet.characters nor canon_packet.locations — sheets are "
+            f"built only for canon entities."
+        )
+
+    for cid, entry in approved_chars.items():
+        _require_entry_receipt(
+            project_dir, CHARACTER_APPROVAL_KINDS, cid,
+            character_approval_record(entry, palette), entry, f"character {cid!r}",
+        )
+    for lid, entry in approved_locs.items():
+        _require_entry_receipt(
+            project_dir, ("location",), lid,
+            location_approval_record(entry, palette), entry, f"location {lid!r}",
+        )
+
+    released = _valid_ruling_question_ids(decisions)
+    for key in ("characters", "locations"):
+        known = {e.get("id") for e in bible.get(key, []) if isinstance(e, dict)}
+        for entry in bible.get(key, []):
+            if entry.get("status") != "superseded":
+                continue
+            eid = entry.get("id")
+            if entry.get("superseded_by") not in known:
+                _fail(
+                    f"superseded {key[:-1]} {eid!r} names replacement "
+                    f"{entry.get('superseded_by')!r}, which is not in the bible."
+                )
+            if f"visual:{eid}" not in released:
+                _fail(
+                    f"{key[:-1]} {eid!r} is superseded without a canon_ruling "
+                    f"decision (question_id 'visual:{eid}', user_approved=true, "
+                    f"selected in options_considered). Visual canon changes "
+                    f"only by logged ruling."
+                )
+
+    poster = bible.get("poster")
+    if not isinstance(poster, dict):
+        _fail(
+            "visual_bible cannot complete without a poster (key_art, "
+            "title_card, poster_final) — the poster is a required deliverable."
+        )
+    if poster.get("status") != "approved":
+        _fail(
+            f"poster status is {poster.get('status')!r} — a completed "
+            f"visual_bible requires an approved poster with a receipt."
+        )
+    _require_entry_receipt(
+        project_dir, ("poster",), POSTER_ENTITY_ID,
+        poster_approval_record(poster, palette), poster, "poster",
+    )
+
+
+# ---- scene_plan 1.1 ----
+
+def _check_scene_plan_v11(
+    scene_plan: dict[str, Any], bible: dict[str, Any], status: str, default_endpoint: str
+) -> None:
+    if status == "completed" and scene_plan.get("migration_status") == "needs_review":
+        _fail(
+            "scene_plan was migrated from 1.0 (migration_status=needs_review): "
+            "character_refs/location_ref/shots were not synthesized. The scene "
+            "director must re-emit the plan and a human must approve it."
+        )
+    approved = approved_entity_ids(bible)
+    scenes = [s for s in scene_plan.get("scenes", []) if isinstance(s, dict)]
+
+    # The project default endpoint is the receipt-bound project.yaml value
+    # (D4); a scene that departs from it must say why. Nothing is inferred
+    # from the scenes themselves.
+    for scene in scenes:
+        sid = scene.get("id")
+        endpoint = scene.get("model_endpoint")
+        if not isinstance(endpoint, str) or not endpoint.strip():
+            _fail(f"scene {sid!r} has no model_endpoint — model policy is scene-level.")
+        override = scene.get("model_override")
+        if endpoint != default_endpoint and override is None:
+            _fail(
+                f"scene {sid!r} uses model_endpoint {endpoint!r} but the "
+                f"project default (project.yaml default_video_endpoint) is "
+                f"{default_endpoint!r} — a per-scene departure needs "
+                f"model_override {{endpoint, reason}}."
+            )
+        if override is not None:
+            if not str(override.get("reason") or "").strip():
+                _fail(f"scene {sid!r} model_override has no reason.")
+            if override.get("endpoint") != endpoint:
+                _fail(
+                    f"scene {sid!r} model_override.endpoint "
+                    f"{override.get('endpoint')!r} != model_endpoint {endpoint!r}."
+                )
+        refs = list(scene.get("character_refs") or [])
+        if scene.get("location_ref"):
+            refs.append(scene["location_ref"])
+        if scene.get("entity_free") is True:
+            if refs:
+                _fail(
+                    f"scene {sid!r} is entity_free but carries refs {refs} — "
+                    f"drop the flag or the refs."
+                )
+            continue
+        if not refs:
+            _fail(
+                f"scene {sid!r} has no character_refs/location_ref and is not "
+                f"entity_free — a scene with no canon entity must say so explicitly."
+            )
+        unknown = [r for r in refs if r not in approved]
+        if unknown:
+            _fail(
+                f"scene {sid!r} references {unknown}, which are not approved "
+                f"visual_bible entries. Approved: {sorted(approved)}"
+            )
+        if not scene.get("shots"):
+            _fail(f"scene {sid!r} has no shots[] — storyboard and takes are shot-level.")
+
+
+# ---- assets 1.1 ----
+
+def _check_assets_v11(
+    project_dir: Path,
+    manifest: dict[str, Any],
+    scene_plan: dict[str, Any],
+    bible: dict[str, Any],
+) -> None:
+    from lib.receipts import ReceiptError, find_generation, require_storyboard_receipt
+
+    if manifest.get("migration_status") == "needs_review":
+        _fail(
+            "asset_manifest was migrated from 1.0 (migration_status=needs_review) "
+            "— its references are unstructured; regenerate under 1.1."
+        )
+    if _version(scene_plan) != "1.1":
+        _fail("a 1.1 asset_manifest requires a 1.1 scene_plan (shots, entity refs).")
+
+    shot_scene: dict[str, dict[str, Any]] = {}
+    for scene in scene_plan.get("scenes", []):
+        for shot in scene.get("shots") or []:
+            shot_scene[shot.get("shot_id")] = scene
+    owners = approved_image_owners(bible)
+
+    assets = [a for a in manifest.get("assets", []) if isinstance(a, dict)]
+    file_sha: dict[str, str] = {}
+    for asset in assets:
+        aid = asset.get("id")
+        if asset.get("type") in {"image", "video"}:
+            sha = _safe_file_sha256(project_dir, str(asset.get("path", "")), f"asset {aid!r}")
+            file_sha[aid] = sha
+            if find_generation(project_dir, sha) is None:
+                _fail(
+                    f"asset {aid!r} ({asset.get('path')!r}, sha256 {sha}) has no "
+                    f"generation receipt that verifies (signed + ledgered) — every "
+                    f"image/video must be produced by a receipted pipeline tool."
+                )
+
+    # Storyboard frames first: one per shot, hashed, so shot_visual references
+    # and the per-shot approval can be checked against them.
+    storyboard_shots: dict[str, str] = {}
+    for asset in assets:
+        if asset.get("asset_class") != "storyboard_frame":
+            continue
+        shot_id = asset.get("shot_id")
+        if shot_id in storyboard_shots:
+            _fail(f"shot {shot_id!r} has more than one storyboard_frame — exactly one per shot.")
+        storyboard_shots[shot_id] = file_sha.get(asset.get("id"), "")
+
+    spending_shots: set[str] = set()
+    for asset in assets:
+        aid = asset.get("id")
+        klass = asset.get("asset_class")
+        if klass not in {"shot_visual", "storyboard_frame"}:
+            continue
+        shot_id = asset.get("shot_id")
+        scene = shot_scene.get(shot_id)
+        if scene is None:
+            _fail(f"asset {aid!r} names shot_id {shot_id!r}, which is not in the scene plan.")
+        if asset.get("scene_id") != scene.get("id"):
+            _fail(
+                f"asset {aid!r} is filed under scene_id {asset.get('scene_id')!r} but its "
+                f"shot {shot_id!r} belongs to scene {scene.get('id')!r} in the scene plan."
+            )
+        continuity = asset.get("continuity") or {}
+        applied = [r for r in continuity.get("references_applied") or [] if isinstance(r, dict)]
+        entity_refs = [r for r in applied if r.get("role") != "storyboard"]
+        board_refs = [r for r in applied if r.get("role") == "storyboard"]
+        if scene.get("entity_free") is not True:
+            required = set(scene.get("character_refs") or [])
+            if scene.get("location_ref"):
+                required.add(scene["location_ref"])
+            covered = {r.get("visual_bible_entity_id") for r in entity_refs}
+            missing = sorted(required - covered)
+            if missing:
+                _fail(
+                    f"asset {aid!r} (shot {shot_id!r}) depicts {sorted(required)} "
+                    f"but references_applied covers only {sorted(covered)} — "
+                    f"missing approved sheets for {missing}."
+                )
+        for r in entity_refs:
+            owner = owners.get(r.get("asset_id"))
+            if owner is None or owner != r.get("visual_bible_entity_id"):
+                _fail(
+                    f"asset {aid!r} references_applied asset {r.get('asset_id')} "
+                    f"for {r.get('visual_bible_entity_id')!r} is not an approved "
+                    f"visual_bible ImageRef of that entity."
+                )
+        if klass == "storyboard_frame":
+            if board_refs:
+                _fail(f"storyboard_frame {aid!r} cannot itself cite a storyboard reference.")
+            continue
+
+        # shot_visual
+        for r in board_refs:
+            if r.get("shot_id") != shot_id:
+                _fail(
+                    f"asset {aid!r} (shot {shot_id!r}) cites the storyboard of shot "
+                    f"{r.get('shot_id')!r} — a take is conditioned only on its own shot's frame."
+                )
+            board_sha = storyboard_shots.get(shot_id)
+            if not board_sha or r.get("asset_id") != board_sha:
+                _fail(
+                    f"asset {aid!r} storyboard reference asset_id {r.get('asset_id')} "
+                    f"is not the storyboard_frame recorded for shot {shot_id!r} "
+                    f"(sha256 {board_sha or 'none'})."
+                )
+        if asset.get("usage_status") == "rejected":
+            continue
+        # Candidate OR selected: spend happened, so approval must have preceded it.
+        spending_shots.add(shot_id)
+        board_sha = storyboard_shots.get(shot_id)
+        if not board_sha:
+            _fail(
+                f"shot_visual {aid!r} exists for shot {shot_id!r} but that shot has "
+                f"no storyboard_frame — storyboards are approved as a batch before "
+                f"any video call."
+            )
+        try:
+            require_storyboard_receipt(project_dir, shot_id, board_sha)
+        except ReceiptError as exc:
+            _fail(
+                f"shot_visual {aid!r} (usage_status {asset.get('usage_status')!r}) "
+                f"was generated without a verified storyboard_batch approval "
+                f"receipt covering shot {shot_id!r} -> {board_sha}: {exc}"
+            )
+        if asset.get("usage_status") == "selected" and asset.get("model_endpoint") != scene.get("model_endpoint"):
+            _fail(
+                f"selected take {aid!r} for shot {shot_id!r} used "
+                f"{asset.get('model_endpoint')!r} but scene {scene.get('id')!r} "
+                f"locked {scene.get('model_endpoint')!r} — strategies never "
+                f"mix within a scene (D4). Rejected candidates are ignored."
+            )
+
+    if spending_shots:
+        missing_boards = sorted(s for s in shot_scene if s not in storyboard_shots)
+        if missing_boards:
+            _fail(
+                f"takes exist for {sorted(spending_shots)} but shots "
+                f"{missing_boards} have no storyboard_frame — storyboards are "
+                f"approved as a batch before any video call."
+            )
+
+
 def enforce_authored_canon(
     pipeline_dir: Path,
     project_id: str,
@@ -693,12 +1377,48 @@ def enforce_authored_canon(
     if status == "completed":
         _check_blocking_questions(canon, decisions, stage)
 
-    if stage == "script":
+    project_dir = pipeline_dir / project_id
+    if status == "completed":
+        _check_migrated_artifacts(project_dir, artifacts)
+
+    config = None
+    if stage in CONFIG_BOUND_STAGES:
+        config = _require_config_binding(project_dir, decisions, stage)
+
+    def _bible() -> dict[str, Any]:
+        bible = _load_stage_artifact(
+            pipeline_dir, project_id, "visual_bible", "visual_bible", artifacts
+        )
+        if bible is None:
+            _fail(f"stage {stage!r} requires the visual_bible from a completed visual_bible checkpoint.")
+        return bible
+
+    if stage == "visual_bible":
+        proposal = _load_stage_artifact(
+            pipeline_dir, project_id, "proposal", "proposal_packet", artifacts
+        ) or {}
+        _check_visual_bible(
+            project_dir, artifacts.get("visual_bible", {}), proposal, canon,
+            config.data if config else {}, decisions, status,
+        )
+    elif stage == "script":
         _check_script(artifacts.get("script", {}), canon, ids, status)
     elif stage == "scene_plan":
-        _check_scene_plan(artifacts.get("scene_plan", {}), ids)
+        scene_plan = artifacts.get("scene_plan", {})
+        _check_scene_plan(scene_plan, ids)
+        if _version(scene_plan) == "1.1":
+            _check_scene_plan_v11(
+                scene_plan, _bible(), status,
+                config.default_video_endpoint if config else "",
+            )
     elif stage == "assets":
-        _check_assets(artifacts.get("asset_manifest", {}), canon, ids)
+        manifest = artifacts.get("asset_manifest", {})
+        _check_assets(manifest, canon, ids)
+        if _version(manifest) == "1.1":
+            scene_plan = _load_stage_artifact(
+                pipeline_dir, project_id, "scene_plan", "scene_plan", artifacts
+            ) or {}
+            _check_assets_v11(project_dir, manifest, scene_plan, _bible())
     elif stage == "compose":
         _check_canon_pass(
             artifacts.get("final_review", {}), canon, strict=(status == "completed")

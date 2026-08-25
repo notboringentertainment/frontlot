@@ -2,6 +2,29 @@
 
 Each stage writes a checkpoint after completion. The orchestrator uses
 checkpoints to resume pipelines and to present state at human checkpoints.
+
+Durability: checkpoint and decision-log writes go through
+``lib.state_io`` (unique temp file + fsync + rename), so a crash mid-write
+never leaves a truncated file or a stale fixed-name temp behind.
+
+Run lease (authored-canon pipelines, PLAN §7): ``write_checkpoint`` does NOT
+acquire the per-project run lease — tests and repair tooling write
+checkpoints freely. The ORCHESTRATOR acquires it once at run start via
+``acquire_run_lease(pipeline_dir, project_id, wall_time_minutes)`` and holds
+it (heartbeating) for the whole run; a second live session on the same
+project fails with ``lib.run_lease.LeaseHeldError``.
+
+Paid-call resume safety: for pipelines with ``validation_profile:
+authored-canon``, every ``write_checkpoint`` first runs
+``tools.cost_tracker.resume_check`` on the project directory. A reservation
+left ``submitting`` with no provider request id means money may have been
+spent with no recorded outcome; the write is refused with a
+``CheckpointValidationError`` naming the reservations until a human
+reconciles them (never resubmit automatically).
+
+Human approval receipts are recorded through ``record_human_approval``
+(re-exported here from ``lib.receipts``); it consumes a one-use gate token
+and never changes checkpoint status.
 """
 
 from __future__ import annotations
@@ -14,6 +37,8 @@ from typing import Any, Optional
 
 import jsonschema
 
+from lib.receipts import record_human_approval  # noqa: F401  (re-export for callers)
+from lib.state_io import atomic_write_bytes, atomic_write_json
 from schemas.artifacts import ARTIFACT_NAMES, validate_artifact
 
 # All known stages across all pipelines (used only for artifact name lookup).
@@ -525,23 +550,16 @@ def _merge_decision_log(
         ) from exc
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".json.tmp")
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(existing, f, indent=2)
-    import os
-    os.replace(tmp_path, path)
+    atomic_write_json(path, existing)
     return path, original
 
 
 def _restore_decision_log(path: Path, original: Optional[bytes]) -> None:
     """Roll the cumulative decision log back to its pre-merge state."""
-    import os
     if original is None:
         path.unlink(missing_ok=True)
         return
-    tmp_path = path.with_suffix(".json.rollback")
-    tmp_path.write_bytes(original)
-    os.replace(tmp_path, path)
+    atomic_write_bytes(path, original)
 
 
 def write_checkpoint(
@@ -688,20 +706,17 @@ def write_checkpoint(
     if manifest is not None and manifest.get("validation_profile") == "authored-canon":
         from lib.canon_enforcement import enforce_authored_canon
 
+        _halt_on_indeterminate_paid_calls(pipeline_dir / project_id)
         enforce_authored_canon(pipeline_dir, project_id, stage, status, artifacts)
 
     path = _checkpoint_path(pipeline_dir, project_id, stage)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Serialize the checkpoint to a temp file FIRST — an unserializable
-    # payload or full disk must fail before the decision log moves. Then
-    # commit the decision log, then swap the checkpoint in. If the checkpoint
-    # swap fails after the log committed, roll the log back: a canon ruling
-    # must never exist in the audit trail without the checkpoint that
-    # carried it.
-    import os
-    tmp_path = path.with_suffix(".json.tmp")
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(checkpoint, f, indent=2)
+    # Serialize the checkpoint FIRST — an unserializable payload must fail
+    # before the decision log moves. Then commit the decision log, then swap
+    # the checkpoint in atomically. If the checkpoint swap fails after the
+    # log committed, roll the log back: a canon ruling must never exist in
+    # the audit trail without the checkpoint that carried it.
+    payload = (json.dumps(checkpoint, indent=2) + "\n").encode("utf-8")
 
     log_rollback: Optional[tuple[Path, Optional[bytes]]] = None
     if carries_decisions:
@@ -714,16 +729,49 @@ def write_checkpoint(
         # checkpoint is copied to history/ (stage versioning, gate audit
         # trail, replay).
         _archive_superseded_checkpoint(path, stage)
-        os.replace(tmp_path, path)
+        # Unique temp name + fsync + rename; the temp is removed on failure.
+        atomic_write_bytes(path, payload)
     except BaseException:
         if log_rollback is not None:
             _restore_decision_log(*log_rollback)
-        # The temp name is fixed per stage — a stale file would be reused by
-        # the next writer for this stage. Clean it up with the rollback.
-        tmp_path.unlink(missing_ok=True)
         raise
 
     return path
+
+
+def _halt_on_indeterminate_paid_calls(project_dir: Path) -> None:
+    """Refuse to touch project state while a paid call has an unknown outcome.
+
+    Thin hook over ``tools.cost_tracker.resume_check``: a reservation that is
+    still ``submitting`` with no provider request id may already have been
+    charged. The human reconciles it by hand; the pipeline never resubmits.
+    """
+    from tools.cost_tracker import IndeterminatePaidCallError, resume_check
+
+    try:
+        resume_check(project_dir)
+    except IndeterminatePaidCallError as exc:
+        ids = [r.get("reservation_id") for r in exc.reservations]
+        raise CheckpointValidationError(
+            f"PAID CALL INDETERMINATE: {len(ids)} reservation(s) were submitted "
+            f"with no recorded provider request id or outcome: {ids}. Halting "
+            f"— reconcile each with the provider by hand (mark completed or "
+            f"failed in {project_dir / 'cost-reservations.jsonl'}) before "
+            f"writing any further checkpoint. Never resubmit automatically."
+        ) from exc
+
+
+def acquire_run_lease(pipeline_dir: Path, project_id: str, wall_time_minutes: float):
+    """Acquire the single-writer run lease for ``pipeline_dir/project_id``.
+
+    Thin wrapper over ``lib.run_lease.acquire``. The orchestrator calls this
+    once at run start and holds the returned ``Lease`` (context manager;
+    call ``heartbeat()`` periodically) for the whole run. Raises
+    ``lib.run_lease.LeaseHeldError`` when another live session owns it.
+    """
+    from lib.run_lease import acquire
+
+    return acquire(Path(pipeline_dir) / project_id, wall_time_minutes)
 
 
 def read_checkpoint(

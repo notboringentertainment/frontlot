@@ -14,6 +14,7 @@ Read `pipelines/authored-film/canon-guard` first.
 | Schema | `schemas/artifacts/render_report.schema.json`, `final_review.schema.json` | Artifact validation |
 | Prior artifacts | `edit_decisions`, `asset_manifest` | The assembly |
 | Optional | `scene_plan`, `canon_packet` | Canon pass source |
+| Optional | `visual_bible` | `poster.poster_final` consumed only as a title/end-card video asset |
 | Tools | `video_compose`, `audio_mixer` (+ optional stitch/trim/grade/enhance) | Rendering |
 
 ## Process
@@ -33,6 +34,14 @@ the runtime that actually ran in
 `final_review.checks.promise_preservation.render_runtime_used` and set
 `runtime_swap_detected` honestly.
 
+### 1a. Poster Assets Are Cards, Not Deliverables
+
+`visual_bible.poster.poster_final` enters the composition only as the title
+card / end card still the edit placed. `render_report.outputs` stays
+**video-only**: the poster PNG is not listed as an output, not re-exported, and
+not re-rendered with different type. The poster ships alongside the film from
+its canon path with its own receipts.
+
 ### 2. Standard Technical Verification
 
 ffprobe validation, frame sampling, audio levels, subtitle checks, delivery
@@ -48,7 +57,8 @@ Beyond the technical review, `final_review` records a structured
 - **`protected_lines[]`** — every protected line with `present_verbatim`
   (subtitle/transcript check) and `audible` (mix check).
 - **`continuity_spotchecks[]`** — tracked characters/locations sampled across
-  scenes for drift.
+  scenes for drift, judged against the approved `visual_bible` sheets (the
+  hero and wardrobe views are the reference, not the previous shot).
 - **`tone.must_never_feel_like_verdict`** — an honest sentence against
   `must_never_feel_like`. If the render feels like the thing it must never
   feel like, say so plainly; the writer decides whether it ships.

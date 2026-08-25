@@ -1,0 +1,23 @@
+{
+  "model_id": "fal-ai/flux-pro/kontext",
+  "verified_at": "2026-08-25",
+  "sources": ["https://fal.ai/models/fal-ai/flux-pro/kontext/api", "https://fal.ai/models/fal-ai/flux-pro/kontext/llms.txt"],
+  "endpoints": {"sync": "https://fal.run/fal-ai/flux-pro/kontext", "queue": "https://queue.fal.run/fal-ai/flux-pro/kontext"},
+  "input": {
+    "required": ["prompt", "image_url"],
+    "properties": {
+      "prompt": {"type": "string"},
+      "image_url": {"type": "string", "note": "single reference only"},
+      "seed": {"type": "integer"},
+      "guidance_scale": {"type": "number", "default": 3.5},
+      "num_images": {"type": "integer", "default": 1},
+      "output_format": {"enum": ["jpeg", "png"], "default": "jpeg"},
+      "safety_tolerance": {"enum": ["1", "2", "3", "4", "5", "6"], "default": "2"},
+      "aspect_ratio": {"enum": ["21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:21"]}
+    },
+    "limits": {"max_reference_images": 1}
+  },
+  "output": {"required": ["images", "timings", "seed", "has_nsfw_concepts", "prompt"], "image_url_path": "images[].url"},
+  "pricing": {"usd_per_image": 0.04},
+  "idempotency": {"client_key_supported": false, "server_request_id": true, "no_retry_header": "X-Fal-No-Retry: 1"}
+}

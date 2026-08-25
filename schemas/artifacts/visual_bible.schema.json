@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openmontage/artifacts/visual_bible",
+  "title": "Visual Bible",
+  "description": "Approved visual canon for an authored-film production: per-character sheets, per-location plates and the poster, every image a content-addressed ImageRef with exactly one generation receipt (model or local derivation). Entities are keyed by canon_packet 1.1 ids. Approval is explicit: status=approved requires an approval_receipt_id; superseded entries name their replacement. Character and location ids must be unique within their array (enforced by validate_artifact).",
+  "type": "object",
+  "required": ["version", "project_slug", "palette", "generator_defaults", "characters", "locations", "poster"],
+  "properties": {
+    "version": { "type": "string", "const": "1.0" },
+    "project_slug": { "type": "string", "pattern": "^[a-z0-9-]+$", "minLength": 1 },
+    "palette": { "$ref": "#/$defs/palette" },
+    "generator_defaults": {
+      "type": "object",
+      "required": ["image_model", "edit_model"],
+      "properties": {
+        "image_model": { "type": "string", "minLength": 1, "description": "Default text-to-image endpoint for sheets and plates" },
+        "edit_model": { "type": "string", "minLength": 1, "description": "Default image-edit endpoint for angle/expression variants" }
+      },
+      "additionalProperties": false
+    },
+    "characters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "hero", "sheet", "wardrobe_negative", "approved_prompt_block", "status"],
+        "properties": {
+          "id": { "$ref": "#/$defs/entity_id", "description": "canon_packet 1.1 character id" },
+          "hero": { "$ref": "#/$defs/image_ref" },
+          "sheet": {
+            "type": "object",
+            "required": ["front", "three_quarter", "profile", "full_body", "expressions", "wardrobe"],
+            "properties": {
+              "front": { "$ref": "#/$defs/image_ref" },
+              "three_quarter": { "$ref": "#/$defs/image_ref" },
+              "profile": { "$ref": "#/$defs/image_ref" },
+              "full_body": { "$ref": "#/$defs/image_ref" },
+              "expressions": { "$ref": "#/$defs/image_ref" },
+              "wardrobe": { "$ref": "#/$defs/image_ref" }
+            },
+            "additionalProperties": false
+          },
+          "wardrobe_negative": { "type": "string", "description": "Negative-prompt text guarding wardrobe drift (may be empty)" },
+          "approved_prompt_block": { "type": "string", "minLength": 1, "description": "Verbatim text copied into every downstream prompt that depicts this character. Any edit after approval invalidates the receipt." },
+          "status": { "$ref": "#/$defs/status" },
+          "approval_receipt_id": { "type": "string", "minLength": 1 },
+          "superseded_by": { "type": "string", "minLength": 1, "description": "Id of the entry that replaces this one" }
+        },
+        "additionalProperties": false,
+        "allOf": [
+          { "$ref": "#/$defs/approval_rules" }
+        ]
+      }
+    },
+    "locations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "establishing", "angles", "status"],
+        "properties": {
+          "id": { "$ref": "#/$defs/entity_id", "description": "canon_packet 1.1 location id" },
+          "establishing": { "$ref": "#/$defs/image_ref" },
+          "angles": { "type": "array", "minItems": 2, "maxItems": 3, "items": { "$ref": "#/$defs/image_ref" } },
+          "palette_override": { "$ref": "#/$defs/palette" },
+          "status": { "$ref": "#/$defs/status" },
+          "approval_receipt_id": { "type": "string", "minLength": 1 },
+          "superseded_by": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false,
+        "allOf": [
+          { "$ref": "#/$defs/approval_rules" }
+        ]
+      }
+    },
+    "poster": {
+      "type": "object",
+      "description": "Key art plus locally rendered title card (title_card tool) and final composite (poster_composite tool). Required: a visual_bible without an approved poster cannot complete (inspection fix #11).",
+      "required": ["key_art", "title_card", "poster_final", "status"],
+      "properties": {
+        "key_art": { "$ref": "#/$defs/image_ref" },
+        "title_card": { "$ref": "#/$defs/image_ref" },
+        "poster_final": { "$ref": "#/$defs/image_ref" },
+        "status": { "$ref": "#/$defs/status" },
+        "approval_receipt_id": { "type": "string", "minLength": 1 },
+        "superseded_by": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        { "$ref": "#/$defs/approval_rules" }
+      ]
+    },
+    "metadata": { "type": "object" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "entity_id": { "type": "string", "pattern": "^[a-z0-9-]+$", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "status": { "type": "string", "enum": ["draft", "approved", "superseded"] },
+    "palette": {
+      "type": "object",
+      "required": ["hues"],
+      "properties": {
+        "hues": { "type": "array", "minItems": 3, "maxItems": 4, "items": { "type": "string", "minLength": 1 } },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "approval_rules": {
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "approved" } }, "required": ["status"] },
+          "then": { "required": ["approval_receipt_id"] }
+        },
+        {
+          "if": { "properties": { "status": { "const": "superseded" } }, "required": ["status"] },
+          "then": { "required": ["superseded_by"] }
+        }
+      ]
+    },
+    "image_ref": {
+      "type": "object",
+      "required": ["asset_id", "path", "role", "provenance"],
+      "properties": {
+        "asset_id": { "$ref": "#/$defs/sha256", "description": "sha256 of the image bytes; the content address" },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))\\S+$",
+          "description": "Project-relative content-addressed path (no absolute paths, no '..' segments)"
+        },
+        "role": { "type": "string", "minLength": 1, "description": "hero, front, three_quarter, establishing, angle, key_art, title_card, poster_final, ..." },
+        "provenance": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["generator_kind", "model_endpoint", "prompt", "generation_receipt_id"],
+              "properties": {
+                "generator_kind": { "const": "model" },
+                "model_endpoint": { "type": "string", "minLength": 1 },
+                "prompt": { "type": "string", "minLength": 1 },
+                "seed": { "type": "integer" },
+                "generation_receipt_id": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["generator_kind", "tool", "tool_version", "parameters_hash", "input_asset_ids", "generation_receipt_id"],
+              "properties": {
+                "generator_kind": { "const": "local" },
+                "tool": { "type": "string", "minLength": 1 },
+                "tool_version": { "type": "string", "minLength": 1 },
+                "parameters_hash": { "$ref": "#/$defs/sha256" },
+                "input_asset_ids": { "type": "array", "items": { "$ref": "#/$defs/sha256" } },
+                "generation_receipt_id": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

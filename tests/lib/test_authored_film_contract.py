@@ -6,12 +6,23 @@ blocking questions must gate advancement, canon evidence must be structured,
 and compose must prove a real render with a passing canon pass.
 """
 
+import hashlib
 import json
 import shutil
 import subprocess
 
 import pytest
+import yaml
 
+from lib import gates, receipts
+from lib.canon_enforcement import (
+    character_approval_record,
+    config_approval_record,
+    location_approval_record,
+    poster_approval_record,
+    storyboard_batch_record,
+)
+from lib.canonical_json import record_sha256
 from lib.checkpoint import (
     CheckpointValidationError,
     init_project,
@@ -22,6 +33,180 @@ from tests.contracts.test_phase0_contracts import sample_artifact
 
 PIPELINE = "authored-film"
 SHA = "a" * 64
+
+# ---------------------------------------------------------------------------
+# Project config + receipts (PLAN §0, §5, §6). Every authored-film stage at or
+# after visual_bible needs project.yaml bound to a human approval; fixtures
+# mint real one-use gate tokens against a per-test OPENMONTAGE_GATES_DIR.
+# ---------------------------------------------------------------------------
+
+PROJECT_CONFIG = {
+    "version": "1.0",
+    "budget_usd_cap": 50.0,
+    "wall_time_minutes": 30,
+    "cast_cap": {"characters": 2, "locations": 2},
+    "provider_egress": {"provider": "fal", "content_classes": ["prompts", "reference_images"]},
+    "default_video_endpoint": "fake/reference-to-video",
+}
+PALETTE = {"hues": ["#101820", "#f2aa4c", "#7a8b99"], "notes": "cold dusk"}
+GENERATOR_DEFAULTS = {"image_model": "fake/text-to-image", "edit_model": "fake/edit"}
+VIDEO_ENDPOINT = "fake/reference-to-video"
+
+
+def config_bytes(config: dict | None = None) -> bytes:
+    return yaml.safe_dump(config or PROJECT_CONFIG, sort_keys=True).encode("utf-8")
+
+
+def config_digest(config: dict | None = None) -> str:
+    return hashlib.sha256(config_bytes(config)).hexdigest()
+
+
+def approval_policy_decision(digest: str | None = None, *, approved: bool = True) -> dict:
+    digest = digest or config_digest()
+    return {
+        "decision_id": f"d-config-{digest[:8]}",
+        "stage": "proposal",
+        "category": "approval_policy",
+        "subject": "Project config approval",
+        "options_considered": [
+            {"option_id": "approve", "label": "Approve config", "score": 1.0,
+             "reason": "Writer approved budget, cast cap and egress"}
+        ],
+        "selected": "approve",
+        "reason": f"config_sha256: {digest}",
+        "user_approved": approved,
+    }
+
+
+def mint(project_id: str, stage: str, scope: str, record: dict) -> str:
+    return gates.mint_gate_token(
+        project_id=project_id, stage=stage, scope=scope,
+        record_sha256=record_sha256(record), user_response="approve",
+    )
+
+
+def approve(project_dir, stage: str, scope: str, record: dict, kind: str, entity_id: str) -> dict:
+    """Mint a gate token for ``record`` and record the signed approval receipt."""
+    token = mint("p", stage, scope, record)
+    return receipts.record_human_approval(
+        project_dir, "p", stage, scope, record, token, kind, entity_id=entity_id,
+    )
+
+
+def write_project_config(project_dir, config: dict | None = None, *, bind: bool = True) -> str:
+    """Write project.yaml; with ``bind`` also record its config approval
+    receipt. The matching approval_policy decision rides in the proposal
+    stage decision log (plain_decision_log)."""
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "project.yaml").write_bytes(config_bytes(config))
+    digest = config_digest(config)
+    if bind:
+        approve(project_dir, "proposal", "config", config_approval_record(digest), "config", "project-config")
+    return digest
+
+
+def fake_image(project_dir, seed: str, *, subdir: str = "canon/visual/objects",
+               receipt: bool = True, role: str = "hero") -> dict:
+    """Write a fake PNG whose sha256 is its asset_id, record a generation
+    receipt for it, and return a schema-valid ImageRef."""
+    data = b"\x89PNG fake " + seed.encode("utf-8")
+    sha = hashlib.sha256(data).hexdigest()
+    rel = f"{subdir}/{sha}.png"
+    path = project_dir / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    receipt_id = "no-receipt"
+    if receipt:
+        row = receipts.record_generation(
+            project_dir, execution_id=f"exec-{seed}", tool="seedream_image",
+            normalized_inputs_hash=SHA, output_sha256=sha, cost_usd=0.01,
+            started_at="2026-08-25T00:00:00+00:00", finished_at="2026-08-25T00:00:01+00:00",
+            model_endpoint=GENERATOR_DEFAULTS["image_model"],
+        )
+        receipt_id = row["receipt_id"]
+    return {
+        "asset_id": sha,
+        "path": rel,
+        "role": role,
+        "provenance": {
+            "generator_kind": "model",
+            "model_endpoint": GENERATOR_DEFAULTS["image_model"],
+            "prompt": f"{role} of {seed}",
+            "generation_receipt_id": receipt_id,
+        },
+    }
+
+
+def character_entry(project_dir, cid: str, *, approve_entry: bool = True) -> dict:
+    entry = {
+        "id": cid,
+        "hero": fake_image(project_dir, f"{cid}-hero", role="hero"),
+        "sheet": {
+            role: fake_image(project_dir, f"{cid}-{role}", role=role)
+            for role in ("front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")
+        },
+        "wardrobe_negative": "no hat",
+        "approved_prompt_block": f"{cid}: tall figure in a grey coat",
+        "status": "approved" if approve_entry else "draft",
+    }
+    if approve_entry:
+        receipt = approve(
+            project_dir, "visual_bible", f"sheet:{cid}",
+            character_approval_record(entry, PALETTE), "sheet", cid,
+        )
+        entry["approval_receipt_id"] = receipt["receipt_id"]
+    return entry
+
+
+def location_entry(project_dir, lid: str, *, approve_entry: bool = True) -> dict:
+    entry = {
+        "id": lid,
+        "establishing": fake_image(project_dir, f"{lid}-establishing", role="establishing"),
+        "angles": [
+            fake_image(project_dir, f"{lid}-angle-{i}", role="angle") for i in range(2)
+        ],
+        "status": "approved" if approve_entry else "draft",
+    }
+    if approve_entry:
+        receipt = approve(
+            project_dir, "visual_bible", f"location:{lid}",
+            location_approval_record(entry, PALETTE), "location", lid,
+        )
+        entry["approval_receipt_id"] = receipt["receipt_id"]
+    return entry
+
+
+def approved_visual_bible(project_dir, *, characters: list[str] = (),
+                          locations: list[str] = (), poster: bool = True) -> dict:
+    bible = {
+        "version": "1.0",
+        "project_slug": "test-feature",
+        "palette": PALETTE,
+        "generator_defaults": GENERATOR_DEFAULTS,
+        "characters": [character_entry(project_dir, c) for c in characters],
+        "locations": [location_entry(project_dir, l) for l in locations],
+    }
+    if poster:
+        p = {
+            "key_art": fake_image(project_dir, "poster-key-art", role="key_art"),
+            "title_card": fake_image(project_dir, "poster-title-card", role="title_card"),
+            "poster_final": fake_image(project_dir, "poster-final", role="poster_final"),
+            "status": "approved",
+        }
+        receipt = approve(
+            project_dir, "visual_bible", "poster",
+            poster_approval_record(p, PALETTE), "poster", "poster",
+        )
+        p["approval_receipt_id"] = receipt["receipt_id"]
+        bible["poster"] = p
+    return bible
+
+
+@pytest.fixture(autouse=True)
+def gates_dir(tmp_path, monkeypatch):
+    d = tmp_path / "gates"
+    monkeypatch.setenv("OPENMONTAGE_GATES_DIR", str(d))
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +311,8 @@ def plain_decision_log() -> dict:
                 ],
                 "selected": "cinematic-trailer",
                 "reason": "Matches comps.",
-            }
+            },
+            approval_policy_decision(),
         ],
     }
 
@@ -286,6 +472,7 @@ def project(tmp_path):
     project_dir = init_project(
         "p", title="Test Feature", pipeline_type=PIPELINE, pipeline_dir=tmp_path
     )
+    write_project_config(project_dir)
     return tmp_path, project_dir
 
 
@@ -293,13 +480,15 @@ def advance(pipeline_dir, through: str, *, canon: dict | None = None,
             project_dir=None) -> dict:
     """Write valid completed checkpoints through the named stage; return canon."""
     canon = canon or canon_packet()
-    order = ["canon_ingest", "proposal", "script", "scene_plan", "assets", "edit", "compose"]
+    order = ["canon_ingest", "proposal", "visual_bible", "script", "scene_plan",
+             "assets", "edit", "compose"]
     stage_artifacts = {
         "canon_ingest": {"canon_packet": canon},
         "proposal": {
             "proposal_packet": sample_artifact("proposal_packet"),
             "decision_log": plain_decision_log(),
         },
+        "visual_bible": {"visual_bible": approved_visual_bible(pipeline_dir / "p")},
         "script": {"script": authored_script()},
         "scene_plan": {"scene_plan": authored_scene_plan()},
         "assets": {"asset_manifest": authored_asset_manifest()},
@@ -416,7 +605,7 @@ class TestDecisionLog:
 
     def test_rejected_checkpoint_does_not_mutate_existing_log(self, project):
         pipeline_dir, _ = project
-        advance(pipeline_dir, "proposal")
+        advance(pipeline_dir, "visual_bible")
         before = (pipeline_dir / "p" / "decision_log.json").read_text(encoding="utf-8")
         bad_log = plain_decision_log()
         bad_log["decisions"][0]["decision_id"] = "d-999"
@@ -483,7 +672,7 @@ class TestBlockingQuestions:
 class TestCanonEvidence:
     def test_script_without_source_refs_is_rejected(self, project):
         pipeline_dir, _ = project
-        advance(pipeline_dir, "proposal")
+        advance(pipeline_dir, "visual_bible")
         script = authored_script()
         for section in script["sections"]:
             section.pop("source_ref")
@@ -496,7 +685,7 @@ class TestCanonEvidence:
 
     def test_script_dropping_protected_line_is_rejected(self, project):
         pipeline_dir, _ = project
-        advance(pipeline_dir, "proposal")
+        advance(pipeline_dir, "visual_bible")
         script = authored_script()
         script["sections"][0]["text"] = "We were never going home, were we?"
         with pytest.raises(CheckpointValidationError, match="[Pp]rotected"):
@@ -676,7 +865,7 @@ class TestSecondRoundFindings:
     # P1: the skill-documented composite source_ref must be accepted.
     def test_composite_source_ref_is_accepted(self, project):
         pipeline_dir, _ = project
-        advance(pipeline_dir, "proposal")
+        advance(pipeline_dir, "visual_bible")
         script = authored_script()
         script["sections"][0]["source_ref"] = "canon:beat-001 lock-001"
         write_checkpoint(
@@ -687,7 +876,7 @@ class TestSecondRoundFindings:
 
     def test_locks_honored_must_cover_every_lock(self, project):
         pipeline_dir, _ = project
-        advance(pipeline_dir, "proposal")
+        advance(pipeline_dir, "visual_bible")
         script = authored_script()
         script["metadata"]["canon_check"]["locks_honored"] = []
         with pytest.raises(CheckpointValidationError, match="lock-001"):
@@ -699,7 +888,7 @@ class TestSecondRoundFindings:
 
     def test_unresolved_tension_blocks_script_completion(self, project):
         pipeline_dir, _ = project
-        advance(pipeline_dir, "proposal")
+        advance(pipeline_dir, "visual_bible")
         script = authored_script()
         script["metadata"]["canon_check"]["tensions"] = [
             {"description": "Treatment runtime cannot fit the final beat."}
@@ -713,7 +902,7 @@ class TestSecondRoundFindings:
 
     def test_tension_is_presentable_at_the_gate(self, project):
         pipeline_dir, _ = project
-        advance(pipeline_dir, "proposal")
+        advance(pipeline_dir, "visual_bible")
         script = authored_script()
         script["metadata"]["canon_check"]["tensions"] = [
             {"description": "Treatment runtime cannot fit the final beat."}
@@ -826,7 +1015,7 @@ class TestSecondRoundFindings:
         import os as os_module
 
         pipeline_dir, _ = project
-        advance(pipeline_dir, "proposal")
+        advance(pipeline_dir, "visual_bible")
         log_path = pipeline_dir / "p" / "decision_log.json"
         before = log_path.read_text(encoding="utf-8")
 
@@ -998,7 +1187,7 @@ class TestCodeRabbitFindings:
 
     def test_non_string_locks_honored_fails_cleanly(self, project):
         pipeline_dir, _ = project
-        advance(pipeline_dir, "proposal")
+        advance(pipeline_dir, "visual_bible")
         script = authored_script()
         script["metadata"]["canon_check"]["locks_honored"] = [{"id": "atom-001"}]
         with pytest.raises(CheckpointValidationError, match="string"):

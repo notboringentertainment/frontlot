@@ -502,8 +502,11 @@ class CostTracker:
     def _load(self) -> None:
         with open(self.cost_log_path) as f:  # type: ignore[arg-type]
             data = json.load(f)
+        # Only entries/spend state are loaded. The cap is NOT: the constructor's
+        # value comes from the receipt-bound project.yaml (or the caller), and a
+        # historical cap persisted in cost_log.json must never override a
+        # lowered, re-approved one (inspection #3).
         self.entries = data.get("entries", [])
-        self.budget_total_usd = data.get("budget_total_usd", self.budget_total_usd)
         self._approved_tools = set(data.get("approved_tools", []))
 
     # ---- Helpers ----
@@ -521,3 +524,185 @@ class CostTracker:
     @staticmethod
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+
+# ---- Paid-call idempotency (PLAN §0) ----
+#
+# A reservation is persisted to <project_root>/cost-reservations.jsonl in state
+# "submitting" BEFORE any network call. The provider request id is attached when
+# it returns; reconciliation appends the terminal state. States:
+#
+#   submitting      — reserved; the request may or may not have reached the
+#                     provider. With no request id it is indeterminate; with a
+#                     request id the outcome is unknown (crash after attach).
+#   pending_billing — the provider ACCEPTED the request (id persisted) but the
+#                     tool failed afterwards (deadline, download, verification).
+#                     The provider may still have completed and billed the job,
+#                     so the reserved amount is retained, never refunded here.
+#   completed / failed — terminal.
+#
+# ``resume_check`` halts on ANY nonterminal reservation; only the human-run
+# scripts/reconcile_paid_calls.py (which polls the provider by request id and
+# never resubmits) moves them to a terminal state.
+
+RESERVATIONS_FILENAME = "cost-reservations.jsonl"
+NONTERMINAL_STATES = ("submitting", "pending_billing")
+TERMINAL_STATES = ("completed", "failed")
+RESERVATION_STATES = NONTERMINAL_STATES + TERMINAL_STATES
+
+
+class IndeterminatePaidCallError(Exception):
+    """Raised on resume when paid calls have no recorded terminal outcome."""
+
+    def __init__(self, reservations: list[dict[str, Any]]) -> None:
+        self.reservations = reservations
+        described = ", ".join(
+            f"{r['reservation_id']} ({r.get('state')}, request id "
+            f"{r.get('provider_request_id') or 'none'})"
+            for r in reservations
+        )
+        super().__init__(
+            f"{len(reservations)} paid call(s) have no terminal outcome: {described}. "
+            f"Halt; run scripts/reconcile_paid_calls.py --project <slug> to reconcile "
+            f"with the provider. Never resubmit."
+        )
+
+
+def reservations_path(project_root: Path) -> Path:
+    return Path(project_root) / RESERVATIONS_FILENAME
+
+
+def _append_reservation_event(project_root: Path, event: dict[str, Any]) -> None:
+    from lib.state_io import append_jsonl
+
+    event = dict(event)
+    event.setdefault("at", datetime.now(timezone.utc).isoformat())
+    append_jsonl(reservations_path(project_root), event)
+
+
+def load_reservations(project_root: Path) -> dict[str, dict[str, Any]]:
+    """Fold the reservation event log into the current state per reservation_id."""
+    from lib.state_io import read_jsonl
+
+    folded: dict[str, dict[str, Any]] = {}
+    for event in read_jsonl(reservations_path(project_root)):
+        rid = event.get("reservation_id")
+        if not rid:
+            continue
+        current = folded.setdefault(rid, {})
+        current.update({k: v for k, v in event.items() if k != "at"})
+        current["updated_at"] = event.get("at")
+    return folded
+
+
+def reserve_paid_call(
+    tracker: CostTracker,
+    project_root: Path,
+    *,
+    tool: str,
+    endpoint: str,
+    normalized_inputs_hash: str,
+    reserved_usd: float,
+    output_hint: Optional[dict[str, Any]] = None,
+) -> str:
+    """Reserve budget through ``tracker`` and persist a ``submitting`` reservation.
+
+    Raises the tracker's BudgetExceededError / ApprovalRequiredError before
+    anything is written to the reservation log. Returns the reservation id,
+    which doubles as the client idempotency key sent with the request.
+    ``output_hint`` (e.g. ``{"kind": "video", "output_path": ...}`` or
+    ``{"kind": "image", "objects_dir": ...}``) lets the offline reconciler
+    recover a completed output without resubmitting.
+    """
+    entry_id = tracker.estimate(tool, endpoint, reserved_usd)
+    try:
+        tracker.reserve(entry_id)
+    except Exception:
+        tracker.refund(entry_id)
+        raise
+    reservation_id = str(uuid.uuid4())
+    _append_reservation_event(
+        project_root,
+        {
+            "reservation_id": reservation_id,
+            "idempotency_key": reservation_id,
+            "cost_entry_id": entry_id,
+            "tool": tool,
+            "endpoint": endpoint,
+            "normalized_inputs_hash": normalized_inputs_hash,
+            "reserved_usd": round(reserved_usd, 4),
+            "state": "submitting",
+            "provider_request_id": None,
+            "output_hint": dict(output_hint) if output_hint else None,
+        },
+    )
+    return reservation_id
+
+
+def attach_request_id(project_root: Path, reservation_id: str, provider_request_id: str) -> None:
+    if not provider_request_id:
+        raise ValueError("provider_request_id must be non-empty")
+    if reservation_id not in load_reservations(project_root):
+        raise KeyError(f"unknown reservation {reservation_id}")
+    _append_reservation_event(
+        project_root,
+        {"reservation_id": reservation_id, "provider_request_id": provider_request_id},
+    )
+
+
+def reconcile_paid_call(
+    project_root: Path,
+    reservation_id: str,
+    actual_usd: float,
+    state: str = "completed",
+    tracker: Optional[CostTracker] = None,
+) -> None:
+    """Record the state of a paid call; also reconciles the tracker entry when given.
+
+    ``completed`` / ``failed`` are terminal. ``pending_billing`` keeps the
+    reserved amount charged against the budget (the tracker entry is settled
+    at ``actual_usd``, which callers pass as the reserved amount) until the
+    reconciler learns the provider's real outcome. A terminal reservation
+    cannot be reconciled again.
+    """
+    if state not in ("completed", "failed", "pending_billing"):
+        raise ValueError("state must be 'completed', 'failed' or 'pending_billing'")
+    reservation = load_reservations(project_root).get(reservation_id)
+    if reservation is None:
+        raise KeyError(f"unknown reservation {reservation_id}")
+    if reservation.get("state") in TERMINAL_STATES:
+        raise ValueError(
+            f"reservation {reservation_id} is already {reservation['state']}; refusing to re-reconcile"
+        )
+    if tracker is not None and reservation.get("cost_entry_id"):
+        tracker.reconcile(reservation["cost_entry_id"], actual_usd, success=(state != "failed"))
+    _append_reservation_event(
+        project_root,
+        {"reservation_id": reservation_id, "state": state, "actual_usd": round(actual_usd, 4)},
+    )
+
+
+def nonterminal_reservations(project_root: Path) -> list[dict[str, Any]]:
+    """Every reservation not yet ``completed`` or ``failed`` (any ``submitting`` —
+    with or without a request id — and every ``pending_billing``)."""
+    return [
+        r for r in load_reservations(project_root).values() if r.get("state") in NONTERMINAL_STATES
+    ]
+
+
+def indeterminate_reservations(project_root: Path) -> list[dict[str, Any]]:
+    """Reservations still ``submitting`` with no provider request id: the only
+    ones the reconciler cannot resolve by polling. Kept for callers that need
+    to single these out; ``resume_check`` blocks on all nonterminal ones."""
+    return [
+        r
+        for r in load_reservations(project_root).values()
+        if r.get("state") == "submitting" and not r.get("provider_request_id")
+    ]
+
+
+def resume_check(project_root: Path) -> None:
+    """Raise IndeterminatePaidCallError if any paid call lacks a terminal outcome."""
+    pending = nonterminal_reservations(project_root)
+    if pending:
+        raise IndeterminatePaidCallError(pending)

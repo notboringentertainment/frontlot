@@ -18,7 +18,7 @@
 #     open questions surfaced to the writer, never filled by invention.
 
 name: authored-film
-version: "1.0"
+version: "1.1"
 description: >
   Produce a film from the writer's finished development assets (synopsis,
   treatment, outline, story bible, wayfinder decisions, canon atoms). Canon
@@ -64,6 +64,7 @@ required_skills:
   - pipelines/authored-film/canon-guard
   - pipelines/authored-film/canon-director
   - pipelines/authored-film/proposal-director
+  - pipelines/authored-film/visual-bible-director
   - pipelines/authored-film/script-director
   - pipelines/authored-film/scene-director
   - pipelines/authored-film/asset-director
@@ -134,9 +135,56 @@ stages:
       - At least 3 treatment options, each grounded_in canon packet fields (not vibes)
       - Cost estimate includes per-item breakdown
 
+  - name: visual_bible
+    skill: pipelines/authored-film/visual-bible-director
+    required_artifacts_in:
+      - canon_packet
+      - proposal_packet
+    produces:
+      - visual_bible
+    tools_available:
+      - seedream_image
+      - image_selector
+      - title_card
+      - poster_composite
+    optional_tools:
+      - flux_image
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - Every character and location named in proposal_packet.cast has an
+        approved sheet — hero plus angle/expression/wardrobe views for
+        characters, establishing plus angles for locations — and nothing
+        outside the cast was built (cast_cap from project.yaml is binding)
+      - Every image is synthetic and receipted — content-addressed under
+        canon/visual/objects/<sha256>.png with a generation receipt; no
+        real-person likeness, no imported photos
+      - Every approved entry carries a human approval receipt bound to the
+        full approved record (asset pointers, approved_prompt_block,
+        wardrobe_negative, palette) — a status flip without a receipt is
+        not an approval
+      - The palette and approved_prompt_block read as the writer's story —
+        bible visual_identity and behavioral_anchors are visible in the
+        sheets, not generic model defaults
+      - Poster (key art + locally rendered title card via title_card +
+        poster_composite) is present and approved with a receipt — the
+        stage cannot complete without it; typography is never generated
+        by a model
+      - Superseded entries name their replacement and are backed by a
+        canon_ruling with question_id visual:<entity-id>
+      - provider_egress is present in project.yaml — prompts and reference
+        images leave the machine only under the writer's recorded consent
+    success_criteria:
+      - Schema-valid visual_bible artifact
+      - Approved character/location ids equal proposal_packet.cast exactly (no extras), every id exists in canon_packet 1.1, and every entry has a verified approval receipt
+      - poster.status is approved with a verified poster receipt
+      - Every ImageRef path resolves inside the project, hashes to its asset_id, and has a generation receipt
+      - Cast counts do not exceed project.yaml cast_cap
+
   - name: script
     skill: pipelines/authored-film/script-director
     required_artifacts_in:
+      - visual_bible
       - canon_packet
       - proposal_packet
     produces:
@@ -158,6 +206,7 @@ stages:
   - name: scene_plan
     skill: pipelines/authored-film/scene-director
     required_artifacts_in:
+      - visual_bible
       - script
       - canon_packet
     optional_artifacts_in:
@@ -186,6 +235,7 @@ stages:
   - name: assets
     skill: pipelines/authored-film/asset-director
     required_artifacts_in:
+      - visual_bible
       - scene_plan
       - canon_packet
     optional_artifacts_in:
@@ -224,6 +274,7 @@ stages:
   - name: edit
     skill: pipelines/authored-film/edit-director
     required_artifacts_in:
+      - visual_bible
       - scene_plan
       - asset_manifest
       - canon_packet
@@ -246,6 +297,7 @@ stages:
   - name: compose
     skill: pipelines/authored-film/compose-director
     required_artifacts_in:
+      - visual_bible
       - edit_decisions
       - asset_manifest
       - canon_packet

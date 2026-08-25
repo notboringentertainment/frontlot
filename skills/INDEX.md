@@ -218,23 +218,27 @@ Stage director skills teach the agent HOW to execute each pipeline stage. Each s
 | Compose Director | `pipelines/cinematic/compose-director.md` | `compose` | Grade and mix finishing, frame-treatment judgment |
 | Publish Director | `pipelines/cinematic/publish-director.md` | `publish` | Hero vs teaser packaging, poster-frame concepts |
 
-### Authored-Film Pipeline (`pipelines/authored-film/`) — v1.0
+### Authored-Film Pipeline (`pipelines/authored-film/`) — v1.1
 
 For stories that were WRITTEN before production began. Canon ingest replaces web
 research; every stage is bound by `canon-guard.md` (locks immutable, protected
-lines verbatim, gaps escalate — never invented).
+lines verbatim, gaps escalate — never invented). v1.1 adds the `visual_bible`
+stage (approved, hashed character/location sheets + poster as canon), the
+trailer format, per-shot storyboards, receipt-bound approvals, and project
+config (`project.yaml`: budget cap, cast cap, provider egress).
 
 | Skill | File | Stage | Key Capabilities |
 |-------|------|-------|-----------------|
-| **Executive Producer** | `pipelines/authored-film/executive-producer.md` | `all` | **7-stage serial orchestration, canon-fidelity gates, continuity enforcement, writer handoff record** |
+| **Executive Producer** | `pipelines/authored-film/executive-producer.md` | `all` | **8-stage serial orchestration, canon-fidelity gates, run lease + config-digest + budget/egress preflight, continuity enforcement, writer handoff record** |
 | Canon Guard | `pipelines/authored-film/canon-guard.md` | `all` | Binding contract: authority ladder, collision procedure, provenance rules |
 | Canon Director | `pipelines/authored-film/canon-director.md` | `canon_ingest` | Reads writer development assets (synopsis/treatment/outline/bible, wayfinder maps, canon atoms, pitch exports) into a schema-valid canon_packet |
-| Proposal Director | `pipelines/authored-film/proposal-director.md` | `proposal` | 3+ visual treatments of the SAME locked story; comps-scoped research only |
-| Script Director | `pipelines/authored-film/script-director.md` | `script` | Adaptation not authorship: beat-mapped sections, verbatim protected lines, full source_ref provenance |
-| Scene Director | `pipelines/authored-film/scene-director.md` | `scene_plan` | Continuity constraints embedded per scene, annex-driven hero moments and styleframes |
-| Asset Director | `pipelines/authored-film/asset-director.md` | `assets` | Reference-driven generation, continuity risks as prompt guards, styleframe-first ordering |
-| Edit Director | `pipelines/authored-film/edit-director.md` | `edit` | Cut on the writer's turns, protected-line audio protection, tone-document pacing |
-| Compose Director | `pipelines/authored-film/compose-director.md` | `compose` | Render + canon pass: locks honored, lines intact, tone verdict |
+| Proposal Director | `pipelines/authored-film/proposal-director.md` | `proposal` | 3+ visual treatments of the SAME locked story; comps-scoped research only; required `runtime_shape.format` + `cast` (v1.1) |
+| Visual Bible Director | `pipelines/authored-film/visual-bible-director.md` | `visual_bible` | Hero portrait (4 candidates) → derived six-view sheet per character, establishing + angles per location, palette, poster with locally rendered title; content-addressed canon, receipt-bound sub-gates, `approved_prompt_block` passports |
+| Script Director | `pipelines/authored-film/script-director.md` | `script` | Adaptation not authorship: beat-mapped sections, verbatim protected lines, full source_ref provenance; trailer format (beat selection, no new dialogue) |
+| Scene Director | `pipelines/authored-film/scene-director.md` | `scene_plan` | Continuity constraints embedded per scene, `character_refs`/`location_ref`/`entity_free`, per-scene `model_endpoint` (Seedance 2.5), `shots[]` with `shot_id`, 12–20 trailer shots |
+| Asset Director | `pipelines/authored-film/asset-director.md` | `assets` | Storyboard frame per shot approved as a batch before video, deterministic `@ImageN` reference packing from the bible, single-endpoint takes with `usage_status`, generation receipts |
+| Edit Director | `pipelines/authored-film/edit-director.md` | `edit` | Cut on the writer's turns, protected-line audio protection, tone-document pacing, poster as title/end card only |
+| Compose Director | `pipelines/authored-film/compose-director.md` | `compose` | Render + canon pass: locks honored, lines intact, tone verdict; video-only outputs |
 
 ### Animation Pipeline (`pipelines/animation/`) — v2.0
 
@@ -336,5 +340,6 @@ Claude Code accesses them via symlinks in `.claude/skills/`.
 | **Design** | `tailwind-design-system`, `web-design-guidelines`, `vercel-react-best-practices`, `vercel-composition-patterns` | `wshobson/agents`, `vercel-labs/agent-skills` |
 | **AI Video (HeyGen)** | `heygen`, `avatar-video`, `create-video`, `faceswap`, `ai-video-gen`, `video-download`, `video-edit`, `video-translate`, `video-understand`, `visual-style` | `heygen-com/skills` |
 | **AI Video/Image/TTS/Avatar (Kling Official)** | `kling-official` - official direct API auth, Classic/Turbo/Omni task protocols, multi-reference Omni syntax, internal Elements/Account Usage helpers, callback notes, TTS voice parameters, avatar/lip-sync face selection, error handling, and cost governance for `kling_official_video` / `kling_official_image` / `kling_tts` / `kling_avatar` / `kling_lip_sync` | Local OpenMontage skill |
-| **AI Video (Premium)** | `seedance-2-0` — preferred premium default (cinematic, trailer, multi-shot, lip-sync, synced audio); accessed via `seedance_video` (fal.ai) or `heygen_video` Avatar Shots | Local OpenMontage skill |
+| **AI Video (Premium)** | `seedance-2-0` — preferred premium default (cinematic, trailer, multi-shot, lip-sync, synced audio); accessed via `seedance_video` (fal.ai) or `heygen_video` Avatar Shots. `seedance-2-5` — reference-to-video contract used by authored-film (`@ImageN` prompt-addressed references, up to 30 images, NO start frame, `X-Fal-No-Retry`) via `seedance_video` with `model_version: "2.5"` | Local OpenMontage skill |
+| **AI Image (Reference Editing)** | `seedream` — Seedream 5 Pro `text_to_image` + `edit` (up to 10 references) on fal.ai via `seedream_image`; the visual-bible sheet generator (hero → derived views, storyboard frames, key art); Flux Kontext single-reference fallback | Local OpenMontage skill |
 | **Infrastructure** | `acestep`, `ltx2`, `playwright-recording` | `digitalsamba/claude-code-video-toolkit` |

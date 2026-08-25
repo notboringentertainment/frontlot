@@ -32,6 +32,8 @@ treatment semantics. Fill them so they stay truthful:
 | `.target_duration_seconds` | May differ per treatment (a teaser cut vs full runtime) — the one story dimension that is legitimately open unless a lock fixes it |
 | `.why_this_works` | Grounded in canon packet fields: cite tone_words, comps ("comp X is tone, comp Y is shape" style entries), annex sequences — not vibes |
 | `grounded_in` | canon_packet lock ids and tone fields, in place of research findings |
+| `runtime_shape.format` | **Required (v1.1).** `trailer` \| `teaser` \| `short`. Emit it explicitly — the schema `default` is annotation-only and the loader fills it only for upgraded 1.0 packets |
+| `cast` | **Required (v1.1).** `{character_ids[], location_ids[]}` — the canon packet entity ids the approved treatment will put on screen. Bounded by `project.yaml.cast_cap`. No defaults, never empty, never a name in place of an id |
 
 ## Process
 
@@ -64,7 +66,31 @@ only counts when it is real: `question_id` matching the question, the writer's
 options in `options_considered`, `selected` naming one of them, and
 `user_approved: true`. An unapproved or malformed ruling releases nothing.
 
-### 4. Standard Production Plan Duties
+### 4. Name the Cast (v1.1, Required)
+
+The `visual_bible` stage that follows renders exactly the entities you list in
+`cast` and nothing else, so the cast is a production decision the writer
+approves at this gate. Rules:
+
+- Ids, not names: every entry is a `canon_packet` character/location `id`.
+- Bounded by `cast_cap` from `project.yaml`. Over cap → choose, with the
+  writer, at this gate; do not hand an over-cap cast downstream.
+- Choose from the treatment: who and where the trailer actually shows. A
+  character who appears only in a line of narration is not cast.
+- `runtime_shape.format` states the deliverable shape (`trailer` for the
+  60–120s promo). Later stages honor it as a format, not a story change.
+- An upgraded 1.0 packet arrives with `migration_status: needs_review` and no
+  cast; you re-emit the packet with cast and format and it is re-approved with
+  a receipt (`kind: artifact_review`) before any paid stage reads it. The
+  gate request's `artifact` is `{artifact_type: "proposal_packet",
+  artifact_version, artifact_digest, migration_status: "reviewed"}` where
+  `artifact_digest` is `lib.canon_enforcement.artifact_review_digest(packet)`
+  (canonical hash minus `migration_status`). Only after that receipt exists do
+  you flip `migration_status` to `ok`; enforcement rejects a completed stage
+  whose artifact still says `needs_review`, and rejects `ok` without the
+  receipt. Any edit after the review changes the digest and needs a new one.
+
+### 5. Standard Production Plan Duties
 
 Delivery promise (explicit motion_required flag), renderer family selected and
 locked, per-item cost breakdown, music plan. Same rigor as the cinematic
@@ -83,10 +109,12 @@ the unavailable one as `rejected_because: "runtime not available"`. The
 runtime locked here is carried through `edit_decisions.render_runtime`
 unchanged — compose may not swap it.
 
-### 5. Gate Presentation
+### 6. Gate Presentation
 
 Checkpoint `awaiting_human`: treatments side by side, tone-compliance note per
-treatment, blocking questions first, cost table. END YOUR TURN.
+treatment, blocking questions first, the proposed cast against the cap, the
+format, cost table (visual bible + storyboards + video, against
+`budget_usd_cap`). END YOUR TURN.
 
 ## Common Pitfalls
 
@@ -97,6 +125,8 @@ treatment, blocking questions first, cost table. END YOUR TURN.
 - Letting web research drift from the comps' craft into story-adjacent content.
 - Deferring blocking questions to the script stage "to keep momentum" — the
   writer decides at the earliest gate, always.
+- Leaving `cast` or `runtime_shape.format` for a default to fill. Nothing
+  fills them; the checkpoint is rejected.
 
 ## Gate Reminder (Binding)
 
