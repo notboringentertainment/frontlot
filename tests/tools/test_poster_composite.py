@@ -21,6 +21,20 @@ def _png(size, color):
     return buf.getvalue()
 
 
+def _receipt(project, path, *, local=False):
+    from lib import receipts
+
+    sha = sha256_file(path)
+    kwargs = {"generator_kind": "local", "local_tool": "title_card", "local_tool_version": "1.0"} if local \
+        else {"model_endpoint": "vendor/image-model", "prompt": f"key art {path.name}"}
+    receipts.record_generation(
+        project, execution_id=f"exec-{path.name}", tool="title_card" if local else "seedream_image",
+        normalized_inputs_hash="a" * 64, output_sha256=sha, cost_usd=0.0,
+        started_at="2026-08-25T00:00:00+00:00", finished_at="2026-08-25T00:00:01+00:00", **kwargs,
+    )
+    return sha
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     project = make_project(tmp_path, monkeypatch, "proj-marquee")
@@ -37,6 +51,9 @@ def env(tmp_path, monkeypatch):
     buf = io.BytesIO()
     card.save(buf, format="PNG")
     title.write_bytes(buf.getvalue())
+    # both inputs are receipted pipeline outputs (the compositor requires it)
+    _receipt(project, key_art)
+    _receipt(project, title, local=True)
     return project, key_art, title
 
 
@@ -82,6 +99,7 @@ def test_layout_and_inputs_change_asset_and_hash(env):
     assert moved.metadata["parameters_hash"] != base.metadata["parameters_hash"]
     other = key_art.with_name("key2.png")
     other.write_bytes(_png((400, 600), (90, 10, 10, 255)))
+    _receipt(project, other)
     swapped = PosterComposite().execute(_inputs(project, other, title))
     assert swapped.data["asset_id"] != base.data["asset_id"]
     assert swapped.metadata["input_asset_ids"][0] == sha256_file(other)
@@ -98,3 +116,26 @@ def test_inputs_outside_project_and_bad_params_rejected(env, tmp_path):
     for bad in ({"title_scale": 0}, {"title_scale": 1.5}, {"title_x": -0.1}, {"title_y": 2}):
         assert not PosterComposite().execute(_inputs(project, key_art, title, **bad)).success
     assert len(list((project / "canon" / "visual" / "objects").iterdir())) == 2  # only the two inputs
+
+
+def test_unreceipted_input_is_rejected(env):
+    """Codex R2 #7: local derivation cannot launder an imported image."""
+    from lib import gates
+    from lib.receipts import generation_receipts_path
+    from lib.state_io import append_jsonl, read_jsonl
+
+    project, key_art, title = env
+    imported = key_art.with_name("imported.png")
+    imported.write_bytes(_png((400, 600), (1, 2, 3, 255)))
+    r = PosterComposite().execute(_inputs(project, imported, title))
+    assert not r.success and "no verified generation receipt" in r.error and "imported.png" in r.error
+    r = PosterComposite().execute(_inputs(project, key_art, imported))
+    assert not r.success and "title_card" in r.error
+    # a forged receipt row (signature of another row) does not admit it either
+    genuine = read_jsonl(generation_receipts_path(project))[0]
+    forged = dict(genuine, receipt_id="forged", output_sha256=sha256_file(imported))
+    append_jsonl(generation_receipts_path(project), forged)
+    r = PosterComposite().execute(_inputs(project, imported, title))
+    assert not r.success and "no verified generation receipt" in r.error
+    assert len(list((project / "canon" / "visual" / "objects").iterdir())) == 3  # nothing composited
+    assert not any((project / ".staging").iterdir()) if (project / ".staging").exists() else True

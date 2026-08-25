@@ -9,6 +9,7 @@ State lives in an orchestrator-owned directory outside any project tree:
     ledger.jsonl      {token_hmac, receipt_id, record_sha256, project_id}
     generation-ledger.jsonl  {receipt_id, output_sha256, project_id, execution_id}
     wal/<hmac>.json   approval write-ahead entries (crash recovery, see lib.receipts)
+    generation-wal/<execution_id>.json  paid-output write-ahead entries (lib.receipts.recover_generation_wal)
 
 Only the HMAC of a token is ever stored; the raw token is returned once to
 the gate handler. Receipts are HMAC-signed over their canonical JSON minus
@@ -34,6 +35,7 @@ import hmac
 import hashlib
 import json
 import os
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -382,3 +384,57 @@ def wal_entries() -> list[dict]:
 
 def wal_delete(token_hmac: str) -> None:
     (wal_dir() / f"{token_hmac}.json").unlink(missing_ok=True)
+
+
+# ---- Generation write-ahead log (crash-safe paid completion) ----
+#
+# A paid tool writes ``generation-wal/<execution_id>.json`` the moment a
+# verified output lands in staging (sha256 + every field a receipt needs).
+# Completion is receipt → ledger → terminal reservation → WAL delete, so a
+# crash anywhere in between is replayed by lib.receipts.recover_generation_wal.
+
+_EXECUTION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def _checked_execution_id(execution_id: str) -> str:
+    if not isinstance(execution_id, str) or not _EXECUTION_ID_RE.match(execution_id):
+        raise ValueError(f"unsafe execution_id for the generation WAL: {execution_id!r}")
+    return execution_id
+
+
+def generation_wal_dir() -> Path:
+    d = gates_dir() / "generation-wal"
+    _ensure_dirs(gates_dir())
+    d.mkdir(exist_ok=True, mode=0o700)
+    return d
+
+
+def generation_wal_write(execution_id: str, entry: dict) -> Path:
+    path = generation_wal_dir() / f"{_checked_execution_id(execution_id)}.json"
+    atomic_write_json(path, entry)
+    return path
+
+
+def generation_wal_read(execution_id: str) -> Optional[dict]:
+    path = generation_wal_dir() / f"{_checked_execution_id(execution_id)}.json"
+    try:
+        entry = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return entry if isinstance(entry, dict) else None
+
+
+def generation_wal_entries() -> list[dict]:
+    out = []
+    for path in sorted(generation_wal_dir().glob("*.json")):
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(entry, dict):
+            out.append(entry)
+    return out
+
+
+def generation_wal_delete(execution_id: str) -> None:
+    (generation_wal_dir() / f"{_checked_execution_id(execution_id)}.json").unlink(missing_ok=True)

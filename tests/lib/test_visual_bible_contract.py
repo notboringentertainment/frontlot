@@ -8,6 +8,7 @@ the receipt path, not a stub of it. Invented names only.
 """
 
 import copy
+import hashlib
 import json
 import os
 
@@ -16,6 +17,7 @@ import pytest
 from lib import receipts
 from lib.canon_enforcement import (
     character_approval_record,
+    poster_approval_record,
     storyboard_batch_record,
 )
 from lib.checkpoint import CheckpointValidationError, write_checkpoint
@@ -26,6 +28,7 @@ from tests.lib.test_authored_film_contract import (  # noqa: F401  (gates_dir au
     PALETTE,
     PIPELINE,
     PROJECT_CONFIG,
+    SHA,
     VIDEO_ENDPOINT,
     approval_policy_decision,
     approve,
@@ -97,10 +100,27 @@ def _ref(image_ref: dict, entity_id: str) -> dict:
     }
 
 
+def _board_ref(project_dir, board: dict) -> dict:
+    from lib.pathsafe import sha256_file
+
+    return {"asset_id": sha256_file(project_dir / board["path"]), "path": board["path"],
+            "role": "storyboard", "shot_id": board["shot_id"]}
+
+
 def shot_asset(project_dir, seed: str, *, asset_class: str, references: list[dict],
                usage_status: str = "selected", endpoint: str = VIDEO_ENDPOINT,
-               shot_id: str = "shot-1", receipt: bool = True) -> dict:
-    image = fake_image(project_dir, seed, subdir="assets/shots", receipt=receipt, role="take")
+               shot_id: str = "shot-1", receipt: bool = True, board: dict | None = None,
+               receipt_references: list[dict] | None = None) -> dict:
+    """A storyboard_frame or shot_visual asset. ``board`` (a storyboard_frame
+    asset) appends the take's storyboard reference, packed last as the video
+    tool does; the generation receipt seals ``receipt_references`` when given,
+    else exactly the manifest's list."""
+    references = list(references)
+    if board is not None:
+        references.append(_board_ref(project_dir, board))
+    sealed = references if receipt_references is None else receipt_references
+    image = fake_image(project_dir, seed, subdir="assets/shots", receipt=receipt, role="take",
+                       references_applied=sealed if asset_class == "shot_visual" else None)
     asset = {
         "id": f"asset-{seed}",
         "type": "image" if asset_class == "storyboard_frame" else "video",
@@ -415,7 +435,7 @@ class TestAssetsV11:
         setup_through_scene_plan(pipeline_dir, project_dir, entity_free=True)
         board = shot_asset(project_dir, "board-1", asset_class="storyboard_frame", references=[])
         approve_storyboards(project_dir, board)
-        take = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=[])
+        take = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=[], board=board)
         write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [board, take]}})
 
     def test_entity_shot_without_references_is_rejected(self, project):
@@ -431,7 +451,7 @@ class TestAssetsV11:
         refs = [hero_ref(bible), establishing_ref(bible)]
         board = shot_asset(project_dir, "board-1", asset_class="storyboard_frame", references=refs)
         approve_storyboards(project_dir, board)
-        take = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=refs)
+        take = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=refs, board=board)
         write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [board, take]}})
 
     def test_reference_must_be_an_approved_bible_image(self, project):
@@ -449,8 +469,8 @@ class TestAssetsV11:
         refs = [hero_ref(bible), establishing_ref(bible)]
         board = shot_asset(project_dir, "board-1", asset_class="storyboard_frame", references=refs)
         approve_storyboards(project_dir, board)
-        good = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=refs)
-        other = shot_asset(project_dir, "take-2", asset_class="shot_visual", references=refs,
+        good = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=refs, board=board)
+        other = shot_asset(project_dir, "take-2", asset_class="shot_visual", references=refs, board=board,
                            endpoint="fake/other-video", usage_status="rejected")
         write(pipeline_dir, "assets",
               {"asset_manifest": {"version": "1.1", "assets": [board, good, other]}})
@@ -491,13 +511,6 @@ class TestAssetsV11:
 # Codex cross-inspection fixes (#6–#14)
 # ---------------------------------------------------------------------------
 
-def _board_ref(project_dir, board: dict) -> dict:
-    from lib.pathsafe import sha256_file
-
-    return {"asset_id": sha256_file(project_dir / board["path"]), "path": board["path"],
-            "role": "storyboard", "shot_id": board["shot_id"]}
-
-
 def _two_shot_plan() -> dict:
     plan = scene_plan_v11()
     plan["scenes"][0]["shots"].append({"shot_id": "shot-2", "description": "Reverse."})
@@ -512,7 +525,7 @@ class TestStoryboardApprovalPrecedesSpend:
         bible = setup_through_scene_plan(pipeline_dir, project_dir)
         refs = [hero_ref(bible), establishing_ref(bible)]
         board = shot_asset(project_dir, "board-1", asset_class="storyboard_frame", references=refs)
-        cand = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=refs,
+        cand = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=refs, board=board,
                           usage_status="candidate")
         with pytest.raises(CheckpointValidationError, match="storyboard_batch approval receipt"):
             write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [board, cand]}})
@@ -528,11 +541,11 @@ class TestStoryboardApprovalPrecedesSpend:
         b1 = shot_asset(project_dir, "board-1", asset_class="storyboard_frame", references=refs, shot_id="shot-1")
         b2 = shot_asset(project_dir, "board-2", asset_class="storyboard_frame", references=refs, shot_id="shot-2")
         approve_storyboards(project_dir, b1, b2)
-        t1 = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=refs, shot_id="shot-1")
-        t2 = shot_asset(project_dir, "take-2", asset_class="shot_visual", references=refs, shot_id="shot-2")
+        t1 = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=refs, shot_id="shot-1", board=b1)
+        t2 = shot_asset(project_dir, "take-2", asset_class="shot_visual", references=refs, shot_id="shot-2", board=b2)
         write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [b1, b2, t1, t2]}})
         b1["shot_id"], b2["shot_id"] = "shot-2", "shot-1"
-        with pytest.raises(CheckpointValidationError, match="storyboard_batch approval receipt"):
+        with pytest.raises(CheckpointValidationError, match="storyboard"):
             write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [b1, b2, t1, t2]}})
 
     def test_storyboard_record_rejects_malformed_entries(self):
@@ -592,6 +605,135 @@ class TestStoryboardReference:
         take["continuity"]["references_applied"] = [_board_ref(project_dir, b1)]
         with pytest.raises(CheckpointValidationError, match="missing approved sheets"):
             write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [b1, b2, take]}})
+
+
+class TestStoryboardFrameProvenInPayload:
+    """Codex R2 #4: the take must cite exactly one storyboard reference (its
+    shot's approved frame) and the manifest's references_applied must equal
+    the list sealed in the generation receipt."""
+
+    def _ready(self, project):
+        pipeline_dir, project_dir = project
+        bible = setup_through_scene_plan(pipeline_dir, project_dir)
+        refs = [hero_ref(bible), establishing_ref(bible)]
+        board = shot_asset(project_dir, "board-1", asset_class="storyboard_frame", references=refs)
+        approve_storyboards(project_dir, board)
+        return pipeline_dir, project_dir, refs, board
+
+    def test_happy_path_take_matches_receipt(self, project):
+        pipeline_dir, project_dir, refs, board = self._ready(project)
+        take = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=refs, board=board)
+        validate_artifact("asset_manifest", {"version": "1.1", "assets": [board, take]})
+        write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [board, take]}})
+
+    def test_take_without_storyboard_reference_is_rejected(self, project):
+        pipeline_dir, project_dir, refs, board = self._ready(project)
+        take = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=refs)
+        with pytest.raises(CheckpointValidationError, match="cites 0 storyboard references"):
+            write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [board, take]}})
+        # a rejected take is not held to it (no spend claim is made on it)
+        take["usage_status"] = "rejected"
+        write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [board, take]}})
+
+    def test_take_citing_a_different_frame_is_rejected(self, project):
+        pipeline_dir, project_dir, refs, board = self._ready(project)
+        other = shot_asset(project_dir, "board-x", asset_class="storyboard_frame", references=refs)
+        take = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=refs, board=other)
+        with pytest.raises(CheckpointValidationError, match="not the storyboard_frame recorded"):
+            write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [board, take]}})
+
+    def test_manifest_references_must_equal_receipt_references(self, project):
+        pipeline_dir, project_dir, refs, board = self._ready(project)
+        # receipt sealed only the hero + frame; the manifest claims the establishing plate too
+        sealed = [refs[0], _board_ref(project_dir, board)]
+        take = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=refs, board=board,
+                          receipt_references=sealed)
+        with pytest.raises(CheckpointValidationError, match="does not equal the reference list sealed"):
+            write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [board, take]}})
+        # order is part of the contract (packing order == @ImageN order)
+        reordered = [refs[1], refs[0], _board_ref(project_dir, board)]
+        take2 = shot_asset(project_dir, "take-2", asset_class="shot_visual", references=refs, board=board,
+                           receipt_references=reordered)
+        with pytest.raises(CheckpointValidationError, match="does not equal the reference list sealed"):
+            write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [board, take2]}})
+
+    def test_receipt_without_sealed_references_is_rejected(self, project):
+        pipeline_dir, project_dir, refs, board = self._ready(project)
+        take = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=refs, board=board,
+                          receipt_references=[])
+        take["continuity"]["references_applied"] = refs + [_board_ref(project_dir, board)]
+        # receipt sealed [] while the manifest lists three: mismatch
+        with pytest.raises(CheckpointValidationError, match="does not equal the reference list sealed"):
+            write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [board, take]}})
+        # a receipt that never recorded references at all (not the governed tool)
+        bare = fake_image(project_dir, "bare-take", subdir="assets/shots", role="take")
+        take["path"] = bare["path"]
+        with pytest.raises(CheckpointValidationError, match="records no references_applied"):
+            write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [board, take]}})
+
+
+class TestProvenanceMatchesReceipt:
+    """Codex R2 #7: every provenance field of an ImageRef is compared against
+    the signed generation receipt, not just receipt id + output hash."""
+
+    def test_prompt_edited_after_generation_is_rejected(self, project):
+        pipeline_dir, project_dir = project
+        setup_through_proposal(pipeline_dir)
+        bible = approved_visual_bible(project_dir, characters=[CHAR], locations=[LOC])
+        bible["characters"][0]["hero"]["provenance"]["prompt"] = "a different portrait"
+        with pytest.raises(CheckpointValidationError, match="provenance.prompt"):
+            write(pipeline_dir, "visual_bible", {"visual_bible": bible})
+
+    def test_model_endpoint_seed_and_kind_must_match(self, project):
+        pipeline_dir, project_dir = project
+        setup_through_proposal(pipeline_dir)
+        bible = approved_visual_bible(project_dir, characters=[CHAR], locations=[LOC])
+        hero = bible["characters"][0]["hero"]["provenance"]
+        for field, value, needle in (("model_endpoint", "vendor/other", "provenance.model_endpoint"),
+                                     ("seed", 99, "provenance.seed")):
+            edited = copy.deepcopy(bible)
+            edited["characters"][0]["hero"]["provenance"][field] = value
+            with pytest.raises(CheckpointValidationError, match=needle):
+                write(pipeline_dir, "visual_bible", {"visual_bible": edited})
+        edited = copy.deepcopy(bible)
+        edited["poster"]["poster_final"]["provenance"] = {
+            "generator_kind": "local", "tool": "poster_composite", "tool_version": "1.0",
+            "parameters_hash": "a" * 64, "input_asset_ids": [], "generation_receipt_id": hero["generation_receipt_id"],
+        }
+        with pytest.raises(CheckpointValidationError, match="no generation receipt|provenance.generator_kind"):
+            write(pipeline_dir, "visual_bible", {"visual_bible": edited})
+
+    def test_local_input_asset_ids_mismatch_is_rejected(self, project):
+        pipeline_dir, project_dir = project
+        setup_through_proposal(pipeline_dir)
+        bible = approved_visual_bible(project_dir, characters=[CHAR], locations=[LOC])
+        key, title = bible["poster"]["key_art"], bible["poster"]["title_card"]
+        data = b"\x89PNG fake poster-final-local"
+        sha = hashlib.sha256(data).hexdigest()
+        (project_dir / "canon" / "visual" / "objects" / f"{sha}.png").write_bytes(data)
+        row = receipts.record_generation(
+            project_dir, execution_id="exec-final", tool="poster_composite", normalized_inputs_hash=SHA,
+            output_sha256=sha, cost_usd=0.0, started_at="2026-08-25T00:00:00+00:00",
+            finished_at="2026-08-25T00:00:01+00:00", generator_kind="local", local_tool="poster_composite",
+            local_tool_version="1.0", parameters_hash="c" * 64, input_asset_ids=[key["asset_id"], title["asset_id"]],
+        )
+        final = {"asset_id": sha, "path": f"canon/visual/objects/{sha}.png", "role": "poster_final",
+                 "provenance": {"generator_kind": "local", "tool": "poster_composite", "tool_version": "1.0",
+                                "parameters_hash": "c" * 64, "input_asset_ids": [key["asset_id"], title["asset_id"]],
+                                "generation_receipt_id": row["receipt_id"]}}
+        bible["poster"]["poster_final"] = final
+        p = bible["poster"]
+        receipt = approve(project_dir, "visual_bible", "poster", poster_approval_record(p, PALETTE), "poster", "poster")
+        p["approval_receipt_id"] = receipt["receipt_id"]
+        write(pipeline_dir, "visual_bible", {"visual_bible": bible})  # happy path
+        stray = fake_image(project_dir, "stray-key", role="key_art")
+        final["provenance"]["input_asset_ids"] = [stray["asset_id"], title["asset_id"]]
+        with pytest.raises(CheckpointValidationError, match="provenance.input_asset_ids"):
+            write(pipeline_dir, "visual_bible", {"visual_bible": bible})
+        final["provenance"]["input_asset_ids"] = [key["asset_id"], title["asset_id"]]
+        final["provenance"]["parameters_hash"] = "d" * 64
+        with pytest.raises(CheckpointValidationError, match="provenance.parameters_hash"):
+            write(pipeline_dir, "visual_bible", {"visual_bible": bible})
 
 
 class TestGenerationReceiptForgery:

@@ -6,7 +6,9 @@ fixed resampling filter and alpha-composited onto the key art at
 ``(title_x, title_y)`` (fractions of the key-art size, centre-anchored). Same
 inputs → same bytes → same content-addressed ``asset_id``.
 
-Both inputs must resolve (strict, no symlinks) inside the project root. The
+Both inputs must resolve (strict, no symlinks) inside the project root and
+each must carry a verified generation receipt (``lib.receipts.find_generation``)
+— an unreceipted image is refused, so compositing cannot launder an import. The
 output goes staging → deterministic PNG re-encode → ``<objects_dir>/<sha256>.png``
 (default ``<project_dir>/canon/visual/objects``). Cost is 0; the receipt is
 written with ``generator_kind="local"``, ``local_tool="poster_composite"``, a
@@ -116,6 +118,7 @@ class PosterComposite(BaseTool):
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         from lib import pathsafe
         from lib.canonical_json import record_sha256
+        from lib.receipts import find_generation
         from lib.state_io import atomic_write_bytes
 
         start = time.time()
@@ -129,6 +132,14 @@ class PosterComposite(BaseTool):
             key_art = pathsafe.resolve_input(str(inputs["key_art_path"]), project_root)
             title_card = pathsafe.resolve_input(str(inputs["title_card_path"]), project_root)
             key_art_sha, title_card_sha = pathsafe.sha256_file(key_art), pathsafe.sha256_file(title_card)
+            # Local derivation launders nothing (Codex R2 #7): both inputs must
+            # already be receipted (signed + ledgered) pipeline outputs.
+            for label, path, sha in (("key_art", key_art, key_art_sha), ("title_card", title_card, title_card_sha)):
+                if find_generation(project_root, sha) is None:
+                    raise ValueError(
+                        f"{label} {path} (sha256 {sha}) has no verified generation receipt — "
+                        f"only receipted pipeline outputs may be composited; an imported image is refused"
+                    )
             objects_dir = (
                 pathsafe.validate_output_parent(Path(inputs["objects_dir"]) / "x", project_root).parent
                 if inputs.get("objects_dir")

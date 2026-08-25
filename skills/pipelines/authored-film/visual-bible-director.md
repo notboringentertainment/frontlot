@@ -213,7 +213,9 @@ approval:
    (`key_art_path` + `title_card_path`, `title_x`/`title_y`/`title_scale`
    layout inputs; PIL alpha composite, deterministic) into a content-addressed
    PNG with a `generator_kind: local` receipt whose `input_asset_ids` are the
-   key art and title card hashes.
+   key art and title card hashes. **Both inputs must already carry verified
+   generation receipts** — the compositor refuses an unreceipted file, so an
+   imported image cannot be laundered into canon by compositing it.
 
 Present key art, title card and final together; the poster receipt hashes all
 three. `compose` consumes `poster_final` only as a title/end-card asset.
@@ -235,6 +237,12 @@ three. `compose` consumes `poster_final` only as a title/end-card asset.
   receipt, not canon.** This is the synthetic-only proof (D3): an image that
   did not come through a wrapped tool call cannot enter the bible, and a
   real-person photo has no path in.
+- **Every provenance field is compared against the signed receipt**, not just
+  the id and hash: `generator_kind`, `model_endpoint`, `prompt`, `seed` (when
+  stated), and for local derivations `tool`, `tool_version`,
+  `parameters_hash`, `input_asset_ids`. Write provenance from the tool's
+  result (`data.prompt`, `seed`, `metadata`), never from memory — a prompt
+  reworded after generation is a violation.
 - Old objects are never deleted.
 
 ### 8. Supersession

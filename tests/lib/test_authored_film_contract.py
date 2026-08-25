@@ -106,9 +106,11 @@ def write_project_config(project_dir, config: dict | None = None, *, bind: bool 
 
 
 def fake_image(project_dir, seed: str, *, subdir: str = "canon/visual/objects",
-               receipt: bool = True, role: str = "hero") -> dict:
+               receipt: bool = True, role: str = "hero",
+               references_applied: list | None = None) -> dict:
     """Write a fake PNG whose sha256 is its asset_id, record a generation
-    receipt for it, and return a schema-valid ImageRef."""
+    receipt for it (prompt + the references the "tool" uploaded), and return
+    a schema-valid ImageRef whose provenance matches that receipt."""
     data = b"\x89PNG fake " + seed.encode("utf-8")
     sha = hashlib.sha256(data).hexdigest()
     rel = f"{subdir}/{sha}.png"
@@ -121,7 +123,8 @@ def fake_image(project_dir, seed: str, *, subdir: str = "canon/visual/objects",
             project_dir, execution_id=f"exec-{seed}", tool="seedream_image",
             normalized_inputs_hash=SHA, output_sha256=sha, cost_usd=0.01,
             started_at="2026-08-25T00:00:00+00:00", finished_at="2026-08-25T00:00:01+00:00",
-            model_endpoint=GENERATOR_DEFAULTS["image_model"],
+            model_endpoint=GENERATOR_DEFAULTS["image_model"], prompt=f"{role} of {seed}",
+            references_applied=references_applied,
         )
         receipt_id = row["receipt_id"]
     return {

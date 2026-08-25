@@ -18,7 +18,10 @@ Trust boundary (inspection #2/#3/#5/#6/#15/#16): the project root comes only
 from ``lib.events.infer_project_dir`` and must be a registered project; the
 budget cap and provider-egress consent come only from the human-approved
 ``project.yaml``; a ``shot_visual`` take needs a signed storyboard receipt
-for its ``shot_id``/frame before reservation; no retries on any paid path; a
+for its ``shot_id``/frame before reservation AND the approved frame file
+(re-hashed) is what gets uploaded, packed last; every local reference is
+bound by hash to a caller-supplied ``reference_manifest`` and the uploaded
+list is sealed into the generation receipt; no retries on any paid path; a
 failure after the provider accepted the job is reconciled ``pending_billing``
 (reserved amount retained) and only ``scripts/reconcile_paid_calls.py`` may
 settle it; every downloaded file must pass ffprobe before it is moved.
@@ -126,6 +129,27 @@ class SeedanceVideo(BaseTool):
             "storyboard_frame_sha256": {
                 "type": "string",
                 "description": "sha256 (asset_id) of the approved storyboard frame for shot_id; required for shot_visual.",
+            },
+            "storyboard_frame_path": {
+                "type": "string",
+                "description": (
+                    "shot_visual only. Project-local path of the approved storyboard frame file. Optional: "
+                    "when omitted the frame is located at <project>/canon/visual/objects/<sha>.png. Either "
+                    "way the file is re-hashed and must equal storyboard_frame_sha256; it is uploaded and "
+                    "packed LAST in image_urls."
+                ),
+            },
+            "reference_manifest": {
+                "type": "array",
+                "items": {"type": "object"},
+                "description": (
+                    "2.5 only; required whenever reference_image_paths is non-empty. One object per local "
+                    "reference, in the same order: {asset_id, path, role, visual_bible_entity_id}. Each "
+                    "path is re-hashed before upload and must equal its asset_id (a mismatch fails "
+                    "preflight). The storyboard frame is NOT listed here — the tool appends it itself. "
+                    "The list the tool actually uploaded is returned in metadata.references_applied and "
+                    "sealed into the generation receipt."
+                ),
             },
             "bitrate_mode": {
                 "type": "string",
@@ -253,6 +277,8 @@ class SeedanceVideo(BaseTool):
 
     def _v25_reference_counts(self, inputs: dict[str, Any]) -> dict[str, int]:
         images = len(inputs.get("reference_image_urls") or []) + len(inputs.get("reference_image_paths") or [])
+        if inputs.get("asset_class") == "shot_visual":
+            images += 1  # the approved storyboard frame is packed last
         videos = len(inputs.get("reference_video_urls") or [])
         audios = len(inputs.get("reference_audio_urls") or [])
         return {"images": images, "videos": videos, "audios": audios, "total": images + videos + audios}
@@ -288,20 +314,33 @@ class SeedanceVideo(BaseTool):
         payload["bitrate_mode"] = str(inputs.get("bitrate_mode", "standard"))
         return payload
 
-    def _v25_storyboard_preflight(self, inputs: dict[str, Any], project_root: Path) -> None:
-        """A shot take must be covered by a signed storyboard approval (inspection #6).
+    STORYBOARD_OBJECTS_SUBDIR = Path("canon") / "visual" / "objects"
+
+    def _v25_storyboard_preflight(self, inputs: dict[str, Any], project_root: Path) -> Path | None:
+        """A shot take must be covered by a signed storyboard approval AND the
+        approved frame must be the file we upload (Codex R2 #4).
 
         The asset director ALWAYS passes ``asset_class="shot_visual"``, ``shot_id``
-        and ``storyboard_frame_sha256`` for shot takes; the receipt check runs
-        before any reservation or network call. ``lib.receipts.require_storyboard_receipt``
-        is imported lazily (track A owns it); its absence fails closed.
+        and ``storyboard_frame_sha256`` for shot takes. Preflight verifies the
+        receipt (``lib.receipts.require_storyboard_receipt``, imported lazily —
+        its absence fails closed), then locates the frame file (``storyboard_frame_path``
+        or ``<project>/canon/visual/objects/<sha>.png``), re-hashes it and
+        requires equality with ``storyboard_frame_sha256``. Returns the resolved
+        frame path (None for non-shot material).
         """
         if inputs.get("asset_class") != "shot_visual":
-            return
+            return None
+        from lib import pathsafe
+
         shot_id = inputs.get("shot_id")
         frame_sha = inputs.get("storyboard_frame_sha256")
         if not shot_id or not frame_sha:
             raise ValueError("shot_visual takes require inputs['shot_id'] and inputs['storyboard_frame_sha256']")
+        if inputs.get("reference_image_urls"):
+            raise ValueError(
+                "shot_visual takes accept only hash-verified local references "
+                "(reference_image_paths + reference_manifest); reference_image_urls cannot be proven"
+            )
         import lib.receipts as receipts_mod
 
         checker = getattr(receipts_mod, "require_storyboard_receipt", None)
@@ -309,14 +348,81 @@ class SeedanceVideo(BaseTool):
             raise RuntimeError("lib.receipts.require_storyboard_receipt is unavailable; cannot verify storyboard approval")
         checker(project_root, str(shot_id), str(frame_sha))
 
-    def _execute_v25(self, inputs: dict[str, Any], api_key: str) -> ToolResult:
+        raw = inputs.get("storyboard_frame_path") or (
+            project_root / self.STORYBOARD_OBJECTS_SUBDIR / f"{frame_sha}.png"
+        )
+        try:
+            frame = pathsafe.resolve_input(raw, project_root)
+        except pathsafe.PathSafetyError as exc:
+            raise ValueError(f"approved storyboard frame for shot {shot_id!r} is not a project-local file: {exc}") from exc
+        actual = pathsafe.sha256_file(frame)
+        if actual != str(frame_sha):
+            raise ValueError(
+                f"storyboard frame file {frame} hashes to {actual} but storyboard_frame_sha256 is "
+                f"{frame_sha} — the approved frame is not the file that would be uploaded"
+            )
+        return frame
+
+    @staticmethod
+    def _v25_reference_manifest(
+        inputs: dict[str, Any], project_root: Path, local_refs: list[Path]
+    ) -> list[dict[str, Any]]:
+        """Bind ``reference_image_paths`` to ``reference_manifest`` objects by hash.
+
+        The manifest must list exactly one object per local reference, in
+        order, with a project-local ``path`` resolving to the same file and an
+        ``asset_id`` equal to the file's sha256. Returned items are the
+        normalized objects recorded as ``references_applied``.
+        """
         from lib import pathsafe
+        from lib.receipts import normalize_reference
+
+        manifest = inputs.get("reference_manifest")
+        if not local_refs:
+            if manifest:
+                raise ValueError("reference_manifest given without reference_image_paths")
+            return []
+        if not isinstance(manifest, list) or len(manifest) != len(local_refs):
+            raise ValueError(
+                f"reference_manifest must list one object per reference_image_paths entry "
+                f"({len(local_refs)}); got {len(manifest) if isinstance(manifest, list) else 'none'}"
+            )
+        applied: list[dict[str, Any]] = []
+        for i, (resolved, item) in enumerate(zip(local_refs, manifest)):
+            ref = normalize_reference(item)
+            if ref.get("role") == "storyboard" or "shot_id" in ref:
+                raise ValueError(
+                    f"reference_manifest[{i}] is a storyboard reference — the tool packs the approved "
+                    f"frame itself from shot_id/storyboard_frame_sha256"
+                )
+            if not ref.get("path") or not ref.get("visual_bible_entity_id"):
+                raise ValueError(f"reference_manifest[{i}] needs asset_id, path, role, visual_bible_entity_id")
+            try:
+                manifest_file = pathsafe.resolve_input(ref["path"], project_root)
+            except pathsafe.PathSafetyError as exc:
+                raise ValueError(f"reference_manifest[{i}].path is not project-local: {exc}") from exc
+            if manifest_file != resolved:
+                raise ValueError(
+                    f"reference_manifest[{i}].path {ref['path']!r} is not reference_image_paths[{i}] ({resolved})"
+                )
+            actual = pathsafe.sha256_file(resolved)
+            if actual != ref["asset_id"]:
+                raise ValueError(
+                    f"reference_manifest[{i}] asset_id {ref['asset_id']} does not match the file "
+                    f"{resolved} (sha256 {actual}) — refusing to upload an unproven reference"
+                )
+            applied.append(ref)
+        return applied
+
+    def _execute_v25(self, inputs: dict[str, Any], api_key: str) -> ToolResult:
+        from lib import pathsafe, receipts
         from lib.state_io import atomic_move
-        from tools.base_tool import normalized_inputs_hash
+        from tools.base_tool import current_execution_id, normalized_inputs_hash
         from tools.cost_tracker import attach_request_id, reconcile_paid_call, reserve_paid_call
         from tools.video import _shared
 
         start = time.time()
+        started_at = _shared.utc_now_iso()
         error = self._v25_preflight_error(inputs)
         if error:
             return ToolResult(success=False, error=error)
@@ -328,13 +434,23 @@ class SeedanceVideo(BaseTool):
             # Prompts always leave the machine; reference images only when consented.
             config.require_egress("fal", "prompts")
             local_refs = [pathsafe.resolve_input(p, project_root) for p in inputs.get("reference_image_paths") or []]
-            if local_refs:
+            frame = self._v25_storyboard_preflight(inputs, project_root)
+            if local_refs or frame is not None:
                 config.require_egress("fal", "prompts", "reference_images")
-            self._v25_storyboard_preflight(inputs, project_root)
+            references_applied = self._v25_reference_manifest(inputs, project_root, local_refs)
             output_path = pathsafe.validate_output_parent(inputs["output_path"], project_root)
             image_urls = list(inputs.get("reference_image_urls") or [])
             for resolved in local_refs:
                 image_urls.append(_shared.upload_image_fal(str(resolved)))
+            if frame is not None:
+                # Packing policy (asset-director.md §2): the storyboard frame is LAST.
+                image_urls.append(_shared.upload_image_fal(str(frame)))
+                references_applied.append({
+                    "asset_id": str(inputs["storyboard_frame_sha256"]),
+                    "path": frame.relative_to(project_root).as_posix(),
+                    "role": "storyboard",
+                    "shot_id": str(inputs["shot_id"]),
+                })
             payload = self._build_v25_payload(inputs, image_urls)
             estimate = self._estimate_cost_v25(inputs)
             reservation_id = reserve_paid_call(
@@ -352,9 +468,11 @@ class SeedanceVideo(BaseTool):
 
         request_id: str | None = None
         request_id_persisted = False
+        completion_started = False
         state = "failed"
         actual_usd = 0.0
         staging: Path | None = None
+        execution_id = current_execution_id() or f"seedance-{reservation_id}"
         try:
             submitted = _shared.fal_queue_submit(self.V25_MODEL_ID, payload, api_key=api_key)
             request_id = str(submitted["request_id"])
@@ -379,11 +497,36 @@ class SeedanceVideo(BaseTool):
                 allowed_mime_prefixes=("video/", "application/octet-stream"),
             )
             probed = _shared.verify_video_file(staging, require_audio=bool(payload["generate_audio"]))
+            # Crash-safe completion (Codex R2 #5): WAL first, then move, then
+            # receipt → ledger → terminal reservation → WAL delete. Anything
+            # interrupted after this point is replayed by resume_check.
+            receipts.stage_generation_wal(
+                project_root,
+                execution_id=execution_id,
+                reservation_id=reservation_id,
+                actual_usd=actual_usd,
+                outputs=[{"staging_path": staging, "output_path": output_path,
+                          "output_sha256": pathsafe.sha256_file(staging)}],
+                receipt={
+                    "tool": self.name,
+                    "generator_kind": "model",
+                    "model_endpoint": self.V25_MODEL_ID,
+                    "provider_request_id": request_id,
+                    "normalized_inputs_hash": normalized_inputs_hash(inputs),
+                    "cost_usd": actual_usd,
+                    "started_at": started_at,
+                    "prompt": inputs["prompt"],
+                    "seed": data.get("seed"),
+                    "references_applied": references_applied,
+                },
+            )
+            completion_started = True
             atomic_move(staging, output_path)
             staging = None
+            receipts.complete_generation(project_root, execution_id, tracker=tracker)
             state = "completed"
         except Exception as exc:
-            if staging is not None:
+            if staging is not None and not completion_started:
                 try:
                     staging.unlink()
                 except FileNotFoundError:
@@ -394,7 +537,9 @@ class SeedanceVideo(BaseTool):
             # may have accepted the job, or attach_request_id itself failed):
             # leave the reservation `submitting` so resume_check halts for the
             # human reconciler instead of marking it failed and inviting a resubmit.
-            if request_id_persisted:
+            # Once the WAL entry exists the reservation belongs to the replay
+            # path (complete_generation / recover_generation_wal), not to us.
+            if request_id_persisted and not completion_started:
                 reconcile_paid_call(project_root, reservation_id, actual_usd, state, tracker)
 
         return ToolResult(
@@ -424,6 +569,9 @@ class SeedanceVideo(BaseTool):
                 "model_endpoint": self.V25_MODEL_ID,
                 "provider_request_id": request_id,
                 "generator_kind": "model",
+                "prompt": inputs["prompt"],
+                "seed": data.get("seed"),
+                "references_applied": references_applied,
             },
         )
 
@@ -599,5 +747,7 @@ class SeedanceVideo(BaseTool):
                 "model_endpoint": model_path,
                 "provider_request_id": queue_data.get("request_id"),
                 "generator_kind": "model",
+                "prompt": inputs["prompt"],
+                "seed": data.get("seed"),
             },
         )

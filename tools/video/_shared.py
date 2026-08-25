@@ -929,6 +929,12 @@ def verify_video_file(path: Path | str, *, require_audio: bool = False) -> dict[
     return info
 
 
+def utc_now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
 class PaidCallContextError(RuntimeError):
     """The paid call cannot be attributed to a registered, approved project."""
 

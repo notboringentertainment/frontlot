@@ -702,7 +702,17 @@ def indeterminate_reservations(project_root: Path) -> list[dict[str, Any]]:
 
 
 def resume_check(project_root: Path) -> None:
-    """Raise IndeterminatePaidCallError if any paid call lacks a terminal outcome."""
+    """Raise if any paid call lacks a terminal outcome.
+
+    Incomplete generation WAL entries (a crash between staging an output and
+    its receipt/ledger/terminal state) are replayed first; one whose output
+    is missing raises ``lib.receipts.GenerationWalError`` and blocks new
+    spend until it is recovered. Then any nonterminal reservation raises
+    IndeterminatePaidCallError.
+    """
+    from lib.receipts import recover_generation_wal
+
+    recover_generation_wal(project_root)
     pending = nonterminal_reservations(project_root)
     if pending:
         raise IndeterminatePaidCallError(pending)

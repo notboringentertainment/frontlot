@@ -212,12 +212,13 @@ class SeedreamImage(BaseTool):
         if not api_key:
             return ToolResult(success=False, error="No fal.ai API key found. " + self.install_instructions)
 
-        from lib import pathsafe
-        from tools.base_tool import normalized_inputs_hash
+        from lib import pathsafe, receipts
+        from tools.base_tool import current_execution_id, normalized_inputs_hash
         from tools.cost_tracker import attach_request_id, reconcile_paid_call, reserve_paid_call
         from tools.video import _shared
 
         start = time.time()
+        started_at = _shared.utc_now_iso()
         error = self._preflight_error(inputs)
         if error:
             return ToolResult(success=False, error=error)
@@ -254,10 +255,12 @@ class SeedreamImage(BaseTool):
 
         request_id: str | None = None
         request_id_persisted = False
+        completion_started = False
         state = "failed"
         actual_usd = 0.0
         asset_ids: list[str] = []
         output_paths: list[str] = []
+        execution_id = current_execution_id() or f"seedream-{reservation_id}"
         try:
             submitted = _shared.fal_queue_submit(model_id, payload, api_key=api_key)
             request_id = str(submitted["request_id"])
@@ -275,30 +278,68 @@ class SeedreamImage(BaseTool):
             images = data.get("images") or []
             if not images:
                 raise RuntimeError("provider returned no images")
-            for item in images:
-                staging = pathsafe.staging_file(project_root, ".img")
-                try:
+            import hashlib
+
+            staged: list[dict[str, Any]] = []
+            try:
+                for item in images:
+                    staging = pathsafe.staging_file(project_root, ".img")
+                    entry = {"staging_path": staging}
+                    staged.append(entry)  # registered first so a failed download is cleaned up
                     _shared.fal_download(
                         item["url"],
                         staging,
                         max_bytes=self.MAX_DOWNLOAD_BYTES,
                         allowed_mime_prefixes=("image/",),
                     )
-                    asset_id, final_path = pathsafe.store_content_addressed(staging, objects_dir, ".png")
-                finally:
-                    try:
-                        staging.unlink()
-                    except FileNotFoundError:
-                        pass
-                asset_ids.append(asset_id)
-                output_paths.append(str(final_path))
+                    # The content address is the hash of the deterministic PNG
+                    # re-encode (what store_content_addressed will produce).
+                    asset_id = hashlib.sha256(pathsafe.reencode_png_bytes(staging)).hexdigest()
+                    entry.update({"output_path": objects_dir / f"{asset_id}.png", "output_sha256": asset_id})
+                # Crash-safe completion (Codex R2 #5): WAL before the moves, then
+                # receipt → ledger → terminal reservation → WAL delete.
+                receipts.stage_generation_wal(
+                    project_root,
+                    execution_id=execution_id,
+                    reservation_id=reservation_id,
+                    actual_usd=actual_usd,
+                    outputs=staged,
+                    receipt={
+                        "tool": self.name,
+                        "generator_kind": "model",
+                        "model_endpoint": model_id,
+                        "provider_request_id": request_id,
+                        "normalized_inputs_hash": normalized_inputs_hash(inputs),
+                        "cost_usd": actual_usd,
+                        "started_at": started_at,
+                        "prompt": inputs["prompt"],
+                        "seed": data.get("seed"),
+                    },
+                )
+                completion_started = True
+                for entry in staged:
+                    asset_id, final_path = pathsafe.store_content_addressed(entry["staging_path"], objects_dir, ".png")
+                    if asset_id != entry["output_sha256"]:
+                        raise RuntimeError(f"content address drift: staged {entry['output_sha256']}, stored {asset_id}")
+                    asset_ids.append(asset_id)
+                    output_paths.append(str(final_path))
+            finally:
+                if not completion_started:
+                    for entry in staged:
+                        try:
+                            Path(entry["staging_path"]).unlink()
+                        except FileNotFoundError:
+                            pass
+            receipts.complete_generation(project_root, execution_id, tracker=tracker)
             state = "completed"
         except Exception as exc:
             return ToolResult(success=False, error=f"Seedream generation failed: {exc}")
         finally:
             # No persisted request id (submit crashed, or attach_request_id
             # itself failed) is indeterminate: leave it `submitting`.
-            if request_id_persisted:
+            # Once the WAL entry exists the reservation belongs to the replay
+            # path (complete_generation / recover_generation_wal), not to us.
+            if request_id_persisted and not completion_started:
                 reconcile_paid_call(project_root, reservation_id, actual_usd, state, tracker)
 
         return ToolResult(
@@ -324,5 +365,7 @@ class SeedreamImage(BaseTool):
                 "model_endpoint": model_id,
                 "provider_request_id": request_id,
                 "generator_kind": "model",
+                "prompt": inputs["prompt"],
+                "seed": data.get("seed"),
             },
         )

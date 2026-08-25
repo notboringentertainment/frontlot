@@ -138,7 +138,8 @@ class ToolResult:
     model: Optional[str] = None
     # Provenance hints consumed by the generation-receipt layer (PLAN §6):
     # model_endpoint, provider_request_id, generator_kind ("model"|"local"),
-    # local_tool, local_tool_version, parameters_hash, input_asset_ids.
+    # local_tool, local_tool_version, parameters_hash, input_asset_ids,
+    # prompt, seed, references_applied (ordered list of uploaded references).
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -215,7 +216,7 @@ def _write_generation_receipts(
     """
     from lib.events import infer_project_dir
     from lib.pathsafe import sha256_file
-    from lib.receipts import record_generation
+    from lib.receipts import find_generation, record_generation
 
     if not getattr(result, "success", False):
         return
@@ -229,9 +230,17 @@ def _write_generation_receipts(
     meta = getattr(result, "metadata", None) or {}
     tool_name = getattr(self, "name", "") or self.__class__.__name__
     inputs_hash = normalized_inputs_hash(inputs)
+    seed = meta.get("seed", getattr(result, "seed", None))
     for output_path in outputs:
         project_dir = infer_project_dir({"output_path": str(output_path)})
         if project_dir is None:
+            continue
+        output_sha = sha256_file(output_path)
+        # Paid tools receipt their own outputs inside execute() through the
+        # generation WAL (receipt → ledger → terminal reservation → WAL
+        # delete); a verified receipt for this very execution is not repeated.
+        existing = find_generation(project_dir, output_sha)
+        if existing is not None and existing.get("execution_id") == execution_id:
             continue
         record_generation(
             project_dir,
@@ -240,7 +249,7 @@ def _write_generation_receipts(
             model_endpoint=meta.get("model_endpoint"),
             provider_request_id=meta.get("provider_request_id"),
             normalized_inputs_hash=inputs_hash,
-            output_sha256=sha256_file(output_path),
+            output_sha256=output_sha,
             cost_usd=float(getattr(result, "cost_usd", 0.0) or 0.0),
             started_at=started_at,
             finished_at=finished_at,
@@ -249,6 +258,9 @@ def _write_generation_receipts(
             local_tool_version=meta.get("local_tool_version"),
             parameters_hash=meta.get("parameters_hash"),
             input_asset_ids=meta.get("input_asset_ids"),
+            prompt=meta.get("prompt"),
+            seed=seed,
+            references_applied=meta.get("references_applied"),
         )
 
 

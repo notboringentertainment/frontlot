@@ -47,11 +47,16 @@ preflight).
 
 The tool enforces this itself: for **every** shot take you call `seedance_video`
 with `asset_class: shot_visual`, `shot_id`, and `storyboard_frame_sha256` (the
-approved frame's asset id). Preflight verifies the signed storyboard receipt
-covering that exact `shot_id → frame` pair before any reservation or upload;
-a missing or mismatched receipt fails the call with no budget consumed. Never
-omit these three inputs on a shot take, and never pass `asset_class` for
-non-shot material.
+approved frame's asset id) — these are **required**, not opt-in. Preflight
+verifies the signed storyboard receipt covering that exact `shot_id → frame`
+pair before any reservation or upload, then **locates the frame file itself**
+(`storyboard_frame_path`, a project-local path, or by hash at
+`canon/visual/objects/<sha>.png`), re-hashes it, and requires the hash to equal
+`storyboard_frame_sha256`. That file is uploaded and packed **last** in
+`image_urls`. A missing receipt, a missing file, or a hash mismatch fails the
+call with no budget consumed. Never omit these inputs on a shot take, and never
+pass `asset_class` for non-shot material. A shot take accepts **only local,
+hash-verified references**: `reference_image_urls` is refused on `shot_visual`.
 
 Seedance 2.5 has no start-frame parameter: the storyboard frame is a
 **reference** (composition, blocking, light), not a first frame. Do not promise
@@ -90,11 +95,24 @@ take's own shot and `asset_id` the content hash of that shot's approved
 `storyboard_frame`. Only entity references count toward entity coverage; a
 storyboard reference never stands in for a missing sheet.
 
-Record every packed reference as an object in
-`continuity.references_applied[]`: `{asset_id, path, role,
-visual_bible_entity_id}` (storyboard frames use the frame's own manifest id and
-no entity id). The EP compares this list against the request payload stored
-with the generation receipt.
+**Caller contract (binding):** pass the entity references twice, in the same
+order — `reference_image_paths` (the files) and `reference_manifest` (one
+object per file: `{asset_id, path, role, visual_bible_entity_id}`). The tool
+resolves each `path` inside the project, re-hashes the file, and refuses the
+call if the hash differs from `asset_id`, if the manifest and the path list
+differ in length or order, or if a storyboard object appears in the manifest
+(the tool appends the frame itself from `shot_id` /
+`storyboard_frame_sha256`). `reference_manifest` is required whenever
+`reference_image_paths` is non-empty, for shot and non-shot calls alike.
+
+The list the tool actually uploaded, in payload order, comes back as
+`result.metadata.references_applied` and is sealed into the signed generation
+receipt. Copy it **verbatim** (same objects, same order — the storyboard entry
+carries the project-relative `path` the tool reports) into the take's
+`continuity.references_applied[]`. Enforcement rejects any non-rejected
+`shot_visual` whose manifest list does not equal the receipt's list, or that
+cites anything other than exactly one storyboard reference (its own shot's
+approved frame).
 
 ### 3. Takes, Endpoints, and Receipts (Single Strategy)
 
@@ -109,10 +127,16 @@ with the generation receipt.
 - Every generated asset — storyboard frame, candidate, selected take — has a
   generation receipt in `generation-receipts.jsonl` whose `output_sha256` is
   the asset's hash. No receipt, no asset; a file that did not come through the
-  wrapped tool cannot be selected.
+  wrapped tool cannot be selected. Receipts also seal the `prompt`, `seed`
+  and (for takes) `references_applied`.
 - Budget: ~3 candidates per shot is the honest planning number; each paid
   call is reserved before submission. An `indeterminate` reservation on resume
   halts the stage for human reconciliation — never resubmit.
+- Crash safety: the paid tools write a generation write-ahead entry the moment
+  a verified output exists, then receipt → ledger → terminal reservation →
+  WAL delete. A crash in between is replayed automatically by the next paid
+  call's `resume_check` (or by `scripts/reconcile_paid_calls.py`); only an
+  output that has gone missing blocks — recover it, never regenerate it.
 - Prefer one longer take per shot over stitching shorter clips; a take that
   drifts identity mid-shot is `rejected`, not trimmed around.
 

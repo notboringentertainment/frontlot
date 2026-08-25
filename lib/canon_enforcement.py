@@ -923,7 +923,8 @@ def _check_image_ref(
             f"{actual} but asset_id is {asset_id} — canon images are "
             f"content-addressed; a swapped file is not the approved image."
         )
-    receipt_id = (ref.get("provenance") or {}).get("generation_receipt_id")
+    provenance = ref.get("provenance") or {}
+    receipt_id = provenance.get("generation_receipt_id")
     matched = [
         r for r in receipts
         if r.get("output_sha256") == asset_id and r.get("receipt_id") == receipt_id
@@ -936,6 +937,53 @@ def _check_image_ref(
             f"image has no receipt and is rejected. Rows without a valid "
             f"signature and generation-ledger entry do not count."
         )
+    _check_provenance_fields(label, provenance, matched[-1])
+
+
+# ImageRef.provenance field -> signed generation-receipt field. Every field the
+# artifact states is compared against the receipt (Codex R2 #7); the receipt
+# is the only source of truth for what generated the image.
+_PROVENANCE_FIELD_MAP = {
+    "generator_kind": "generator_kind",
+    "model_endpoint": "model_endpoint",
+    "prompt": "prompt",
+    "seed": "seed",
+    "provider_request_id": "provider_request_id",
+    "tool": "local_tool",
+    "local_tool": "local_tool",
+    "tool_version": "local_tool_version",
+    "local_tool_version": "local_tool_version",
+    "parameters_hash": "parameters_hash",
+    "input_asset_ids": "input_asset_ids",
+}
+_PROVENANCE_REQUIRED = {
+    "model": ("generator_kind", "model_endpoint", "prompt"),
+    "local": ("generator_kind", "tool", "tool_version", "parameters_hash", "input_asset_ids"),
+}
+
+
+def _check_provenance_fields(label: str, provenance: dict[str, Any], receipt: dict[str, Any]) -> None:
+    kind = provenance.get("generator_kind")
+    required = _PROVENANCE_REQUIRED.get(kind)
+    if required is None:
+        _fail(f"{label} provenance.generator_kind {kind!r} is not 'model' or 'local'.")
+    for field in required:
+        if field not in provenance:
+            _fail(f"{label} provenance lacks {field!r}, which a {kind} generation must state.")
+    for field, receipt_field in _PROVENANCE_FIELD_MAP.items():
+        if field not in provenance:
+            continue
+        stated = provenance[field]
+        recorded = receipt.get(receipt_field)
+        if isinstance(stated, list) or isinstance(recorded, list):
+            stated, recorded = list(stated or []), list(recorded or [])
+        if stated != recorded:
+            _fail(
+                f"{label} provenance.{field} {stated!r} does not match the signed "
+                f"generation receipt {receipt.get('receipt_id')!r} ({receipt_field} "
+                f"{recorded!r}) — provenance is whatever the receipt recorded at "
+                f"generation time; an edited artifact does not change it."
+            )
 
 
 def _iter_image_refs(bible: dict[str, Any]):
@@ -1208,7 +1256,7 @@ def _check_assets_v11(
     scene_plan: dict[str, Any],
     bible: dict[str, Any],
 ) -> None:
-    from lib.receipts import ReceiptError, find_generation, require_storyboard_receipt
+    from lib.receipts import ReceiptError, find_generation, normalize_reference, require_storyboard_receipt
 
     if manifest.get("migration_status") == "needs_review":
         _fail(
@@ -1226,17 +1274,20 @@ def _check_assets_v11(
 
     assets = [a for a in manifest.get("assets", []) if isinstance(a, dict)]
     file_sha: dict[str, str] = {}
+    generation_receipt: dict[str, dict[str, Any]] = {}
     for asset in assets:
         aid = asset.get("id")
         if asset.get("type") in {"image", "video"}:
             sha = _safe_file_sha256(project_dir, str(asset.get("path", "")), f"asset {aid!r}")
             file_sha[aid] = sha
-            if find_generation(project_dir, sha) is None:
+            receipt = find_generation(project_dir, sha)
+            if receipt is None:
                 _fail(
                     f"asset {aid!r} ({asset.get('path')!r}, sha256 {sha}) has no "
                     f"generation receipt that verifies (signed + ledgered) — every "
                     f"image/video must be produced by a receipted pipeline tool."
                 )
+            generation_receipt[aid] = receipt
 
     # Storyboard frames first: one per shot, hashed, so shot_visual references
     # and the per-shot approval can be checked against them.
@@ -1325,6 +1376,36 @@ def _check_assets_v11(
                 f"shot_visual {aid!r} (usage_status {asset.get('usage_status')!r}) "
                 f"was generated without a verified storyboard_batch approval "
                 f"receipt covering shot {shot_id!r} -> {board_sha}: {exc}"
+            )
+        # The approved frame must have been IN the payload (Codex R2 #4): exactly
+        # one storyboard citation (already checked to be this shot's approved
+        # frame), and the manifest's references_applied must equal, in order,
+        # the list the tool sealed into the signed generation receipt.
+        if len(board_refs) != 1:
+            _fail(
+                f"shot_visual {aid!r} (shot {shot_id!r}) cites {len(board_refs)} storyboard "
+                f"references — a take is conditioned on exactly one: its shot's approved frame, "
+                f"packed last by the video tool."
+            )
+        receipt = generation_receipt.get(aid) or {}
+        recorded = receipt.get("references_applied")
+        if not isinstance(recorded, list):
+            _fail(
+                f"shot_visual {aid!r} generation receipt {receipt.get('receipt_id')!r} records no "
+                f"references_applied — takes are generated only through the governed video tool, "
+                f"which seals the uploaded reference list into the receipt."
+            )
+        try:
+            stated = [normalize_reference(r) for r in applied]
+            sealed = [normalize_reference(r) for r in recorded]
+        except ValueError as exc:
+            _fail(f"shot_visual {aid!r} has a malformed reference: {exc}")
+        if stated != sealed:
+            _fail(
+                f"shot_visual {aid!r} continuity.references_applied does not equal the reference "
+                f"list sealed in generation receipt {receipt.get('receipt_id')!r} — manifest "
+                f"{stated} vs receipt {sealed}. Record exactly what the tool reported in "
+                f"metadata.references_applied (same objects, same order)."
             )
         if asset.get("usage_status") == "selected" and asset.get("model_endpoint") != scene.get("model_endpoint"):
             _fail(

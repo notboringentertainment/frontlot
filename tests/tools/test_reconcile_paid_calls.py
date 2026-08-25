@@ -115,7 +115,8 @@ def test_reconciler_settles_completed_failed_running_and_manual(env, capsys):
     submit.assert_not_called()  # never resubmits
     assert all(u.startswith("https://queue.fal.run/") and u.endswith("/status") for u, _ in seen_urls)
     assert all(h["X-Fal-No-Retry"] == "1" for _, h in seen_urls)
-    assert summary == {"completed": [done_video, done_image], "failed": [dead], "running": [running], "manual": [manual]}
+    assert summary == {"completed": [done_video, done_image], "failed": [dead], "running": [running],
+                       "manual": [manual], "replayed": []}
     verify.assert_called_once()
     assert verify.call_args.kwargs == {"require_audio": True}
     res = load_reservations(env)
@@ -136,17 +137,33 @@ def test_reconciler_settles_completed_failed_running_and_manual(env, capsys):
         resume_check(env)
 
 
-def test_reconciler_skips_download_when_output_present_and_needs_key_for_ids(env):
+def test_reconciler_receipts_existing_output_instead_of_skipping_it(env):
+    """Codex R2 #5: an output that survived a crash is verified and receipted, not skipped."""
     video_out = env / "assets" / "video" / "have.mp4"
     video_out.parent.mkdir(parents=True)
     video_out.write_bytes(b"already")
     rid = _reserve(env, usd=1.0, request_id="req-have", state="pending_billing",
-                   hint={"kind": "video", "output_path": str(video_out)})
+                   hint={"kind": "video", "output_path": str(video_out), "generate_audio": True})
+    assert find_generation(env, sha256_file(video_out)) is None
     with patch("requests.get", return_value=_status({"status": "COMPLETED"})), \
-         patch.object(_shared, "fal_download") as dl:
+         patch.object(_shared, "fal_download") as dl, \
+         patch.object(_shared, "verify_video_file", return_value={"video_codec": "h264"}) as verify:
         summary = rc.reconcile_project(env, api_key="test-key")
     dl.assert_not_called()
+    verify.assert_called_once_with(video_out, require_audio=True)
     assert summary["completed"] == [rid] and video_out.read_bytes() == b"already"
+    receipt = find_generation(env, sha256_file(video_out))
+    assert receipt["provider_request_id"] == "req-have" and receipt["execution_id"] == f"reconcile-{rid}"
+    # a second run finds the receipt and does not duplicate it
+    _reserve(env, usd=1.0, request_id="req-have-2", state="pending_billing",
+             hint={"kind": "video", "output_path": str(video_out), "generate_audio": True})
+    with patch("requests.get", return_value=_status({"status": "COMPLETED"})), \
+         patch.object(_shared, "verify_video_file", return_value={"video_codec": "h264"}):
+        rc.reconcile_project(env, api_key="test-key")
+    from lib.receipts import generation_receipts_path
+    from lib.state_io import read_jsonl
+
+    assert len(read_jsonl(generation_receipts_path(env))) == 1
     _reserve(env, request_id="req-needs-key")
     with pytest.raises(rc.ReconcileError, match="FAL_KEY"):
         rc.reconcile_project(env, api_key=None)
@@ -163,3 +180,41 @@ def test_reconciler_requires_registered_verified_project_and_no_tty(env, tmp_pat
     stray.mkdir()
     with pytest.raises(_shared.PaidCallContextError):
         rc.reconcile_project(stray, api_key="k")
+
+
+def test_reconciler_replays_generation_wal_and_reports_missing_output(env, capsys):
+    """An incomplete WAL entry is finished by the reconciler; one whose output
+    vanished is reported as manual instead of being silently dropped."""
+    from lib import gates, receipts
+
+    video_out = env / "assets" / "video" / "staged.mp4"
+    video_out.parent.mkdir(parents=True)
+    video_out.write_bytes(b"paid-bytes")
+    rid = _reserve(env, usd=2.0, request_id="req-wal")
+    receipts.stage_generation_wal(
+        env, execution_id="exec-wal-1", reservation_id=rid, actual_usd=2.0,
+        outputs=[{"staging_path": None, "output_path": video_out, "output_sha256": sha256_file(video_out)}],
+        receipt={"tool": "seedance_video", "generator_kind": "model", "model_endpoint": "bytedance/seedance-2.5/reference-to-video",
+                 "provider_request_id": "req-wal", "normalized_inputs_hash": "h" * 64, "cost_usd": 2.0,
+                 "started_at": "2026-08-25T00:00:00+00:00", "prompt": "p", "seed": 1, "references_applied": []},
+    )
+    gone = env / "assets" / "video" / "gone.mp4"
+    rid2 = _reserve(env, usd=1.0, request_id="req-gone")
+    receipts.stage_generation_wal(
+        env, execution_id="exec-wal-2", reservation_id=rid2, actual_usd=1.0,
+        outputs=[{"staging_path": None, "output_path": gone, "output_sha256": "b" * 64}],
+        receipt={"tool": "seedance_video", "generator_kind": "model", "model_endpoint": "x/y",
+                 "normalized_inputs_hash": "h" * 64, "cost_usd": 1.0, "started_at": "2026-08-25T00:00:00+00:00"},
+    )
+    with patch("requests.get", return_value=_status({"status": "IN_PROGRESS"})):
+        summary = rc.reconcile_project(env, api_key="test-key")
+    out = capsys.readouterr().out
+    assert "[replayed] execution exec-wal-1" in out and "[manual] generation WAL" in out and "gone.mp4" in out
+    assert len(summary["replayed"]) == 1 and "generation-wal" in summary["manual"]
+    receipt = find_generation(env, sha256_file(video_out))
+    assert receipt["execution_id"] == "exec-wal-1" and receipt["references_applied"] == []
+    assert load_reservations(env)[rid]["state"] == "completed"
+    assert load_reservations(env)[rid2]["state"] == "submitting"
+    assert [p.stem for p in gates.generation_wal_dir().glob("*.json")] == ["exec-wal-2"]
+    with pytest.raises(receipts.GenerationWalError):
+        resume_check(env)

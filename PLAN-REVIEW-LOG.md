@@ -242,3 +242,5 @@ Remaining/new findings:
 **Fixing now (4):** cost_tracker loading must not override the receipt-bound cap; `resume_check` at the paid-call boundary before any upload; `gate_approve.py` strict request-id grammar + path confinement; Seedance 2.0 blocked for authored-canon projects (any project with project.yaml) and routed through the same governed context otherwise; plus the cheap uniqueness checks (asset ids global, take ids per shot, scene owns shot).
 **Deferred to the next slice, before the Bloodless pilot (3):** storyboard frame proven in the payload and cited by the take (needs asset-director + tool + enforcement change together); recoverable WAL for output→receipt→ledger→terminal ordering and receipting recovered outputs; compositor input provenance + full provenance-field comparison against the signed receipt.
 ### Final fixes applied: suite 1350 passed, 11 skipped. Presented to Ben for diff approval; nothing committed.
+
+### Deferred slice applied (storyboard-in-payload proof, generation WAL, compositor/provenance comparison): 1350 → 1371 passed. Smoke scaffold added (projects/smoke-visual-bible, scripts/smoke_visual_bible.py).

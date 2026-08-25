@@ -89,3 +89,40 @@ def make_verified_project(
 def project_tracker(project: Path) -> CostTracker:
     """Re-open the tracker the paid tools built over <project>/cost_log.json."""
     return CostTracker(cost_log_path=project / "cost_log.json")
+
+
+def approve_storyboard_batch(project: Path, frames: dict[str, str], slug: str | None = None) -> dict:
+    """Mint + consume a real gate token for a ``storyboard_batch`` receipt
+    covering ``frames`` (shot_id -> sha256) so ``require_storyboard_receipt`` passes."""
+    from lib import gates, receipts
+    from lib.canon_enforcement import storyboard_batch_record
+    from lib.canonical_json import record_sha256
+
+    slug = slug or project.name
+    record = storyboard_batch_record(frames)
+    token = gates.mint_gate_token(
+        project_id=slug, stage="assets", scope="storyboard_batch",
+        record_sha256=record_sha256(record), user_response="approve",
+    )
+    return receipts.record_human_approval(
+        project, slug, "assets", "storyboard_batch", record, token, "storyboard_batch",
+        entity_id="storyboard_batch",
+    )
+
+
+def write_receipted_png(project: Path, rel: str, payload: bytes | None = None, *, tool: str = "seedream_image") -> dict:
+    """Write a PNG under the project and record a verified generation receipt
+    for it; returns ``{"path": <abs Path>, "sha256": ..., "receipt": ...}``."""
+    from lib import receipts
+    from lib.pathsafe import sha256_file
+
+    path = project / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload or tiny_png_bytes())
+    sha = sha256_file(path)
+    row = receipts.record_generation(
+        project, execution_id=f"exec-{rel}", tool=tool, normalized_inputs_hash="a" * 64,
+        output_sha256=sha, cost_usd=0.01, started_at="2026-08-25T00:00:00+00:00",
+        finished_at="2026-08-25T00:00:01+00:00", model_endpoint="vendor/image-model", prompt=f"image {rel}",
+    )
+    return {"path": path, "sha256": sha, "receipt": row}

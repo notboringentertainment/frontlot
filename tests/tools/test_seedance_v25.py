@@ -3,19 +3,28 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 import lib.receipts as receipts_mod
-from lib.receipts import find_generation
+from lib import gates
+from lib.receipts import GenerationWalError, find_generation, generation_receipts_path
 from lib.pathsafe import sha256_file
+from lib.state_io import read_jsonl
 from tools.cost_tracker import IndeterminatePaidCallError, load_reservations, resume_check
 from tools.video import _shared
 from tools.video.seedance_video import SeedanceVideo
 
-from tests.tools._authored_film_helpers import make_verified_project, project_tracker, tiny_png_bytes
+from tests.tools._authored_film_helpers import (
+    approve_storyboard_batch,
+    make_verified_project,
+    project_tracker,
+    tiny_png_bytes,
+    write_receipted_png,
+)
 
 FIXTURE = json.loads(
     (Path(__file__).resolve().parents[1] / "fixtures" / "providers" / "bytedance-seedance-2.5-reference-to-video.json").read_text()
@@ -105,9 +114,16 @@ def test_v25_payload_matches_fixture_shape(env):
     out = Path(result.data["output_path"])
     assert out.read_bytes() == b"fake-mp4"
     assert not any((env / ".staging").iterdir())
-    assert result.metadata == {"model_endpoint": FIXTURE["model_id"], "provider_request_id": "req-25", "generator_kind": "model"}
+    assert result.metadata == {"model_endpoint": FIXTURE["model_id"], "provider_request_id": "req-25",
+                               "generator_kind": "model", "prompt": "@Image1 walks through fog", "seed": 4,
+                               "references_applied": []}
     receipt = find_generation(env, sha256_file(out))
     assert receipt and receipt["provider_request_id"] == "req-25"
+    assert receipt["prompt"] == "@Image1 walks through fog" and receipt["seed"] == 4
+    assert receipt["references_applied"] == []
+    # exactly one receipt row: the in-tool WAL completion and the wrapper agree
+    assert len(read_jsonl(generation_receipts_path(env))) == 1
+    assert not list((Path(os.environ["OPENMONTAGE_GATES_DIR"]) / "generation-wal").glob("*.json"))
     res = list(load_reservations(env).values())[0]
     assert res["state"] == "completed" and res["provider_request_id"] == "req-25"
     assert res["output_hint"] == {"kind": "video", "output_path": str(out), "generate_audio": True}
@@ -229,7 +245,36 @@ def test_reference_path_outside_project_rejected_before_upload(env, tmp_path):
     submit.assert_not_called()
 
 
-# ---- storyboard receipt (inspection #6) ----
+# ---- storyboard receipt + frame proven in the payload (inspection #6, Codex R2 #4) ----
+
+def _png(color):
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _shot_setup(project, *, approve=True):
+    """One approved hero sheet + one approved storyboard frame for shot 'sh-1'.
+    Returns (shot inputs, expected references_applied)."""
+    hero = write_receipted_png(project, "canon/visual/objects/hero.png", _png((1, 2, 3)))
+    frame = write_receipted_png(project, "assets/storyboards/sh-1.png", _png((9, 8, 7)))
+    if approve:
+        approve_storyboard_batch(project, {"sh-1": frame["sha256"]})
+    manifest = [{"asset_id": hero["sha256"], "path": "canon/visual/objects/hero.png", "role": "hero",
+                 "visual_bible_entity_id": "char-01-aaaaaaaa"}]
+    inputs = dict(
+        reference_image_urls=[], reference_image_paths=[str(hero["path"])], reference_manifest=manifest,
+        asset_class="shot_visual", shot_id="sh-1", storyboard_frame_sha256=frame["sha256"],
+        storyboard_frame_path="assets/storyboards/sh-1.png",
+    )
+    expected = manifest + [{"asset_id": frame["sha256"], "path": "assets/storyboards/sh-1.png",
+                            "role": "storyboard", "shot_id": "sh-1"}]
+    return inputs, expected, hero, frame
+
 
 def test_shot_visual_requires_shot_id_and_frame_hash(env, monkeypatch):
     calls = []
@@ -249,28 +294,220 @@ def test_shot_visual_missing_receipt_fails_preflight(env, monkeypatch):
 
     monkeypatch.setattr(receipts_mod, "require_storyboard_receipt", deny, raising=False)
     with patch.object(_shared, "fal_queue_submit") as submit:
-        r = SeedanceVideo().execute(_inputs(env, asset_class="shot_visual", shot_id="s1", storyboard_frame_sha256="ab" * 32))
+        r = SeedanceVideo().execute(_inputs(env, reference_image_urls=[], asset_class="shot_visual", shot_id="s1",
+                                            storyboard_frame_sha256="ab" * 32))
     assert not r.success and "preflight" in r.error and "storyboard approval" in r.error
     submit.assert_not_called()
     assert not (env / "cost-reservations.jsonl").exists()
 
 
-def test_shot_visual_with_receipt_proceeds(env, monkeypatch):
-    seen = []
-    monkeypatch.setattr(receipts_mod, "require_storyboard_receipt", lambda root, sid, sha: seen.append((root, sid, sha)), raising=False)
-    wait, dl, verify = _happy_path()
-    with patch.object(_shared, "fal_queue_submit", return_value={"request_id": "req-sb"}), wait, dl, verify:
-        r = SeedanceVideo().execute(_inputs(env, asset_class="shot_visual", shot_id="s1", storyboard_frame_sha256="cd" * 32))
-    assert r.success, r.error
-    assert seen == [(env.resolve(), "s1", "cd" * 32)]
-
-
 def test_shot_visual_checker_absent_fails_closed(env, monkeypatch):
     monkeypatch.delattr(receipts_mod, "require_storyboard_receipt", raising=False)
     with patch.object(_shared, "fal_queue_submit") as submit:
-        r = SeedanceVideo().execute(_inputs(env, asset_class="shot_visual", shot_id="s1", storyboard_frame_sha256="ab" * 32))
+        r = SeedanceVideo().execute(_inputs(env, reference_image_urls=[], asset_class="shot_visual", shot_id="s1",
+                                            storyboard_frame_sha256="ab" * 32))
     assert not r.success and "require_storyboard_receipt" in r.error
     submit.assert_not_called()
+
+
+def test_shot_visual_happy_path_packs_verified_frame_last_and_seals_references(env):
+    shot, expected, hero, frame = _shot_setup(env)
+    uploads, captured = [], {}
+
+    def fake_upload(path):
+        uploads.append(Path(path))
+        return f"https://v3.fal.media/up{len(uploads)}.png"
+
+    def fake_submit(model_id, payload, *, api_key, timeout_s=30.0):
+        captured["payload"] = payload
+        return {"request_id": "req-sb"}
+
+    wait, dl, verify = _happy_path()
+    with patch.object(_shared, "upload_image_fal", side_effect=fake_upload), \
+         patch.object(_shared, "fal_queue_submit", side_effect=fake_submit), wait, dl, verify:
+        r = SeedanceVideo().execute(_inputs(env, **shot))
+    assert r.success, r.error
+    assert uploads == [hero["path"].resolve(), frame["path"].resolve()]
+    assert captured["payload"]["image_urls"] == ["https://v3.fal.media/up1.png", "https://v3.fal.media/up2.png"]
+    assert r.metadata["references_applied"] == expected
+    receipt = find_generation(env, sha256_file(Path(r.data["output_path"])))
+    assert receipt["references_applied"] == expected
+    assert gates.verify_generation_receipt(receipt)
+
+
+def test_shot_visual_frame_located_by_hash_in_objects_when_path_omitted(env):
+    shot, expected, hero, frame = _shot_setup(env)
+    objects = env / "canon" / "visual" / "objects" / f"{frame['sha256']}.png"
+    objects.write_bytes(frame["path"].read_bytes())
+    shot.pop("storyboard_frame_path")
+    uploads = []
+    wait, dl, verify = _happy_path()
+    with patch.object(_shared, "upload_image_fal", side_effect=lambda p: uploads.append(Path(p)) or "https://v3.fal.media/u.png"), \
+         patch.object(_shared, "fal_queue_submit", return_value={"request_id": "req-obj"}), wait, dl, verify:
+        r = SeedanceVideo().execute(_inputs(env, **shot))
+    assert r.success, r.error
+    assert uploads[-1] == objects.resolve()
+    assert r.metadata["references_applied"][-1]["path"] == f"canon/visual/objects/{frame['sha256']}.png"
+
+
+def test_shot_visual_frame_hash_mismatch_rejected_before_upload(env):
+    shot, _, _, frame = _shot_setup(env)
+    frame["path"].write_bytes(_png((0, 0, 0)))  # approved hash, different bytes
+    with patch.object(_shared, "upload_image_fal") as up, patch.object(_shared, "fal_queue_submit") as submit:
+        r = SeedanceVideo().execute(_inputs(env, **shot))
+    assert not r.success and "preflight" in r.error and "not the file that would be uploaded" in r.error
+    up.assert_not_called()
+    submit.assert_not_called()
+    assert not (env / "cost-reservations.jsonl").exists()
+
+
+def test_shot_visual_missing_frame_file_rejected(env):
+    shot, _, _, frame = _shot_setup(env)
+    frame["path"].unlink()
+    with patch.object(_shared, "upload_image_fal") as up, patch.object(_shared, "fal_queue_submit") as submit:
+        r = SeedanceVideo().execute(_inputs(env, **shot))
+    assert not r.success and "not a project-local file" in r.error
+    up.assert_not_called()
+    submit.assert_not_called()
+
+
+def test_shot_visual_refuses_unprovable_url_references(env):
+    shot, *_ = _shot_setup(env)
+    with patch.object(_shared, "upload_image_fal") as up, patch.object(_shared, "fal_queue_submit") as submit:
+        r = SeedanceVideo().execute(_inputs(env, **dict(shot, reference_image_urls=["https://v3.fal.media/x.png"])))
+    assert not r.success and "reference_image_urls" in r.error
+    up.assert_not_called()
+    submit.assert_not_called()
+
+
+def test_reference_manifest_hash_mismatch_rejected_before_upload(env):
+    shot, _, hero, _ = _shot_setup(env)
+    bad = [dict(shot["reference_manifest"][0], asset_id="e" * 64)]
+    with patch.object(_shared, "upload_image_fal") as up, patch.object(_shared, "fal_queue_submit") as submit:
+        r = SeedanceVideo().execute(_inputs(env, **dict(shot, reference_manifest=bad)))
+        assert not r.success and "does not match the file" in r.error
+        r = SeedanceVideo().execute(_inputs(env, **dict(shot, reference_manifest=[])))
+        assert not r.success and "reference_manifest must list one object" in r.error
+        other = write_receipted_png(env, "canon/visual/objects/other.png", _png((5, 5, 5)))
+        swapped = [dict(shot["reference_manifest"][0], path="canon/visual/objects/other.png", asset_id=other["sha256"])]
+        r = SeedanceVideo().execute(_inputs(env, **dict(shot, reference_manifest=swapped)))
+        assert not r.success and "is not reference_image_paths[0]" in r.error
+        board_in_manifest = [{"asset_id": hero["sha256"], "path": "canon/visual/objects/hero.png",
+                              "role": "storyboard", "shot_id": "sh-1"}]
+        r = SeedanceVideo().execute(_inputs(env, **dict(shot, reference_manifest=board_in_manifest)))
+        assert not r.success and "packs the approved frame itself" in r.error
+    up.assert_not_called()
+    submit.assert_not_called()
+    assert not (env / "cost-reservations.jsonl").exists()
+
+
+def test_non_shot_local_reference_requires_manifest(env):
+    hero = write_receipted_png(env, "canon/visual/objects/h.png")
+    with patch.object(_shared, "upload_image_fal") as up, patch.object(_shared, "fal_queue_submit") as submit:
+        r = SeedanceVideo().execute(_inputs(env, reference_image_urls=[], reference_image_paths=[str(hero["path"])]))
+    assert not r.success and "reference_manifest" in r.error
+    up.assert_not_called()
+    submit.assert_not_called()
+
+
+def test_storyboard_frame_counts_against_image_cap(env):
+    tool = SeedanceVideo()
+    at_cap = {"operation": "reference_to_video", "reference_image_paths": [f"{i}.png" for i in range(30)]}
+    assert tool._v25_preflight_error(at_cap) is None
+    assert "at most 30 reference images" in tool._v25_preflight_error({**at_cap, "asset_class": "shot_visual"})
+
+
+# ---- crash-safe completion: generation WAL (Codex R2 #5) ----
+
+def _wal_entries():
+    return list((Path(os.environ["OPENMONTAGE_GATES_DIR"]) / "generation-wal").glob("*.json"))
+
+
+def test_crash_after_staging_is_replayed_by_resume_check(env):
+    """Crash after the output landed but before receipt/ledger/terminal state:
+    resume_check replays the WAL — receipt + ledger + completed reservation."""
+    wait, dl, verify = _happy_path()
+    with patch.object(_shared, "fal_queue_submit", return_value={"request_id": "req-crash"}), wait, dl, verify, \
+         patch.object(receipts_mod, "complete_generation", side_effect=OSError("power cut")):
+        r = SeedanceVideo().execute(_inputs(env))
+    assert not r.success and "power cut" in r.error
+    out = env / "assets" / "video" / "shot.mp4"
+    assert out.read_bytes() == b"fake-mp4"  # the paid output survived
+    assert find_generation(env, sha256_file(out)) is None
+    res = list(load_reservations(env).values())[0]
+    assert res["state"] == "submitting" and res["provider_request_id"] == "req-crash"
+    assert len(_wal_entries()) == 1
+
+    resume_check(env)  # replays instead of blocking
+    receipt = find_generation(env, sha256_file(out))
+    assert receipt and receipt["provider_request_id"] == "req-crash" and receipt["prompt"] == "@Image1 walks through fog"
+    assert gates.verify_generation_receipt(receipt)
+    res = list(load_reservations(env).values())[0]
+    assert res["state"] == "completed" and res["actual_usd"] == pytest.approx(res["reserved_usd"])
+    assert project_tracker(env).budget_spent_usd == pytest.approx(res["reserved_usd"], abs=1e-4)
+    assert _wal_entries() == []
+    resume_check(env)  # nothing left, nothing raised
+
+
+def test_crash_after_receipt_replay_is_idempotent(env):
+    """Receipt + ledger + terminal state written, WAL delete lost: the replay
+    adds no second receipt, no second ledger row, no re-reconcile."""
+    wait, dl, verify = _happy_path()
+    with patch.object(_shared, "fal_queue_submit", return_value={"request_id": "req-half"}), wait, dl, verify, \
+         patch.object(gates, "generation_wal_delete", side_effect=OSError("disk yanked")):
+        r = SeedanceVideo().execute(_inputs(env))
+    assert not r.success and "disk yanked" in r.error
+    out = env / "assets" / "video" / "shot.mp4"
+    first = find_generation(env, sha256_file(out))
+    assert first is not None
+    assert list(load_reservations(env).values())[0]["state"] == "completed"
+    assert len(_wal_entries()) == 1
+    spent = project_tracker(env).budget_spent_usd
+
+    replayed = receipts_mod.recover_generation_wal(env)
+    assert [r["receipt_id"] for r in replayed] == [first["receipt_id"]]
+    assert _wal_entries() == []
+    assert len(read_jsonl(generation_receipts_path(env))) == 1
+    ledger = [row for row in read_jsonl(gates.generation_ledger_path()) if row.get("receipt_id") == first["receipt_id"]]
+    assert len(ledger) == 1
+    assert project_tracker(env).budget_spent_usd == pytest.approx(spent)
+    resume_check(env)
+
+
+def test_missing_staged_output_blocks_resume_check_and_new_paid_calls(env):
+    wait, dl, verify = _happy_path()
+    with patch.object(_shared, "fal_queue_submit", return_value={"request_id": "req-lost"}), wait, dl, verify, \
+         patch.object(receipts_mod, "complete_generation", side_effect=OSError("power cut")):
+        assert not SeedanceVideo().execute(_inputs(env)).success
+    (env / "assets" / "video" / "shot.mp4").unlink()
+    with pytest.raises(GenerationWalError, match="missing"):
+        resume_check(env)
+    assert len(_wal_entries()) == 1
+    with patch.object(_shared, "fal_queue_submit") as submit, patch.object(_shared, "upload_image_fal") as up:
+        r = SeedanceVideo().execute(_inputs(env))
+    assert not r.success and "missing" in r.error
+    submit.assert_not_called()
+    up.assert_not_called()
+    assert len(load_reservations(env)) == 1
+
+
+def test_crash_before_move_replays_from_staging(env):
+    """WAL written, process died before atomic_move: the staged file is moved
+    into place by the replay (hash-checked) and receipted."""
+    from lib.state_io import atomic_move
+
+    wait, dl, verify = _happy_path()
+    with patch.object(_shared, "fal_queue_submit", return_value={"request_id": "req-stage"}), wait, dl, verify, \
+         patch("tools.video.seedance_video.atomic_move", side_effect=OSError("died"), create=True), \
+         patch("lib.state_io.atomic_move", side_effect=OSError("died")):
+        assert not SeedanceVideo().execute(_inputs(env)).success
+    out = env / "assets" / "video" / "shot.mp4"
+    assert not out.exists() and any((env / ".staging").iterdir())
+    resume_check(env)
+    assert out.read_bytes() == b"fake-mp4"
+    assert find_generation(env, sha256_file(out))["provider_request_id"] == "req-stage"
+    assert not any((env / ".staging").iterdir())
+    assert _wal_entries() == []
 
 
 # ---- reservation states (inspection #3/#4/#5) ----

@@ -15,6 +15,12 @@ For every reservation that is not ``completed``/``failed``:
 - ``submitting`` with no request id: cannot be resolved by polling; the script
   prints what the human must check in the FAL dashboard and leaves it.
 
+Before polling, incomplete generation-WAL entries (an output staged but not
+receipted / ledgered / reconciled because of a crash) are replayed
+(``lib.receipts.recover_generation_wal``); an entry whose output is missing
+is reported for manual recovery. An existing output is verified and
+receipted rather than skipped.
+
 Read-only towards the provider: this script NEVER resubmits and never mints a
 gate token or approval. The project must be registered under PROJECTS_DIR with
 a human-approved ``project.yaml`` (that is where the budget tracker comes from).
@@ -87,6 +93,7 @@ def recover_output(project_root: Path, reservation: dict[str, Any], *, api_key: 
     Returns the recovered paths (empty when nothing was needed).
     """
     from lib import pathsafe
+    from lib.receipts import find_generation
     from lib.state_io import atomic_move
     from tools.video import _shared
 
@@ -97,6 +104,13 @@ def recover_output(project_root: Path, reservation: dict[str, Any], *, api_key: 
     if kind == "video" and hint.get("output_path"):
         output_path = pathsafe.validate_output_parent(hint["output_path"], project_root)
         if output_path.exists():
+            # An output that survived the crash is verified and receipted, never
+            # skipped: a paid file without a receipt is inadmissible forever.
+            _shared.verify_video_file(output_path, require_audio=bool(hint.get("generate_audio", False)))
+            sha = pathsafe.sha256_file(output_path)
+            if find_generation(project_root, sha) is None:
+                _record_receipt(project_root, reservation, sha)
+                recovered.append(str(output_path))
             return recovered
         data = _shared.fal_queue_wait(model_id, request_id, api_key=api_key, deadline_s=60.0, poll_s=1.0)
         staging = pathsafe.staging_file(project_root, ".mp4")
@@ -140,11 +154,28 @@ def reconcile_project(project_root: Path, *, api_key: str | None, out=None) -> d
     from tools.cost_tracker import nonterminal_reservations, reconcile_paid_call
     from tools.video import _shared
 
+    from lib.receipts import GenerationWalError, recover_generation_wal
+
     out = out or sys.stdout
     project_root, tracker, _config = _shared.paid_call_context(
         {"project_dir": str(project_root)}, check_resume=False  # reconciling IS the resume path
     )
-    summary: dict[str, list[str]] = {"completed": [], "failed": [], "running": [], "manual": []}
+    summary: dict[str, list[str]] = {"completed": [], "failed": [], "running": [], "manual": [], "replayed": []}
+    # Generation WAL first: a crash between a staged output and its receipt /
+    # ledger / terminal reservation is finished here (idempotent). An entry
+    # whose output is missing is reported and left for the human.
+    def _report_replayed(receipts: list[dict[str, Any]]) -> None:
+        for receipt in receipts:
+            summary["replayed"].append(receipt["receipt_id"])
+            print(f"[replayed] execution {receipt['execution_id']}: receipt {receipt['receipt_id']} "
+                  f"for output {receipt['output_sha256']} completed from the generation WAL", file=out)
+
+    try:
+        _report_replayed(recover_generation_wal(project_root))
+    except GenerationWalError as exc:
+        _report_replayed(exc.recovered)
+        summary["manual"].append("generation-wal")
+        print(f"[manual] generation WAL: {exc}", file=out)
     pending = nonterminal_reservations(project_root)
     if not pending:
         print("nothing to reconcile: every reservation is terminal", file=out)
