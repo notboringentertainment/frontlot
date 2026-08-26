@@ -371,7 +371,11 @@ def verify_generation_receipt(receipt: dict) -> bool:
 # receipts, same digests, same order) and fail closed on the first
 # divergence.
 
-CHAIN_STREAMS = ("approval", "generation")
+CHAIN_STREAMS = ("approval", "generation", "bootstrap")
+# ``bootstrap`` holds at most one row per project: the signed ``chain_bootstrap``
+# marker scripts/chain_bootstrap.py writes after adopting pre-chain receipts.
+# It has no project-local projection, so it is never verified by
+# ``verify_local_projection``.
 
 
 class ReceiptChainError(GateError):
@@ -499,9 +503,15 @@ def verify_local_projection(project_id: str, stream: str, local_receipts: list[d
         if i >= len(chain):
             row = local_receipts[i]
             rid = row.get("receipt_id") if isinstance(row, dict) else None
+            hint = (
+                f" — pre-chain receipts? run scripts/chain_bootstrap.py --project {project_id} "
+                f"from a terminal to adopt them"
+                if not chain
+                else " — extra or forged row"
+            )
             raise ReceiptChainError(
                 f"{label}: local receipt file row {i} ({rid!r}) is not in the signed chain "
-                f"(chain has {len(chain)} receipts) — extra or forged row"
+                f"(chain has {len(chain)} receipts){hint}"
             )
         expected = chain[i]
         if i >= len(local_receipts):
