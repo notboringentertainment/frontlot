@@ -14,7 +14,7 @@ Read `pipelines/authored-film/canon-guard` first.
 |-------|----------|---------|
 | Schema | `schemas/artifacts/scene_plan.schema.json` | Artifact validation |
 | Prior artifacts | `script`, `canon_packet`, `visual_bible` | Timing + continuity truth + the approved sheets scenes must bind to |
-| Config | `projects/<slug>/project.yaml` | Default `model_endpoint` (Seedance 2.5) |
+| Config | `projects/<slug>/project.yaml` | Default `model_endpoint` (Kling o3 pro reference-to-video) |
 | Optional | `proposal_packet` | Approved treatment's shot vocabulary |
 
 ## Process
@@ -60,9 +60,12 @@ the receipt-bound `default_video_endpoint` unless the scene carries
 plan itself.
 
 **Model policy is per scene (D4).** `scene.model_endpoint` defaults to the
-project's Seedance 2.5 endpoint. `model_override {endpoint, reason}` is
+project's Kling o3 pro reference-to-video endpoint. `model_override {endpoint, reason}` is
 allowed only with a real reason (a still-frame insert, a documented failure of
-the default on this kind of shot). Shots carry no model field; every shot and
+the default on this kind of shot). Seedance 2.5 is a valid override **only**
+for scenes marked `entity_free: true`: on FAL it rejects any human face as a
+reference (proven 2026-08-25), so a scene with `character_refs` must stay on
+the default. Shots carry no model field; every shot and
 every selected take in a scene uses the scene's endpoint. Never mix endpoints
 within a scene.
 

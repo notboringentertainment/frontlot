@@ -26,7 +26,8 @@ Written from a live end-to-end shakedown run (2026-08-08, project
    agent presents it, you approve it, and that approval is bound to the
    file's sha256 — change a number and it must be approved again.
 5. **`FAL_KEY` in `.env`** for Seedream (sheets, storyboards, key art) and
-   Seedance 2.5 (video). A licensed font file for the title card.
+   Kling o3 pro reference-to-video (video; Seedance 2.5 only for entity-free
+   scenes — it rejects human-face references). A licensed font file for the title card.
 
 ## The one start command
 
@@ -80,7 +81,7 @@ tension (never silently resolved).
 
 **Gate 5 — Scene plan.** Scenes with your continuity facts embedded in the
 descriptions, each naming which sheets it binds to (`character_refs`,
-`location_ref`), the video model per scene (Seedance 2.5 unless a scene says
+`location_ref`), the video model per scene (Kling o3 pro unless a scene says
 otherwise with a reason), and the shot list — for a trailer, 12–20 shots, one
 action each.
 

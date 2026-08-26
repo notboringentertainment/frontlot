@@ -295,7 +295,7 @@ present, poster approved.
   `text_to_image` and some from `edit`, or a hero from one model family and a
   sheet from another, or a LoRA sneaking in "for the hard view." One anchor,
   one strategy, per entity.
-- **Generating video before sheets.** No `seedance_video` call exists in this
+- **Generating video before sheets.** No `kling_reference_video` (or `seedance_video`) call exists in this
   stage. If a storyboard or motion test feels necessary to judge a design, that
   is the `assets` stage's storyboard sub-step, after this stage completes.
 - **Self-approving.** Writing `status: approved`, inventing a receipt id,

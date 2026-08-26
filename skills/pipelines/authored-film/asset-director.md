@@ -15,8 +15,8 @@ Read `pipelines/authored-film/canon-guard` first.
 | Schema | `schemas/artifacts/asset_manifest.schema.json` | Artifact validation |
 | Prior artifacts | `scene_plan` (v1.1: `shots[]`, refs, `model_endpoint`), `canon_packet`, `visual_bible` | What to make + continuity truth + approved sheets |
 | Config | `projects/<slug>/project.yaml` | Budget cap, run lease, egress (already approved before this stage) |
-| Layer 3 | `.agents/skills/seedance-2-5`, `.agents/skills/seedream` | Provider prompting guidance |
-| Tools | `seedream_image` (storyboard frames), `seedance_video` (`model_version: 2.5`, reference-to-video), music tools, TTS, subtitle_gen, audio_enhance | Capabilities |
+| Layer 3 | `.agents/skills/kling-o3-reference`, `.agents/skills/seedream` (and `.agents/skills/seedance-2-5` only for entity-free scenes) | Provider prompting guidance |
+| Tools | `seedream_image` (storyboard frames), `kling_reference_video` (default: Kling o3 pro reference-to-video, faces allowed), `seedance_video` (`model_version: 2.5`, entity-free scenes only via `model_override`), music tools, TTS, subtitle_gen, audio_enhance | Capabilities |
 
 ## Process
 
@@ -38,14 +38,14 @@ The approval record is the ordered map `{"storyboard_frames": {shot_id:
 sha256}}` (`lib.canon_enforcement.storyboard_batch_record`), so the receipt
 binds each frame to its shot — frames cannot be swapped between shots after
 approval, and a redone frame needs a new batch receipt.
-**No `seedance_video` call may run until the batch receipt exists.** Approval
+**No `kling_reference_video` (or `seedance_video`) call may run until the batch receipt exists.** Approval
 precedes *spend*, not selection: enforcement rejects any `shot_visual` that is
 `candidate` or `selected` (anything not `rejected`) whose `shot_id → frame
 hash` is not covered by a verified `storyboard_batch` receipt
 (`lib.receipts.require_storyboard_receipt`, which the video tool also calls in
 preflight).
 
-The tool enforces this itself: for **every** shot take you call `seedance_video`
+The tool enforces this itself: for **every** shot take you call `kling_reference_video`
 with `asset_class: shot_visual`, `shot_id`, and `storyboard_frame_sha256` (the
 approved frame's asset id) — these are **required**, not opt-in. Preflight
 verifies the signed storyboard receipt covering that exact `shot_id → frame`
@@ -58,22 +58,32 @@ call with no budget consumed. Never omit these inputs on a shot take, and never
 pass `asset_class` for non-shot material. A shot take accepts **only local,
 hash-verified references**: `reference_image_urls` is refused on `shot_visual`.
 
-Seedance 2.5 has no start-frame parameter: the storyboard frame is a
-**reference** (composition, blocking, light), not a first frame. Do not promise
-the writer the video will begin on it.
+The storyboard frame is a **reference** (composition, blocking, light), not a
+first frame: Kling o3 packs it as the last `@ImageN`, and Seedance 2.5 has no
+start-frame parameter at all. Do not promise the writer the video will begin on
+it. (Kling's optional `start_image_url` is refused on `shot_visual` takes.)
+
+**Why Kling, not Seedance (D4 revised 2026-08-25).** On FAL, Seedance 2.5
+rejects *any* recognisable human face as a reference (photoreal or drawn —
+`content_policy_violation`, see `PLAN-REVIEW-LOG.md` → "Probes"). Kling o3
+pro reference-to-video accepted the same pipeline-generated portraits and held
+identity. Seedance stays available only for scenes marked `entity_free: true`
+(no character refs) through a scene-level `model_override` with a reason.
 
 ### 2. Reference Packing (Deterministic, Per Shot)
 
 For each shot, pack references in this exact order, each becoming `@ImageN` in
-the Seedance 2.5 prompt (N in packing order):
+the Kling o3 prompt (N in packing order; the `elements` form groups the same
+manifest into `@ElementN` per entity — hero → frontal, other views → references):
 
 1. For every id in the scene's `character_refs`, in order: that character's
    approved **hero**, then its **wardrobe** view.
 2. For `location_ref`: the location's approved **establishing** plate.
 3. The shot's approved **storyboard frame**, last.
 
-Preflight counts the pack against the verified endpoint cap (`seedance-2.5
-reference-to-video`: 30 images) and **fails** if over — it never truncates
+Preflight counts the pack against the verified endpoint cap (Kling o3: 4 total
+when a video reference is present; otherwise a conservative 9 until the
+no-video cap is confirmed live; Seedance 2.5: 30 images) and **fails** if over — it never truncates
 silently. If a shot legitimately cannot fit, that is a scene-plan problem
 (too many entities in one shot), raised at the gate, not solved by dropping a
 reference.
@@ -119,7 +129,7 @@ approved frame).
 - Every video asset is a `shot_visual`: `shot_id`, `take_id`, `usage_status`
   (`candidate` | `selected` | `rejected`), `model_endpoint`, and
   `continuity.references_applied`.
-- `model_endpoint` is the **scene's** endpoint (default Seedance 2.5, or the
+- `model_endpoint` is the **scene's** endpoint (default Kling o3 pro reference-to-video, or the
   scene's `model_override.endpoint` with its reason). Candidates may be
   generated on it only. Every `selected` take in a scene shares the scene
   endpoint — enforcement rejects a plan where selected takes in one scene use
@@ -194,7 +204,8 @@ per-asset cost and receipt ids, spend against cap. END YOUR TURN.
   storyboard frame without the sheets as references.
 - Mixing endpoints inside a scene, or choosing a model per shot.
 - Truncating the reference pack to fit a cap instead of failing preflight.
-- Treating the storyboard frame as a start frame (Seedance 2.5 has none).
+- Treating the storyboard frame as a start frame (Kling packs it as a reference; Seedance 2.5 has no start frame).
+- Sending a shot with character refs to Seedance 2.5 (it will be rejected for faces; use the default Kling endpoint).
 - Letting a provider's house style override the treatment (the playbook and
   tone document outrank a model's defaults — regenerate or switch providers).
 - Generating hero moments with the same effort as connective scenes — heroes

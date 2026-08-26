@@ -1,7 +1,7 @@
 ---
 name: seedance-2-5
 description: |
-  Generate reference-conditioned video with ByteDance Seedance 2.5 on fal.ai — the default video endpoint for the authored-film pipeline. Use when: (1) every shot must hold identity against approved character/location sheets, (2) references must be addressed in the prompt as @Image1…@ImageN (up to 30 images), (3) a storyboard frame should steer composition — as a reference, since 2.5 has NO start-frame parameter, (4) a scene's `model_endpoint` is Seedance 2.5 (the project default). Accessible via fal.ai only (`seedance_video` with `model_version: "2.5"`, FAL_KEY). For Seedance 2.0's broader gateway menu and the general prompting methodology, read `seedance-2-0`; this skill covers only what differs.
+  Generate reference-conditioned video with ByteDance Seedance 2.5 on fal.ai — NO LONGER the authored-film default (D4 revised 2026-08-25: on FAL it rejects any human face as a reference, photoreal or drawn; the default is `kling-o3-reference`). Use ONLY for scenes marked entity_free (no character refs) through a scene-level model_override with a reason. Use when: (1) every shot must hold identity against approved character/location sheets, (2) references must be addressed in the prompt as @Image1…@ImageN (up to 30 images), (3) a storyboard frame should steer composition — as a reference, since 2.5 has NO start-frame parameter, (4) a scene's `model_endpoint` is Seedance 2.5 (the project default). Accessible via fal.ai only (`seedance_video` with `model_version: "2.5"`, FAL_KEY). For Seedance 2.0's broader gateway menu and the general prompting methodology, read `seedance-2-0`; this skill covers only what differs.
 allowed-tools: Bash, Read, Write
 metadata:
   openclaw:

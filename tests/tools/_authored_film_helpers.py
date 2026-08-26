@@ -44,7 +44,7 @@ PROJECT_CONFIG = {
     "budget_usd_cap": 50.0,
     "wall_time_minutes": 30,
     "cast_cap": {"characters": 2, "locations": 2},
-    "default_video_endpoint": "bytedance/seedance-2.5/reference-to-video",
+    "default_video_endpoint": "fal-ai/kling-video/o3/pro/reference-to-video",
     "provider_egress": {"provider": "fal", "content_classes": ["prompts", "reference_images"]},
 }
 

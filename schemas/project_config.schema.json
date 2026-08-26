@@ -9,7 +9,7 @@
     "version": { "type": "string", "const": "1.0" },
     "budget_usd_cap": { "type": "number", "minimum": 0, "description": "Hard cap on paid calls for the run; a reservation that would exceed it fails preflight" },
     "wall_time_minutes": { "type": "integer", "minimum": 1 },
-    "default_video_endpoint": { "type": "string", "minLength": 1, "description": "D4: the approved video model for every scene (e.g. bytedance/seedance-2.5/reference-to-video). A scene using another endpoint must carry model_override with a reason." },
+    "default_video_endpoint": { "type": "string", "minLength": 1, "description": "D4: the approved video model for every scene (default fal-ai/kling-video/o3/pro/reference-to-video — Kling o3 pro accepts human-face references; bytedance/seedance-2.5/reference-to-video rejects any human face on FAL and is only for entity-free scenes via model_override). A scene using another endpoint must carry model_override with a reason." },
     "cast_cap": {
       "type": "object",
       "required": ["characters", "locations"],

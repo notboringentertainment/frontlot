@@ -19,7 +19,7 @@ Read `pipelines/authored-film/canon-guard` first. It binds every stage.
 | Schemas | All artifact schemas incl. `canon_packet` | Validation |
 | Input | The writer's development assets (paths supplied by the writer) | The story |
 | Project config | `projects/<slug>/project.yaml` (`schemas/project_config.schema.json`) | `budget_usd_cap`, `wall_time_minutes`, `cast_cap`, `provider_egress` — overrides the manifest defaults |
-| Layer 3 | `.agents/skills/seedream`, `.agents/skills/seedance-2-5` | Provider prompting guidance for the visual bible and shot generation |
+| Layer 3 | `.agents/skills/seedream`, `.agents/skills/kling-o3-reference` (`.agents/skills/seedance-2-5` for entity-free scenes only) | Provider prompting guidance for the visual bible and shot generation |
 
 ## Intake
 
@@ -140,8 +140,9 @@ CHECK: Continuity binding
   - character_refs / location_ref resolve to approved visual_bible entities;
     empty refs only on scenes marked entity_free: true.
 CHECK: Model policy (D4)
-  - Every scene carries model_endpoint (default Seedance 2.5); any
-    model_override has a reason. Shots carry no model field.
+  - Every scene carries model_endpoint (default Kling o3 pro reference-to-video); any
+    model_override has a reason. A Seedance 2.5 override is valid only on an
+    entity_free scene (Seedance rejects human-face references on FAL). Shots carry no model field.
 CHECK: Trailer format
   - 12–20 shots total, one action per shot, shot_id on every shot.
 CHECK: Annex coverage

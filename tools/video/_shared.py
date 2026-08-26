@@ -1032,3 +1032,106 @@ def paid_call_context(inputs: dict[str, Any], *, check_resume: bool = True) -> t
         cost_log_path=project_root / "cost_log.json",
     )
     return project_root, tracker, config
+
+
+# ---- governed reference packing (shared by seedance_video 2.5 and kling_reference_video) ----
+
+STORYBOARD_OBJECTS_SUBDIR = Path("canon") / "visual" / "objects"
+
+
+def storyboard_preflight(inputs: dict[str, Any], project_root: Path, *, model_label: str) -> Path | None:
+    """A shot take must be covered by a signed storyboard approval AND the
+    approved frame must be the file we upload (Codex R2 #4).
+
+    The asset director ALWAYS passes ``asset_class="shot_visual"``, ``shot_id``
+    and ``storyboard_frame_sha256`` for shot takes. Preflight verifies the
+    receipt (``lib.receipts.require_storyboard_receipt``, imported lazily —
+    its absence fails closed), then locates the frame file (``storyboard_frame_path``
+    or ``<project>/canon/visual/objects/<sha>.png``), re-hashes it and
+    requires equality with ``storyboard_frame_sha256``. Returns the resolved
+    frame path (None for non-shot material).
+    """
+    if inputs.get("asset_class") != "shot_visual":
+        return None
+    from lib import pathsafe
+
+    shot_id = inputs.get("shot_id")
+    frame_sha = inputs.get("storyboard_frame_sha256")
+    if not shot_id or not frame_sha:
+        raise ValueError("shot_visual takes require inputs['shot_id'] and inputs['storyboard_frame_sha256']")
+    for key in ("reference_image_urls", "start_image_url", "end_image_url"):
+        if inputs.get(key):
+            raise ValueError(
+                f"shot_visual takes accept only hash-verified local references "
+                f"(reference_image_paths + reference_manifest); {key} cannot be proven"
+            )
+    import lib.receipts as receipts_mod
+
+    checker = getattr(receipts_mod, "require_storyboard_receipt", None)
+    if checker is None:
+        raise RuntimeError("lib.receipts.require_storyboard_receipt is unavailable; cannot verify storyboard approval")
+    checker(project_root, str(shot_id), str(frame_sha))
+
+    raw = inputs.get("storyboard_frame_path") or (project_root / STORYBOARD_OBJECTS_SUBDIR / f"{frame_sha}.png")
+    try:
+        frame = pathsafe.resolve_input(raw, project_root)
+    except pathsafe.PathSafetyError as exc:
+        raise ValueError(f"approved storyboard frame for shot {shot_id!r} is not a project-local file: {exc}") from exc
+    actual = pathsafe.sha256_file(frame)
+    if actual != str(frame_sha):
+        raise ValueError(
+            f"storyboard frame file {frame} hashes to {actual} but storyboard_frame_sha256 is "
+            f"{frame_sha} — the approved frame is not the file that would be uploaded ({model_label})"
+        )
+    return frame
+
+
+def bind_reference_manifest(
+    inputs: dict[str, Any], project_root: Path, local_refs: list[Path]
+) -> list[dict[str, Any]]:
+    """Bind ``reference_image_paths`` to ``reference_manifest`` objects by hash.
+
+    The manifest must list exactly one object per local reference, in
+    order, with a project-local ``path`` resolving to the same file and an
+    ``asset_id`` equal to the file's sha256. Returned items are the
+    normalized objects recorded as ``references_applied``.
+    """
+    from lib import pathsafe
+    from lib.receipts import normalize_reference
+
+    manifest = inputs.get("reference_manifest")
+    if not local_refs:
+        if manifest:
+            raise ValueError("reference_manifest given without reference_image_paths")
+        return []
+    if not isinstance(manifest, list) or len(manifest) != len(local_refs):
+        raise ValueError(
+            f"reference_manifest must list one object per reference_image_paths entry "
+            f"({len(local_refs)}); got {len(manifest) if isinstance(manifest, list) else 'none'}"
+        )
+    applied: list[dict[str, Any]] = []
+    for i, (resolved, item) in enumerate(zip(local_refs, manifest)):
+        ref = normalize_reference(item)
+        if ref.get("role") == "storyboard" or "shot_id" in ref:
+            raise ValueError(
+                f"reference_manifest[{i}] is a storyboard reference — the tool packs the approved "
+                f"frame itself from shot_id/storyboard_frame_sha256"
+            )
+        if not ref.get("path") or not ref.get("visual_bible_entity_id"):
+            raise ValueError(f"reference_manifest[{i}] needs asset_id, path, role, visual_bible_entity_id")
+        try:
+            manifest_file = pathsafe.resolve_input(ref["path"], project_root)
+        except pathsafe.PathSafetyError as exc:
+            raise ValueError(f"reference_manifest[{i}].path is not project-local: {exc}") from exc
+        if manifest_file != resolved:
+            raise ValueError(
+                f"reference_manifest[{i}].path {ref['path']!r} is not reference_image_paths[{i}] ({resolved})"
+            )
+        actual = pathsafe.sha256_file(resolved)
+        if actual != ref["asset_id"]:
+            raise ValueError(
+                f"reference_manifest[{i}] asset_id {ref['asset_id']} does not match the file "
+                f"{resolved} (sha256 {actual}) — refusing to upload an unproven reference"
+            )
+        applied.append(ref)
+    return applied

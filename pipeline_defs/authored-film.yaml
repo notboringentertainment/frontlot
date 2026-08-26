@@ -243,6 +243,7 @@ stages:
     produces:
       - asset_manifest
     optional_tools:
+      - seedance_video      # entity-free scenes only (model_override with reason); rejects human-face references on FAL
       - subtitle_gen
       - audio_enhance
       - image_selector
@@ -251,6 +252,9 @@ stages:
       - freesound_music
       - music_gen
     tools_available:
+      - kling_reference_video   # default video endpoint (D4 revised 2026-08-25): fal-ai/kling-video/o3/pro/reference-to-video
+      - seedream_image          # storyboard frames
+      - seedance_video
       - subtitle_gen
       - audio_enhance
       - image_selector
