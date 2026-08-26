@@ -191,3 +191,23 @@ def test_download_host_allows_fal_media_subdomains_only():
     assert _shared._host_allowed("fal.media", _shared.FAL_ALLOWED_HOSTS)
     assert not _shared._host_allowed("evil-fal.media", _shared.FAL_ALLOWED_HOSTS)
     assert not _shared._host_allowed("fal.media.attacker.com", _shared.FAL_ALLOWED_HOSTS)
+
+
+def test_wait_survives_transient_poll_errors(monkeypatch):
+    import requests as _requests
+    from tools.video import _shared
+
+    calls = {"n": 0}
+
+    def fake_get(url, headers=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise _requests.ConnectionError("blip")
+        if url.endswith("/status"):
+            return _resp(json={"status": "COMPLETED"})
+        return _resp(json={"video": {"url": "https://v3.fal.media/f.mp4"}})
+
+    monkeypatch.setattr(_requests, "get", fake_get)
+    out = _shared.fal_queue_wait("vendor/model", "req-1", api_key="k", deadline_s=60, poll_s=0, _sleep=lambda s: None)
+    assert out["video"]["url"].endswith("f.mp4")
+    assert calls["n"] >= 4

@@ -249,3 +249,7 @@ Remaining/new findings:
 - Live fixes: FAL queue URLs use owner/app prefix and bare result URL; CDN download allowlist is domain-based (*.fal.media); reconciler loads .env. Crash-recovery path exercised for real: a status-URL bug left a Seedream call pending_billing; after the fix the reconciler recovered the image, receipted it, and closed the reservation.
 - Seedream 5 Pro text_to_image and edit-with-reference: WORK live ($0.0675 each, 6 images total).
 - Seedance 2.5 reference_to_video: REJECTED at validation — content_policy_violation 'may contain likenesses of real people' (partner_validation_failed) on two pipeline-generated photoreal portraits. Not billed. This is a design-level risk: photoreal synthetic faces as references trip ByteDance's real-person filter. Open question for Ben: stylization level, or a different reference-to-video model (Kling 3.0 Elements, MiniMax H3, Wan 3.0) for face-bearing shots.
+
+### Probes (2026-08-25 late)
+- Probe A (stylized): Seedream produced a clearly illustrated ink/cel character; Seedance 2.5 STILL rejected it — content_policy_violation, partner_validation_failed. Conclusion: on FAL, Seedance 2.5 refuses any recognizable human face as a reference, photoreal or drawn. Stylization is not a workaround.
+- Probe B (Kling o3 pro reference-to-video, $0.112/s, no start frame required): ACCEPTED the same photoreal pair and rendered (IN_PROGRESS → see result below). A transient connect timeout during status polling aborted the client once; reconciler recovered; poll loop now tolerates transient errors.

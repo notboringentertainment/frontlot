@@ -705,6 +705,7 @@ def probe_output(path: Path) -> dict[str, Any]:
 FAL_QUEUE_BASE = "https://queue.fal.run"
 FAL_ALLOWED_HOSTS: tuple[str, ...] = ("fal.run", "queue.fal.run", "fal.media", "v3.fal.media")
 FAL_NO_RETRY_HEADER = {"X-Fal-No-Retry": "1"}
+MAX_TRANSIENT_POLL_FAILURES = 10  # read-only status GETs only; never affects submission
 FAL_TERMINAL_FAILURES = ("FAILED", "CANCELLED", "ERROR")
 
 
@@ -808,14 +809,26 @@ def fal_queue_wait(
     headers = _fal_headers(api_key)
     status_url = fal_request_url(model_id, request_id, "status")
     started = _clock()
+    transient_failures = 0
     while True:
         if _clock() - started > deadline_s:
             fal_queue_cancel(model_id, request_id, api_key=api_key)
             raise FalDeadlineExceeded(
                 f"{model_id} request {request_id} exceeded {deadline_s}s; cancel issued"
             )
-        resp = requests.get(status_url, headers=headers, timeout=15)
-        resp.raise_for_status()
+        try:
+            resp = requests.get(status_url, headers=headers, timeout=15)
+            resp.raise_for_status()
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            # A transient network blip on a read-only status GET must not abandon a
+            # paid render (seen live 2026-08-25: connect timeout mid-poll). Retry until
+            # the overall deadline; the reservation stays pending_billing meanwhile.
+            transient_failures += 1
+            if transient_failures > MAX_TRANSIENT_POLL_FAILURES:
+                raise FalQueueError(f"status polling for {request_id} failed {transient_failures} times: {exc}") from exc
+            _sleep(poll_s)
+            continue
+        transient_failures = 0
         body = resp.json() if resp.content else {}
         status = str(body.get("status", "UNKNOWN")).upper()
         if status == "COMPLETED":
