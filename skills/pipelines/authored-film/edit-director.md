@@ -2,7 +2,7 @@
 
 ## When To Use
 
-Sixth stage (`edit`). You produce `edit_decisions` that assemble the approved
+Ninth stage (`edit`, manifest 1.2). You produce `edit_decisions` that assemble the approved
 assets into the writer's story at the approved runtime.
 
 Read `pipelines/authored-film/canon-guard` first.

@@ -2,7 +2,7 @@
 
 ## When To Use
 
-Third stage (`script`). You adapt the writer's locked story into a timed,
+Sixth stage (`script`, manifest 1.2). You adapt the writer's locked story into a timed,
 schema-valid `script` artifact for the approved treatment and runtime. **This
 is adaptation, not authorship.** The distance between the canon packet and your
 script should be format and timing — never story.

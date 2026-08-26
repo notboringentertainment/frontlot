@@ -46,6 +46,8 @@ ARTIFACT_NAMES = [
     "video_analysis_brief",
     "canon_packet",
     "visual_bible",
+    "look_packet",
+    "headshot_packet",
 ]
 
 
@@ -156,6 +158,19 @@ def _python_checks(name: str, version: str, data: dict) -> None:
     elif name == "visual_bible":
         for arr in ("characters", "locations"):
             _check_unique(name, version, data.get(arr, []), "id", arr)
+    elif name == "look_packet":
+        seen: set[tuple[str, str]] = set()
+        for look in data.get("looks", []):
+            if not isinstance(look, dict):
+                continue
+            key = (look.get("entity_kind"), look.get("entity_id"))
+            if key in seen:
+                raise ArtifactValidationError(
+                    f"[{name} v{version}] duplicate look key {key!r} in looks"
+                )
+            seen.add(key)
+    elif name == "headshot_packet":
+        _check_unique(name, version, data.get("characters", []), "entity_id", "characters")
 
 
 def validate_artifact(name: str, data: dict[str, Any]) -> None:

@@ -307,12 +307,15 @@ class KlingReferenceVideo(BaseTool):
         if not inputs.get("output_path"):
             return ToolResult(success=False, error="Kling o3 requires an explicit output_path under the project")
 
+        governance: dict[str, Any] = {}
         try:
-            project_root, tracker, config = _shared.paid_call_context(inputs)
+            # Look governance (look_refs verified before any upload) runs inside paid_call_context.
+            project_root, tracker, config = _shared.paid_call_context(inputs, governance=governance)
             # Prompts always leave the machine; reference images only when consented.
             config.require_egress("fal", "prompts")
             local_refs = [pathsafe.resolve_input(p, project_root) for p in inputs.get("reference_image_paths") or []]
             frame = _shared.storyboard_preflight(inputs, project_root, model_label="Kling o3")
+            _shared.verify_reference_lineage(inputs, project_root, local_refs, governed=governance.get("governed", False))
             if local_refs or frame is not None:
                 config.require_egress("fal", "prompts", "reference_images")
             references_applied = _shared.bind_reference_manifest(inputs, project_root, local_refs)
@@ -397,6 +400,7 @@ class KlingReferenceVideo(BaseTool):
                     "prompt": prompt_text,
                     "seed": data.get("seed"),
                     "references_applied": references_applied,
+                    **_shared.receipt_governance_fields(governance),
                 },
             )
             completion_started = True
@@ -446,5 +450,6 @@ class KlingReferenceVideo(BaseTool):
                 "prompt": prompt_text,
                 "seed": data.get("seed"),
                 "references_applied": references_applied,
+                **_shared.receipt_governance_fields(governance),
             },
         )

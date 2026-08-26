@@ -120,6 +120,7 @@ class PosterComposite(BaseTool):
         from lib.canonical_json import record_sha256
         from lib.receipts import find_generation
         from lib.state_io import atomic_write_bytes
+        from tools.video import _shared
 
         start = time.time()
         try:
@@ -128,9 +129,12 @@ class PosterComposite(BaseTool):
             project_root = Path(inputs["project_dir"]).resolve()
             if not project_root.is_dir():
                 raise ValueError(f"project_dir does not exist: {project_root}")
+            # Look governance (plan D10 5(b)) + recursive lineage of both inputs on governed calls.
+            governance = _shared.verify_look_governance(inputs, project_root)
             params = self._params(inputs)
             key_art = pathsafe.resolve_input(str(inputs["key_art_path"]), project_root)
             title_card = pathsafe.resolve_input(str(inputs["title_card_path"]), project_root)
+            _shared.verify_reference_lineage(inputs, project_root, [key_art, title_card], governed=governance["governed"])
             key_art_sha, title_card_sha = pathsafe.sha256_file(key_art), pathsafe.sha256_file(title_card)
             # Local derivation launders nothing (Codex R2 #7): both inputs must
             # already be receipted (signed + ledgered) pipeline outputs.
@@ -174,5 +178,6 @@ class PosterComposite(BaseTool):
                 "local_tool_version": self.LOCAL_TOOL_VERSION,
                 "parameters_hash": parameters_hash,
                 "input_asset_ids": [key_art_sha, title_card_sha],
+                **_shared.receipt_governance_fields(governance),
             },
         )

@@ -46,10 +46,33 @@ APPROVALS_FILENAME = "approvals.jsonl"
 GENERATION_RECEIPTS_FILENAME = "generation-receipts.jsonl"
 
 APPROVAL_KINDS = frozenset(
-    {"hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review"}
+    {
+        "hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review",
+        # Plan D10 (look locks) and Slice A' (headshots, reference import, manifest pins).
+        "look_lock", "headshot", "reference_import", "pipeline_migration",
+    }
 )
 ARTIFACT_REVIEW_FIELDS = ("artifact_type", "artifact_version", "artifact_digest", "migration_status")
-GENERATOR_KINDS = frozenset({"model", "local"})
+GENERATOR_KINDS = frozenset({"model", "local", "imported"})
+
+# Signed envelope fields per approval kind (beyond the hashed record). The
+# envelope is what supersession chains and invalidation read; it is part of
+# the signed receipt, never a plain column. ``action`` is activate|retire.
+RECEIPT_ACTIONS = frozenset({"activate", "retire"})
+ENVELOPE_FIELDS: dict[str, dict[str, bool]] = {
+    # field -> required
+    "look_lock": {
+        "action": True, "entity_kind": True, "look_hash": True,
+        "supersedes_look_hash": False, "promotion_refs": False, "source_ticket_ref": False,
+    },
+    "headshot": {
+        "action": True, "entity_kind": True, "look_hash": True, "supersedes_receipt_id": False,
+    },
+    "reference_import": {"origin_class": True, "normalized_pixel_hash": True},
+    "pipeline_migration": {"supersedes_receipt_id": False},
+}
+REFERENCE_ORIGIN_CLASSES = frozenset({"imported_synthetic", "casting_inspiration"})
+ENTITY_KINDS = frozenset({"character", "location"})
 
 
 class ReceiptError(RuntimeError):
@@ -90,6 +113,7 @@ def record_human_approval(
     entity_id: Optional[str] = None,
     artifact: Optional[dict] = None,
     source_checkpoint_digest: Optional[str] = None,
+    envelope: Optional[dict] = None,
 ) -> dict:
     """Consume ``gate_token`` for ``approval_record`` and append a signed receipt.
 
@@ -98,6 +122,11 @@ def record_human_approval(
     every other kind requires ``entity_id``. The approved record itself is
     carried in the receipt (``record``) so per-item checks such as
     ``require_storyboard_receipt`` can be answered from the receipt alone.
+
+    ``envelope`` carries the per-kind signed fields listed in
+    ``ENVELOPE_FIELDS`` (look_hash, action, supersedes_*, origin_class ...);
+    it is validated against the record here so a receipt can never claim a
+    look_hash its own record does not hash to.
     """
     if kind not in APPROVAL_KINDS:
         raise ValueError(f"unknown approval kind {kind!r}")
@@ -111,6 +140,7 @@ def record_human_approval(
         raise ValueError(f"approval kind {kind!r} requires entity_id")
 
     digest = _record_sha256(approval_record)
+    envelope = validate_envelope(kind, approval_record, digest, entity_id, envelope)
     # Peek first: an unknown/consumed token fails before any WAL entry exists.
     pending = gates.peek_binding(gate_token)
     token_hmac = pending.token_hmac
@@ -133,6 +163,7 @@ def record_human_approval(
             receipt[field] = artifact[field]  # type: ignore[index]
     else:
         receipt["entity_id"] = entity_id
+    receipt.update(envelope)
     receipt["signature"] = gates.sign_receipt(receipt)
 
     root = Path(project_root)
@@ -145,6 +176,61 @@ def record_human_approval(
     binding = gates.consume_gate_token(gate_token, project_id, stage, scope, digest)
     _commit_approval(root, binding, receipt)
     return receipt
+
+
+def validate_envelope(
+    kind: str,
+    record: dict,
+    digest: str,
+    entity_id: Optional[str],
+    envelope: Optional[dict],
+) -> dict:
+    """Check the signed envelope of an approval kind against its record and
+    return the fields to embed. Kinds without an envelope contract accept
+    none (an unexpected envelope is an error, not ignored)."""
+    spec = ENVELOPE_FIELDS.get(kind)
+    env = dict(envelope or {})
+    if spec is None:
+        if env:
+            raise ValueError(f"approval kind {kind!r} takes no envelope, got {sorted(env)}")
+        return {}
+    unknown = sorted(set(env) - set(spec))
+    if unknown:
+        raise ValueError(f"approval kind {kind!r} envelope has unknown fields {unknown}")
+    missing = sorted(f for f, required in spec.items() if required and env.get(f) is None)
+    if missing:
+        raise ValueError(f"approval kind {kind!r} envelope is missing {missing}")
+    if "action" in spec and env["action"] not in RECEIPT_ACTIONS:
+        raise ValueError(f"envelope action must be one of {sorted(RECEIPT_ACTIONS)}")
+    if "entity_kind" in spec and env["entity_kind"] not in ENTITY_KINDS:
+        raise ValueError(f"envelope entity_kind must be one of {sorted(ENTITY_KINDS)}")
+    if kind in {"look_lock", "headshot"}:
+        if record.get("entity_id") != entity_id or record.get("entity_kind") != env["entity_kind"]:
+            raise ValueError(
+                f"{kind} record key ({record.get('entity_kind')!r}, {record.get('entity_id')!r}) "
+                f"does not match the receipt key ({env['entity_kind']!r}, {entity_id!r})"
+            )
+    if kind == "look_lock":
+        if env["action"] == "activate" and env["look_hash"] != digest:
+            raise ValueError(
+                "look_lock activate: envelope look_hash must equal the canonical hash of the "
+                "record (the record IS the validated look_spec payload)"
+            )
+        if env["action"] == "retire" and record.get("look_hash") != env["look_hash"]:
+            raise ValueError("look_lock retire: record.look_hash must equal envelope look_hash")
+        if env.get("promotion_refs") is not None and not isinstance(env["promotion_refs"], list):
+            raise ValueError("look_lock promotion_refs must be a list")
+    if kind == "headshot" and record.get("look_hash") != env["look_hash"]:
+        raise ValueError("headshot: record.look_hash must equal envelope look_hash")
+    if kind == "reference_import":
+        if env["origin_class"] not in REFERENCE_ORIGIN_CLASSES:
+            raise ValueError(f"origin_class must be one of {sorted(REFERENCE_ORIGIN_CLASSES)}")
+        for field in ("origin_class", "normalized_pixel_hash"):
+            if record.get(field) != env[field]:
+                raise ValueError(f"reference_import: record.{field} must equal envelope {field}")
+        if not isinstance(env["normalized_pixel_hash"], str) or len(env["normalized_pixel_hash"]) != 64:
+            raise ValueError("reference_import: normalized_pixel_hash must be a sha256 hex digest")
+    return {k: env.get(k) for k in spec}
 
 
 def _commit_approval(root: Path, binding: gates.GateBinding, receipt: dict) -> None:
@@ -215,6 +301,34 @@ def find_approval(
     return match
 
 
+def verified_approvals(
+    project_root: Path | str,
+    kind: str,
+    *,
+    entity_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+) -> list[dict]:
+    """Every verified receipt of ``kind`` for this project, in ledger order.
+    Supersession chains (looks, headshots, manifest pins) are replayed over
+    this list; forged or foreign rows are invisible."""
+    recover_pending_approvals(project_root)
+    expected_project = project_id_for(project_root, project_id)
+    out: list[dict] = []
+    for row in read_jsonl(approvals_path(project_root)):
+        if not isinstance(row, dict) or row.get("kind") != kind:
+            continue
+        if row.get("project_id") != expected_project:
+            continue
+        if entity_id is not None and row.get("entity_id") != entity_id:
+            continue
+        if not gates.verify_receipt(row):
+            continue
+        if row.get("record_sha256") != _record_sha256(row.get("record")):
+            continue
+        out.append(row)
+    return out
+
+
 def require_storyboard_receipt(
     project_root: Path | str,
     shot_id: str,
@@ -274,18 +388,58 @@ def _build_generation_receipt(
     prompt: Optional[str] = None,
     seed: Optional[int] = None,
     references_applied: Optional[list[dict]] = None,
+    origin_tool: Optional[str] = None,
+    attestation_receipt_id: Optional[str] = None,
+    look_refs: Optional[list[dict]] = None,
+    headshot_ref: Optional[dict] = None,
+    import_receipt_id: Optional[str] = None,
+    normalized_pixel_hash: Optional[str] = None,
+    prompt_recipe: Optional[dict] = None,
 ) -> dict:
-    """Validate the fields and return a signed (not yet persisted) receipt."""
+    """Validate the fields and return a signed (not yet persisted) receipt.
+
+    ``generator_kind == 'imported'`` (Slice A') is an attested import of an
+    image generated elsewhere: it requires ``origin_tool`` and the
+    ``attestation_receipt_id`` of the reference_import approval receipt, and
+    can carry no inputs or references (it is a lineage root). ``look_refs``,
+    ``headshot_ref`` and ``prompt_recipe`` (the builder recipe whose
+    ``rendered_sha256`` is the hash of ``prompt``) are bound in by governed
+    visual tools; ``import_receipt_id`` / ``normalized_pixel_hash`` are the
+    import provenance a tool passes through for an imported image (the
+    pixel hash IS the content address, so it must equal ``output_sha256``).
+    """
     if generator_kind not in GENERATOR_KINDS:
         raise ValueError(f"generator_kind must be one of {sorted(GENERATOR_KINDS)}")
     if generator_kind == "model" and not model_endpoint:
         raise ValueError("model generations require model_endpoint")
     if generator_kind == "local" and not local_tool:
         raise ValueError("local generations require local_tool")
+    if generator_kind == "imported":
+        if not origin_tool or not attestation_receipt_id:
+            raise ValueError("imported generations require origin_tool and attestation_receipt_id")
+        if input_asset_ids or references_applied:
+            raise ValueError("an imported image is a lineage root: no input_asset_ids or references_applied")
+    elif origin_tool or attestation_receipt_id:
+        raise ValueError("origin_tool/attestation_receipt_id are only valid for generator_kind 'imported'")
     if not output_sha256:
         raise ValueError("output_sha256 is required")
     if references_applied is not None:
         references_applied = [normalize_reference(r) for r in references_applied]
+    if look_refs is not None:
+        look_refs = [normalize_look_ref(r) for r in look_refs]
+    if headshot_ref is not None:
+        headshot_ref = normalize_headshot_ref(headshot_ref)
+    if prompt_recipe is not None:
+        prompt_recipe = normalize_prompt_recipe(prompt_recipe)
+    if import_receipt_id is not None and (not isinstance(import_receipt_id, str) or not import_receipt_id):
+        raise ValueError("import_receipt_id must be a non-empty string")
+    if normalized_pixel_hash is not None:
+        if not _is_sha256(normalized_pixel_hash):
+            raise ValueError("normalized_pixel_hash must be a 64-hex sha256")
+        if normalized_pixel_hash != output_sha256:
+            raise ValueError(
+                "normalized_pixel_hash must equal output_sha256 (canon objects are the normalized PNG bytes)"
+            )
 
     receipt = {
         "receipt_id": str(uuid.uuid4()),
@@ -303,6 +457,13 @@ def _build_generation_receipt(
         "prompt": prompt,
         "seed": seed,
         "references_applied": references_applied,
+        "origin_tool": origin_tool,
+        "attestation_receipt_id": attestation_receipt_id,
+        "look_refs": look_refs,
+        "headshot_ref": headshot_ref,
+        "prompt_recipe": prompt_recipe,
+        "import_receipt_id": import_receipt_id,
+        "normalized_pixel_hash": normalized_pixel_hash,
         "output_sha256": output_sha256,
         "cost_usd": round(float(cost_usd), 6),
         "started_at": started_at,
@@ -324,6 +485,59 @@ def normalize_reference(ref: dict) -> dict:
     out = {k: ref[k] for k in REFERENCE_FIELDS if ref.get(k) is not None}
     if not out.get("asset_id") or not out.get("role"):
         raise ValueError(f"reference needs asset_id and role: {ref!r}")
+    return out
+
+
+LOOK_REF_FIELDS = ("entity_kind", "entity_id", "look_hash")
+HEADSHOT_REF_FIELDS = ("entity_id", "asset_id", "approval_receipt_id")
+
+
+def normalize_look_ref(ref: dict) -> dict:
+    """Comparable form of one ``look_refs`` item: exactly the contract fields."""
+    if not isinstance(ref, dict):
+        raise ValueError(f"look_ref must be an object, got {type(ref).__name__}")
+    out = {k: ref.get(k) for k in LOOK_REF_FIELDS}
+    if out["entity_kind"] not in ENTITY_KINDS or not out["entity_id"]:
+        raise ValueError(f"look_ref needs entity_kind (character|location) and entity_id: {ref!r}")
+    if not isinstance(out["look_hash"], str) or len(out["look_hash"]) != 64:
+        raise ValueError(f"look_ref needs a sha256 look_hash: {ref!r}")
+    return out
+
+
+PROMPT_RECIPE_FIELDS = ("look_hash", "builder_version", "fields_used", "rendered_sha256")
+_HEX64 = frozenset("0123456789abcdef")
+
+
+def _is_sha256(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX64
+
+
+def normalize_prompt_recipe(recipe: dict) -> dict:
+    """Comparable form of a builder ``prompt_recipe``: exactly
+    ``{look_hash, builder_version, fields_used[], rendered_sha256}``."""
+    if not isinstance(recipe, dict):
+        raise ValueError(f"prompt_recipe must be an object, got {type(recipe).__name__}")
+    out = {k: recipe.get(k) for k in PROMPT_RECIPE_FIELDS}
+    if not _is_sha256(out["look_hash"]) or not _is_sha256(out["rendered_sha256"]):
+        raise ValueError(f"prompt_recipe needs 64-hex look_hash and rendered_sha256: {recipe!r}")
+    if not isinstance(out["builder_version"], str) or not out["builder_version"]:
+        raise ValueError(f"prompt_recipe needs a non-empty builder_version: {recipe!r}")
+    fields = out["fields_used"]
+    if not isinstance(fields, list) or not all(isinstance(f, str) and f for f in fields):
+        raise ValueError(f"prompt_recipe.fields_used must be a list of field names: {recipe!r}")
+    out["fields_used"] = list(fields)
+    return out
+
+
+def normalize_headshot_ref(ref: dict) -> dict:
+    """Comparable form of a ``headshot_ref``: {entity_id, asset_id, approval_receipt_id}."""
+    if not isinstance(ref, dict):
+        raise ValueError(f"headshot_ref must be an object, got {type(ref).__name__}")
+    out = {k: ref.get(k) for k in HEADSHOT_REF_FIELDS}
+    if not all(isinstance(v, str) and v for v in out.values()):
+        raise ValueError(f"headshot_ref needs entity_id, asset_id, approval_receipt_id: {ref!r}")
+    if len(out["asset_id"]) != 64:
+        raise ValueError(f"headshot_ref asset_id must be a sha256: {ref!r}")
     return out
 
 

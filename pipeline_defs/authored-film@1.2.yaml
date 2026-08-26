@@ -1,0 +1,405 @@
+# Authored Film — a production pipeline for stories that were WRITTEN, not prompted.
+#
+# The story arrives finished: synopsis / treatment / outline / story bible in the
+# writer's development formats, plus locked decisions (wayfinder maps, canon atoms,
+# pitch exports). This pipeline ADAPTS that canon into a produced film. It never
+# invents story. Where the standard pipelines open with web research and concept
+# generation, this one opens with canon ingest — and every later stage treats the
+# canon packet's locks the way the checkpoint writer treats approval gates: binding.
+#
+# Collision doctrine (why this pipeline exists instead of a config flag on cinematic):
+#   - research is replaced by ingest: grounding an authored story in Reddit trends
+#     is a category error. Visual/comps research happens inside proposal, scoped to
+#     the tone document's comps list.
+#   - proposal still offers 3+ genuinely different options — but they are visual
+#     TREATMENTS of the same locked story (cinematography, palette, runtime shape),
+#     never alternative stories. Story choice is the writer's, already made.
+#   - script is adaptation, not authorship. Protected lines verbatim. Gaps become
+#     open questions surfaced to the writer, never filled by invention.
+
+name: authored-film
+version: "1.2"
+description: >
+  Produce a film from the writer's finished development assets (synopsis,
+  treatment, outline, story bible, wayfinder decisions, canon atoms). Canon
+  ingest replaces web research; proposal offers visual treatments of the locked
+  story; script and scene plan adapt the writer's material with full provenance;
+  assets/edit/compose reuse the complete cinematic production machinery.
+category: cinematic
+stability: beta
+
+# Runtime enforcement beyond generic artifact contracts (lib/canon_enforcement.py):
+# blocking open questions gate completion, script/scene/asset artifacts must carry
+# structured canon evidence, compose must prove a real render and a passing canon pass.
+#
+# Manifest 1.2 (plan D10 Slice A + A', 2026-08-26): two stages sit between
+# proposal and visual_bible. `look_lock` ratifies one look_spec per cast entity
+# (a signed look_lock receipt bound to the look_hash — D12); `headshots` approves
+# one face per cast character through the selection gate before any sheet or
+# shot spend (D17). A project runs under 1.2 only through a signed
+# pipeline_migration receipt (lib/pipeline_pin.py); until pinned it stays on 1.1.
+validation_profile: authored-canon
+
+reference_input:
+  supported: true
+  analysis_depth: deep
+  analysis_tools:
+    - video_analyzer
+    - transcript_fetcher
+    - video_downloader
+    - scene_detect
+    - frame_sampler
+  # A reference video here is a VISUAL reference (how it should look/move/cut),
+  # never a story source. Analysis feeds proposal treatments, not the canon packet.
+
+orchestration:
+  mode: executive-producer
+  skill: pipelines/authored-film/executive-producer
+  budget_default_usd: 5.00
+  max_revisions_per_stage: 3
+  max_send_backs: 3
+  max_wall_time_minutes: 20
+
+extensions:
+  custom_scripts: true
+  custom_playbooks: true
+  custom_skills: true
+  custom_tools: false
+
+required_skills:
+  - pipelines/authored-film/executive-producer
+  - pipelines/authored-film/canon-guard
+  - pipelines/authored-film/canon-director
+  - pipelines/authored-film/proposal-director
+  - pipelines/authored-film/look-lock-director
+  - pipelines/authored-film/headshots-director
+  - pipelines/authored-film/visual-bible-director
+  - pipelines/authored-film/script-director
+  - pipelines/authored-film/scene-director
+  - pipelines/authored-film/asset-director
+  - pipelines/authored-film/edit-director
+  - pipelines/authored-film/compose-director
+  - meta/reviewer
+  - meta/checkpoint-protocol
+  - meta/animation-runtime-selector
+
+compatible_playbooks:
+  recommended:
+    - clean-professional
+  also_works:
+    - flat-motion-graphics
+    - minimalist-diagram
+  custom_allowed: true
+  # The real playbook usually comes from the story bible's visual style section —
+  # proposal should offer a custom playbook derived from it as one treatment option.
+
+stages:
+  - name: canon_ingest
+    skill: pipelines/authored-film/canon-director
+    produces:
+      - canon_packet
+    tools_available: []
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - Every lock in the source material appears in locks[] — atoms, wayfinder
+        Decisions so far, continuity log rows marked locked, producer rulings
+      - Protected lines are captured character-for-character, not paraphrased
+      - Nothing in the packet is invented — every field traces to a source document
+      - Every [NEEDS DECISION] marker and in-scope unresolved ticket appears in
+        open_questions[], with honest blocking flags
+      - Groundwork and sketches are recorded as groundwork/reference authority,
+        never promoted to canon
+    success_criteria:
+      - Schema-valid canon_packet artifact
+      - Every locks[] entry carries source_path (and evidence_ref where the source has one)
+      - source_documents[] covers every file read, with authority classification
+
+  - name: proposal
+    skill: pipelines/authored-film/proposal-director
+    required_artifacts_in:
+      - canon_packet
+    optional_artifacts_in:
+      - video_analysis_brief
+    produces:
+      - proposal_packet
+      - decision_log
+    tools_available:
+      - web_search
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - All concept options tell the SAME locked story — options differ in visual
+        treatment, palette, pacing shape, and runtime, never in story content
+      - Every option honors the tone document (tone words, comps, anti-comps,
+        must_never_feel_like)
+      - Web research, if used, targeted the comps' visual language — not story ideas
+      - Delivery promise is explicit and honest about motion requirements
+      - Renderer family is selected and locked; music plan resolved against the
+        bible's sound/music style
+      - Blocking open questions from the canon packet are surfaced at this gate,
+        not deferred
+    success_criteria:
+      - Schema-valid proposal_packet artifact
+      - At least 3 treatment options, each grounded_in canon packet fields (not vibes)
+      - Cost estimate includes per-item breakdown
+
+  - name: look_lock
+    skill: pipelines/authored-film/look-lock-director
+    required_artifacts_in:
+      - canon_packet
+      - proposal_packet
+    produces:
+      - look_packet
+    tools_available: []
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - Every entity in proposal_packet.cast has a resolved wayfinder look ticket
+        (type grill, mode hitl, exactly one Look spec block) and an active
+        look_lock receipt bound to its look_hash — ratification is the receipt,
+        never a field in the block (D12)
+      - No look is shape_only or marks a minor; the writer's
+        fictional_subject_attestation is true; spoiler looks are excluded from
+        trailer/teaser casts
+      - The reference-image question was asked while the ticket was drafted;
+        casting inspiration is imported only through the reference_import gate,
+        shown to the human only, never sent to any model or director
+      - No agent invented a look; an agent may draft a Question, never an Answer
+    success_criteria:
+      - Schema-valid look_packet artifact whose (entity_kind, entity_id) keys equal the cast
+      - Every look_hash equals the canonical hash of its look_spec and has a verified, active look_lock receipt
+
+  - name: headshots
+    skill: pipelines/authored-film/headshots-director
+    required_artifacts_in:
+      - look_packet
+      - proposal_packet
+    produces:
+      - headshot_packet
+    tools_available:
+      - seedream_image
+      - image_selector
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - One face per proposal_packet.cast.character_ids entity, chosen by the
+        human through the selection gate (gate_approve.py kind headshot) from
+        up to 4 candidates — the agent never authors the approval record
+      - Every candidate was generated from the prompt_recipe of the active look
+        (look_ref current) or is the single attested imported_synthetic hero
+      - Lineage is clean — no candidate touches a casting_inspiration hash; every
+        lineage root is a pipeline generation receipt or an attested import
+      - Reject-all regenerates with a logged note; rejected candidates stay as
+        history and can never satisfy a headshot_ref
+    success_criteria:
+      - Schema-valid headshot_packet artifact (state pending at awaiting_human, approved at completed)
+      - Every approved hero carries a verified headshot receipt (unique ledger tip per entity)
+
+  - name: visual_bible
+    skill: pipelines/authored-film/visual-bible-director
+    required_artifacts_in:
+      - canon_packet
+      - proposal_packet
+      - look_packet
+      - headshot_packet
+    produces:
+      - visual_bible
+    tools_available:
+      - seedream_image
+      - image_selector
+      - title_card
+      - poster_composite
+    optional_tools:
+      - flux_image
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - Every character and location named in proposal_packet.cast has an
+        approved sheet — hero plus angle/expression/wardrobe views for
+        characters, establishing plus angles for locations — and nothing
+        outside the cast was built (cast_cap from project.yaml is binding)
+      - Every image is synthetic and receipted — content-addressed under
+        canon/visual/objects/<sha256>.png with a generation receipt; no
+        real-person likeness, no imported photos
+      - Every approved entry carries a human approval receipt bound to the
+        full approved record (asset pointers, prompt_recipe, look_hash,
+        wardrobe_negative, palette) — a status flip without a receipt is
+        not an approval
+      - Every entry's look_ref.look_hash is the active look for its entity and
+        every character sheet image was generated with a headshot_ref naming
+        the approved hero — prompts are rebuilt from the look_spec by the
+        structured builder (prompt_recipe.rendered_sha256), never copied verbatim
+      - The palette and prompt recipes read as the writer's story —
+        bible visual_identity and behavioral_anchors are visible in the
+        sheets, not generic model defaults
+      - Poster (key art + locally rendered title card via title_card +
+        poster_composite) is present and approved with a receipt — the
+        stage cannot complete without it; typography is never generated
+        by a model
+      - Superseded entries name their replacement and are backed by a
+        canon_ruling with question_id visual:<entity-id>
+      - provider_egress is present in project.yaml — prompts and reference
+        images leave the machine only under the writer's recorded consent
+    success_criteria:
+      - Schema-valid visual_bible artifact
+      - Approved character/location ids equal proposal_packet.cast exactly (no extras), every id exists in canon_packet 1.1, and every entry has a verified approval receipt
+      - poster.status is approved with a verified poster receipt
+      - Every ImageRef path resolves inside the project, hashes to its asset_id, and has a generation receipt
+      - Cast counts do not exceed project.yaml cast_cap
+
+  - name: script
+    skill: pipelines/authored-film/script-director
+    required_artifacts_in:
+      - visual_bible
+      - canon_packet
+      - proposal_packet
+    produces:
+      - script
+    tools_available: []
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - Adaptation, not authorship — every section traces to a canon beat via source_ref
+      - Protected lines appear verbatim; a diff against protected_lines[] shows zero drift
+      - No lock is contradicted; no open question was silently answered
+      - Character voice follows speech_patterns and never_write_as constraints
+      - Timing is realistic for the approved treatment's runtime
+    success_criteria:
+      - Schema-valid script artifact
+      - Every section carries source_ref pointing to a canon_packet beat or lock id
+      - metadata.canon_check lists locks honored and any flagged tensions (must be empty of unresolved conflicts)
+
+  - name: scene_plan
+    skill: pipelines/authored-film/scene-director
+    required_artifacts_in:
+      - visual_bible
+      - script
+      - canon_packet
+    optional_artifacts_in:
+      - proposal_packet
+    produces:
+      - scene_plan
+    optional_tools:
+      - frame_sampler
+      - scene_detect
+    tools_available:
+      - frame_sampler
+      - scene_detect
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - Location scenes match the bible's visual_identity; characters match
+        behavioral_anchors — continuity facts are visible in scene descriptions
+      - Key visual sequences from the AI production annex are hero_moment scenes
+      - Styleframe-flagged scenes are marked for pre-generation approval
+      - Shot language serves the tone document, not generic coverage
+    success_criteria:
+      - Schema-valid scene_plan artifact
+      - Every script section is covered by at least one scene
+      - Every scene involving a tracked character or location cites its continuity constraints in description or overlay_notes
+
+  - name: assets
+    skill: pipelines/authored-film/asset-director
+    required_artifacts_in:
+      - visual_bible
+      - scene_plan
+      - canon_packet
+    optional_artifacts_in:
+      - script
+    produces:
+      - asset_manifest
+    optional_tools:
+      - seedance_video      # entity-free scenes only (model_override with reason); rejects human-face references on FAL
+      - subtitle_gen
+      - audio_enhance
+      - image_selector
+      - video_selector
+      - pixabay_music
+      - freesound_music
+      - music_gen
+    tools_available:
+      - kling_reference_video   # default video endpoint (D4 revised 2026-08-25): fal-ai/kling-video/o3/pro/reference-to-video
+      - seedream_image          # storyboard frames
+      - seedance_video
+      - subtitle_gen
+      - audio_enhance
+      - image_selector
+      - video_selector
+      - pixabay_music
+      - freesound_music
+      - music_gen
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - Character and location generation uses reference assets and continuity
+        risk notes from the canon packet — prompts carry the continuity constraints
+      - Generation challenges flagged in the annex got the mitigation the annex asked for
+      - Music and ambience match the bible's sound/music style
+      - Motion-required beats use actual video clips rather than still-image substitutes
+    success_criteria:
+      - Schema-valid asset_manifest artifact
+      - All referenced asset files exist on disk
+      - Assets for continuity-tracked characters/locations record which references and risk notes were applied
+
+  - name: edit
+    skill: pipelines/authored-film/edit-director
+    required_artifacts_in:
+      - visual_bible
+      - scene_plan
+      - asset_manifest
+      - canon_packet
+    optional_artifacts_in:
+      - script
+    produces:
+      - edit_decisions
+    tools_available: []
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - Emotional pacing follows the writer's beat turns — cuts land on turns,
+        not across them
+      - Protected lines are never trimmed or stepped on by music/SFX
+      - Pacing rules from the tone document are respected
+    success_criteria:
+      - Schema-valid edit_decisions artifact
+      - Edit decisions cover the full planned runtime
+
+  - name: compose
+    skill: pipelines/authored-film/compose-director
+    required_artifacts_in:
+      - visual_bible
+      - edit_decisions
+      - asset_manifest
+      - canon_packet
+    optional_artifacts_in:
+      - scene_plan
+    produces:
+      - render_report
+      - final_review
+    required_tools:
+      - video_compose
+      - audio_mixer
+    optional_tools:
+      - video_stitch
+      - video_trimmer
+      - color_grade
+      - audio_enhance
+    tools_available:
+      - video_compose
+      - audio_mixer
+      - video_stitch
+      - video_trimmer
+      - color_grade
+      - audio_enhance
+    checkpoint_required: true
+    human_approval_default: false
+    review_focus:
+      - Render runtime matches the proposal's locked renderer family — silent swap
+        is a CRITICAL governance violation
+      - Final review includes a canon pass — locks honored, protected lines intact
+        and audible, must_never_feel_like verdict recorded
+    success_criteria:
+      - Schema-valid render_report artifact
+      - Output file exists and passes ffprobe validation
+      - final_review records the canon pass results

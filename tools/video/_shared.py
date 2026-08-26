@@ -980,8 +980,17 @@ class PaidCallContextError(RuntimeError):
     """The paid call cannot be attributed to a registered, approved project."""
 
 
-def paid_call_context(inputs: dict[str, Any], *, check_resume: bool = True) -> tuple[Path, Any, Any]:
+def paid_call_context(
+    inputs: dict[str, Any], *, check_resume: bool = True, governance: dict[str, Any] | None = None
+) -> tuple[Path, Any, Any]:
     """Resolve ``(project_root, tracker, config)`` for a paid FAL call (inspection #2).
+
+    Look governance (plan D10, Slice A step 5(b)) runs here, before any upload
+    or reservation: ``verify_look_governance`` refuses a governed visual call
+    that carries no verified ``look_refs`` (unless the named ``shot_id`` is
+    entity-free in the approved scene plan) and verifies ``headshot_ref`` for
+    sheet roles. Pass a dict as ``governance`` to receive the verified
+    ``look_refs`` / ``headshot_ref`` for binding into the generation receipt.
 
     The project root is derived ONLY from ``lib.events.infer_project_dir`` and
     must be a registered project directory under ``lib.paths.PROJECTS_DIR``;
@@ -1023,6 +1032,9 @@ def paid_call_context(inputs: dict[str, Any], *, check_resume: bool = True) -> t
         resume_check(project_root)  # raises IndeterminatePaidCallError
 
     config = load_verified_project_config(project_root)  # raises ProjectConfigError
+    verified = verify_look_governance(inputs, project_root)
+    if governance is not None:
+        governance.update(verified)
     tracker = CostTracker(
         budget_total_usd=float(config.budget_usd_cap),
         reserve_pct=0.0,
@@ -1135,3 +1147,261 @@ def bind_reference_manifest(
             )
         applied.append(ref)
     return applied
+
+
+# ---------------------------------------------------------------------------
+# Look governance (plan D10 Slice A step 5(b)/7, Slice A′ steps 1–3; D16/D17).
+# Shared by every governed visual tool: seedream_image, kling_reference_video,
+# seedance_video (2.5), title_card, poster_composite. Everything here runs
+# BEFORE any upload or reservation and fails closed when the lib-side
+# verifiers (built separately) are missing.
+# ---------------------------------------------------------------------------
+
+LOOK_GOVERNED_STAGE = "look_lock"
+ENTITY_KINDS = ("character", "location")
+SHEET_ASSET_ROLES = frozenset({"front", "three_quarter", "profile", "full_body", "expressions", "wardrobe"})
+# Presence of any of these makes a call governed regardless of the project's
+# manifest: a caller who names looks, a stage, a sheet role or a headshot is
+# making a governed call and gets the full check.
+GOVERNED_CALL_KEYS = ("look_refs", "stage", "asset_role", "headshot_ref", "prompt_recipe")
+REMOTE_REFERENCE_KEYS = ("reference_image_urls", "start_image_url", "end_image_url")
+REAL_PERSON_REFUSAL = (
+    "reference refused: it has no receipted pipeline lineage (or is casting inspiration of a real "
+    "person). Only pipeline-generated images and attested imported_synthetic images may be uploaded "
+    "as references; real-person or unconsented images are never sent to a provider."
+)
+_HEX64 = frozenset("0123456789abcdef")
+
+
+class LookGovernanceError(RuntimeError):
+    """A governed visual call is missing or misusing its look / headshot / lineage proof."""
+
+
+def _is_sha256(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX64
+
+
+def _lazy(module: str, name: str):
+    """Import ``module.name`` by name; a missing module or attribute fails closed."""
+    import importlib
+
+    try:
+        mod = importlib.import_module(module)
+    except ImportError as exc:
+        raise LookGovernanceError(f"{module}.{name} is unavailable ({exc}); refusing the governed call") from exc
+    fn = getattr(mod, name, None)
+    if fn is None:
+        raise LookGovernanceError(f"{module}.{name} is unavailable; refusing the governed call")
+    return fn
+
+
+def project_look_governed(project_root: Path | str) -> bool:
+    """Whether ``project_root`` runs under a manifest that declares ``look_lock`` (D13).
+
+    Answered by ``lib.look_ingest.project_look_governed`` — the signed pipeline
+    pin (unique migration-chain tip, 1.1 when unpinned), never the marker file
+    alone. Imported by name and fails closed if the lib side is missing.
+    """
+    return bool(_lazy("lib.look_ingest", "project_look_governed")(Path(project_root)))
+
+
+def call_is_governed(inputs: dict[str, Any], project_root: Path | str) -> bool:
+    return any(inputs.get(k) is not None for k in GOVERNED_CALL_KEYS) or project_look_governed(project_root)
+
+
+def normalize_look_ref(ref: Any, index: int = 0) -> dict[str, str]:
+    if not isinstance(ref, dict):
+        raise LookGovernanceError(f"look_refs[{index}] must be an object {{entity_kind, entity_id, look_hash}}")
+    kind, eid, look_hash = ref.get("entity_kind"), ref.get("entity_id"), ref.get("look_hash")
+    if kind not in ENTITY_KINDS:
+        raise LookGovernanceError(f"look_refs[{index}].entity_kind must be one of {ENTITY_KINDS}; got {kind!r}")
+    if not isinstance(eid, str) or not eid:
+        raise LookGovernanceError(f"look_refs[{index}].entity_id must be a non-empty string")
+    if not _is_sha256(look_hash):
+        raise LookGovernanceError(f"look_refs[{index}].look_hash must be a 64-hex sha256")
+    return {"entity_kind": kind, "entity_id": eid, "look_hash": look_hash}
+
+
+def shot_is_entity_free(project_root: Path | str, shot_id: str) -> bool:
+    """Server-side lookup (R4#2): True only when the APPROVED ``scene_plan``
+    checkpoint (status completed, human_approved) has a scene whose ``shots``
+    contain ``shot_id`` and that scene records ``entity_free: true``. The
+    tool-call inputs are never consulted."""
+    from lib.checkpoint import read_checkpoint
+
+    root = Path(project_root)
+    checkpoint = read_checkpoint(root.parent, root.name, "scene_plan")
+    if not checkpoint or checkpoint.get("status") != "completed" or checkpoint.get("human_approved") is not True:
+        return False
+    plan = (checkpoint.get("artifacts") or {}).get("scene_plan") or {}
+    for scene in plan.get("scenes") or []:
+        if not isinstance(scene, dict):
+            continue
+        ids = {str(s.get("shot_id")) for s in scene.get("shots") or [] if isinstance(s, dict)}
+        if str(shot_id) in ids:
+            return scene.get("entity_free") is True
+    return False
+
+
+def _verify_look_refs(inputs: dict[str, Any], project_root: Path) -> list[dict[str, str]]:
+    refs = inputs.get("look_refs")
+    stage = inputs.get("stage")
+    if "entity_free" in inputs:
+        raise LookGovernanceError(
+            "entity_free is not a tool-call input; it is read from the approved scene_plan checkpoint for shot_id"
+        )
+    if not refs:
+        if stage == "visual_bible":
+            raise LookGovernanceError("visual_bible generation can never be entity-free: look_refs[] is required")
+        shot_id = inputs.get("shot_id")
+        if not shot_id:
+            raise LookGovernanceError(
+                "governed visual call requires look_refs[] {entity_kind, entity_id, look_hash}; "
+                "only a shot_id whose approved scene_plan record is entity_free may omit them"
+            )
+        if not shot_is_entity_free(project_root, str(shot_id)):
+            raise LookGovernanceError(
+                f"shot {shot_id!r} is not entity_free in the approved scene_plan checkpoint; look_refs[] is required"
+            )
+        return []
+    if not isinstance(refs, list):
+        raise LookGovernanceError("look_refs must be a list")
+    out = [normalize_look_ref(r, i) for i, r in enumerate(refs)]
+    keys = [(r["entity_kind"], r["entity_id"]) for r in out]
+    if len(set(keys)) != len(keys):
+        raise LookGovernanceError("look_refs names the same (entity_kind, entity_id) twice")
+    # lib.look_ingest.verify_look_refs: every ref names the ACTIVE look_lock tip
+    # for its key and that look is generation-sufficient; raises otherwise.
+    verify_look_refs = _lazy("lib.look_ingest", "verify_look_refs")
+    verify_look_refs(project_root, out)
+    return out
+
+
+def _verify_headshot_ref(
+    inputs: dict[str, Any], project_root: Path, look_refs: list[dict[str, str]]
+) -> dict[str, str] | None:
+    role = inputs.get("asset_role")
+    ref = inputs.get("headshot_ref")
+    if role is not None and role in SHEET_ASSET_ROLES and ref is None:
+        raise LookGovernanceError(
+            f"asset_role {role!r} is a character-sheet role: headshot_ref {{entity_id, asset_id, approval_receipt_id}} "
+            f"is required — sheets derive only from the approved hero (Slice A′ step 3)"
+        )
+    if ref is None:
+        return None
+    if not isinstance(ref, dict):
+        raise LookGovernanceError("headshot_ref must be an object {entity_id, asset_id, approval_receipt_id}")
+    eid, asset_id, receipt_id = ref.get("entity_id"), ref.get("asset_id"), ref.get("approval_receipt_id")
+    if not isinstance(eid, str) or not eid:
+        raise LookGovernanceError("headshot_ref.entity_id must be a non-empty string")
+    if not _is_sha256(asset_id):
+        raise LookGovernanceError("headshot_ref.asset_id must be the hero's 64-hex sha256")
+    if not isinstance(receipt_id, str) or not receipt_id:
+        raise LookGovernanceError("headshot_ref.approval_receipt_id must be a non-empty string")
+    if not any(r["entity_kind"] == "character" and r["entity_id"] == eid for r in look_refs):
+        raise LookGovernanceError(f"headshot_ref.entity_id {eid!r} is not a character named in look_refs")
+    normalized = {"entity_id": eid, "asset_id": asset_id, "approval_receipt_id": receipt_id}
+    # lib.headshots.verify_headshot_ref: the ref must be the ACTIVE headshot tip
+    # (same asset, same receipt) approved against the active look; raises otherwise.
+    verify_headshot_ref = _lazy("lib.headshots", "verify_headshot_ref")
+    verify_headshot_ref(project_root, normalized)
+    return normalized
+
+
+def _verify_prompt_recipe(inputs: dict[str, Any], look_refs: list[dict[str, str]]) -> dict[str, Any] | None:
+    """On ``stage: visual_bible`` the prompt must be a builder rendering: the
+    ``prompt_recipe`` names a look in ``look_refs`` and ``rendered_sha256``
+    equals the hash of the prompt actually sent (no verbatim text)."""
+    recipe = inputs.get("prompt_recipe")
+    if inputs.get("stage") != "visual_bible" and recipe is None:
+        return None
+    if not isinstance(recipe, dict):
+        raise LookGovernanceError(
+            "visual_bible generation requires prompt_recipe {look_hash, builder_version, fields_used[], rendered_sha256} "
+            "from tools.prompt_builder"
+        )
+    from tools.prompt_builder import rendered_prompt_sha256
+
+    look_hash = recipe.get("look_hash")
+    if not any(r["look_hash"] == look_hash for r in look_refs):
+        raise LookGovernanceError("prompt_recipe.look_hash is not one of the verified look_refs")
+    prompt = inputs.get("prompt")
+    if not isinstance(prompt, str) or rendered_prompt_sha256(prompt) != recipe.get("rendered_sha256"):
+        raise LookGovernanceError(
+            "prompt does not match prompt_recipe.rendered_sha256 — rebuild it with tools.prompt_builder"
+        )
+    return {
+        "look_hash": look_hash,
+        "builder_version": recipe.get("builder_version"),
+        "fields_used": list(recipe.get("fields_used") or []),
+        "rendered_sha256": recipe.get("rendered_sha256"),
+    }
+
+
+def verify_look_governance(inputs: dict[str, Any], project_root: Path | str) -> dict[str, Any]:
+    """Run the generation-boundary look checks for one visual call.
+
+    Returns ``{"governed": bool, "look_refs": [...] | None, "headshot_ref": {...} | None,
+    "prompt_recipe": {...} | None}``. Non-governed (legacy manifest, no governed
+    keys) calls get ``governed: False`` and ``None`` fields. Raises
+    ``LookGovernanceError`` on any refusal.
+    """
+    root = Path(project_root)
+    if not call_is_governed(inputs, root):
+        return {"governed": False, "look_refs": None, "headshot_ref": None, "prompt_recipe": None}
+    look_refs = _verify_look_refs(inputs, root)
+    headshot_ref = _verify_headshot_ref(inputs, root, look_refs)
+    prompt_recipe = _verify_prompt_recipe(inputs, look_refs)
+    return {"governed": True, "look_refs": look_refs, "headshot_ref": headshot_ref, "prompt_recipe": prompt_recipe}
+
+
+def verify_reference_lineage(
+    inputs: dict[str, Any], project_root: Path | str, local_refs: list[Path], *, governed: bool
+) -> None:
+    """Reference provenance at the upload boundary (Slice A step 7, A′ step 1).
+
+    On a governed call remote reference URLs are refused outright, and every
+    local reference must (a) not be in the project's casting-inspiration taint
+    set and (b) pass ``lib.receipts.verify_lineage`` (recursive receipted
+    lineage). Both verifiers are imported by name and fail closed if absent.
+    """
+    if not governed:
+        return
+    for key in REMOTE_REFERENCE_KEYS:
+        if inputs.get(key):
+            raise LookGovernanceError(
+                f"{key} refused: governed projects accept only project-local references with receipted lineage"
+            )
+    if not local_refs:
+        return
+    from lib.pathsafe import sha256_file
+
+    root = Path(project_root)
+    # lib.reference_import.tainted_hashes: every casting_inspiration pixel hash;
+    # lib.reference_import.verify_lineage: recursive receipted lineage to
+    # pipeline / attested-import roots (raises on any violation).
+    taint = _lazy("lib.reference_import", "tainted_hashes")(root)
+    verify_lineage = _lazy("lib.reference_import", "verify_lineage")
+    for path in local_refs:
+        sha = sha256_file(path)
+        if sha in taint:
+            raise LookGovernanceError(f"{path}: {REAL_PERSON_REFUSAL}")
+        try:
+            verify_lineage(root, sha, label=str(path))
+        except Exception as exc:  # noqa: BLE001 — any lineage failure is a refusal
+            raise LookGovernanceError(f"{path}: {REAL_PERSON_REFUSAL} ({exc})") from exc
+
+
+def receipt_governance_fields(governance: dict[str, Any] | None) -> dict[str, Any]:
+    """The receipt-bound subset of a ``verify_look_governance`` result — only
+    keys that are set, so legacy calls produce receipts identical to before.
+    The receipt binds ``look_refs`` / ``headshot_ref`` and, when the call was a
+    builder rendering, the verified ``prompt_recipe`` (enforcement re-checks
+    ``rendered_sha256`` against the sealed prompt for sheet images)."""
+    out: dict[str, Any] = {}
+    if not governance:
+        return out
+    for key in ("look_refs", "headshot_ref", "prompt_recipe"):
+        if governance.get(key) is not None:
+            out[key] = governance[key]
+    return out

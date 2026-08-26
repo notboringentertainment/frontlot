@@ -261,7 +261,28 @@ def _write_generation_receipts(
             prompt=meta.get("prompt"),
             seed=seed,
             references_applied=meta.get("references_applied"),
+            **_receipt_passthrough_fields(meta),
         )
+
+
+# Receipt fields a tool may bind through ``ToolResult.metadata`` (plan D10):
+# look governance (``look_refs``, ``headshot_ref``, ``prompt_recipe``) and, for
+# ``generator_kind: imported`` (Slice A′), the import provenance. They are
+# passed to ``record_generation`` only when present, so a tool that binds them
+# fails closed if the receipt layer cannot carry them.
+_RECEIPT_PASSTHROUGH_KEYS = (
+    "look_refs", "headshot_ref", "prompt_recipe",
+    "origin_tool", "attestation_receipt_id", "import_receipt_id", "normalized_pixel_hash",
+)
+
+
+def _receipt_passthrough_fields(meta: dict[str, Any]) -> dict[str, Any]:
+    out = {k: meta[k] for k in _RECEIPT_PASSTHROUGH_KEYS if meta.get(k) is not None}
+    if meta.get("generator_kind") == "imported":
+        missing = [k for k in ("origin_tool", "attestation_receipt_id") if k not in out]
+        if missing:
+            raise ValueError(f"imported provenance receipt is missing {missing}")
+    return out
 
 
 def _instrument_execute(fn: Callable) -> Callable:

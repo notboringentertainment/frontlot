@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openmontage/artifacts/headshot_packet",
+  "title": "Headshot Packet",
+  "description": "Output of the headshots stage (authored-film 1.2), scoped to proposal_packet.cast.character_ids. One discriminated artifact: state=pending carries per character up to 4 candidate ImageRefs (generated from the prompt_recipe, or the single imported_synthetic hero) and no hero; state=approved carries per character the approved hero, its origin, pixel hash and the headshot approval receipt minted by the selection gate. Completion requires state=approved. entity_id is unique per packet (enforced by validate_artifact).",
+  "type": "object",
+  "required": ["version", "state", "characters"],
+  "properties": {
+    "version": { "type": "string", "const": "1.0" },
+    "state": { "type": "string", "enum": ["pending", "approved"] },
+    "characters": { "type": "array" },
+    "metadata": { "type": "object" }
+  },
+  "additionalProperties": false,
+  "allOf": [ { "$ref": "#/$defs/by_state" } ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "entity_id": { "type": "string", "pattern": "^[a-z0-9-]+$", "minLength": 1 },
+    "look_ref": {
+      "type": "object",
+      "required": ["entity_kind", "entity_id", "look_hash", "receipt_id"],
+      "properties": {
+        "entity_kind": { "const": "character" },
+        "entity_id": { "$ref": "#/$defs/entity_id" },
+        "look_hash": { "$ref": "#/$defs/sha256" },
+        "receipt_id": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "prompt_recipe": {
+      "type": "object",
+      "required": ["look_hash", "builder_version", "fields_used", "rendered_sha256"],
+      "properties": {
+        "look_hash": { "$ref": "#/$defs/sha256" },
+        "builder_version": { "type": "string", "minLength": 1 },
+        "fields_used": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "rendered_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "image_ref": {
+      "type": "object",
+      "required": ["asset_id", "path", "role", "provenance"],
+      "properties": {
+        "asset_id": { "$ref": "#/$defs/sha256" },
+        "path": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))\\S+$" },
+        "role": { "type": "string", "minLength": 1 },
+        "provenance": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["generator_kind", "model_endpoint", "prompt", "generation_receipt_id"],
+              "properties": {
+                "generator_kind": { "const": "model" },
+                "model_endpoint": { "type": "string", "minLength": 1 },
+                "prompt": { "type": "string", "minLength": 1 },
+                "seed": { "type": "integer" },
+                "generation_receipt_id": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["generator_kind", "tool", "tool_version", "parameters_hash", "input_asset_ids", "generation_receipt_id"],
+              "properties": {
+                "generator_kind": { "const": "local" },
+                "tool": { "type": "string", "minLength": 1 },
+                "tool_version": { "type": "string", "minLength": 1 },
+                "parameters_hash": { "$ref": "#/$defs/sha256" },
+                "input_asset_ids": { "type": "array", "items": { "$ref": "#/$defs/sha256" } },
+                "generation_receipt_id": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["generator_kind", "origin_tool", "attestation_receipt_id", "import_receipt_id", "normalized_pixel_hash", "generation_receipt_id"],
+              "properties": {
+                "generator_kind": { "const": "imported" },
+                "origin_tool": { "type": "string", "minLength": 1 },
+                "attestation_receipt_id": { "type": "string", "minLength": 1, "description": "The reference_import approval receipt (origin_class imported_synthetic) binding origin, normalized pixel hash and attestation" },
+                "import_receipt_id": { "type": "string", "minLength": 1, "description": "The generation receipt (generator_kind imported) that ledgered the normalized object; equals generation_receipt_id" },
+                "normalized_pixel_hash": { "$ref": "#/$defs/sha256" },
+                "generation_receipt_id": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "pending_entry": {
+      "type": "object",
+      "required": ["entity_kind", "entity_id", "look_ref", "candidates"],
+      "properties": {
+        "entity_kind": { "const": "character" },
+        "entity_id": { "$ref": "#/$defs/entity_id" },
+        "look_ref": { "$ref": "#/$defs/look_ref" },
+        "prompt_recipe": { "$ref": "#/$defs/prompt_recipe" },
+        "candidates": { "type": "array", "minItems": 1, "maxItems": 4, "items": { "$ref": "#/$defs/image_ref" } },
+        "rejection_notes": { "type": "array", "items": { "type": "string" }, "description": "Logged notes from earlier reject-all rounds" }
+      },
+      "additionalProperties": false
+    },
+    "approved_entry": {
+      "type": "object",
+      "required": ["entity_kind", "entity_id", "look_ref", "hero", "origin", "normalized_pixel_hash", "approval_receipt_id", "candidates_rejected"],
+      "properties": {
+        "entity_kind": { "const": "character" },
+        "entity_id": { "$ref": "#/$defs/entity_id" },
+        "look_ref": { "$ref": "#/$defs/look_ref" },
+        "prompt_recipe": { "$ref": "#/$defs/prompt_recipe" },
+        "hero": { "$ref": "#/$defs/image_ref" },
+        "origin": { "type": "string", "enum": ["generated", "imported_synthetic"] },
+        "import_receipt_id": { "type": "string", "minLength": 1 },
+        "normalized_pixel_hash": { "$ref": "#/$defs/sha256" },
+        "approval_receipt_id": { "type": "string", "minLength": 1 },
+        "candidates_checkpoint_digest": { "$ref": "#/$defs/sha256" },
+        "candidates_rejected": { "type": "array", "items": { "$ref": "#/$defs/sha256" } },
+        "rejection_notes": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false,
+      "if": { "properties": { "origin": { "const": "imported_synthetic" } } },
+      "then": { "required": ["import_receipt_id"] }
+    },
+    "by_state": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": { "const": "pending" },
+            "characters": { "type": "array", "items": { "$ref": "#/$defs/pending_entry" } }
+          },
+          "required": ["state", "characters"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": { "const": "approved" },
+            "characters": { "type": "array", "items": { "$ref": "#/$defs/approved_entry" } }
+          },
+          "required": ["state", "characters"]
+        }
+      ]
+    }
+  }
+}

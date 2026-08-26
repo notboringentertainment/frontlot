@@ -33,13 +33,15 @@ VISUAL_ASSET_TYPES = {"image", "video", "animation"}
 
 # Stages at or after visual_bible: paid work happens here, so the project
 # config (budget, cast cap, egress consent) must be human-bound first.
-CONFIG_BOUND_STAGES = {"visual_bible", "script", "scene_plan", "assets", "edit", "compose"}
+CONFIG_BOUND_STAGES = {"headshots", "visual_bible", "script", "scene_plan", "assets", "edit", "compose"}
 PROJECT_CONFIG_FILENAME = "project.yaml"
 CONFIG_ENTITY_ID = "project-config"
 STORYBOARD_BATCH_ENTITY_ID = "storyboard_batch"
 POSTER_ENTITY_ID = "poster"
 CHARACTER_SHEET_ROLES = ("front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")
 CHARACTER_APPROVAL_KINDS = ("sheet", "hero")
+LOOK_LOCK_MANIFEST = ("authored-film", "1.2")
+SPOILER_SENSITIVE_FORMATS = {"trailer", "teaser"}
 _CONFIG_DIGEST_RE = re.compile(r"config_sha256:\s*([a-f0-9]{64})")
 
 # Media probes run on the checkpoint-write path against writer-supplied
@@ -711,24 +713,36 @@ def character_approval_record(entry: dict[str, Any], palette: dict[str, Any]) ->
     sheet = entry.get("sheet") or {}
     for role in CHARACTER_SHEET_ROLES:
         assets[role] = (sheet.get(role) or {}).get("asset_id")
-    return {
+    record = {
         "id": entry.get("id"),
         "assets": assets,
-        "approved_prompt_block": entry.get("approved_prompt_block"),
         "wardrobe_negative": entry.get("wardrobe_negative"),
         "palette": palette,
     }
+    if "prompt_recipe" in entry or "look_ref" in entry:
+        # visual_bible 1.1: the approval seals the recipe and the look hash,
+        # never a verbatim prompt block.
+        record["prompt_recipe"] = entry.get("prompt_recipe")
+        record["look_hash"] = (entry.get("look_ref") or {}).get("look_hash")
+        record["sheet_revision"] = entry.get("sheet_revision")
+    else:
+        record["approved_prompt_block"] = entry.get("approved_prompt_block")
+    return record
 
 
 def location_approval_record(entry: dict[str, Any], palette: dict[str, Any]) -> dict[str, Any]:
     assets = {"establishing": (entry.get("establishing") or {}).get("asset_id")}
     for i, angle in enumerate(entry.get("angles") or []):
         assets[f"angle_{i}"] = (angle or {}).get("asset_id")
-    return {
+    record = {
         "id": entry.get("id"),
         "assets": assets,
         "palette": entry.get("palette_override") or palette,
     }
+    if "look_ref" in entry:
+        record["look_hash"] = (entry.get("look_ref") or {}).get("look_hash")
+        record["sheet_revision"] = entry.get("sheet_revision")
+    return record
 
 
 def poster_approval_record(poster: dict[str, Any], palette: dict[str, Any]) -> dict[str, Any]:
@@ -760,7 +774,7 @@ def storyboard_batch_record(frames: dict[str, str]) -> dict[str, Any]:
 # the decision_log ``approval_policy`` requirement (the writer's recorded
 # ruling) on top of the receipt binding.
 
-UPLOADING_STAGES = {"visual_bible", "assets"}
+UPLOADING_STAGES = {"headshots", "visual_bible", "assets"}
 
 
 def _config_decision_bound(decisions: list[dict[str, Any]], digest: str) -> bool:
@@ -955,10 +969,16 @@ _PROVENANCE_FIELD_MAP = {
     "local_tool_version": "local_tool_version",
     "parameters_hash": "parameters_hash",
     "input_asset_ids": "input_asset_ids",
+    # imported branch (Slice A'): the receipt is the attested import itself.
+    "origin_tool": "origin_tool",
+    "attestation_receipt_id": "attestation_receipt_id",
+    "normalized_pixel_hash": "output_sha256",
+    "import_receipt_id": "receipt_id",
 }
 _PROVENANCE_REQUIRED = {
     "model": ("generator_kind", "model_endpoint", "prompt"),
     "local": ("generator_kind", "tool", "tool_version", "parameters_hash", "input_asset_ids"),
+    "imported": ("generator_kind", "origin_tool", "attestation_receipt_id", "import_receipt_id", "normalized_pixel_hash"),
 }
 
 
@@ -966,7 +986,7 @@ def _check_provenance_fields(label: str, provenance: dict[str, Any], receipt: di
     kind = provenance.get("generator_kind")
     required = _PROVENANCE_REQUIRED.get(kind)
     if required is None:
-        _fail(f"{label} provenance.generator_kind {kind!r} is not 'model' or 'local'.")
+        _fail(f"{label} provenance.generator_kind {kind!r} is not 'model', 'local' or 'imported'.")
     for field in required:
         if field not in provenance:
             _fail(f"{label} provenance lacks {field!r}, which a {kind} generation must state.")
@@ -1425,15 +1445,327 @@ def _check_assets_v11(
             )
 
 
+# ---------------------------------------------------------------------------
+# authored-film 1.2: look_lock, headshots, look_ref / headshot_ref / lineage
+# ---------------------------------------------------------------------------
+
+def _is_look_lock_manifest(pin: Any) -> bool:
+    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) == LOOK_LOCK_MANIFEST
+
+
+def _cast_keys(proposal: dict[str, Any]) -> list[tuple[str, str]]:
+    cast = proposal.get("cast") or {}
+    keys = [("character", c) for c in cast.get("character_ids") or []]
+    keys += [("location", l) for l in cast.get("location_ids") or []]
+    return keys
+
+
+def _active_looks(project_dir: Path) -> dict[tuple[str, str], Any]:
+    from lib.look_ingest import LookIngestError, active_looks
+
+    try:
+        return active_looks(project_dir)
+    except LookIngestError as exc:
+        _fail(f"look_lock receipt chain is not a unique-tip chain: {exc}")
+        return {}
+
+
+def _active_headshots(project_dir: Path) -> dict[str, Any]:
+    from lib.headshots import HeadshotError, active_headshots
+
+    try:
+        return active_headshots(project_dir)
+    except HeadshotError as exc:
+        _fail(f"headshot receipt chain is not a unique-tip chain: {exc}")
+        return {}
+
+
+def _check_look_packet_current(project_dir: Path, packet: dict[str, Any], proposal: dict[str, Any], stage: str) -> dict[tuple[str, str], Any]:
+    """Every proposal cast entity has an entry whose look_hash is the active
+    look, hashes its look_spec, names the active receipt, is generation-
+    sufficient, and (trailer/teaser) is not a spoiler. Returns active looks."""
+    from lib.canonical_json import record_sha256
+    from lib.look_spec import LookSpecError, generation_sufficient, validate_look_spec
+
+    active = _active_looks(project_dir)
+    entries = {(e.get("entity_kind"), e.get("entity_id")): e for e in packet.get("looks", []) if isinstance(e, dict)}
+    fmt = str((proposal.get("runtime_shape") or {}).get("format") or "")
+    for key in _cast_keys(proposal):
+        entry = entries.get(key)
+        if entry is None:
+            _fail(f"{stage}: cast entity {key} has no entry in look_packet — every cast entity needs a ratified look.")
+        spec = entry.get("look_spec") or {}
+        try:
+            validate_look_spec(spec)
+        except LookSpecError as exc:
+            _fail(f"{stage}: look_spec for {key} is invalid: {exc}")
+        if (spec.get("entity_kind"), spec.get("entity_id")) != key:
+            _fail(f"{stage}: look_spec for {key} describes {(spec.get('entity_kind'), spec.get('entity_id'))}.")
+        if record_sha256(spec) != entry.get("look_hash"):
+            _fail(f"{stage}: look_packet entry {key} look_hash does not hash its look_spec.")
+        current = active.get(key)
+        if current is None:
+            _fail(f"{stage}: no active look_lock receipt for {key} — ratification is the signed receipt (D12).")
+        if current.look_hash != entry.get("look_hash") or current.receipt_id != entry.get("receipt_id"):
+            _fail(
+                f"{stage}: look_packet entry {key} carries look_hash {entry.get('look_hash')} / receipt "
+                f"{entry.get('receipt_id')} but the active look is {current.look_hash} / {current.receipt_id}."
+            )
+        ok, why = generation_sufficient(spec)
+        if not ok:
+            _fail(f"{stage}: look for {key} cannot drive production: {why}.")
+        if fmt in SPOILER_SENSITIVE_FORMATS and spec.get("spoiler") is True:
+            _fail(f"{stage}: look for {key} is a spoiler; a {fmt} cast refuses spoiler looks.")
+    return active
+
+
+def _check_look_lock(project_dir: Path, packet: dict[str, Any], proposal: dict[str, Any], status: str) -> None:
+    if status != "completed":
+        return
+    _check_look_packet_current(project_dir, packet, proposal, "look_lock")
+
+
+def _check_lineage(project_dir: Path, label: str, asset_id: str, receipts_by_sha: dict[str, dict[str, Any]]) -> None:
+    from lib.reference_import import ReferenceImportError, verify_lineage
+
+    try:
+        verify_lineage(project_dir, asset_id, receipts_by_sha=receipts_by_sha, label=label)
+    except ReferenceImportError as exc:
+        _fail(str(exc))
+
+
+def _receipt_for(ref: dict[str, Any], receipts_by_sha: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    return receipts_by_sha.get(ref.get("asset_id"), {})
+
+
+def _require_look_refs(label: str, ref: dict[str, Any], receipt: dict[str, Any], key: tuple[str, str], look_hash: str) -> None:
+    """A model/local canon image of an entity must have been generated with
+    look_refs naming that entity's active look (never entity-free)."""
+    if (ref.get("provenance") or {}).get("generator_kind") == "imported":
+        return
+    refs = receipt.get("look_refs") or []
+    wanted = {"entity_kind": key[0], "entity_id": key[1], "look_hash": look_hash}
+    if wanted not in refs:
+        _fail(
+            f"{label}: generation receipt {receipt.get('receipt_id')!r} does not bind look_ref {wanted} — "
+            f"visual_bible-stage generation is never entity-free; the governed tool verifies and seals look_refs."
+        )
+
+
+def _check_sheet_prompt_recipe(label: str, ref: dict[str, Any], receipt: dict[str, Any], look_hash: str) -> None:
+    """A sheet ImageRef generated under a builder ``prompt_recipe`` (sealed in
+    its receipt) must be the rendering that recipe describes: the receipt's
+    ``prompt`` — the text the provider actually received, and what the
+    ImageRef's ``provenance.prompt`` is compared against — hashes to
+    ``rendered_sha256``, and the recipe names the active look. Receipts
+    without a recipe (legacy sheets) are untouched."""
+    recipe = receipt.get("prompt_recipe")
+    if not isinstance(recipe, dict):
+        return
+    stated = (ref.get("provenance") or {}).get("prompt")
+    prompt = receipt.get("prompt") if stated is None else stated
+    rendered = hashlib.sha256(str(prompt or "").encode("utf-8")).hexdigest()
+    if rendered != recipe.get("rendered_sha256"):
+        _fail(
+            f"{label}: prompt does not hash to the sealed prompt_recipe.rendered_sha256 "
+            f"{recipe.get('rendered_sha256')!r} in receipt {receipt.get('receipt_id')!r} — sheet prompts are "
+            f"builder renderings, never edited text."
+        )
+    if recipe.get("look_hash") != look_hash:
+        _fail(f"{label}: receipt prompt_recipe.look_hash {recipe.get('look_hash')!r} is not the active look {look_hash}.")
+
+
+def _check_headshots(project_dir: Path, packet: dict[str, Any], proposal: dict[str, Any], status: str) -> None:
+    from lib.headshots import prompt_recipe_sha256
+
+    look_packet_cp = _read_json(project_dir / "checkpoint_look_lock.json") or {}
+    look_packet = (look_packet_cp.get("artifacts") or {}).get("look_packet") or {}
+    active_looks = _check_look_packet_current(project_dir, look_packet, proposal, "headshots")
+    char_ids = list((proposal.get("cast") or {}).get("character_ids") or [])
+    receipts = {r["output_sha256"]: r for r in _generation_receipt_rows(project_dir)}
+    entries = {e.get("entity_id"): e for e in packet.get("characters", []) if isinstance(e, dict)}
+    state = packet.get("state")
+    if status == "completed" and state != "approved":
+        _fail("headshots cannot complete with a pending headshot_packet — every cast character needs an approved hero.")
+    if status == "awaiting_human" and state not in {"pending", "approved"}:
+        _fail(f"headshot_packet.state {state!r} is not pending|approved.")
+    extra = sorted(set(entries) - set(char_ids))
+    if extra:
+        _fail(f"headshot_packet carries characters {extra} outside proposal_packet.cast.character_ids.")
+    for cid in char_ids:
+        entry = entries.get(cid)
+        if entry is None:
+            if status == "completed":
+                _fail(f"headshots cannot complete: cast character {cid!r} has no approved hero.")
+            continue
+        look = active_looks.get(("character", cid))
+        look_ref = entry.get("look_ref") or {}
+        if look is None or look_ref.get("look_hash") != look.look_hash or look_ref.get("receipt_id") != look.receipt_id:
+            _fail(f"headshot entry {cid!r} look_ref is not the active look ({look.look_hash if look else None}).")
+        recipe = entry.get("prompt_recipe")
+        if isinstance(recipe, dict) and recipe.get("look_hash") != look.look_hash:
+            _fail(f"headshot entry {cid!r} prompt_recipe.look_hash is not the active look.")
+        if state == "pending":
+            for i, cand in enumerate(entry.get("candidates") or []):
+                label = f"headshot candidate {cid!r}[{i}]"
+                _check_image_ref(project_dir, label, cand, list(receipts.values()))
+                _check_lineage(project_dir, label, cand.get("asset_id"), receipts)
+                _require_look_refs(label, cand, _receipt_for(cand, receipts), ("character", cid), look.look_hash)
+            continue
+        hero = entry.get("hero") or {}
+        label = f"headshot hero {cid!r}"
+        _check_image_ref(project_dir, label, hero, list(receipts.values()))
+        _check_lineage(project_dir, label, hero.get("asset_id"), receipts)
+        _require_look_refs(label, hero, _receipt_for(hero, receipts), ("character", cid), look.look_hash)
+        current = _active_headshots(project_dir).get(cid)
+        if current is None:
+            _fail(f"{label} has no active headshot receipt — faces are approved only through the selection gate.")
+        if current.receipt_id != entry.get("approval_receipt_id") or current.asset_id != hero.get("asset_id"):
+            _fail(
+                f"{label} names receipt {entry.get('approval_receipt_id')!r} / asset {hero.get('asset_id')} but the "
+                f"active headshot is receipt {current.receipt_id} / asset {current.asset_id}."
+            )
+        rec = current.record
+        if rec.get("look_hash") != look.look_hash:
+            _fail(f"{label} was approved against look {rec.get('look_hash')}, not the active look {look.look_hash}.")
+        if rec.get("origin") != entry.get("origin") or rec.get("normalized_pixel_hash") != entry.get("normalized_pixel_hash"):
+            _fail(f"{label} origin/pixel hash differ from the signed headshot record.")
+        if rec.get("import_receipt_id") != entry.get("import_receipt_id"):
+            _fail(f"{label} import_receipt_id differs from the signed headshot record.")
+        if rec.get("prompt_recipe_sha256") != prompt_recipe_sha256(recipe):
+            _fail(f"{label} prompt_recipe does not match the recipe hash sealed in the headshot record.")
+        if entry.get("candidates_checkpoint_digest") not in (None, rec.get("candidates_checkpoint_digest")):
+            _fail(f"{label} candidates_checkpoint_digest differs from the signed headshot record.")
+        provenance = hero.get("provenance") or {}
+        if entry.get("origin") == "imported_synthetic":
+            if provenance.get("generator_kind") != "imported" or provenance.get("generation_receipt_id") != entry.get("import_receipt_id"):
+                _fail(f"{label} is imported_synthetic but its provenance/import_receipt_id do not cite the imported generation receipt.")
+        elif provenance.get("generator_kind") == "imported":
+            _fail(f"{label} has imported provenance but origin {entry.get('origin')!r}.")
+
+
+def _load_headshot_packet(project_dir: Path, artifacts: dict[str, Any]) -> dict[str, Any] | None:
+    checkpoint = _read_json(project_dir / "checkpoint_headshots.json")
+    if checkpoint and checkpoint.get("status") == "completed" and isinstance(checkpoint.get("artifacts"), dict):
+        packet = checkpoint["artifacts"].get("headshot_packet")
+        if isinstance(packet, dict):
+            return packet
+    packet = artifacts.get("headshot_packet")
+    return packet if isinstance(packet, dict) else None
+
+
+def _check_visual_bible_entry_v12(
+    project_dir: Path, artifacts: dict[str, Any], proposal: dict[str, Any]
+) -> tuple[dict[tuple[str, str], Any], dict[str, Any]]:
+    """visual_bible (in_progress onward): look_packet and headshot_packet
+    must be current. Returns (active looks, active headshots)."""
+    look_packet_cp = _read_json(project_dir / "checkpoint_look_lock.json") or {}
+    look_packet = (look_packet_cp.get("artifacts") or {}).get("look_packet")
+    if not isinstance(look_packet, dict) and isinstance(artifacts.get("look_packet"), dict):
+        look_packet = artifacts["look_packet"]
+    if not isinstance(look_packet, dict):
+        _fail("visual_bible cannot start: no look_packet from a completed look_lock checkpoint.")
+    active_looks = _check_look_packet_current(project_dir, look_packet, proposal, "visual_bible")
+    packet = _load_headshot_packet(project_dir, artifacts)
+    if not isinstance(packet, dict) or packet.get("state") != "approved":
+        _fail("visual_bible cannot start: no approved headshot_packet from a completed headshots checkpoint.")
+    active_headshots = _active_headshots(project_dir)
+    entries = {e.get("entity_id"): e for e in packet.get("characters", []) if isinstance(e, dict)}
+    for cid in (proposal.get("cast") or {}).get("character_ids") or []:
+        entry = entries.get(cid)
+        current = active_headshots.get(cid)
+        if entry is None or current is None:
+            _fail(f"visual_bible cannot start: character {cid!r} has no approved current headshot.")
+        if current.receipt_id != entry.get("approval_receipt_id") or current.asset_id != (entry.get("hero") or {}).get("asset_id"):
+            _fail(f"visual_bible cannot start: headshot for {cid!r} was superseded or retired; re-approve it.")
+        look = active_looks.get(("character", cid))
+        if look is None or current.look_hash != look.look_hash:
+            _fail(f"visual_bible cannot start: headshot for {cid!r} predates the active look; re-approve it.")
+    return active_looks, active_headshots
+
+
+def _check_visual_bible_v12(
+    project_dir: Path, bible: dict[str, Any], proposal: dict[str, Any],
+    active_looks: dict[tuple[str, str], Any], active_headshots: dict[str, Any],
+) -> None:
+    if _version(bible) != "1.1":
+        _fail("authored-film 1.2 requires a 1.1 visual_bible (look_ref, sheet_revision, prompt_recipe).")
+    receipts = {r["output_sha256"]: r for r in _generation_receipt_rows(project_dir)}
+    for kind, key in (("character", "characters"), ("location", "locations")):
+        for entry in bible.get(key, []):
+            if not isinstance(entry, dict) or entry.get("status") == "superseded":
+                continue
+            eid = entry.get("id")
+            look = active_looks.get((kind, eid))
+            look_ref = entry.get("look_ref") or {}
+            if look is None:
+                _fail(f"{kind} {eid!r} has no active look; sheets are built only from ratified looks.")
+            if look_ref.get("look_hash") != look.look_hash or look_ref.get("receipt_id") != look.receipt_id:
+                _fail(
+                    f"{kind} {eid!r} look_ref.look_hash {look_ref.get('look_hash')} is not the active look "
+                    f"{look.look_hash} — the look was superseded; a new sheet_revision is required."
+                )
+            recipe = entry.get("prompt_recipe")
+            if isinstance(recipe, dict) and recipe.get("look_hash") != look.look_hash:
+                _fail(f"{kind} {eid!r} prompt_recipe.look_hash is not the active look.")
+            if kind == "character":
+                refs = [("hero", entry.get("hero") or {})] + [
+                    (role, (entry.get("sheet") or {}).get(role) or {}) for role in CHARACTER_SHEET_ROLES
+                ]
+                current = active_headshots.get(eid)
+                if current is None:
+                    _fail(f"character {eid!r} has no approved headshot; a face is approved before any sheet.")
+                if (entry.get("hero") or {}).get("asset_id") != current.asset_id:
+                    _fail(f"character {eid!r} hero {entry.get('hero', {}).get('asset_id')} is not the approved headshot {current.asset_id}.")
+                wanted = {"entity_id": eid, "asset_id": current.asset_id, "approval_receipt_id": current.receipt_id}
+                for role, ref in refs:
+                    label = f"character {eid!r} {role}"
+                    _check_lineage(project_dir, label, ref.get("asset_id"), receipts)
+                    receipt = _receipt_for(ref, receipts)
+                    _require_look_refs(label, ref, receipt, (kind, eid), look.look_hash)
+                    if role != "hero" and receipt.get("headshot_ref") != wanted:
+                        _fail(
+                            f"{label}: generation receipt {receipt.get('receipt_id')!r} headshot_ref "
+                            f"{receipt.get('headshot_ref')!r} does not name the approved hero {wanted} — "
+                            f"sheets derive only from the approved headshot."
+                        )
+                    if role != "hero":
+                        _check_sheet_prompt_recipe(label, ref, receipt, look.look_hash)
+            else:
+                refs = [("establishing", entry.get("establishing") or {})] + [
+                    (f"angles[{i}]", a or {}) for i, a in enumerate(entry.get("angles") or [])
+                ]
+                for role, ref in refs:
+                    label = f"location {eid!r} {role}"
+                    _check_lineage(project_dir, label, ref.get("asset_id"), receipts)
+                    _require_look_refs(label, ref, _receipt_for(ref, receipts), (kind, eid), look.look_hash)
+    poster = bible.get("poster") or {}
+    for role in ("key_art", "title_card", "poster_final"):
+        ref = poster.get(role) or {}
+        if ref.get("asset_id"):
+            _check_lineage(project_dir, f"poster {role}", ref["asset_id"], receipts)
+
+
 def enforce_authored_canon(
     pipeline_dir: Path,
     project_id: str,
     stage: str,
     status: str,
     artifacts: dict[str, Any],
+    *,
+    pin: Any = None,
 ) -> None:
     """Entry point called by lib.checkpoint.write_checkpoint before any state
-    is persisted. Raises CheckpointValidationError on violation."""
+    is persisted. Raises CheckpointValidationError on violation. ``pin`` is
+    the project's pinned manifest tuple (lib.pipeline_pin.PinnedPipeline);
+    look-lock / headshot / lineage rules apply only under authored-film 1.2."""
+    look_lock_profile = _is_look_lock_manifest(pin)
+    if look_lock_profile and stage == "visual_bible" and status == "in_progress":
+        # Stage-entry preflight (R2#12, R2#5): no sheet work starts without a
+        # current look_packet and an approved, current headshot for every
+        # cast character.
+        proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}
+        _check_visual_bible_entry_v12(pipeline_dir / project_id, artifacts, proposal)
     if status not in {"completed", "awaiting_human"}:
         return
 
@@ -1482,6 +1814,17 @@ def enforce_authored_canon(
             project_dir, artifacts.get("visual_bible", {}), proposal, canon,
             config.data if config else {}, decisions, status,
         )
+        if look_lock_profile:
+            active_looks, active_headshots = _check_visual_bible_entry_v12(project_dir, artifacts, proposal)
+            _check_visual_bible_v12(
+                project_dir, artifacts.get("visual_bible", {}), proposal, active_looks, active_headshots,
+            )
+    elif stage == "look_lock":
+        proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}
+        _check_look_lock(project_dir, artifacts.get("look_packet", {}), proposal, status)
+    elif stage == "headshots":
+        proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}
+        _check_headshots(project_dir, artifacts.get("headshot_packet", {}), proposal, status)
     elif stage == "script":
         _check_script(artifacts.get("script", {}), canon, ids, status)
     elif stage == "scene_plan":

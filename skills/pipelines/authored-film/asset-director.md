@@ -2,9 +2,12 @@
 
 ## When To Use
 
-Fifth stage (`assets`). You generate/select every asset the scene plan needs,
-with the canon packet's continuity apparatus applied at generation time and
-recorded in the manifest.
+Eighth stage (`assets`, manifest 1.2). You generate/select every asset the
+scene plan needs, with the canon packet's continuity apparatus applied at
+generation time and recorded in the manifest. Every governed visual call you
+make names the ratified looks it renders (`look_refs`) — the only exception is
+a shot whose approved scene record is `entity_free: true`, and that is checked
+server-side, not taken from you.
 
 Read `pipelines/authored-film/canon-guard` first.
 
@@ -13,7 +16,8 @@ Read `pipelines/authored-film/canon-guard` first.
 | Layer | Resource | Purpose |
 |-------|----------|---------|
 | Schema | `schemas/artifacts/asset_manifest.schema.json` | Artifact validation |
-| Prior artifacts | `scene_plan` (v1.1: `shots[]`, refs, `model_endpoint`), `canon_packet`, `visual_bible` | What to make + continuity truth + approved sheets |
+| Prior artifacts | `scene_plan` (v1.1: `shots[]`, refs, `model_endpoint`), `canon_packet`, `visual_bible` (v1.1: `look_ref`, `headshot_ref`, `prompt_recipe`, `sheet_revision` per entity), `look_packet` | What to make + continuity truth + approved sheets + the ratified looks they render |
+| Prompt builder | `tools/prompt_builder` | Rebuilds each entity's identity paragraph from its `prompt_recipe`; verifies `rendered_sha256` |
 | Config | `projects/<slug>/project.yaml` | Budget cap, run lease, egress (already approved before this stage) |
 | Layer 3 | `.agents/skills/kling-o3-reference`, `.agents/skills/seedream` (and `.agents/skills/seedance-2-5` only for entity-free scenes) | Provider prompting guidance |
 | Tools | `seedream_image` (storyboard frames), `kling_reference_video` (default: Kling o3 pro reference-to-video, faces allowed), `seedance_video` (`model_version: 2.5`, entity-free scenes only via `model_override`), music tools, TTS, subtitle_gen, audio_enhance | Capabilities |
@@ -26,10 +30,11 @@ Before any video call, generate a `storyboard_frame` for **every** `shot_id` in
 the scene plan (`asset_class: storyboard_frame`, `type: image`, `shot_id`,
 `continuity.references_applied` required). Each frame is a `seedream_image`
 `edit` call with the shot's approved sheets as references (packing policy
-below, minus the storyboard slot), the shot's `description`, the character
-`approved_prompt_block`s pasted verbatim, the palette, and the shot's
-`shot_language` framing. Storyboard frames are per-production assets that
-**cite** canon; they are not canon and do not enter `canon/visual/`.
+below, minus the storyboard slot), the shot's `description`, each character's
+identity paragraph **rebuilt from its `prompt_recipe`** (§2a), the palette,
+and the shot's `shot_language` framing, with `look_refs` for every entity in
+the shot. Storyboard frames are per-production assets that **cite** canon;
+they are not canon and do not enter `canon/visual/`.
 
 Present the whole set on the filmstrip and checkpoint `awaiting_human`. The
 writer approves the batch (receipt `kind: storyboard_batch`, minted by the gate
@@ -91,11 +96,39 @@ reference.
 The prompt addresses each reference by slot: "@Image1 is the character's face
 and hair — maintain exact appearance; @Image2 is her costume — do not alter
 garment category or colour; @Image3 is the location; @Image4 is the
-composition to match." Then the shot's action (one action), the pasted
-`approved_prompt_block` for each character, the `wardrobe_negative`, the
-scene's continuity constraints, the palette hues, and the annex's
-`visual_continuity_risks` as negative lines. A reference that is packed but not
+composition to match." Then the shot's action (one action), each character's
+rebuilt identity paragraph (§2a), the `wardrobe_negative`, the scene's
+continuity constraints, the palette hues, and the look's `continuity_risks[]`
+/ `negative_lines[]` as negative lines. A reference that is packed but not
 addressed in the prompt is not applied.
+
+### 2a. Rebuild Identity Paragraphs From the Recipe — Never Paste, Never Reword
+
+The visual bible no longer carries an `approved_prompt_block` string. Each
+entity carries a `prompt_recipe {look_hash, builder_version, fields_used[],
+rendered_sha256}`. For every entity in a shot:
+
+1. Call `tools/prompt_builder` with the entity's recipe. It reads the ratified
+   `look_spec` for `look_hash` from `look_packet`, renders the same
+   `fields_used[]` with the same `builder_version`, and returns the paragraph.
+2. Verify the returned `rendered_sha256` equals the recipe's. A mismatch means
+   the look was superseded, the builder version moved, or the bible is stale
+   — stop and raise it at the gate; do not "fix" the text.
+3. Insert the paragraph unchanged into the prompt, and pass `look_refs:
+   [{entity_kind, entity_id, look_hash}]` for every entity the shot renders.
+
+You never type identity lines by hand and never edit the rendered paragraph.
+`paid_call_context` verifies each look ref against the active `look_lock`
+receipt before upload, checks the prompt against the recipe, and binds
+`look_refs` into the signed generation receipt. A call whose `look_hash` is
+not the current active look for that key fails with no budget consumed.
+
+**`look_refs` is required on every governed visual call** (`seedream_image`,
+`kling_reference_video`, `seedance_video`). A call may omit it only when it
+names a `shot_id` whose approved scene-plan record is `entity_free: true` —
+the tool looks that up in the approved `scene_plan` checkpoint itself; a
+boolean you pass is never trusted. There is no other entity-free path, and no
+non-shot material with a tracked entity in it.
 
 `continuity.references_applied[]` has two item shapes (asset_manifest 1.1):
 an **entity reference** `{asset_id, path, role, visual_bible_entity_id}` for
@@ -155,13 +188,21 @@ approved frame).
 For each generated asset involving a tracked character or location:
 
 - Start from the `visual_bible` sheets (the canon packet's
-  `reference_assets` describe the writer's intent; the sheets are what the
-  model sees).
-- Paste `approved_prompt_block` verbatim — never reworded — and the
-  `wardrobe_negative`.
+  `reference_assets` / `reference_assets_needed` describe the writer's
+  intent and are advisory only; the sheets are what the model sees). Every
+  reference you pack is local, hash-verified, and has a receipted lineage
+  back to a pipeline generation or an attested `imported_synthetic` import;
+  remote URLs are refused, and anything touching a `casting_inspiration`
+  hash fails before upload.
+- Rebuild each character's identity paragraph from its `prompt_recipe` (§2a)
+  and add the `wardrobe_negative`. Never paste, never reword.
+- Confirm the sheet's `look_ref.look_hash` is still the active look and its
+  `headshot_ref` still the current hero; a retired look or superseded hero
+  has already invalidated the bible, and the runtime will refuse the call.
 - Carry the scene's continuity constraints into the generation prompt.
-- Apply the annex's `visual_continuity_risks` as explicit negative/guard
-  instructions, and its `prompt_language_notes` where they apply.
+- Apply the look's `continuity_risks[]` / `negative_lines[]` (and the annex's
+  `visual_continuity_risks`) as explicit negative/guard instructions, and the
+  annex's `prompt_language_notes` where they apply.
 - Record the evidence in each visual asset's structured `continuity` field:
   `canon_refs` (the lock/beat ids or entity ids the asset must stay true to),
   `references_applied` (objects, above), and `risk_notes_applied`. Runtime-
@@ -170,7 +211,9 @@ For each generated asset involving a tracked character or location:
   `character_refs`/`location_ref` are non-empty — one whose
   `references_applied` does not cover every referenced entity. Shots on
   `entity_free` scenes (title cards, transitions, abstract inserts) are exempt
-  and are `asset_class: non_shot` or carry empty refs honestly.
+  from `look_refs` and entity coverage only because the approved scene record
+  says so — they are `asset_class: non_shot` or carry empty refs honestly,
+  and the tool verifies the `shot_id` against the approved plan.
 
 A character drifting off their described appearance between scenes is the
 authored-film equivalent of a broken build.
@@ -200,6 +243,12 @@ per-asset cost and receipt ids, spend against cap. END YOUR TURN.
 
 - Listing references in the manifest without them ever touching a prompt or
   the payload.
+- Typing identity lines by hand, editing the rebuilt paragraph, or reusing a
+  paragraph whose `rendered_sha256` no longer matches the recipe.
+- Omitting `look_refs` on a governed call, or claiming a shot is entity-free
+  when its approved scene record is not.
+- Packing a reference with no receipted lineage (or a remote URL) and hoping
+  the provider does not mind.
 - Generating video before the storyboard batch is approved, or generating a
   storyboard frame without the sheets as references.
 - Mixing endpoints inside a scene, or choosing a model per shot.

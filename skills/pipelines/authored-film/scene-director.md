@@ -2,7 +2,7 @@
 
 ## When To Use
 
-Fourth stage (`scene_plan`). You translate the approved script into an ordered
+Seventh stage (`scene_plan`, manifest 1.2). You translate the approved script into an ordered
 `scene_plan` whose scenes carry the canon's continuity constraints INTO the
 plan itself — so asset generation cannot lose them.
 

@@ -126,6 +126,26 @@ class SeedreamImage(BaseTool):
             },
             "num_images": {"type": "integer", "minimum": 1, "maximum": 6, "default": 1},
             "output_format": {"type": "string", "enum": ["jpeg", "png"], "default": "png"},
+            "reference_manifest": {
+                "type": "array", "items": {"type": "object"},
+                "description": "Optional {asset_id, path, role, visual_bible_entity_id} per reference_image_paths entry, "
+                               "same order; when omitted the tool records {asset_id, path, role: reference} itself.",
+            },
+            "look_refs": {
+                "type": "array", "items": {"type": "object"},
+                "description": "Governed calls: [{entity_kind, entity_id, look_hash}] verified against active look_lock "
+                               "receipts before upload and bound into the receipt. Omit only for a shot_id whose "
+                               "approved scene_plan record is entity_free.",
+            },
+            "stage": {"type": "string", "description": "Pipeline stage making the call; visual_bible calls can never be entity-free and require prompt_recipe."},
+            "asset_role": {
+                "type": "string",
+                "enum": ["hero", "front", "three_quarter", "profile", "full_body", "expressions", "wardrobe", "establishing", "detail", "time_variant", "key_art"],
+                "description": "Sheet roles (front, three_quarter, profile, full_body, expressions, wardrobe) require headshot_ref.",
+            },
+            "headshot_ref": {"type": "object", "description": "{entity_id, asset_id, approval_receipt_id} of the approved hero (lib.headshots.verify_headshot_ref)."},
+            "prompt_recipe": {"type": "object", "description": "tools.prompt_builder recipe; prompt must hash to rendered_sha256."},
+            "shot_id": {"type": "string"},
         },
     }
 
@@ -225,10 +245,17 @@ class SeedreamImage(BaseTool):
         operation = inputs.get("operation", "text_to_image")
         model_id = self.MODEL_IDS[operation]
 
+        governance: dict[str, Any] = {}
         try:
-            project_root, tracker, config = _shared.paid_call_context(inputs)
+            # Look governance (look_refs / headshot_ref / prompt_recipe) is
+            # verified inside paid_call_context, before any upload.
+            project_root, tracker, config = _shared.paid_call_context(inputs, governance=governance)
             config.require_egress("fal", "prompts")
             local_refs = [pathsafe.resolve_input(p, project_root) for p in inputs.get("reference_image_paths") or []]
+            # Reference provenance (R3#3): remote URLs refused and every local
+            # reference's receipted lineage verified before upload on governed calls.
+            _shared.verify_reference_lineage(inputs, project_root, local_refs, governed=governance.get("governed", False))
+            references_applied = self._references_applied(inputs, project_root, local_refs)
             if local_refs:
                 config.require_egress("fal", "prompts", "reference_images")
             objects_dir = (
@@ -314,6 +341,8 @@ class SeedreamImage(BaseTool):
                         "started_at": started_at,
                         "prompt": inputs["prompt"],
                         "seed": data.get("seed"),
+                        "references_applied": references_applied,
+                        **_shared.receipt_governance_fields(governance),
                     },
                 )
                 completion_started = True
@@ -355,6 +384,10 @@ class SeedreamImage(BaseTool):
                 "output": output_paths[0],
                 "reservation_id": reservation_id,
                 "seed": data.get("seed"),
+                "references_applied": references_applied,
+                "look_refs": governance.get("look_refs"),
+                "headshot_ref": governance.get("headshot_ref"),
+                "prompt_recipe": governance.get("prompt_recipe"),
             },
             artifacts=output_paths,
             cost_usd=actual_usd,
@@ -367,5 +400,38 @@ class SeedreamImage(BaseTool):
                 "generator_kind": "model",
                 "prompt": inputs["prompt"],
                 "seed": data.get("seed"),
+                "references_applied": references_applied,
+                **_shared.receipt_governance_fields(governance),
             },
         )
+
+    @staticmethod
+    def _references_applied(inputs: dict[str, Any], project_root: Path, local_refs: list[Path]) -> list[dict[str, Any]]:
+        """The exact reference list this call uploads, recorded in the signed
+        receipt (Slice A step 7). With a ``reference_manifest`` the shared
+        hash-binding applies; otherwise each local file is recorded as
+        ``{asset_id: sha256, path: project-relative, role: reference}``. Remote
+        URLs (legacy projects only) are recorded as ``role: remote_url`` with
+        the URL's sha256 as asset_id so the receipt never claims a local root."""
+        import hashlib
+
+        from lib import pathsafe
+        from tools.video import _shared
+
+        # Same order as image_urls: already-hosted URLs first, then local uploads.
+        applied = [
+            {"asset_id": hashlib.sha256(str(url).encode("utf-8")).hexdigest(), "role": "remote_url"}
+            for url in inputs.get("reference_image_urls") or []
+        ]
+        if inputs.get("reference_manifest"):
+            applied.extend(_shared.bind_reference_manifest(inputs, project_root, local_refs))
+        else:
+            applied.extend(
+                {
+                    "asset_id": pathsafe.sha256_file(p),
+                    "path": p.relative_to(project_root).as_posix(),
+                    "role": "reference",
+                }
+                for p in local_refs
+            )
+        return applied

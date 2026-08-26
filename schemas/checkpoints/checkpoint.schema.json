@@ -4,24 +4,61 @@
   "title": "Pipeline Checkpoint",
   "description": "Full resumable snapshot after each pipeline stage.",
   "type": "object",
-  "required": ["version", "project_id", "pipeline_type", "stage", "status", "timestamp", "artifacts"],
+  "required": [
+    "version",
+    "project_id",
+    "pipeline_type",
+    "stage",
+    "status",
+    "timestamp",
+    "artifacts"
+  ],
   "properties": {
-    "version": { "type": "string", "const": "1.0" },
-    "project_id": { "type": "string" },
+    "version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "project_id": {
+      "type": "string"
+    },
     "stage": {
       "type": "string",
-      "description": "Stage name — validated at runtime against the pipeline manifest's stage list"
+      "description": "Stage name \u2014 validated at runtime against the pipeline manifest's stage list"
     },
     "status": {
       "type": "string",
-      "enum": ["completed", "failed", "awaiting_human", "in_progress"]
+      "enum": [
+        "completed",
+        "failed",
+        "awaiting_human",
+        "in_progress"
+      ]
     },
-    "timestamp": { "type": "string", "format": "date-time" },
-    "pipeline_type": { "type": "string", "description": "Pipeline manifest name" },
-    "style_playbook": { "type": "string" },
-    "checkpoint_policy": { "type": "string", "enum": ["guided", "manual_all", "auto_noncreative"] },
-    "human_approval_required": { "type": "boolean" },
-    "human_approved": { "type": "boolean" },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "pipeline_type": {
+      "type": "string",
+      "description": "Pipeline manifest name"
+    },
+    "style_playbook": {
+      "type": "string"
+    },
+    "checkpoint_policy": {
+      "type": "string",
+      "enum": [
+        "guided",
+        "manual_all",
+        "auto_noncreative"
+      ]
+    },
+    "human_approval_required": {
+      "type": "boolean"
+    },
+    "human_approved": {
+      "type": "boolean"
+    },
     "artifacts": {
       "type": "object",
       "description": "Map of artifact name to artifact data or file path",
@@ -34,13 +71,100 @@
     "cost_snapshot": {
       "type": "object",
       "properties": {
-        "total_spent_usd": { "type": "number" },
-        "total_reserved_usd": { "type": "number" },
-        "budget_remaining_usd": { "type": "number" }
+        "total_spent_usd": {
+          "type": "number"
+        },
+        "total_reserved_usd": {
+          "type": "number"
+        },
+        "budget_remaining_usd": {
+          "type": "number"
+        }
       }
     },
-    "error": { "type": "string" },
-    "metadata": { "type": "object" }
+    "error": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "object"
+    },
+    "pipeline": {
+      "type": "object",
+      "description": "The manifest tuple this checkpoint was written under (plan D10 R4#1). Optional for legacy checkpoints; required (with predecessors) under authored-film 1.2 \u2014 see allOf.",
+      "required": [
+        "name",
+        "version",
+        "manifest_digest"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifest_digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "predecessors": {
+      "type": "array",
+      "description": "Completed predecessor checkpoints this one was written on top of: {stage, checkpoint_digest (sha256 of the checkpoint file bytes)}.",
+      "items": {
+        "type": "object",
+        "required": [
+          "stage",
+          "checkpoint_digest"
+        ],
+        "properties": {
+          "stage": {
+            "type": "string",
+            "minLength": 1
+          },
+          "checkpoint_digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "pipeline"
+        ],
+        "properties": {
+          "pipeline": {
+            "properties": {
+              "name": {
+                "const": "authored-film"
+              },
+              "version": {
+                "const": "1.2"
+              }
+            },
+            "required": [
+              "name",
+              "version"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "pipeline",
+          "predecessors"
+        ]
+      }
+    }
+  ]
 }

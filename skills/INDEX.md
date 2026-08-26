@@ -218,25 +218,34 @@ Stage director skills teach the agent HOW to execute each pipeline stage. Each s
 | Compose Director | `pipelines/cinematic/compose-director.md` | `compose` | Grade and mix finishing, frame-treatment judgment |
 | Publish Director | `pipelines/cinematic/publish-director.md` | `publish` | Hero vs teaser packaging, poster-frame concepts |
 
-### Authored-Film Pipeline (`pipelines/authored-film/`) — v1.1
+### Authored-Film Pipeline (`pipelines/authored-film/`) — v1.2
 
 For stories that were WRITTEN before production began. Canon ingest replaces web
 research; every stage is bound by `canon-guard.md` (locks immutable, protected
-lines verbatim, gaps escalate — never invented). v1.1 adds the `visual_bible`
+lines verbatim, gaps escalate — never invented). v1.1 added the `visual_bible`
 stage (approved, hashed character/location sheets + poster as canon), the
 trailer format, per-shot storyboards, receipt-bound approvals, and project
-config (`project.yaml`: budget cap, cast cap, provider egress).
+config (`project.yaml`: budget cap, cast cap, provider egress). v1.2 adds
+`look_lock` (the writer's wayfinder look ticket → ratified `look_spec` via a
+signed `look_lock` receipt bound to `look_hash`), `headshots` (a face approved
+in the gate handler's selection mode before any sheet), reference import
+(JPEG/HEIC/PNG; `imported_synthetic` lineage roots vs `casting_inspiration`
+for the writer's eyes only), `prompt_recipe` in place of `approved_prompt_block`,
+`look_refs` on every governed visual call, ledger-derived invalidation, and a
+signed `pipeline_migration` pin per project.
 
 | Skill | File | Stage | Key Capabilities |
 |-------|------|-------|-----------------|
-| **Executive Producer** | `pipelines/authored-film/executive-producer.md` | `all` | **8-stage serial orchestration, canon-fidelity gates, run lease + config-digest + budget/egress preflight, continuity enforcement, writer handoff record** |
+| **Executive Producer** | `pipelines/authored-film/executive-producer.md` | `all` | **10-stage serial orchestration, canon-fidelity gates, run lease + config-digest + pipeline-pin + budget/egress preflight, ledger-derived invalidation, continuity enforcement, writer handoff record** |
 | Canon Guard | `pipelines/authored-film/canon-guard.md` | `all` | Binding contract: authority ladder, collision procedure, provenance rules |
 | Canon Director | `pipelines/authored-film/canon-director.md` | `canon_ingest` | Reads writer development assets (synopsis/treatment/outline/bible, wayfinder maps, canon atoms, pitch exports) into a schema-valid canon_packet |
 | Proposal Director | `pipelines/authored-film/proposal-director.md` | `proposal` | 3+ visual treatments of the SAME locked story; comps-scoped research only; required `runtime_shape.format` + `cast` (v1.1) |
-| Visual Bible Director | `pipelines/authored-film/visual-bible-director.md` | `visual_bible` | Hero portrait (4 candidates) → derived six-view sheet per character, establishing + angles per location, palette, poster with locally rendered title; content-addressed canon, receipt-bound sub-gates, `approved_prompt_block` passports |
+| Look Lock Director | `pipelines/authored-film/look-lock-director.md` | `look_lock` | One wayfinder look ticket per cast entity (drafts the Question only, never the Answer); reference-image question and import gate (two origin classes); ingest via `lib/look_ingest`; `look_lock` receipt per entity → `look_packet`; spoiler/trailer rule; supersession = retire + new ticket |
+| Headshots Director | `pipelines/authored-film/headshots-director.md` | `headshots` | Characters only, one at a time; imported_synthetic hero as single candidate or 4 candidates from `tools/prompt_builder` with `look_refs`; `headshot_packet pending → approved`; the gate handler's selection mode writes the record; no sheet without `headshot_ref` |
+| Visual Bible Director | `pipelines/authored-film/visual-bible-director.md` | `visual_bible` | Six-view sheet per character derived from the approved headshot (`headshot_ref` + `look_refs` on every call), location reference import + establishing + angles, palette, poster with locally rendered title; content-addressed canon, receipt-bound sub-gates, `prompt_recipe` passports, `sheet_revision` supersession |
 | Script Director | `pipelines/authored-film/script-director.md` | `script` | Adaptation not authorship: beat-mapped sections, verbatim protected lines, full source_ref provenance; trailer format (beat selection, no new dialogue) |
 | Scene Director | `pipelines/authored-film/scene-director.md` | `scene_plan` | Continuity constraints embedded per scene, `character_refs`/`location_ref`/`entity_free`, per-scene `model_endpoint` (Kling o3 pro reference-to-video; Seedance 2.5 only for entity-free scenes), `shots[]` with `shot_id`, 12–20 trailer shots |
-| Asset Director | `pipelines/authored-film/asset-director.md` | `assets` | Storyboard frame per shot approved as a batch before video, deterministic `@ImageN` reference packing from the bible, single-endpoint takes with `usage_status`, generation receipts |
+| Asset Director | `pipelines/authored-film/asset-director.md` | `assets` | Storyboard frame per shot approved as a batch before video, deterministic `@ImageN` reference packing from the bible, identity paragraphs rebuilt from `prompt_recipe` (verified `rendered_sha256`), `look_refs` on every governed call (entity-free only via the approved scene record), single-endpoint takes with `usage_status`, generation receipts |
 | Edit Director | `pipelines/authored-film/edit-director.md` | `edit` | Cut on the writer's turns, protected-line audio protection, tone-document pacing, poster as title/end card only |
 | Compose Director | `pipelines/authored-film/compose-director.md` | `compose` | Render + canon pass: locks honored, lines intact, tone verdict; video-only outputs |
 
