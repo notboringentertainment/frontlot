@@ -885,10 +885,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--project", required=True, help="project slug under projects/")
     ap.add_argument("--request", help="request id to decide; omit to list pending")
     ap.add_argument("--projects-dir", type=Path, default=None)
+    ap.add_argument("--dry-run", action="store_true",
+                    help="construct and print the record that WOULD be signed, then exit; never prompts or mints (safe for agents)")
     args = ap.parse_args(argv)
 
     try:
-        require_tty()
+        if not args.dry_run:
+            require_tty()
         root = project_root(args.project, args.projects_dir)
         reqs = pending_requests(root)
         if not args.request:
@@ -904,6 +907,15 @@ def main(argv: list[str] | None = None) -> int:
             raise GateHandlerError(f"no pending request {args.request!r}")
         req = load_request(match[0])
         show_request(req, root)
+        if args.dry_run:
+            if req["kind"] in SELECTION_KINDS:
+                _, entry, candidates = headshot_candidates(req, root)
+                show_candidates(entry, candidates, root)
+                print("dry-run: selection kinds stop here (no candidate chosen).")
+            else:
+                show_constructed(construct(root, req))
+                print("dry-run: record constructed and verified; nothing signed.")
+            return 0
         selection: int | None = None
         shown: Optional[Constructed] = None
         approved = False

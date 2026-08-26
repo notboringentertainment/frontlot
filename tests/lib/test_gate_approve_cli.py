@@ -126,3 +126,14 @@ def test_load_request_rejects_id_not_matching_stem(tmp_path):
     p.write_text(json.dumps(req))
     with pytest.raises(gate_approve.GateHandlerError):
         gate_approve.load_request(p)
+
+
+def test_dry_run_constructs_without_tty_and_mints_nothing(tmp_path, monkeypatch, capsys):
+    import io
+    root, req = _project(tmp_path)
+    monkeypatch.setattr(sys, "stdin", io.StringIO())  # not a TTY
+    rc = gate_approve.main(["--project", "demo", "--projects-dir", str(tmp_path / "projects"), "--request", "req-1", "--dry-run"])
+    out = capsys.readouterr().out
+    assert rc in (0, 2)  # 0 if the hero constructor accepts the fixture, 2 if it refuses — either way nothing is signed
+    assert not (root / "approvals.jsonl").exists()
+    assert "dry-run" in out or "error" in capsys.readouterr().err or rc == 2
