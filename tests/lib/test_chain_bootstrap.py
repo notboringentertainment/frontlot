@@ -54,8 +54,9 @@ def human_tty(monkeypatch):
 
 
 def _approve(project, entity="ch-001"):
-    token = gates.mint_gate_token(PROJECT_ID, "visual_bible", f"hero:{entity}", record_sha256(RECORD),
-                                  user_response="approve")
+    with gates.handler_context():
+        token = gates.mint_gate_token(PROJECT_ID, "visual_bible", f"hero:{entity}", record_sha256(RECORD),
+                                      user_response="approve")
     return receipts.record_human_approval(project, PROJECT_ID, "visual_bible", f"hero:{entity}", RECORD, token,
                                           "hero", entity_id=entity)
 

@@ -34,7 +34,9 @@ from scripts import gate_approve  # noqa: E402
 from tests.lib.look_lock_helpers import (  # noqa: E402
     CHAR,
     activate_look,
+    approve_request,
     character_look,
+    decline_request,
     image,
     look_refs_for,
     pin_project,
@@ -78,7 +80,8 @@ def _write_rows(path: Path, rows: list[dict]) -> None:
 
 def _casting_receipt(project_dir: Path, pixel_hash: str) -> dict:
     record = import_record(ORIGIN_CASTING, pixel_hash)
-    token = gates.mint_gate_token("p", "look_lock", f"reference:{pixel_hash}", record_sha256(record))
+    with gates.handler_context():
+        token = gates.mint_gate_token("p", "look_lock", f"reference:{pixel_hash}", record_sha256(record))
     return receipts.record_human_approval(
         project_dir, "p", "look_lock", f"reference:{pixel_hash}", record, token, "reference_import",
         entity_id=f"reference-{pixel_hash[:12]}",
@@ -199,19 +202,19 @@ class TestGateConstructors:
         req["approval_record"] = dict(c, minor=True)  # the agent's record is only a hint
         (root / ".gate-requests" / f"{req['request_id']}.json").write_text(json.dumps(req))
         with pytest.raises(gate_approve.GateHandlerError, match="does not equal the record constructed"):
-            gate_approve.decide(req, root, answer="y", note=None)
+            approve_request(req, root, note=None)
         assert not (root / "approvals.jsonl").exists()
         # a malformed look block in the ticket itself never becomes canon either
         bad = write_ticket(wf, character_look(prompt_safe_description="too short"), name="bad.md")
         req["approval_record"] = None
         req["source_ticket_path"] = str(bad.relative_to(wf))
         with pytest.raises(gate_approve.GateHandlerError, match="look ticket refused"):
-            gate_approve.decide(req, root, answer="y", note=None)
+            approve_request(req, root, note=None)
         # ...and a ticket outside the configured wayfinder root is not authority
         elsewhere = write_ticket(tmp_path / "elsewhere", c)
         req["source_ticket_path"] = str(elsewhere)
         with pytest.raises(gate_approve.GateHandlerError, match="not confined|not under"):
-            gate_approve.decide(req, root, answer="y", note=None)
+            approve_request(req, root, note=None)
 
     def test_constructed_record_is_printed_as_canonical_json(self, root, human_tty, tmp_path, capsys):
         from lib.look_ingest import look_lock_request, parse_look_ticket
@@ -238,14 +241,14 @@ class TestGateConstructors:
         forged = dict(req, approval_record=dict(req["approval_record"], attestation_text="a photo, honestly"))
         (root / ".gate-requests" / f"{req['request_id']}.json").write_text(json.dumps(forged))
         with pytest.raises(gate_approve.GateHandlerError, match="does not equal the record constructed"):
-            gate_approve.decide(forged, root, answer="y", note=None)
+            approve_request(forged, root, note=None)
         (root / ".gate-requests" / f"{req['request_id']}.json").write_text(json.dumps(req))
         staged_bytes = prepared.staged_path.read_bytes()
         prepared.staged_path.write_bytes(png_bytes("swapped"))
         with pytest.raises(gate_approve.GateHandlerError, match="hashes to"):
-            gate_approve.decide(req, root, answer="y", note=None)
+            approve_request(req, root, note=None)
         prepared.staged_path.write_bytes(staged_bytes)
-        receipt = gate_approve.decide(req, root, answer="y", note=None)
+        receipt = approve_request(req, root, note=None)
         assert receipt["record"] == import_record(ORIGIN_IMPORTED_SYNTHETIC, prepared.normalized_pixel_hash, origin_tool="elsewhere-gen")
         assert receipt["entity_id"] == f"reference-{prepared.normalized_pixel_hash[:12]}"
 
@@ -261,10 +264,10 @@ class TestGateConstructors:
         # the checkpoint changed after the request was written: the record no longer matches
         (root / "checkpoint_canon_ingest.json").write_text(json.dumps({"stage": "canon_ingest", "status": "completed", "x": 1}))
         with pytest.raises(gate_approve.GateHandlerError, match="does not equal the record constructed"):
-            gate_approve.decide(req, root, answer="y", note=None)
+            approve_request(req, root, note=None)
         req["approval_record"] = None
         req["envelope"] = None
-        receipt = gate_approve.decide(req, root, answer="y", note=None)
+        receipt = approve_request(req, root, note=None)
         pin = pinned_pipeline(root, "authored-film")
         assert pin.version == "1.2" and pin.binds_checkpoint(
             "canon_ingest", hashlib.sha256((root / "checkpoint_canon_ingest.json").read_bytes()).hexdigest()
@@ -282,9 +285,9 @@ class TestGateConstructors:
                "entity_id": "project_config", "approval_record": {"config_sha256": "0" * 64}, "summary": "s"}
         (root / ".gate-requests" / "cfg.json").write_text(json.dumps(req))
         with pytest.raises(gate_approve.GateHandlerError, match="does not equal the record constructed"):
-            gate_approve.decide(req, root, answer="y", note=None)
+            approve_request(req, root, note=None)
         req["approval_record"] = None
-        receipt = gate_approve.decide(req, root, answer="y", note=None)
+        receipt = approve_request(req, root, note=None)
         assert receipt["record"] == {"config_sha256": hashlib.sha256(raw).hexdigest()}
         from lib.project_config import load_verified_project_config
 
@@ -299,7 +302,7 @@ class TestGateConstructors:
                    "approval_record": {"id": "x", "assets": {"hero": "a" * 64}}, "summary": "s"}
             (root / ".gate-requests" / f"r-{kind}.json").write_text(json.dumps(req))
             with pytest.raises(gate_approve.GateHandlerError, match=f"no checkpoint_{stage}.json"):
-                gate_approve.decide(req, root, answer="y", note=None)
+                approve_request(req, root, note=None)
         assert not (root / "approvals.jsonl").exists()
 
 
@@ -318,7 +321,7 @@ class TestHeadshotSelectionEnforcement:
         stray = image(pinned, "stray", prompt=RECIPE_PROMPT, receipt_prompt_recipe=recipe_for(c))  # no look_refs
         _pending_checkpoint(pinned, c, [stray])
         with pytest.raises(gate_approve.GateHandlerError, match="not receipted with look_ref"):
-            gate_approve.decide(_headshot_request(pinned), pinned, answer="y", note=None, selection=1)
+            approve_request(_headshot_request(pinned), pinned, note=None, selection=1)
         assert receipts.find_approval(pinned, "headshot", entity_id=CHAR) is None
 
     def test_recipe_and_prompt_must_match_the_receipt(self, pinned, human_tty):
@@ -327,11 +330,11 @@ class TestHeadshotSelectionEnforcement:
         edited = image(pinned, "edited", look_refs=look_refs_for(c), receipt_prompt_recipe=recipe_for(c), prompt="hand-edited prompt")
         _pending_checkpoint(pinned, c, [edited])
         with pytest.raises(gate_approve.GateHandlerError, match="does not hash to prompt_recipe.rendered_sha256"):
-            gate_approve.decide(_headshot_request(pinned), pinned, answer="y", note=None, selection=1)
+            approve_request(_headshot_request(pinned), pinned, note=None, selection=1)
         other_recipe = dict(recipe_for(c), builder_version="builder/9")
         _pending_checkpoint(pinned, c, [candidate(pinned, c, "ok")], recipe=other_recipe)
         with pytest.raises(gate_approve.GateHandlerError, match="receipted with prompt_recipe"):
-            gate_approve.decide(_headshot_request(pinned), pinned, answer="y", note=None, selection=1)
+            approve_request(_headshot_request(pinned), pinned, note=None, selection=1)
 
     def test_packet_look_ref_must_be_the_active_receipt(self, pinned, human_tty):
         c = character_look()
@@ -340,13 +343,13 @@ class TestHeadshotSelectionEnforcement:
         stale_ref = {"entity_kind": "character", "entity_id": CHAR, "look_hash": look_hash(c), "receipt_id": "stale-receipt"}
         _pending_checkpoint(pinned, c, [cand], look_ref=stale_ref)
         with pytest.raises(gate_approve.GateHandlerError, match="active look_lock receipt is"):
-            gate_approve.decide(_headshot_request(pinned), pinned, answer="y", note=None, selection=1)
+            approve_request(_headshot_request(pinned), pinned, note=None, selection=1)
         # a superseded look can no longer approve a face
         c2 = character_look(hair="shaved")
         activate_look(pinned, c2, supersedes=look_hash(c))
         _pending_checkpoint(pinned, c, [cand], look_ref=dict(stale_ref, receipt_id=r["receipt_id"]))
         with pytest.raises(gate_approve.GateHandlerError, match="active look check failed"):
-            gate_approve.decide(_headshot_request(pinned), pinned, answer="y", note=None, selection=1)
+            approve_request(_headshot_request(pinned), pinned, note=None, selection=1)
 
     def test_imported_claim_needs_the_import_receipts(self, pinned, human_tty):
         c = character_look()
@@ -359,7 +362,7 @@ class TestHeadshotSelectionEnforcement:
         })
         _pending_checkpoint(pinned, c, [forged])
         with pytest.raises(gate_approve.GateHandlerError, match="generator_kind 'imported' but its receipt says"):
-            gate_approve.decide(_headshot_request(pinned), pinned, answer="y", note=None, selection=1)
+            approve_request(_headshot_request(pinned), pinned, note=None, selection=1)
 
     def test_invalid_packet_shape_is_refused_by_schema(self, pinned, human_tty):
         c = character_look()
@@ -369,7 +372,7 @@ class TestHeadshotSelectionEnforcement:
         cp["artifacts"]["headshot_packet"]["characters"][0]["candidates"][0].pop("provenance")
         (pinned / "checkpoint_headshots.json").write_text(json.dumps(cp))
         with pytest.raises(gate_approve.GateHandlerError, match="schema"):
-            gate_approve.decide(_headshot_request(pinned), pinned, answer="y", note=None, selection=1)
+            approve_request(_headshot_request(pinned), pinned, note=None, selection=1)
 
 
 # ---- #10: legacy checkpoints must be in the bound set ---------------------------
@@ -455,7 +458,8 @@ class TestReferenceImportRecords:
     def test_origin_uniqueness_is_rechecked_under_the_consumed_token(self, root):
         pixel_hash = "9" * 64
         record = import_record(ORIGIN_IMPORTED_SYNTHETIC, pixel_hash, origin_tool="elsewhere")
-        token = gates.mint_gate_token("p", "look_lock", f"reference:{pixel_hash}", record_sha256(record))
+        with gates.handler_context():
+            token = gates.mint_gate_token("p", "look_lock", f"reference:{pixel_hash}", record_sha256(record))
         calls = []
 
         def conflict():
@@ -493,8 +497,8 @@ class TestReferenceImportRecords:
         first = prepare_reference_import(root, "p", a, origin_class=ORIGIN_CASTING, request_id="first")
         second = prepare_reference_import(root, "p", b, origin_class=ORIGIN_IMPORTED_SYNTHETIC, origin_tool="x", request_id="second")
         assert first.normalized_pixel_hash == second.normalized_pixel_hash
-        gate_approve.decide(json.loads(first.request_path.read_text()), root, answer="y", note=None)
+        approve_request(json.loads(first.request_path.read_text()), root, note=None)
         with pytest.raises(gate_approve.GateHandlerError, match="already imported as casting_inspiration"):
-            gate_approve.decide(json.loads(second.request_path.read_text()), root, answer="y", note=None)
+            approve_request(json.loads(second.request_path.read_text()), root, note=None)
         assert tainted_hashes(root) == {first.normalized_pixel_hash}
         assert len(receipts.verified_approvals(root, "reference_import")) == 1

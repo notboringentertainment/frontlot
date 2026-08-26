@@ -79,10 +79,11 @@ def approval_policy_decision(digest: str | None = None, *, approved: bool = True
 
 
 def mint(project_id: str, stage: str, scope: str, record: dict) -> str:
-    return gates.mint_gate_token(
-        project_id=project_id, stage=stage, scope=scope,
-        record_sha256=record_sha256(record), user_response="approve",
-    )
+    with gates.handler_context():  # tests stand in for the gate handler explicitly (round 2 #4)
+        return gates.mint_gate_token(
+            project_id=project_id, stage=stage, scope=scope,
+            record_sha256=record_sha256(record), user_response="approve",
+        )
 
 
 def approve(project_dir, stage: str, scope: str, record: dict, kind: str, entity_id: str) -> dict:

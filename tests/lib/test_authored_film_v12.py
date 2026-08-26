@@ -420,7 +420,8 @@ class TestImportedAndTaint:
         src.write_bytes(png_bytes(seed, size=(6, 6)))
         prepared = prepare_reference_import(project_dir, PROJECT, src, origin_class=origin_class, origin_tool="elsewhere")
         req = json.loads(prepared.request_path.read_text())
-        token = gates.mint_gate_token(PROJECT, req["stage"], req["scope"], record_sha256(req["approval_record"]))
+        with gates.handler_context():
+            token = gates.mint_gate_token(PROJECT, req["stage"], req["scope"], record_sha256(req["approval_record"]))
         receipt = receipts.record_human_approval(
             project_dir, PROJECT, req["stage"], req["scope"], req["approval_record"], token, "reference_import",
             entity_id=req["entity_id"], envelope=req["envelope"],
@@ -474,7 +475,8 @@ class TestImportedAndTaint:
 
         root = image(project_dir, "later-tainted-root", role="angle", look_refs=look_refs_for(l))
         record = import_record("casting_inspiration", root["asset_id"])
-        token = gates.mint_gate_token(PROJECT, "look_lock", f"reference:{root['asset_id']}", record_sha256(record))
+        with gates.handler_context():
+            token = gates.mint_gate_token(PROJECT, "look_lock", f"reference:{root['asset_id']}", record_sha256(record))
         receipts.record_human_approval(project_dir, PROJECT, "look_lock", f"reference:{root['asset_id']}", record, token,
                                        "reference_import", entity_id="ref-tainted",
                                        envelope={"origin_class": "casting_inspiration", "normalized_pixel_hash": root["asset_id"]})

@@ -17,7 +17,7 @@ from tools.video import _shared
 from tools.video.video_selector import VideoSelector
 
 from tests.tools._authored_film_helpers import tiny_png_bytes
-from tests.tools.test_look_governance import CHAR_REF, env, verifiers  # noqa: F401 — fixtures
+from tests.tools.test_look_governance import CHAR_REF, env, rendering_inputs, verifiers  # noqa: F401 — fixtures
 from tests.tools.test_video_selector_routing import _ScoreStub
 
 
@@ -86,16 +86,47 @@ def test_legacy_call_without_project_is_unchanged(video, image):
     assert ImageSelector().execute({"prompt": "fog"}).success and loose_i.calls and not bound_i.calls
 
 
+def _governed_inputs(verifiers, selector_cls, **extra):
+    """Video calls carry look_refs; image calls are builder renderings (round 2 #6)."""
+    if selector_cls is VideoSelector:
+        return {"prompt": "fog", "look_refs": [CHAR_REF], **extra}
+    return {**rendering_inputs(verifiers, "hero"), **extra}
+
+
 @pytest.mark.parametrize("selector_cls, fixture", [(VideoSelector, "video"), (ImageSelector, "image")])
 def test_governed_call_verified_before_delegation_and_bound_only(env, verifiers, request, selector_cls, fixture):
     loose, bound = request.getfixturevalue(fixture)
-    inputs = {"prompt": "fog", "project_dir": str(env), "look_refs": [CHAR_REF], "stage": "assets"}
+    inputs = _governed_inputs(verifiers, selector_cls, project_dir=str(env), stage="assets")
+    ref = inputs["look_refs"][0]
     r = selector_cls().execute(inputs)
     assert r.success, r.error
-    assert verifiers.look_calls == [("proj-quill", "character", "quill-marrow", CHAR_REF["look_hash"])]
+    assert verifiers.look_calls == [("proj-quill", "character", "quill-marrow", ref["look_hash"])]
     assert not loose.calls, "an ungoverned provider was delegated a governed call"
-    assert bound.calls and bound.calls[0]["look_refs"] == [CHAR_REF]
+    assert bound.calls and bound.calls[0]["look_refs"] == [ref]
     assert r.data["selected_tool"] == bound.name
+
+
+def test_output_path_inside_pinned_project_is_governed(env, verifiers, image, monkeypatch):
+    """Round 2 #9: the project is inferred from ANY path-like input before the legacy
+    return; a call carrying only output_path under a 1.2-pinned project is governed by the
+    signed pin, so an unbound provider is never delegated."""
+    import sys
+
+    loose, bound = image
+    sys.modules["lib.look_ingest"].project_look_governed = lambda root, **k: True
+    out = str(env / "renders" / "fog.png")
+    r = ImageSelector().execute({"prompt": "fog", "output_path": out})
+    assert not r.success and "refused before delegation" in r.error and "look_refs" in r.error
+    assert not loose.calls and not bound.calls
+    r = ImageSelector().execute({**rendering_inputs(verifiers, "hero"), "output_path": out})
+    assert r.success, r.error
+    assert not loose.calls and bound.calls and r.data["selected_tool"] == bound.name
+    assert bound.calls[0]["project_dir"] == str(env)  # delegated call bound to the governing project
+    # A registered legacy (unpinned) project reached only through output_path stays legacy.
+    sys.modules["lib.look_ingest"].project_look_governed = lambda root, **k: False
+    bound.calls.clear()
+    r = ImageSelector().execute({"prompt": "fog", "output_path": out})
+    assert r.success and loose.calls and not bound.calls
 
 
 @pytest.mark.parametrize("selector_cls, fixture", [(VideoSelector, "video"), (ImageSelector, "image")])
@@ -154,7 +185,7 @@ def test_governed_call_with_only_ungoverned_providers_is_refused(env, verifiers,
     loose = _Provider("loose_image", "loose", bound=False, capability="image_generation")
     _rank_first(monkeypatch, loose)
     monkeypatch.setattr(ImageSelector, "_providers", lambda self: [loose])
-    r = ImageSelector().execute({"prompt": "fog", "project_dir": str(env), "look_refs": [CHAR_REF]})
+    r = ImageSelector().execute({**rendering_inputs(verifiers, "hero"), "project_dir": str(env)})
     assert not r.success and "governance-bound" in r.error and not loose.calls
 
 

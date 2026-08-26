@@ -32,7 +32,8 @@ SCOPE = "hero:ch-001"
 def _mint(record=RECORD, **kw):
     args = dict(project_id=PROJECT_ID, stage=STAGE, scope=SCOPE, record_sha256=record_sha256(record))
     args.update(kw)
-    return gates.mint_gate_token(**args, user_response="approve")
+    with gates.handler_context():
+        return gates.mint_gate_token(**args, user_response="approve")
 
 
 def test_record_human_approval_writes_signed_ledgered_receipt(project, gates_dir):

@@ -20,8 +20,9 @@ strictly under the project's configured ``project.yaml: wayfinder_root``
 (symlinks rejected) and must sit under ``<root>/wayfinder/resolved/``; the
 front matter must carry ``area: look``, ``type: grill``, ``mode: hitl`` and
 a non-empty ``resolved:`` claim; and ``depends_on`` is DERIVED from the
-ticket's ``blocked-by`` (ids, or titles of resolved tickets) — a block that
-declares a different ``depends_on`` is rejected.
+ticket's ``blocked-by`` (ids or titles, each proven to be exactly one
+resolved ticket under the root; refs carry ``{id?, path, content_sha256}``)
+— a block that declares a different ``depends_on`` is rejected.
 
 Ratification is NOT read from the ticket (D12): ``active_looks`` replays the
 project's verified ``look_lock`` receipts into a per-key monotonic
@@ -187,7 +188,7 @@ def _read_ticket_text(path: Path) -> tuple[bytes, str]:
 
 def _ticket_ref(path: Path, meta: dict[str, Any], raw: bytes, wayfinder_root: Path) -> dict[str, Any]:
     """``{id}`` for a ticket with an immutable id, else ``{path (relative to
-    the wayfinder root), content_sha256}``."""
+    the wayfinder root), content_sha256}`` — the ``source_ticket_ref`` form."""
     ticket_id = meta.get("id")
     if ticket_id is not None:
         if not isinstance(ticket_id, str) or not TICKET_ID_RE.match(ticket_id):
@@ -196,13 +197,42 @@ def _ticket_ref(path: Path, meta: dict[str, Any], raw: bytes, wayfinder_root: Pa
     return {"path": str(path.relative_to(wayfinder_root)), "content_sha256": hashlib.sha256(raw).hexdigest()}
 
 
+def _dependency_ref(path: Path, meta: dict[str, Any], raw: bytes, wayfinder_root: Path) -> dict[str, Any]:
+    """A ``depends_on`` entry (round 2 #5): always the exact resolved file
+    (``path`` relative to the wayfinder root + ``content_sha256``), plus
+    ``id`` when the ticket carries an immutable one."""
+    ref = _ticket_ref(path, meta, raw, wayfinder_root)
+    ref["path"] = str(path.relative_to(wayfinder_root))
+    ref["content_sha256"] = hashlib.sha256(raw).hexdigest()
+    return {k: ref[k] for k in ("id", "path", "content_sha256") if k in ref}
+
+
+def _resolved_tickets(resolved_dir: Path, exclude: Path) -> list[tuple[Path, dict[str, Any], bytes]]:
+    """Every parseable ticket under ``resolved_dir`` (regular files only,
+    symlinks skipped, ``exclude`` skipped) as ``(path, front matter, raw)``."""
+    out: list[tuple[Path, dict[str, Any], bytes]] = []
+    for candidate in sorted(resolved_dir.rglob("*.md")):
+        if candidate == exclude or candidate.is_symlink() or not candidate.is_file():
+            continue
+        c_raw, c_text = _read_ticket_text(candidate)
+        try:
+            c_meta, _ = _front_matter(candidate, c_text)
+        except LookIngestError:
+            continue
+        out.append((candidate, c_meta, c_raw))
+    return out
+
+
 def derive_depends_on(path: Path, meta: dict[str, Any], wayfinder_root: Path) -> list[dict[str, Any]]:
     """The ``depends_on`` refs a look block MUST carry, derived from the
-    ticket's ``blocked-by`` front matter (Slice A #4): each entry is a ticket
-    id (``wf-<8hex>`` → ``{id}``) or the exact title of a RESOLVED ticket
-    under the wayfinder root (→ ``{path, content_sha256}`` of that ticket,
-    or ``{id}`` when it carries one). A blocker that is not resolved makes
-    this ticket un-ingestible: canon cannot depend on an open decision."""
+    ticket's ``blocked-by`` front matter (Slice A #4, round 2 #5): each
+    entry is a ticket id (``wf-<8hex>``) or the exact title of a ticket, and
+    EITHER form must resolve to exactly one RESOLVED ticket under
+    ``<wayfinder_root>/wayfinder/resolved/`` — an id is matched against the
+    ``id:`` front-matter line, a title against ``title:``. The ref carries
+    ``{id?, path, content_sha256}`` of that resolved file. A blocker that is
+    not exactly one resolved ticket makes this ticket un-ingestible: canon
+    cannot depend on an open or unknown decision."""
     blockers = meta.get("blocked-by")
     if blockers is None:
         blockers = []
@@ -212,29 +242,21 @@ def derive_depends_on(path: Path, meta: dict[str, Any], wayfinder_root: Path) ->
         raise LookIngestError(f"look ticket {path.name}: blocked-by must be a list of ticket ids or titles")
     refs: list[dict[str, Any]] = []
     resolved_dir = wayfinder_root / RESOLVED_SUBDIR
+    tickets = _resolved_tickets(resolved_dir, path) if blockers else []
     for blocker in blockers:
         blocker = blocker.strip()
-        if TICKET_ID_RE.match(blocker):
-            refs.append({"id": blocker})
-            continue
-        matches = []
-        for candidate in sorted(resolved_dir.rglob("*.md")):
-            if candidate == path or candidate.is_symlink() or not candidate.is_file():
-                continue
-            c_raw, c_text = _read_ticket_text(candidate)
-            try:
-                c_meta, _ = _front_matter(candidate, c_text)
-            except LookIngestError:
-                continue
-            if str(c_meta.get("title", "")).strip() == blocker:
-                matches.append((candidate, c_meta, c_raw))
+        by_id = bool(TICKET_ID_RE.match(blocker))
+        matches = [
+            t for t in tickets
+            if (t[1].get("id") == blocker if by_id else str(t[1].get("title", "")).strip() == blocker)
+        ]
         if len(matches) != 1:
             raise LookIngestError(
                 f"look ticket {path.name}: blocked-by {blocker!r} matches {len(matches)} resolved ticket(s) "
                 f"under {resolved_dir} — every blocker must be exactly one resolved ticket"
             )
         c_path, c_meta, c_raw = matches[0]
-        refs.append(_ticket_ref(c_path, c_meta, c_raw, wayfinder_root))
+        refs.append(_dependency_ref(c_path, c_meta, c_raw, wayfinder_root))
     return refs
 
 

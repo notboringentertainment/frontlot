@@ -11,6 +11,8 @@ State lives in an orchestrator-owned directory outside any project tree:
     chains/<sha256(project_id)>.<stream>.jsonl  signed per-project receipt chain
                       ({project_id, stream, receipt_id, kind, prev_receipt_id,
                       record_sha256, signature}); ``.tip.json`` beside it is the head
+    chains/<name>.journal.json  in-flight chain advancement (row written, tip not yet)
+    locks/<project>.<stream>.lock  flock files serializing receipt transactions
     wal/<hmac>.json   approval write-ahead entries (crash recovery, see lib.receipts)
     generation-wal/<execution_id>.json  paid-output write-ahead entries (lib.receipts.recover_generation_wal)
 
@@ -30,20 +32,30 @@ sign, and ledger approvals itself. What this layer guarantees is that
 *pipeline code following its contract* — directors, tools, checkpoint
 writers — has no API path to self-approve, and that any approval which did
 not pass through the human gate is detectable as unsigned/unledgered.
+
+``mint_gate_token`` additionally refuses unless the calling process is inside
+``handler_context()`` — a per-process nonce that scripts/gate_approve.py
+enters right before minting and leaves right after. That is the same kind of
+discipline boundary: it stops pipeline code from minting by accident or by
+import, not a co-resident hostile process that can call ``handler_context``
+itself.
 """
 
 from __future__ import annotations
 
+import fcntl
 import hmac
 import hashlib
 import json
 import os
 import re
 import secrets
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from lib.canonical_json import canonical_bytes
 from lib.state_io import append_jsonl, atomic_write_json, read_jsonl
@@ -173,6 +185,59 @@ def is_pending(token_hmac: str) -> bool:
     return _valid_hmac_name(token_hmac) and (gates_dir() / "pending" / f"{token_hmac}.json").exists()
 
 
+# ---- Gate handler process marker (inspection round 2, #4 narrowed) ----
+
+HANDLER_ENV = "OPENMONTAGE_GATE_HANDLER"
+_handler_nonce: Optional[str] = None
+
+
+class GateHandlerRequired(GateError):
+    """``mint_gate_token`` was called outside ``handler_context()``."""
+
+
+@contextmanager
+def handler_context() -> Iterator[None]:
+    """Mark this process as the human gate handler for the duration of the block.
+
+    A fresh random nonce is stored in this module AND exported as
+    ``$OPENMONTAGE_GATE_HANDLER``; ``mint_gate_token`` requires both to agree.
+    Only ``scripts/gate_approve.py`` (right before minting, cleared right
+    after) and tests should enter it.
+
+    This is a discipline boundary, not a privilege boundary: it makes minting
+    from pipeline code an explicit, greppable act rather than something a
+    stray import or a tool call can do, and it cannot be satisfied by setting
+    the environment variable from outside the process (the nonce lives in
+    process memory). It does NOT stop a hostile process running as the user —
+    that process can enter ``handler_context`` itself, or read the key.
+    """
+    global _handler_nonce
+    previous_nonce = _handler_nonce
+    previous_env = os.environ.get(HANDLER_ENV)
+    nonce = secrets.token_hex(16)
+    _handler_nonce = nonce
+    os.environ[HANDLER_ENV] = nonce
+    try:
+        yield
+    finally:
+        _handler_nonce = previous_nonce
+        if previous_env is None:
+            os.environ.pop(HANDLER_ENV, None)
+        else:
+            os.environ[HANDLER_ENV] = previous_env
+
+
+def _require_handler() -> None:
+    nonce = _handler_nonce
+    marker = os.environ.get(HANDLER_ENV)
+    if nonce is None or marker is None or not hmac.compare_digest(nonce, marker):
+        raise GateHandlerRequired(
+            "mint_gate_token is only callable from the gate handler process "
+            "(scripts/gate_approve.py, inside gates.handler_context()) — pipeline "
+            "code never mints its own approval"
+        )
+
+
 # ---- Tokens ----
 
 
@@ -184,7 +249,13 @@ def mint_gate_token(
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     user_response: Optional[Any] = None,
 ) -> str:
-    """Mint a one-use token bound to the given approval and return it (never stored raw)."""
+    """Mint a one-use token bound to the given approval and return it (never stored raw).
+
+    Refuses (``GateHandlerRequired``) unless the process is inside
+    ``handler_context()`` — see that function for what this does and does
+    not guarantee.
+    """
+    _require_handler()
     root = gates_dir()
     key = _load_key(root)
     token = secrets.token_urlsafe(32)
@@ -405,6 +476,63 @@ def chain_tip_path(project_id: str, stream: str) -> Path:
     return chain_dir() / f"{_chain_name(project_id, stream)}.tip.json"
 
 
+def chain_journal_path(project_id: str, stream: str) -> Path:
+    return chain_dir() / f"{_chain_name(project_id, stream)}.journal.json"
+
+
+# ---- Per-project, per-stream receipt transaction lock (round 2, #2) ----
+
+_SAFE_LOCK_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_held_locks = threading.local()
+
+
+def lock_dir() -> Path:
+    d = gates_dir() / "locks"
+    _ensure_dirs(gates_dir())
+    d.mkdir(exist_ok=True, mode=0o700)
+    return d
+
+
+def lock_path(project_id: str, stream: str) -> Path:
+    _chain_name(project_id, stream)  # validates both
+    name = project_id if _SAFE_LOCK_NAME.match(project_id) else hashlib.sha256(project_id.encode("utf-8")).hexdigest()
+    return lock_dir() / f"{name}.{stream}.lock"
+
+
+@contextmanager
+def receipt_lock(project_id: str, stream: str) -> Iterator[None]:
+    """Exclusive interprocess lock (``fcntl.flock``) for every receipt
+    transaction on ``(project_id, stream)``: pre-commit validation, local
+    append, ledger append, chain append and tip advance all happen under
+    it, so two writers can never both pass a uniqueness check or append
+    sibling chain rows. Re-entrant within a thread (a pre-commit check may
+    read receipts, which may replay the WAL, which commits under the same
+    lock); a second thread or process blocks until release."""
+    path = lock_path(project_id, stream)
+    held: dict = getattr(_held_locks, "held", None)
+    if held is None:
+        held = _held_locks.held = {}
+    key = str(path)
+    if key in held:
+        held[key][1] += 1
+        try:
+            yield
+        finally:
+            held[key][1] -= 1
+        return
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        held[key] = [fd, 1]
+        try:
+            yield
+        finally:
+            del held[key]
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 def receipt_digest(receipt: dict) -> str:
     """sha256 of the canonical JSON of a receipt minus ``signature`` — what a
     chain row binds (the whole signed row: record, envelope, ids)."""
@@ -440,10 +568,59 @@ def chain_rows(project_id: str, stream: str) -> list[dict]:
         rows.append(row)
     tip = chain_tip(project_id, stream)
     if tip != prev:
+        if rows and rows[-1].get("prev_receipt_id") == tip:
+            # Round 2 #3: a crash between the row append and the tip write left
+            # a signed, correctly linked tail; advance the tip instead of
+            # bricking the chain. The journal (written before the row) is the
+            # trace of that in-flight advancement.
+            _recover_dangling_tail(project_id, stream, rows[-1], len(rows))
+            return rows
         raise ReceiptChainError(
             f"receipt chain {project_id}/{stream} tip file names {tip!r} but the chain ends at {prev!r}"
         )
+    _discard_stale_journal(project_id, stream, prev)
     return rows
+
+
+def _write_tip(project_id: str, stream: str, receipt_id: str, length: int) -> None:
+    atomic_write_json(
+        chain_tip_path(project_id, stream),
+        {"project_id": project_id, "stream": stream, "tip_receipt_id": receipt_id, "length": length},
+    )
+
+
+def _recover_dangling_tail(project_id: str, stream: str, tail: dict, length: int) -> None:
+    with receipt_lock(project_id, stream):
+        # Re-read under the lock: another process may have finished the advance.
+        current = chain_tip(project_id, stream)
+        if current == tail["receipt_id"]:
+            pass
+        elif current == tail.get("prev_receipt_id"):
+            _write_tip(project_id, stream, tail["receipt_id"], length)
+        else:
+            raise ReceiptChainError(
+                f"receipt chain {project_id}/{stream} tip file names {current!r} while the chain ends at "
+                f"{tail['receipt_id']!r} — cannot recover"
+            )
+        chain_journal_path(project_id, stream).unlink(missing_ok=True)
+
+
+def _discard_stale_journal(project_id: str, stream: str, tip: Optional[str]) -> None:
+    """A journal whose row never reached the chain (crash between journal
+    and row append) records nothing committed; drop it once the chain and
+    tip agree."""
+    path = chain_journal_path(project_id, stream)
+    if not path.exists():
+        return
+    try:
+        entry = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        entry = None
+    row = entry.get("row") if isinstance(entry, dict) else None
+    if isinstance(row, dict) and row.get("receipt_id") == tip:
+        path.unlink(missing_ok=True)  # advance completed; journal just outlived it
+    elif isinstance(row, dict) and row.get("prev_receipt_id") == tip:
+        path.unlink(missing_ok=True)  # row never appended; nothing to recover
 
 
 def chain_tip(project_id: str, stream: str) -> Optional[str]:
@@ -465,32 +642,34 @@ def chain_has(project_id: str, stream: str, receipt_id: str) -> bool:
 def chain_append(project_id: str, stream: str, receipt: dict) -> dict:
     """Link ``receipt`` onto the chain (idempotent on receipt_id) and advance
     the tip. The chain is verified before the append so a corrupt chain is
-    never extended."""
-    rows = chain_rows(project_id, stream)
-    rid = receipt["receipt_id"]
-    for row in rows:
-        if row.get("receipt_id") == rid:
-            if row.get("record_sha256") != receipt_digest(receipt):
-                raise ReceiptChainError(
-                    f"receipt {rid} is already chained with a different digest in {project_id}/{stream}"
-                )
-            return row
-    row = {
-        "project_id": project_id,
-        "stream": stream,
-        "receipt_id": rid,
-        "kind": receipt.get("kind") or ("generation" if stream == "generation" else None),
-        "prev_receipt_id": rows[-1]["receipt_id"] if rows else None,
-        "record_sha256": receipt_digest(receipt),
-        "recorded_at": _now().isoformat(),
-    }
-    row["signature"] = _sign_chain_row(row)
-    append_jsonl(chain_path(project_id, stream), row)
-    atomic_write_json(
-        chain_tip_path(project_id, stream),
-        {"project_id": project_id, "stream": stream, "tip_receipt_id": rid, "length": len(rows) + 1},
-    )
-    return row
+    never extended. Runs under ``receipt_lock`` and journals the advance:
+    journal entry → row append → tip write → journal removal, so a crash at
+    any point is recoverable by ``chain_rows`` on the next open."""
+    with receipt_lock(project_id, stream):
+        rows = chain_rows(project_id, stream)
+        rid = receipt["receipt_id"]
+        for row in rows:
+            if row.get("receipt_id") == rid:
+                if row.get("record_sha256") != receipt_digest(receipt):
+                    raise ReceiptChainError(
+                        f"receipt {rid} is already chained with a different digest in {project_id}/{stream}"
+                    )
+                return row
+        row = {
+            "project_id": project_id,
+            "stream": stream,
+            "receipt_id": rid,
+            "kind": receipt.get("kind") or ("generation" if stream == "generation" else None),
+            "prev_receipt_id": rows[-1]["receipt_id"] if rows else None,
+            "record_sha256": receipt_digest(receipt),
+            "recorded_at": _now().isoformat(),
+        }
+        row["signature"] = _sign_chain_row(row)
+        atomic_write_json(chain_journal_path(project_id, stream), {"row": row, "length": len(rows) + 1})
+        append_jsonl(chain_path(project_id, stream), row)
+        _write_tip(project_id, stream, rid, len(rows) + 1)
+        chain_journal_path(project_id, stream).unlink(missing_ok=True)
+        return row
 
 
 def verify_local_projection(project_id: str, stream: str, local_receipts: list[dict]) -> None:

@@ -165,7 +165,8 @@ class TestNormalization:
 
 def _approve_import(project_dir, prepared):
     req = json.loads(prepared.request_path.read_text())
-    token = gates.mint_gate_token("p", req["stage"], req["scope"], record_sha256(req["approval_record"]))
+    with gates.handler_context():
+        token = gates.mint_gate_token("p", req["stage"], req["scope"], record_sha256(req["approval_record"]))
     return receipts.record_human_approval(
         project_dir, "p", req["stage"], req["scope"], req["approval_record"], token, "reference_import",
         entity_id=req["entity_id"], envelope=req["envelope"],
@@ -267,7 +268,8 @@ class TestImportGate:
         from lib.reference_import import import_record
 
         record = import_record(ORIGIN_CASTING, root["asset_id"], origin_tool=None)
-        token = gates.mint_gate_token("p", "look_lock", f"reference:{root['asset_id']}", record_sha256(record))
+        with gates.handler_context():
+            token = gates.mint_gate_token("p", "look_lock", f"reference:{root['asset_id']}", record_sha256(record))
         receipts.record_human_approval(project_dir, "p", "look_lock", f"reference:{root['asset_id']}", record, token,
                                        "reference_import", entity_id="ref-x",
                                        envelope={"origin_class": ORIGIN_CASTING, "normalized_pixel_hash": root["asset_id"]})

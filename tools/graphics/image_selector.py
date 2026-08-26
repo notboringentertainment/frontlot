@@ -253,6 +253,9 @@ class ImageSelector(BaseTool):
 
         # Adapt input keys: stock tools use 'query' while generators use 'prompt'
         adapted = dict(inputs)
+        if governance is not None:
+            # Bind the delegated call to the project that governed it (round 2 #9).
+            adapted.setdefault("project_dir", str(governance["project_root"]))
         if hasattr(tool, 'input_schema'):
             props = tool.input_schema.get("properties", {})
             if "query" in props and "query" not in adapted:

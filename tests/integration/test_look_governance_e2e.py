@@ -92,6 +92,14 @@ class Fal:
 
 def _run(project: Path, **inputs):
     base = {"prompt": "a wiry station engineer at the rail", "project_dir": str(project)}
+    if inputs.get("look_refs") and "prompt_recipe" not in inputs and "prompt" not in inputs:
+        # Round 2 #6: every generated image rendering of look_refs is a builder rendering
+        # of the active look, carrying the rebuilt prompt_recipe.
+        from tools.prompt_builder import build_prompt
+
+        role = inputs.get("asset_role") or "hero"
+        built = build_prompt(character_look(), role=role)
+        base.update(prompt=built["prompt"], prompt_recipe=built["prompt_recipe"], asset_role=role)
     with Fal() as fal:
         result = SeedreamImage().execute({**base, **inputs})
     return result, fal
@@ -99,7 +107,8 @@ def _run(project: Path, **inputs):
 
 def _approve_import(project_dir: Path, prepared) -> dict:
     req = json.loads(prepared.request_path.read_text())
-    token = gates.mint_gate_token(PROJECT, req["stage"], req["scope"], record_sha256(req["approval_record"]))
+    with gates.handler_context():
+        token = gates.mint_gate_token(PROJECT, req["stage"], req["scope"], record_sha256(req["approval_record"]))
     return receipts.record_human_approval(
         project_dir, PROJECT, req["stage"], req["scope"], req["approval_record"], token, "reference_import",
         entity_id=req["entity_id"], envelope=req["envelope"],
@@ -128,10 +137,11 @@ def test_governed_call_with_active_look_passes_and_binds_look_refs(governed):
     assert _shared.project_look_governed(governed) is True
     result, fal = _run(governed, look_refs=look_refs_for(c))
     assert result.success, result.error
-    assert fal.submits and fal.submits[0]["prompt"].startswith("a wiry")
+    assert fal.submits and fal.submits[0]["prompt"].lower().startswith("a wiry")
     row = receipts.find_generation(governed, result.data["asset_ids"][0])
     assert row is not None and row["look_refs"] == look_refs_for(c)
-    assert row["headshot_ref"] is None and row["prompt_recipe"] is None
+    # The rendering's rebuilt recipe is sealed into the receipt (round 2 #6).
+    assert row["headshot_ref"] is None and row["prompt_recipe"]["look_hash"] == look_refs_for(c)[0]["look_hash"]
     assert result.metadata["look_refs"] == look_refs_for(c)
 
 

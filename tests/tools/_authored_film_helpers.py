@@ -76,10 +76,12 @@ def make_verified_project(
     import hashlib
 
     record = {"config_sha256": hashlib.sha256(raw).hexdigest()}
-    token = gates.mint_gate_token(
-        project_id=slug, stage="proposal", scope="config",
-        record_sha256=record_sha256(record), user_response="approve",
-    )
+    # Tokens mint only inside the gate handler process (round 2 #4); tests enter it explicitly.
+    with gates.handler_context():
+        token = gates.mint_gate_token(
+            project_id=slug, stage="proposal", scope="config",
+            record_sha256=record_sha256(record), user_response="approve",
+        )
     receipts.record_human_approval(
         project, slug, "proposal", "config", record, token, "config", entity_id="project-config",
     )
@@ -100,10 +102,11 @@ def approve_storyboard_batch(project: Path, frames: dict[str, str], slug: str | 
 
     slug = slug or project.name
     record = storyboard_batch_record(frames)
-    token = gates.mint_gate_token(
-        project_id=slug, stage="assets", scope="storyboard_batch",
-        record_sha256=record_sha256(record), user_response="approve",
-    )
+    with gates.handler_context():
+        token = gates.mint_gate_token(
+            project_id=slug, stage="assets", scope="storyboard_batch",
+            record_sha256=record_sha256(record), user_response="approve",
+        )
     return receipts.record_human_approval(
         project, slug, "assets", "storyboard_batch", record, token, "storyboard_batch",
         entity_id="storyboard_batch",

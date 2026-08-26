@@ -981,9 +981,13 @@ class PaidCallContextError(RuntimeError):
 
 
 def paid_call_context(
-    inputs: dict[str, Any], *, check_resume: bool = True, governance: dict[str, Any] | None = None
+    inputs: dict[str, Any], *, check_resume: bool = True, governance: dict[str, Any] | None = None,
+    media: str = "image",
 ) -> tuple[Path, Any, Any]:
     """Resolve ``(project_root, tracker, config)`` for a paid FAL call (inspection #2).
+    ``media`` (``"image"`` default / ``"video"``) is forwarded to
+    ``verify_look_governance``: image renderings of look_refs need a rebuilt
+    prompt_recipe (round 2 #6).
 
     Look governance (plan D10, Slice A step 5(b)) runs here, before any upload
     or reservation: ``verify_look_governance`` refuses a governed visual call
@@ -1032,7 +1036,7 @@ def paid_call_context(
         resume_check(project_root)  # raises IndeterminatePaidCallError
 
     config = load_verified_project_config(project_root)  # raises ProjectConfigError
-    verified = verify_look_governance(inputs, project_root)
+    verified = verify_look_governance(inputs, project_root, media=media)
     if governance is not None:
         governance.update(verified)
     tracker = CostTracker(
@@ -1222,38 +1226,64 @@ def normalize_look_ref(ref: Any, index: int = 0) -> dict[str, str]:
     return {"entity_kind": kind, "entity_id": eid, "look_hash": look_hash}
 
 
-def shot_is_entity_free(project_root: Path | str, shot_id: str) -> bool:
-    """Server-side lookup (R4#2): True only when the APPROVED ``scene_plan``
-    checkpoint (status completed, human_approved) has a scene whose ``shots``
-    contain ``shot_id`` and that scene records ``entity_free: true``. The
-    tool-call inputs are never consulted.
+def _scene_plan_shot_index(project_root: Path) -> dict[str, str]:
+    """``shot_id -> scene_id`` from the on-disk ``scene_plan`` checkpoint.
 
-    The checkpoint is resolved through the invalidation-aware projection
-    (inspection #7): ``lib.checkpoint.invalidated_stages`` replays the
-    approval ledger, and a scene plan invalidated by a look/headshot
-    retirement or replacement never authorizes an entity-free call. Any
-    failure to compute invalidation fails closed.
+    This is a MAPPING only — never an authorization. Which scenes are
+    entity-free is decided exclusively by ``lib.checkpoint.entity_free_scene_ids``
+    (inspection round 2 #7); the checkpoint's ``status`` / ``human_approved`` /
+    ``entity_free`` fields are not read here.
     """
     import lib.checkpoint as checkpoint_mod
 
     root = Path(project_root)
-    checkpoint = checkpoint_mod.read_checkpoint(root.parent, root.name, "scene_plan")
-    if not checkpoint or checkpoint.get("status") != "completed" or checkpoint.get("human_approved") is not True:
-        return False
     try:
-        invalidated = checkpoint_mod.invalidated_stages(root.parent, root.name, checkpoint.get("pipeline_type"))
-    except Exception:  # noqa: BLE001 — unknown invalidation state is not authorization
-        return False
-    if "scene_plan" in invalidated:
-        return False
-    plan = (checkpoint.get("artifacts") or {}).get("scene_plan") or {}
+        checkpoint = checkpoint_mod.read_checkpoint(root.parent, root.name, "scene_plan")
+    except Exception:  # noqa: BLE001 — an unreadable plan maps nothing
+        return {}
+    plan = ((checkpoint or {}).get("artifacts") or {}).get("scene_plan") or {}
+    index: dict[str, str] = {}
     for scene in plan.get("scenes") or []:
         if not isinstance(scene, dict):
             continue
-        ids = {str(s.get("shot_id")) for s in scene.get("shots") or [] if isinstance(s, dict)}
-        if str(shot_id) in ids:
-            return scene.get("entity_free") is True
-    return False
+        scene_id = scene.get("scene_id")
+        if not isinstance(scene_id, str) or not scene_id:
+            continue
+        for shot in scene.get("shots") or []:
+            if isinstance(shot, dict) and shot.get("shot_id") is not None:
+                index.setdefault(str(shot.get("shot_id")), scene_id)
+    return index
+
+
+def entity_free_scene_ids(project_root: Path | str) -> set[str]:
+    """Scene ids the project may generate without ``look_refs``.
+
+    Answered ONLY by ``lib.checkpoint.entity_free_scene_ids`` — the scene ids
+    of a completed, non-invalidated, pin-matching, receipt-bound ``scene_plan``
+    (inspection round 2 #7). Imported by name and fails closed if the lib side
+    is missing; any lib-side failure is an empty set (not authorization).
+    """
+    fn = _lazy("lib.checkpoint", "entity_free_scene_ids")
+    try:
+        ids = fn(Path(project_root))
+    except Exception:  # noqa: BLE001 — unknown scene-plan state is not authorization
+        return set()
+    return {str(s) for s in (ids or ())}
+
+
+def shot_is_entity_free(project_root: Path | str, shot_id: str) -> bool:
+    """Server-side lookup (R4#2): True only when ``shot_id`` belongs to a scene
+    that ``lib.checkpoint.entity_free_scene_ids`` reports as entity-free. The
+    tool-call inputs are never consulted, and neither are the checkpoint's
+    own ``status`` / ``human_approved`` / ``entity_free`` fields: an edited,
+    unsigned checkpoint claiming ``entity_free`` authorizes nothing (round 2 #7).
+    """
+    root = Path(project_root)
+    free = entity_free_scene_ids(root)
+    if not free:
+        return False
+    scene_id = _scene_plan_shot_index(root).get(str(shot_id))
+    return scene_id is not None and scene_id in free
 
 
 def _verify_look_refs(inputs: dict[str, Any], project_root: Path) -> list[dict[str, str]]:
@@ -1321,25 +1351,75 @@ def _verify_headshot_ref(
     return normalized
 
 
+IMPORTED_SYNTHETIC_ORIGIN = "imported_synthetic"
+
+
+def _recipe_required(inputs: dict[str, Any], look_refs: list[dict[str, str]], media: str) -> bool:
+    """Whether this call must carry a rebuilt ``prompt_recipe`` (round 2 #6).
+
+    Every model/local IMAGE rendering of a look — a call that names
+    ``look_refs`` and renders them (it carries a ``prompt`` or an
+    ``asset_role``, or runs at ``stage: visual_bible``) — must be a builder
+    rendering, not only ``visual_bible``. Exempt: video calls (the builder
+    has no motion roles), calls with no look_refs (entity-free shots), and
+    receipt-bound scene renders that name a ``shot_id`` of the approved
+    scene plan (their prompt is the shot, not an appearance).
+    """
+    if media != "image" or not look_refs:
+        return False
+    if inputs.get("stage") == "visual_bible":
+        return True
+    if inputs.get("shot_id"):
+        return False
+    return isinstance(inputs.get("prompt"), str) or inputs.get("asset_role") is not None
+
+
+def _verify_imported_synthetic(inputs: dict[str, Any]) -> bool:
+    """An ``origin: imported_synthetic`` candidate is never generated here; it
+    may omit the recipe only with a non-empty ``import_receipt_id`` and no
+    prompt (the import gate, not this boundary, attests the file)."""
+    origin = inputs.get("origin")
+    if origin is None:
+        return False
+    if origin != IMPORTED_SYNTHETIC_ORIGIN:
+        raise LookGovernanceError(f"origin {origin!r} is not a generation origin this boundary accepts")
+    receipt_id = inputs.get("import_receipt_id")
+    if not isinstance(receipt_id, str) or not receipt_id:
+        raise LookGovernanceError("origin imported_synthetic requires a non-empty import_receipt_id")
+    if inputs.get("prompt") is not None or inputs.get("prompt_recipe") is not None:
+        raise LookGovernanceError("an imported_synthetic candidate is not generated: prompt / prompt_recipe are refused")
+    return True
+
+
 def _verify_prompt_recipe(
-    inputs: dict[str, Any], look_refs: list[dict[str, str]], project_root: Path
+    inputs: dict[str, Any], look_refs: list[dict[str, str]], project_root: Path, *, media: str = "image"
 ) -> dict[str, Any] | None:
-    """On ``stage: visual_bible`` the prompt must be a builder rendering: the
-    ``prompt_recipe`` names a look in ``look_refs``, ``rendered_sha256``
-    equals the hash of the prompt actually sent (no verbatim text), AND the
-    prompt rebuilds from the signed ACTIVE look payload (inspection #2): the
-    boundary calls ``tools.prompt_builder.build_prompt`` on the active
-    look's payload with the same builder version, ``asset_role`` and
-    ``palette`` as the call, and requires ``rendered_sha256`` equality. A
-    rendering of appearance B submitted under look A's hash is refused before
-    any upload."""
+    """Every image rendering of a look must be a builder rendering (round 2
+    #6, generalising the ``visual_bible`` rule): the ``prompt_recipe`` names a
+    look in ``look_refs``, ``rendered_sha256`` equals the hash of the prompt
+    actually sent (no verbatim text), AND the prompt rebuilds from the signed
+    ACTIVE look payload (inspection #2): the boundary calls
+    ``tools.prompt_builder.build_prompt`` on the active look's payload with
+    the same builder version, ``asset_role`` and ``palette`` as the call, and
+    requires ``rendered_sha256`` equality. A rendering of appearance B
+    submitted under look A's hash is refused before any upload. Omission is
+    allowed only for an attested ``origin: imported_synthetic`` candidate."""
     recipe = inputs.get("prompt_recipe")
-    if inputs.get("stage") != "visual_bible" and recipe is None:
+    if _verify_imported_synthetic(inputs):
+        return None
+    if recipe is None and not _recipe_required(inputs, look_refs, media):
+        shot_id = inputs.get("shot_id")
+        if media == "image" and look_refs and shot_id and str(shot_id) not in _scene_plan_shot_index(project_root):
+            raise LookGovernanceError(
+                f"shot {shot_id!r} is not a shot of the scene_plan checkpoint; a rendering of look_refs that is "
+                "not a planned shot requires prompt_recipe from tools.prompt_builder"
+            )
         return None
     if not isinstance(recipe, dict):
         raise LookGovernanceError(
-            "visual_bible generation requires prompt_recipe {look_hash, builder_version, fields_used[], rendered_sha256} "
-            "from tools.prompt_builder"
+            "a generated rendering of look_refs requires prompt_recipe {look_hash, builder_version, fields_used[], "
+            "rendered_sha256} from tools.prompt_builder (only origin: imported_synthetic with an import_receipt_id "
+            "may omit it)"
         )
     from tools.prompt_builder import BUILDER_VERSION, ROLES, PromptBuildError, build_prompt, rendered_prompt_sha256
 
@@ -1388,20 +1468,25 @@ def _verify_prompt_recipe(
     }
 
 
-def verify_look_governance(inputs: dict[str, Any], project_root: Path | str) -> dict[str, Any]:
+def verify_look_governance(
+    inputs: dict[str, Any], project_root: Path | str, *, media: str = "image"
+) -> dict[str, Any]:
     """Run the generation-boundary look checks for one visual call.
 
     Returns ``{"governed": bool, "look_refs": [...] | None, "headshot_ref": {...} | None,
     "prompt_recipe": {...} | None}``. Non-governed (legacy manifest, no governed
     keys) calls get ``governed: False`` and ``None`` fields. Raises
-    ``LookGovernanceError`` on any refusal.
+    ``LookGovernanceError`` on any refusal. ``media`` is ``"image"`` (default;
+    every rendering of look_refs needs a rebuilt prompt_recipe) or ``"video"``.
     """
+    if media not in ("image", "video"):
+        raise LookGovernanceError(f"media must be 'image' or 'video'; got {media!r}")
     root = Path(project_root)
     if not call_is_governed(inputs, root):
         return {"governed": False, "look_refs": None, "headshot_ref": None, "prompt_recipe": None}
     look_refs = _verify_look_refs(inputs, root)
     headshot_ref = _verify_headshot_ref(inputs, root, look_refs)
-    prompt_recipe = _verify_prompt_recipe(inputs, look_refs, root)
+    prompt_recipe = _verify_prompt_recipe(inputs, look_refs, root, media=media)
     return {"governed": True, "look_refs": look_refs, "headshot_ref": headshot_ref, "prompt_recipe": prompt_recipe}
 
 
@@ -1462,30 +1547,39 @@ def receipt_governance_fields(governance: dict[str, Any] | None) -> dict[str, An
 SELECTOR_LOCAL_REFERENCE_KEYS = ("reference_image_path", "reference_image_paths", "image_path", "image_paths")
 
 
-def selector_governance(inputs: dict[str, Any]) -> dict[str, Any] | None:
+def selector_governance(inputs: dict[str, Any], *, media: str = "image") -> dict[str, Any] | None:
     """Governance for the generic selectors, run BEFORE any upload or delegation.
 
-    Returns ``None`` for a legacy call (no ``project_dir``, no governed keys)
-    — the selector then behaves as before. Otherwise the call is governed:
-    ``paid_call_context`` (registered project, resume check, verified
-    ``project.yaml``, ``verify_look_governance``) and
-    ``verify_reference_lineage`` over every local reference run here, and the
-    verified governance dict is returned so the selector restricts delegation
-    to ``governance_bound`` providers. Raises on any refusal.
+    The project is inferred FIRST (round 2 #9) with ``lib.events.infer_project_dir``,
+    which resolves any path-like input — ``project_dir`` or ``output_path`` /
+    ``input_path`` hints — under the registered ``PROJECTS_DIR``. When a
+    registered project resolves, governance is decided from its signed pin
+    (``lib.look_ingest.project_look_governed``) regardless of which keys the
+    caller supplied; governed keys force governance either way. Only a call
+    that resolves to no project AND carries no governed key is legacy
+    (``None``; the selector then behaves as before).
+
+    A governed call runs ``paid_call_context`` (registered project, resume
+    check, verified ``project.yaml``, ``verify_look_governance``) and
+    ``verify_reference_lineage`` over every local reference, and the verified
+    governance dict is returned so the selector restricts delegation to
+    ``governance_bound`` providers. Raises on any refusal.
     """
     from lib import pathsafe
     from lib.events import infer_project_dir
 
+    root = infer_project_dir(inputs)
     has_keys = any(inputs.get(k) is not None for k in GOVERNED_CALL_KEYS)
-    if not inputs.get("project_dir") and not has_keys:
-        return None
-    root = infer_project_dir(inputs) if inputs.get("project_dir") else None
     if root is None and not has_keys:
         return None
     if root is not None and not has_keys and not project_look_governed(root):
         return None
     governance: dict[str, Any] = {}
-    project_root, _tracker, _config = paid_call_context(inputs, governance=governance)
+    # The inferred root IS the project: a call reached through a path hint is
+    # bound to it explicitly so the boundary (and the delegated provider) can
+    # never resolve a different project than the one that governed it.
+    bound_inputs = inputs if inputs.get("project_dir") else {**inputs, "project_dir": str(root)}
+    project_root, _tracker, _config = paid_call_context(bound_inputs, governance=governance, media=media)
     local_refs: list[Path] = []
     for key in SELECTOR_LOCAL_REFERENCE_KEYS:
         value = inputs.get(key)

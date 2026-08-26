@@ -16,6 +16,14 @@ def gates_dir(tmp_path, monkeypatch):
     return d
 
 
+@pytest.fixture(autouse=True)
+def _gate_handler():
+    # Tests stand in for the gate handler explicitly (round 2 #4); the
+    # refusal tests below leave the context by clearing the nonce.
+    with gates.handler_context():
+        yield
+
+
 BIND = dict(project_id="proj-alpha", stage="visual_bible", scope="hero:ch-001", record_sha256="ab" * 32)
 
 

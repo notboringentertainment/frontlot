@@ -113,7 +113,7 @@
         "type": "array",
         "maxItems": 24,
         "items": {
-          "$ref": "#/$defs/ticket_ref"
+          "$ref": "#/$defs/resolved_ticket_ref"
         }
       },
       "shape_only": {
@@ -385,6 +385,38 @@
         }
       },
       "additionalProperties": false
+    },
+    "resolved_ticket_ref": {
+      "description": "A depends_on entry. Ingestion derives the full form — the exact resolved ticket file (path relative to the wayfinder root + sha256) plus its immutable id when it carries one; the bare {id} form is the template's authored shorthand and is replaced by derivation before anything is signed.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ticket_ref"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "path",
+            "content_sha256"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^wf-[0-9a-f]{8}$"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "content_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
     }
   }
 }

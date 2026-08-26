@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts import gate_approve  # noqa: E402
 from lib.receipts import find_approval  # noqa: E402
 from lib.canonical_json import record_sha256  # noqa: E402
+from tests.lib.look_lock_helpers import approve_request, decline_request  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -60,11 +61,11 @@ def test_refuses_without_tty():
 
 
 def test_decide_refuses_without_tty(tmp_path, monkeypatch):
-    """decide() is not a bypass around main()'s TTY check (#1)."""
+    """_decide() is not a bypass around main()'s TTY check (#1)."""
     monkeypatch.setattr(sys, "stdin", io.StringIO())
     root, req = _project(tmp_path)
     with pytest.raises(gate_approve.GateHandlerError, match="interactive terminal"):
-        gate_approve.decide(req, root, answer="y", note=None)
+        approve_request(req, root, note=None)
     assert not (root / "approvals.jsonl").exists()
     assert (root / ".gate-requests" / "req-1.json").exists()
 
@@ -79,7 +80,7 @@ def test_main_exits_2_without_tty(tmp_path, monkeypatch, capsys):
 
 def test_approve_writes_verified_receipt_and_moves_request(tmp_path, human_tty):
     root, req = _project(tmp_path)
-    receipt = gate_approve.decide(req, root, answer="y", note="looks right")
+    receipt = approve_request(req, root, note="looks right")
     assert receipt["kind"] == "config"
     found = find_approval(root, "config", record_sha256=record_sha256(req["approval_record"]))
     assert found and found["receipt_id"] == receipt["receipt_id"]
@@ -89,7 +90,7 @@ def test_approve_writes_verified_receipt_and_moves_request(tmp_path, human_tty):
 
 def test_decline_writes_no_receipt(tmp_path, human_tty):
     root, req = _project(tmp_path)
-    assert gate_approve.decide(req, root, answer="n", note="face is wrong") is None
+    assert decline_request(req, root, note="face is wrong") is None
     assert not (root / "approvals.jsonl").exists()
     declined = json.loads((root / ".gate-requests" / "declined" / "req-1.json").read_text())
     assert declined["declined_note"] == "face is wrong"
@@ -103,9 +104,9 @@ def test_decide_rejects_malformed_request_ids(tmp_path, human_tty, bad_id):
     before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
     req["request_id"] = bad_id
     with pytest.raises(gate_approve.GateHandlerError):
-        gate_approve.decide(req, root, answer="y", note=None)
+        approve_request(req, root, note=None)
     with pytest.raises(gate_approve.GateHandlerError):
-        gate_approve.decide(req, root, answer="n", note=None)
+        decline_request(req, root, note=None)
     assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
     assert not (root / "approvals.jsonl").exists()
 
@@ -114,7 +115,7 @@ def test_decide_requires_request_id_to_match_file_stem(tmp_path, human_tty):
     root, req = _project(tmp_path)
     req["request_id"] = "req-2"  # valid grammar, but no such pending file
     with pytest.raises(gate_approve.GateHandlerError):
-        gate_approve.decide(req, root, answer="n", note=None)
+        decline_request(req, root, note=None)
     assert (root / ".gate-requests" / "req-1.json").exists()
 
 

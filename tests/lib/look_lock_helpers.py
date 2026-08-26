@@ -120,10 +120,29 @@ def write_ticket(
 
 
 def _approve(project_dir: Path, stage: str, scope: str, record: dict, kind: str, entity_id: str, envelope: dict | None) -> dict:
-    token = gates.mint_gate_token(PROJECT, stage, scope, record_sha256(record), user_response="approve")
+    with gates.handler_context():  # tests stand in for the gate handler explicitly (round 2 #4)
+        token = gates.mint_gate_token(PROJECT, stage, scope, record_sha256(record), user_response="approve")
     return receipts.record_human_approval(
         project_dir, PROJECT, stage, scope, record, token, kind, entity_id=entity_id, envelope=envelope,
     )
+
+
+def approve_request(req: dict, root: Path, *, note: str | None = None, selection: int | None = None) -> dict:
+    """Drive gate_approve's internal approval path the way ``main`` does after
+    the human answered yes at the prompt: construct → display-equivalent
+    ``shown`` → ``_decide`` under ``handler_context``. Raises GateHandlerError
+    exactly as the CLI would."""
+    from scripts import gate_approve
+
+    shown = gate_approve.construct(root, req, selection=selection)
+    with gates.handler_context():
+        return gate_approve._decide(req, root, shown=shown, note=note, selection=selection)
+
+
+def decline_request(req: dict, root: Path, *, note: str | None = None) -> None:
+    from scripts import gate_approve
+
+    return gate_approve._decline_request(req, root, note)
 
 
 def activate_look(project_dir: Path, payload: dict, *, supersedes: str | None = None) -> dict:

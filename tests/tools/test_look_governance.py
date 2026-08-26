@@ -208,20 +208,29 @@ def _scene_plan_checkpoint(status="completed", approved=True, entity_free=True):
     }
 
 
-def test_entity_free_is_read_from_approved_scene_plan_only(env, verifiers, monkeypatch):
+def _entity_free_from_lib(monkeypatch, scene_ids, *, checkpoint=None, seen=None):
+    """Stub the lib-side authority (``lib.checkpoint.entity_free_scene_ids``) and the
+    on-disk plan the boundary reads only for the shot -> scene mapping."""
     import lib.checkpoint as cp
 
-    calls = []
+    def fake_ids(project_dir):
+        if seen is not None:
+            seen.append(Path(project_dir))
+        return set(scene_ids)
 
-    def fake_read(pipeline_dir, project_id, stage):
-        calls.append((Path(pipeline_dir), project_id, stage))
-        return _scene_plan_checkpoint()
+    monkeypatch.setattr(cp, "entity_free_scene_ids", fake_ids, raising=False)
+    monkeypatch.setattr(cp, "read_checkpoint", lambda *a: _scene_plan_checkpoint() if checkpoint is None else checkpoint)
 
-    monkeypatch.setattr(cp, "read_checkpoint", fake_read)
+
+def test_entity_free_is_decided_only_by_the_lib_scene_id_authority(env, verifiers, monkeypatch):
+    """Round 2 #7: the boundary asks ``lib.checkpoint.entity_free_scene_ids`` (completed,
+    non-invalidated, pin-matching, receipt-bound scene_plan) and maps shot -> scene."""
+    seen: list[Path] = []
+    _entity_free_from_lib(monkeypatch, {"sc-1"}, seen=seen)
     out = _shared.verify_look_governance({"stage": "assets", "shot_id": "sh-title"}, env)
     assert out["look_refs"] == [] and out["governed"]
-    assert calls == [(env.parent, "proj-quill", "scene_plan")]
-    # A shot in a scene with entities is not entity-free.
+    assert seen == [env]
+    # A shot in a scene the authority does not list is not entity-free.
     with pytest.raises(_shared.LookGovernanceError, match="not entity_free"):
         _shared.verify_look_governance({"stage": "assets", "shot_id": "sh-2"}, env)
     # Unknown shot id.
@@ -230,46 +239,42 @@ def test_entity_free_is_read_from_approved_scene_plan_only(env, verifiers, monke
     # The tool-call boolean is never trusted — it is refused outright.
     with pytest.raises(_shared.LookGovernanceError, match="entity_free is not a tool-call input"):
         _shared.verify_look_governance({"stage": "assets", "shot_id": "sh-title", "entity_free": True}, env)
-    # Not approved / not completed / missing checkpoint → not entity-free.
-    for cpt in (_scene_plan_checkpoint(approved=False), _scene_plan_checkpoint(status="awaiting_human"), None):
-        monkeypatch.setattr(cp, "read_checkpoint", lambda *a, _c=cpt: _c)
-        with pytest.raises(_shared.LookGovernanceError, match="not entity_free"):
-            _shared.verify_look_governance({"stage": "assets", "shot_id": "sh-title"}, env)
 
 
-def test_invalidated_scene_plan_never_authorizes_entity_free(env, verifiers, monkeypatch):
-    """Inspection #7: entity_free is resolved through the invalidation-aware projection."""
+def test_edited_unsigned_checkpoint_claiming_entity_free_is_refused(env, verifiers, monkeypatch):
+    """Round 2 #7: the checkpoint's own status / human_approved / entity_free fields are
+    never authorization. A locally edited plan that claims entity_free for sc-1 while the
+    receipt-bound authority lists nothing authorizes nothing."""
     import lib.checkpoint as cp
-    from lib.invalidation import Invalidation
 
-    monkeypatch.setattr(cp, "read_checkpoint", lambda *a: dict(_scene_plan_checkpoint(), pipeline_type="authored-film"))
-    seen = []
-
-    def fake_invalidated(pipeline_dir, project_id, pipeline_type):
-        seen.append((Path(pipeline_dir), project_id, pipeline_type))
-        return {}
-
-    monkeypatch.setattr(cp, "invalidated_stages", fake_invalidated)
-    assert _shared.verify_look_governance({"stage": "assets", "shot_id": "sh-title"}, env)["look_refs"] == []
-    assert seen == [(env.parent, "proj-quill", "authored-film")]
-    # The same approved checkpoint, once a look retirement invalidates scene_plan, authorizes nothing.
-    hit = Invalidation(**{f: "x" for f in Invalidation.__dataclass_fields__})
-    monkeypatch.setattr(cp, "invalidated_stages", lambda *a: {"scene_plan": hit})
+    edited = _scene_plan_checkpoint(status="completed", approved=True, entity_free=True)
+    _entity_free_from_lib(monkeypatch, set(), checkpoint=edited)
     with pytest.raises(_shared.LookGovernanceError, match="not entity_free"):
         _shared.verify_look_governance({"stage": "assets", "shot_id": "sh-title"}, env)
-    # An undecidable invalidation state fails closed.
-    def boom(*a):
+    # The lib authority listing a scene the edited plan does not contain maps nothing either.
+    _entity_free_from_lib(monkeypatch, {"sc-9"}, checkpoint=edited)
+    with pytest.raises(_shared.LookGovernanceError, match="not entity_free"):
+        _shared.verify_look_governance({"stage": "assets", "shot_id": "sh-title"}, env)
+    # A lib-side failure is not authorization.
+    def boom(project_dir):
         raise cp.CheckpointValidationError("ledger unreadable")
 
-    monkeypatch.setattr(cp, "invalidated_stages", boom)
+    monkeypatch.setattr(cp, "entity_free_scene_ids", boom, raising=False)
     with pytest.raises(_shared.LookGovernanceError, match="not entity_free"):
+        _shared.verify_look_governance({"stage": "assets", "shot_id": "sh-title"}, env)
+
+
+def test_missing_lib_entity_free_authority_fails_closed(env, verifiers, monkeypatch):
+    import lib.checkpoint as cp
+
+    monkeypatch.setattr(cp, "read_checkpoint", lambda *a: _scene_plan_checkpoint())
+    monkeypatch.delattr(cp, "entity_free_scene_ids", raising=False)
+    with pytest.raises(_shared.LookGovernanceError, match="entity_free_scene_ids is unavailable"):
         _shared.verify_look_governance({"stage": "assets", "shot_id": "sh-title"}, env)
 
 
 def test_visual_bible_calls_can_never_be_entity_free(env, verifiers, monkeypatch):
-    import lib.checkpoint as cp
-
-    monkeypatch.setattr(cp, "read_checkpoint", lambda *a: _scene_plan_checkpoint())
+    _entity_free_from_lib(monkeypatch, {"sc-1"})
     with pytest.raises(_shared.LookGovernanceError, match="never be entity-free"):
         _shared.verify_look_governance({"stage": "visual_bible", "shot_id": "sh-title"}, env)
 
@@ -280,18 +285,36 @@ def test_visual_bible_calls_can_never_be_entity_free(env, verifiers, monkeypatch
 HEADSHOT = {"entity_id": "quill-marrow", "asset_id": "d" * 64, "approval_receipt_id": "hs-1"}
 
 
+def rendering_inputs(verifiers, role="hero", *, palette=None, **overrides):
+    """A builder rendering of the active character look: ``look_refs`` naming the
+    activated look, ``asset_role``, the rendered ``prompt`` and its ``prompt_recipe``
+    (round 2 #6: every generated rendering of look_refs carries a rebuilt recipe)."""
+    from tools.prompt_builder import build_prompt
+
+    payload = _character_look()
+    key = ("character", payload["entity_id"])
+    look = verifiers.active.get(key) or _activate(verifiers, payload)
+    built = build_prompt(look.payload, role=role, palette=palette)
+    ref = {"entity_kind": "character", "entity_id": payload["entity_id"], "look_hash": look.look_hash}
+    out = {"look_refs": [ref], "asset_role": role, "prompt": built["prompt"], "prompt_recipe": built["prompt_recipe"]}
+    if palette is not None:
+        out["palette"] = list(palette)
+    out.update(overrides)
+    return out
+
+
 @pytest.mark.parametrize("role", sorted(_shared.SHEET_ASSET_ROLES))
 def test_sheet_roles_require_headshot_ref(env, verifiers, role):
     with pytest.raises(_shared.LookGovernanceError, match="headshot_ref"):
         _shared.verify_look_governance({"look_refs": [CHAR_REF], "asset_role": role}, env)
     assert verifiers.headshot_calls == []
-    out = _shared.verify_look_governance({"look_refs": [CHAR_REF], "asset_role": role, "headshot_ref": HEADSHOT}, env)
+    out = _shared.verify_look_governance({**rendering_inputs(verifiers, role), "headshot_ref": HEADSHOT}, env)
     assert out["headshot_ref"] == HEADSHOT
     assert verifiers.headshot_calls == [("quill-marrow", "d" * 64, "hs-1")]
 
 
 def test_headshot_ref_must_match_a_character_look_and_verify(env, verifiers):
-    assert _shared.verify_look_governance({"look_refs": [CHAR_REF], "asset_role": "hero"}, env)["headshot_ref"] is None
+    assert _shared.verify_look_governance(rendering_inputs(verifiers, "hero"), env)["headshot_ref"] is None
     with pytest.raises(_shared.LookGovernanceError, match="not a character named in look_refs"):
         _shared.verify_look_governance({"look_refs": [LOC_REF], "asset_role": "front", "headshot_ref": HEADSHOT}, env)
     with pytest.raises(_shared.LookGovernanceError, match="sha256"):
@@ -340,6 +363,54 @@ def test_visual_bible_requires_matching_prompt_recipe(env, verifiers):
         _shared.verify_look_governance({**base, "asset_role": None, "prompt_recipe": built["prompt_recipe"]}, env)
     with pytest.raises(_shared.LookGovernanceError, match="builder_version"):
         _shared.verify_look_governance({**base, "prompt_recipe": dict(built["prompt_recipe"], builder_version="0.9")}, env)
+
+
+def test_every_generated_rendering_of_look_refs_requires_a_recipe(env, verifiers, monkeypatch):
+    """Round 2 #6: a headshot-style call (look_refs + prompt, not visual_bible) without a
+    rebuilt recipe is refused; the same call with the builder's recipe passes."""
+    rendered = rendering_inputs(verifiers, "hero", stage="headshots")
+    headshot = {k: v for k, v in rendered.items() if k != "prompt_recipe"}
+    with pytest.raises(_shared.LookGovernanceError, match="requires prompt_recipe"):
+        _shared.verify_look_governance(headshot, env)
+    # No stage at all, and no asset_role at all: still a rendering of look_refs.
+    with pytest.raises(_shared.LookGovernanceError, match="requires prompt_recipe"):
+        _shared.verify_look_governance({k: v for k, v in headshot.items() if k not in ("stage", "asset_role")}, env)
+    # asset_role without a prompt is still a rendering call.
+    with pytest.raises(_shared.LookGovernanceError, match="requires prompt_recipe"):
+        _shared.verify_look_governance({"look_refs": rendered["look_refs"], "asset_role": "hero"}, env)
+    out = _shared.verify_look_governance(rendered, env)
+    assert out["prompt_recipe"] == rendered["prompt_recipe"]
+    # A recipe that does not rebuild from the active look is refused even off visual_bible.
+    with pytest.raises(_shared.LookGovernanceError, match="rendered_sha256"):
+        _shared.verify_look_governance({**rendered, "prompt": rendered["prompt"] + " and a hat"}, env)
+    # Video renderings are exempt (the builder has no motion roles); image is the default.
+    assert _shared.verify_look_governance(headshot, env, media="video")["prompt_recipe"] is None
+    with pytest.raises(_shared.LookGovernanceError, match="media"):
+        _shared.verify_look_governance(headshot, env, media="audio")
+    # A planned shot render (shot_id in the scene plan) is the shot's prompt, not an appearance.
+    import lib.checkpoint as cp
+
+    monkeypatch.setattr(cp, "read_checkpoint", lambda *a: _scene_plan_checkpoint())
+    shot = {"look_refs": rendered["look_refs"], "prompt": "she crosses the gantry", "shot_id": "sh-2"}
+    assert _shared.verify_look_governance(shot, env)["prompt_recipe"] is None
+    with pytest.raises(_shared.LookGovernanceError, match="not a shot of the scene_plan"):
+        _shared.verify_look_governance({**shot, "shot_id": "sh-invented"}, env)
+
+
+def test_imported_synthetic_candidate_may_omit_the_recipe_only_when_attested(env, verifiers):
+    ref = rendering_inputs(verifiers, "hero")["look_refs"]
+    base = {"look_refs": ref, "asset_role": "hero", "origin": "imported_synthetic"}
+    out = _shared.verify_look_governance({**base, "import_receipt_id": "imp-7"}, env)
+    assert out["prompt_recipe"] is None and out["look_refs"] == ref
+    with pytest.raises(_shared.LookGovernanceError, match="import_receipt_id"):
+        _shared.verify_look_governance(base, env)
+    with pytest.raises(_shared.LookGovernanceError, match="import_receipt_id"):
+        _shared.verify_look_governance({**base, "import_receipt_id": ""}, env)
+    # An import is not generated: a prompt on it is refused, as is any other origin.
+    with pytest.raises(_shared.LookGovernanceError, match="not generated"):
+        _shared.verify_look_governance({**base, "import_receipt_id": "imp-7", "prompt": "p"}, env)
+    with pytest.raises(_shared.LookGovernanceError, match="origin"):
+        _shared.verify_look_governance({**base, "origin": "generated", "import_receipt_id": "imp-7"}, env)
 
 
 def test_prompt_rendered_from_appearance_b_under_look_a_hash_is_refused(env, verifiers):
@@ -426,10 +497,11 @@ def test_seedream_governed_call_binds_refs_and_lineage_before_upload(env, verifi
         return real_stage(project_root, **kw)
 
     headshot = dict(HEADSHOT, asset_id=hero["sha256"])
+    rendered = rendering_inputs(verifiers, "front")
+    CHAR_REF = rendered["look_refs"][0]  # noqa: N806 — the ref of the activated look
     inputs = {
-        "prompt": "front sheet", "operation": "edit", "project_dir": str(env),
-        "reference_image_paths": [str(hero["path"])],
-        "look_refs": [CHAR_REF], "asset_role": "front", "headshot_ref": headshot, "stage": "assets",
+        **rendered, "operation": "edit", "project_dir": str(env),
+        "reference_image_paths": [str(hero["path"])], "headshot_ref": headshot, "stage": "assets",
     }
     order = []
     submit, wait, download = _seedream_happy(captured)
@@ -450,10 +522,12 @@ def test_seedream_governed_call_binds_refs_and_lineage_before_upload(env, verifi
 
 def test_seedream_refuses_before_upload_on_governance_failure(env, verifiers):
     hero = write_receipted_png(env, "canon/visual/objects/hero.png")
+    rendered = rendering_inputs(verifiers, "hero")
     cases = [
         ({"look_refs": [CHAR_REF], "asset_role": "front"}, "headshot_ref"),
         ({"stage": "visual_bible"}, "never be entity-free"),
-        ({"look_refs": [CHAR_REF], "reference_image_urls": ["https://v3.fal.media/x.png"]}, "reference_image_urls refused"),
+        ({"look_refs": [CHAR_REF]}, "requires prompt_recipe"),
+        ({**rendered, "reference_image_urls": ["https://v3.fal.media/x.png"]}, "reference_image_urls refused"),
     ]
     for extra, msg in cases:
         with patch.object(_shared, "upload_image_fal") as up, patch.object(_shared, "fal_queue_submit") as submit:
@@ -464,8 +538,8 @@ def test_seedream_refuses_before_upload_on_governance_failure(env, verifiers):
         submit.assert_not_called()
     verifiers.tainted.add(hero["sha256"])
     with patch.object(_shared, "upload_image_fal") as up, patch.object(_shared, "fal_queue_submit") as submit:
-        r = SeedreamImage().execute({"prompt": "p", "operation": "edit", "project_dir": str(env),
-                                     "reference_image_paths": [str(hero["path"])], "look_refs": [CHAR_REF]})
+        r = SeedreamImage().execute({**rendered, "operation": "edit", "project_dir": str(env),
+                                     "reference_image_paths": [str(hero["path"])]})
     assert not r.success and "real person" in r.error
     up.assert_not_called()
     assert not (env / "cost-reservations.jsonl").exists()
@@ -544,9 +618,7 @@ def font(tmp_path, monkeypatch):
 
 def test_title_card_and_poster_are_governed(font, verifiers, monkeypatch):
     project, font_path = font
-    import lib.checkpoint as cp
-
-    monkeypatch.setattr(cp, "read_checkpoint", lambda *a: _scene_plan_checkpoint())
+    _entity_free_from_lib(monkeypatch, {"sc-1"})
     base = {"text": "THE FIRST LIGHT", "font_path": str(font_path), "font_size": 32, "width": 320, "height": 180,
             "project_dir": str(project)}
     r = TitleCard().execute({**base, "stage": "assets"})

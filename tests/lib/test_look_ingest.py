@@ -119,7 +119,8 @@ class TestReceiptChain:
         from lib.canonical_json import record_sha256
 
         c = character_look()
-        token = gates.mint_gate_token("p", "look_lock", "character:x", record_sha256(c))
+        with gates.handler_context():
+            token = gates.mint_gate_token("p", "look_lock", "character:x", record_sha256(c))
         with pytest.raises(ValueError, match="look_hash must equal"):
             receipts.record_human_approval(
                 project_dir, "p", "look_lock", "character:x", c, token, "look_lock", entity_id=CHAR,
@@ -225,17 +226,19 @@ class TestTicketConfinement:
 
     def test_depends_on_is_derived_from_blocked_by(self, tmp_path):
         blocker = write_ticket(tmp_path, location_look(), ticket_id=None, title="Where is the station?", name="station.md")
+        by_id = write_ticket(tmp_path, location_look("loc-02-0ddba11e"), ticket_id="wf-11111111", name="by-id.md")
         undeclared = character_look()
         del undeclared["depends_on"]  # derived by ingestion, never authored
         path = write_ticket(tmp_path, undeclared, blocked_by=["wf-11111111", "Where is the station?"])
         look = parse_look_ticket(path, wayfinder_root=tmp_path)
         assert look.payload["depends_on"] == [
-            {"id": "wf-11111111"},
+            {"id": "wf-11111111", "path": "wayfinder/resolved/by-id.md",
+             "content_sha256": hashlib.sha256(by_id.read_bytes()).hexdigest()},
             {"path": "wayfinder/resolved/station.md", "content_sha256": hashlib.sha256(blocker.read_bytes()).hexdigest()},
         ]
         assert look.look_hash == look_hash(look.payload)
         # a block that declares a disagreeing depends_on is rejected
-        bad = write_ticket(tmp_path, character_look(depends_on=[{"id": "wf-22222222"}]), blocked_by=["wf-11111111"])
+        bad = write_ticket(tmp_path, character_look(depends_on=[{"id": "wf-11111111", "path": "x.md", "content_sha256": "0" * 64}]), blocked_by=["wf-11111111"])
         with pytest.raises(LookIngestError, match="derived from the wayfinder"):
             parse_look_ticket(bad, wayfinder_root=tmp_path)
         # a blocker that is not a resolved ticket makes the look un-ingestible

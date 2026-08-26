@@ -42,6 +42,11 @@ from lib import gates
 from lib.canonical_json import record_sha256 as _record_sha256
 from lib.state_io import append_jsonl, read_jsonl
 
+# Approval transactions in flight in this process (token_hmac). A pre-commit
+# check that reads receipts triggers WAL replay; replay must never commit the
+# very transaction whose check is still running (round 2 #2).
+_in_flight: set[str] = set()
+
 APPROVALS_FILENAME = "approvals.jsonl"
 GENERATION_RECEIPTS_FILENAME = "generation-receipts.jsonl"
 
@@ -182,20 +187,30 @@ def record_human_approval(
     receipt["signature"] = gates.sign_receipt(receipt)
 
     root = Path(project_root)
-    gates.wal_write(token_hmac, {
-        "token_hmac": token_hmac,
-        "project_id": project_id,
-        "project_root": str(root.resolve()),
-        "receipt": receipt,
-    })
-    binding = gates.consume_gate_token(gate_token, project_id, stage, scope, digest)
-    if pre_commit_check is not None:
+    # Round 2 #2: the whole transaction — WAL, token consume, pre-commit
+    # validation (origin-uniqueness recheck), local append, ledger, chain,
+    # tip — runs under the per-project/per-stream interprocess lock, so two
+    # concurrent approvals are serialized and the second one re-derives its
+    # checks against the first one's committed rows.
+    with gates.receipt_lock(project_id, "approval"):
+        gates.wal_write(token_hmac, {
+            "token_hmac": token_hmac,
+            "project_id": project_id,
+            "project_root": str(root.resolve()),
+            "receipt": receipt,
+        })
+        _in_flight.add(token_hmac)
         try:
-            pre_commit_check()
-        except BaseException:
-            gates.wal_delete(token_hmac)
-            raise
-    _commit_approval(root, binding, receipt)
+            binding = gates.consume_gate_token(gate_token, project_id, stage, scope, digest)
+            if pre_commit_check is not None:
+                try:
+                    pre_commit_check()
+                except BaseException:
+                    gates.wal_delete(token_hmac)
+                    raise
+        finally:
+            _in_flight.discard(token_hmac)
+        _commit_approval(root, binding, receipt)
     return receipt
 
 
@@ -282,13 +297,14 @@ def _rows_for_commit(root: Path, stream: str, receipt: dict) -> tuple[list[dict]
 def _commit_approval(root: Path, binding: gates.GateBinding, receipt: dict) -> None:
     """Idempotent tail of an approval: receipt row, ledger row, chain row, WAL removal."""
     rid = receipt["receipt_id"]
-    _, present = _rows_for_commit(root, "approval", receipt)
-    if not present:
-        append_jsonl(approvals_path(root), receipt)
-    if not gates.ledger_has(rid, receipt["record_sha256"], receipt["project_id"], binding.token_hmac):
-        gates.ledger_append(binding, rid)
-    gates.chain_append(receipt["project_id"], "approval", receipt)
-    gates.wal_delete(binding.token_hmac)
+    with gates.receipt_lock(receipt["project_id"], "approval"):
+        _, present = _rows_for_commit(root, "approval", receipt)
+        if not present:
+            append_jsonl(approvals_path(root), receipt)
+        if not gates.ledger_has(rid, receipt["record_sha256"], receipt["project_id"], binding.token_hmac):
+            gates.ledger_append(binding, rid)
+        gates.chain_append(receipt["project_id"], "approval", receipt)
+        gates.wal_delete(binding.token_hmac)
 
 
 def chained_rows(project_root: Path | str, stream: str, *, project_id: Optional[str] = None) -> list[dict]:
@@ -326,6 +342,8 @@ def recover_pending_approvals(project_root: Path | str) -> list[dict]:
         token_hmac = entry.get("token_hmac")
         if not isinstance(token_hmac, str) or entry.get("project_root") != str(root):
             continue
+        if token_hmac in _in_flight:
+            continue  # its pre-commit check is still running; it commits (or aborts) itself
         binding = gates.consumed_binding(token_hmac)
         if binding is None:
             if gates.is_pending(token_hmac):
@@ -658,20 +676,21 @@ def _commit_generation(root: Path, receipt: dict) -> None:
     Provenance is immutable per output hash: a second receipt for an
     already-receipted output is refused unless its provenance is identical."""
     rid = receipt["receipt_id"]
-    rows, present = _rows_for_commit(root, "generation", receipt)
-    if not present:
-        for row in rows:
-            if row.get("output_sha256") == receipt["output_sha256"] and gates.verify_generation_receipt(row):
-                if provenance_of(row) != provenance_of(receipt):
-                    raise ValueError(
-                        f"output {receipt['output_sha256']} already has generation receipt "
-                        f"{row['receipt_id']} with different provenance — provenance is immutable per "
-                        f"output hash; a receipt can never relabel an existing asset's lineage"
-                    )
-        append_jsonl(generation_receipts_path(root), receipt)
-    if not gates.generation_ledger_has(rid, receipt["output_sha256"], receipt["project_id"]):
-        gates.generation_ledger_append(receipt)
-    gates.chain_append(receipt["project_id"], "generation", receipt)
+    with gates.receipt_lock(receipt["project_id"], "generation"):
+        rows, present = _rows_for_commit(root, "generation", receipt)
+        if not present:
+            for row in rows:
+                if row.get("output_sha256") == receipt["output_sha256"] and gates.verify_generation_receipt(row):
+                    if provenance_of(row) != provenance_of(receipt):
+                        raise ValueError(
+                            f"output {receipt['output_sha256']} already has generation receipt "
+                            f"{row['receipt_id']} with different provenance — provenance is immutable per "
+                            f"output hash; a receipt can never relabel an existing asset's lineage"
+                        )
+            append_jsonl(generation_receipts_path(root), receipt)
+        if not gates.generation_ledger_has(rid, receipt["output_sha256"], receipt["project_id"]):
+            gates.generation_ledger_append(receipt)
+        gates.chain_append(receipt["project_id"], "generation", receipt)
 
 
 def record_generation(project_root: Path | str, **fields: Any) -> dict:
@@ -679,8 +698,10 @@ def record_generation(project_root: Path | str, **fields: Any) -> dict:
     for the fields; ``prompt``, ``seed`` and ``references_applied`` (the ordered
     list of references the tool actually uploaded) are carried in the signed
     record so enforcement can compare the artifact against them."""
-    receipt = _build_generation_receipt(project_root, **fields)
-    _commit_generation(Path(project_root), receipt)
+    project_id = project_id_for(project_root)
+    with gates.receipt_lock(project_id, "generation"):
+        receipt = _build_generation_receipt(project_root, **fields)
+        _commit_generation(Path(project_root), receipt)
     return receipt
 
 

@@ -350,7 +350,7 @@ class SeedanceVideo(BaseTool):
         governance: dict[str, Any] = {}
         try:
             # Look governance (look_refs verified before any upload) runs inside paid_call_context.
-            project_root, tracker, config = _shared.paid_call_context(inputs, governance=governance)
+            project_root, tracker, config = _shared.paid_call_context(inputs, governance=governance, media="video")
             # Prompts always leave the machine; reference images only when consented.
             config.require_egress("fal", "prompts")
             local_refs = [pathsafe.resolve_input(p, project_root) for p in inputs.get("reference_image_paths") or []]

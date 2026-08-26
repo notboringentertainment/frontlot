@@ -11,8 +11,14 @@ The human then runs this script from a real terminal::
     python scripts/gate_approve.py --project <slug> --request <id>
 
 It refuses to run without an interactive TTY on stdin (checked in ``main``
-and again in ``decide``), so an agent driving a non-interactive shell cannot
-mint a token for itself. This is process discipline, not an OS privilege
+and again in ``_decide``), so an agent driving a non-interactive shell cannot
+mint a token for itself. There is NO programmatic decision path (round 2
+#4): the decision is read only from the interactive prompt, after the
+canonical record has been printed, and ``_decide`` is internal — it takes the
+``Constructed`` that was displayed and refuses unless the record it rebuilds
+right before minting has the same digest. ``main`` enters
+``lib.gates.handler_context()`` only around that call; ``mint_gate_token``
+refuses outside it. All of this is process discipline, not an OS privilege
 boundary — see the trust-boundary note in ``lib/gates.py``. On approval it mints a
 one-use token, consumes it through ``record_human_approval`` (signed receipt +
 consumed-token ledger + per-project receipt chain), and moves the request to
@@ -69,7 +75,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from lib.canonical_json import record_sha256  # noqa: E402
-from lib.gates import mint_gate_token  # noqa: E402
+from lib import gates  # noqa: E402
 from lib.paths import PROJECTS_DIR  # noqa: E402
 from lib.receipts import APPROVAL_KINDS, record_human_approval  # noqa: E402
 from lib.state_io import atomic_move  # noqa: E402
@@ -800,50 +806,60 @@ def _decline(req: dict, req_path: Path, root: Path, note: str | None) -> None:
     _confined(req_path, root).unlink()
 
 
-def decide(
-    req: dict,
-    root: Path,
-    *,
-    answer: str,
-    note: str | None,
-    projects_dir: Path | None = None,
-    selection: int | None = None,
-    shown: Optional[Constructed] = None,
-) -> dict | None:
-    """Apply a human decision. ``answer`` is 'y' or 'n'. Returns the receipt on approval.
-
-    For selection kinds (headshot) ``answer='y'`` needs ``selection`` (1-based
-    candidate number); ``answer='n'`` is reject-all and requires a note.
-
-    The record is constructed from the authoritative inputs HERE, right
-    before the token is minted; when ``shown`` (what the human saw) is given
-    it must be identical, so the inputs cannot change between display and
-    signature. Re-checks the TTY here (not only in ``main``) so importing this
-    module and calling ``decide`` from a non-interactive process is refused.
-    """
-    require_tty()
+def _pending_request_path(req: dict, root: Path) -> Path:
+    """The on-disk pending request ``req`` names, or GateHandlerError."""
     request_id = validate_request_id(req.get("request_id"))
     req_path = _confined(root / REQUEST_DIRNAME / f"{request_id}.json", root)
     if req_path.stem != request_id or not req_path.is_file():
         raise GateHandlerError(f"no pending request {request_id!r}")
-    kind = req.get("kind")
-    if kind not in APPROVAL_KINDS:
-        raise GateHandlerError(f"unknown kind {kind!r}")
+    if req.get("kind") not in APPROVAL_KINDS:
+        raise GateHandlerError(f"unknown kind {req.get('kind')!r}")
+    return req_path
 
-    if answer != "y":
-        if kind in SELECTION_KINDS and not note:
-            raise GateHandlerError("reject-all needs a note (it is logged for the regeneration round)")
-        _decline(req, req_path, root, note)
-        return None
+
+def _decline_request(req: dict, root: Path, note: str | None) -> None:
+    """Record a human decline (no receipt). Reject-all on a selection kind needs a note."""
+    require_tty()
+    req_path = _pending_request_path(req, root)
+    if req["kind"] in SELECTION_KINDS and not note:
+        raise GateHandlerError("reject-all needs a note (it is logged for the regeneration round)")
+    _decline(req, req_path, root, note)
+
+
+def _decide(
+    req: dict,
+    root: Path,
+    *,
+    shown: Constructed,
+    note: str | None,
+    selection: Optional[int] = None,
+) -> dict:
+    """Internal: sign the record the human just approved at the prompt.
+
+    There is no ``answer`` parameter — reaching this function IS the
+    affirmative answer, and only ``main`` (after ``show_constructed``) calls
+    it. ``shown`` is the ``Constructed`` that was displayed; the record is
+    constructed AGAIN here from the authoritative inputs and must have the
+    same digest and envelope, so the inputs cannot change between display
+    and signature. Re-checks the TTY (not only in ``main``) so importing
+    this module and calling ``_decide`` from a non-interactive process is
+    refused; ``mint_gate_token`` additionally refuses outside
+    ``gates.handler_context()``.
+    """
+    require_tty()
+    req_path = _pending_request_path(req, root)
+    kind = req["kind"]
+    if not isinstance(shown, Constructed):
+        raise GateHandlerError("_decide needs the Constructed record that was displayed to the human")
 
     built = construct(root, req, selection=selection)
-    if shown is not None and (shown.record != built.record or shown.envelope != built.envelope):
+    if shown.digest != built.digest or shown.record != built.record or shown.envelope != built.envelope:
         raise GateHandlerError(
             "the authoritative inputs changed between display and approval — the record shown is not the "
             "record that would be signed; re-run the request"
         )
 
-    token = mint_gate_token(
+    token = gates.mint_gate_token(
         req["project_id"], req["stage"], req["scope"], built.digest,
         user_response={"answer": "approved", "note": note, "selection": selection},
     )
@@ -890,6 +906,7 @@ def main(argv: list[str] | None = None) -> int:
         show_request(req, root)
         selection: int | None = None
         shown: Optional[Constructed] = None
+        approved = False
         if req["kind"] in SELECTION_KINDS:
             _, entry, candidates = headshot_candidates(req, root)
             show_candidates(entry, candidates, root)
@@ -898,20 +915,20 @@ def main(argv: list[str] | None = None) -> int:
                 selection = int(raw)
                 shown = construct(root, req, selection=selection)
                 show_constructed(shown)
-                answer = "y" if input("Sign this record? [y/N] ").strip().lower() == "y" else "n"
-            else:
-                answer = "n"
+                approved = input("Sign this record? [y/N] ").strip().lower() == "y"
             note = input("Note (required for reject-all): ").strip() or None
         else:
             shown = construct(root, req)
             show_constructed(shown)
-            answer = input("Approve? [y/N] ").strip().lower()
-            answer = "y" if answer == "y" else "n"
+            approved = input("Approve? [y/N] ").strip().lower() == "y"
             note = input("Note (optional): ").strip() or None
-        receipt = decide(req, root, answer=answer, note=note, selection=selection, shown=shown)
-        if receipt:
+        if approved and shown is not None:
+            # The handler marker exists only for this call; minting is refused elsewhere.
+            with gates.handler_context():
+                receipt = _decide(req, root, shown=shown, note=note, selection=selection)
             print(f"approved — receipt {receipt['receipt_id']}")
         else:
+            _decline_request(req, root, note)
             print("declined — no receipt written")
         return 0
     except GateHandlerError as e:

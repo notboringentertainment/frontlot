@@ -17,7 +17,9 @@ from lib.receipts import find_approval  # noqa: E402
 from tests.lib.look_lock_helpers import (  # noqa: E402
     CHAR,
     activate_look,
+    approve_request,
     character_look,
+    decline_request,
     image,
     look_refs_for,
     pin_project,
@@ -86,7 +88,7 @@ class TestSelectionGate:
         _pending_checkpoint(root, c, cands)
         req = _headshot_request(root)
         assert req["approval_record"] is None
-        receipt = gate_approve.decide(req, root, answer="y", note="the second one", selection=2)
+        receipt = approve_request(req, root, note="the second one", selection=2)
         rec = receipt["record"]
         assert rec["asset_id"] == cands[1]["asset_id"] and rec["origin"] == "generated"
         assert rec["look_hash"] == look_hash(c) and rec["import_receipt_id"] is None
@@ -102,10 +104,10 @@ class TestSelectionGate:
         activate_look(root, c)
         cands = [candidate(root, c, "c0")]
         _pending_checkpoint(root, c, cands)
-        first = gate_approve.decide(_headshot_request(root), root, answer="y", note=None, selection=1)
+        first = approve_request(_headshot_request(root), root, note=None, selection=1)
         cands = [candidate(root, c, "c1")]
         _pending_checkpoint(root, c, cands)
-        second = gate_approve.decide(_headshot_request(root), root, answer="y", note=None, selection=1)
+        second = approve_request(_headshot_request(root), root, note=None, selection=1)
         assert second["supersedes_receipt_id"] == first["receipt_id"]
         assert active_headshots(root)[CHAR].asset_id == cands[0]["asset_id"]
 
@@ -115,8 +117,8 @@ class TestSelectionGate:
         _pending_checkpoint(root, c, [candidate(root, c, "c0")])
         req = _headshot_request(root)
         with pytest.raises(gate_approve.GateHandlerError, match="note"):
-            gate_approve.decide(req, root, answer="n", note=None)
-        assert gate_approve.decide(req, root, answer="n", note="all wrong jaw") is None
+            decline_request(req, root, note=None)
+        assert decline_request(req, root, note="all wrong jaw") is None
         assert active_headshots(root) == {}
         assert find_approval(root, "headshot", entity_id=CHAR) is None
         declined = json.loads((root / ".gate-requests" / "declined" / f"{req['request_id']}.json").read_text())
@@ -128,9 +130,9 @@ class TestSelectionGate:
         _pending_checkpoint(root, c, [candidate(root, c, "c0")])
         req = _headshot_request(root)
         with pytest.raises(gate_approve.GateHandlerError, match="1..1"):
-            gate_approve.decide(req, root, answer="y", note=None, selection=2)
+            approve_request(req, root, note=None, selection=2)
         with pytest.raises(gate_approve.GateHandlerError, match="selection"):
-            gate_approve.decide(req, root, answer="y", note=None)
+            approve_request(req, root, note=None)
         req["approval_record"] = {"asset_id": "z" * 64}
         (root / ".gate-requests" / f"{req['request_id']}.json").write_text(json.dumps(req))
         with pytest.raises(gate_approve.GateHandlerError, match="must not carry approval_record"):
@@ -143,14 +145,14 @@ class TestSelectionGate:
         _pending_checkpoint(root, c, [cand])
         (root / cand["path"]).write_bytes(b"swapped")
         with pytest.raises(gate_approve.GateHandlerError, match="hashes to"):
-            gate_approve.decide(_headshot_request(root), root, answer="y", note=None, selection=1)
+            approve_request(_headshot_request(root), root, note=None, selection=1)
 
     def test_requires_awaiting_human_pending_packet(self, root, human_tty):
         c = character_look()
         activate_look(root, c)
         _pending_checkpoint(root, c, [candidate(root, c, "c0")], status="completed")
         with pytest.raises(gate_approve.GateHandlerError, match="awaiting_human"):
-            gate_approve.decide(_headshot_request(root), root, answer="y", note=None, selection=1)
+            approve_request(_headshot_request(root), root, note=None, selection=1)
 
     def test_main_prompts_for_candidate(self, root, human_tty, monkeypatch, capsys):
         c = character_look()
@@ -174,14 +176,14 @@ class TestNewKinds:
         (root / "project.yaml").write_text(f"wayfinder_root: {wf}\n")
         look = parse_look_ticket(ticket, wayfinder_root=wf)
         req = json.loads(look_lock_request(root, "p", look, ticket_path=ticket.relative_to(wf)).read_text())
-        receipt = gate_approve.decide(req, root, answer="y", note=None)
+        receipt = approve_request(req, root, note=None)
         assert receipt["look_hash"] == look.look_hash and receipt["source_ticket_ref"] == {"id": "wf-0badc0de"}
         assert receipt["record"] == look.payload
         assert active_looks(root)[("character", CHAR)].receipt_id == receipt["receipt_id"]
 
     def test_pipeline_migration_refreshes_cache(self, root, human_tty):
         req = json.loads(prepare_migration_request(root, "p", "authored-film", "1.2").read_text())
-        receipt = gate_approve.decide(req, root, answer="y", note=None)
+        receipt = approve_request(req, root, note=None)
         assert find_approval(root, "pipeline_migration", entity_id="authored-film")["receipt_id"] == receipt["receipt_id"]
         assert pinned_pipeline(root, "authored-film").version == "1.2"
         assert json.loads((root / "project.json").read_text())["pipeline_manifest_version"] == "1.2"

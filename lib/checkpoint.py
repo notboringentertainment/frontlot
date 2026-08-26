@@ -951,7 +951,20 @@ def read_checkpoint(
     with open(path, encoding="utf-8") as f:
         checkpoint = json.load(f)
     validate_checkpoint(checkpoint)
+    _require_pin_bound(pipeline_dir, project_id, stage, path, checkpoint)
     return checkpoint
+
+
+def _require_pin_bound(
+    pipeline_dir: Path, project_id: str, stage: str, path: Path, checkpoint: dict[str, Any]
+) -> None:
+    """Round 2 #8: every project-context checkpoint read applies
+    ``_pin_mismatch``. Under a receipted (1.2) pin an unbound legacy or
+    mismatched checkpoint fails closed here, before any resume or boundary
+    consumer can act on it; projects with no signed pin are unchanged."""
+    mismatch = _pin_mismatch(pipeline_dir, project_id, checkpoint.get("pipeline_type"), stage, path, checkpoint)
+    if mismatch:
+        raise CheckpointValidationError(f"PIPELINE PIN VIOLATION: {mismatch}")
 
 
 def get_latest_checkpoint(
@@ -973,6 +986,8 @@ def get_latest_checkpoint(
     with open(checkpoints[0], encoding="utf-8") as f:
         checkpoint = json.load(f)
     validate_checkpoint(checkpoint)
+    stage = checkpoint.get("stage") or checkpoints[0].stem[len("checkpoint_"):]
+    _require_pin_bound(pipeline_dir, project_id, str(stage), checkpoints[0], checkpoint)
     return _project_invalidation(pipeline_dir, project_id, checkpoint)
 
 
@@ -1011,6 +1026,50 @@ def get_completed_stages(
         if cp and cp.get("status") == "completed" and stage not in invalidated:
             completed.append(stage)
     return completed
+
+
+def entity_free_scene_ids(project_dir: Path | str) -> set[str]:
+    """Scene ids a generation call may treat as ``entity_free`` (round 2 #7).
+
+    ``entity_free`` is never trusted from the checkpoint file alone (an
+    editable project-file boolean). Ids are returned only from a
+    ``scene_plan`` checkpoint that is completed and human-approved,
+    non-invalidated, pin-bound (``read_checkpoint`` fails closed on a pin
+    mismatch), AND bound by a gate-signed ``artifact_review`` receipt whose
+    ``{artifact_type: scene_plan, artifact_digest}`` names this exact
+    checkpoint file's digest. Anything else — including any failure to
+    compute the invalidation set or read the receipts — yields the empty
+    set; callers must never fall back to the file.
+    """
+    root = Path(project_dir)
+    pipeline_dir, project_id = root.parent, root.name
+    try:
+        checkpoint = read_checkpoint(pipeline_dir, project_id, "scene_plan")
+    except (CheckpointValidationError, ValueError, OSError):
+        return set()
+    if not checkpoint or checkpoint.get("status") != "completed" or checkpoint.get("human_approved") is not True:
+        return set()
+    try:
+        invalidated = invalidated_stages(pipeline_dir, project_id, checkpoint.get("pipeline_type"))
+    except Exception:  # noqa: BLE001 — unknown invalidation state is not authorization
+        return set()
+    if "scene_plan" in invalidated:
+        return set()
+    digest = checkpoint_digest(_checkpoint_path(pipeline_dir, project_id, "scene_plan"))
+    from lib.receipts import verified_approvals
+
+    try:
+        reviews = verified_approvals(root, "artifact_review")
+    except Exception:  # noqa: BLE001 — an unverifiable receipt file authorizes nothing
+        return set()
+    if not any(r.get("artifact_type") == "scene_plan" and r.get("artifact_digest") == digest for r in reviews):
+        return set()
+    plan = (checkpoint.get("artifacts") or {}).get("scene_plan") or {}
+    return {
+        str(scene["id"])
+        for scene in plan.get("scenes") or []
+        if isinstance(scene, dict) and scene.get("entity_free") is True and scene.get("id") is not None
+    }
 
 
 def get_next_stage(

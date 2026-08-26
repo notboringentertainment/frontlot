@@ -298,7 +298,7 @@ class VideoSelector(BaseTool):
         from tools.video import _shared
 
         try:
-            governance = _shared.selector_governance(inputs)
+            governance = _shared.selector_governance(inputs, media="video")
         except Exception as exc:  # noqa: BLE001 — every refusal stops delegation
             return ToolResult(success=False, error=f"video_selector refused before delegation: {exc}")
         if governance is not None:
@@ -314,6 +314,9 @@ class VideoSelector(BaseTool):
 
         # Adapt input keys: stock tools use 'query' while generators use 'prompt'
         adapted = dict(inputs)
+        if governance is not None:
+            # Bind the delegated call to the project that governed it (round 2 #9).
+            adapted.setdefault("project_dir", str(governance["project_root"]))
         if hasattr(tool, 'input_schema'):
             required = tool.input_schema.get("properties", {})
             if "query" in required and "query" not in adapted:
