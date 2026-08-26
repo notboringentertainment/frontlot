@@ -30,7 +30,10 @@ def run(tool_name, inputs):
     res = tool.execute(inputs)
     if not res.success:
         sys.exit(f"{tool_name} failed: {res.error}")
-    print(f"[{tool_name}] {res.output_path}  cost=${res.cost_usd:.3f}  receipt={res.metadata.get('generation_receipt_ids') or res.metadata.get('generation_receipt_id')}")
+    path = res.data.get("output_path") or (res.data.get("output_paths") or [None])[0]
+    meta = getattr(res, "metadata", {}) or {}
+    print(f"[{tool_name}] {path}  cost=${res.cost_usd:.3f}  receipt={meta.get('generation_receipt_ids') or meta.get('generation_receipt_id')}")
+    res.output_path = path
     return res
 
 def main():
@@ -40,7 +43,9 @@ def main():
     out = PROJECT / "assets" / "smoke"; out.mkdir(parents=True, exist_ok=True)
     hero = run("seedream_image", {"operation": "text_to_image", "prompt": "studio portrait of a weathered lighthouse keeper in a wool coat, neutral grey background, soft key light, photographic", "image_size": "auto_1K", "num_images": 1, "output_format": "png", "output_dir": str(out), "project_dir": str(PROJECT)})
     view = run("seedream_image", {"operation": "edit", "prompt": "same person, three-quarter view, same coat and lighting, neutral grey background", "reference_image_paths": [hero.output_path], "image_size": "auto_1K", "num_images": 1, "output_format": "png", "output_dir": str(out), "project_dir": str(PROJECT)})
-    clip = run("seedance_video", {"operation": "reference_to_video", "model_version": "2.5", "prompt": "@Image1 and @Image2 are the same lighthouse keeper. He turns his head slowly toward the camera, wind in his hair, 4 seconds, no dialogue.", "reference_image_paths": [hero.output_path, view.output_path], "resolution": "480p", "duration": "4", "aspect_ratio": "16:9", "generate_audio": False, "output_path": str(out / "smoke.mp4"), "project_dir": str(PROJECT)})
+    def ref(path, role):
+        return {"asset_id": Path(path).stem, "path": str(path), "role": role, "visual_bible_entity_id": "character-smoke"}
+    clip = run("seedance_video", {"operation": "reference_to_video", "model_version": "2.5", "prompt": "@Image1 and @Image2 are the same lighthouse keeper. He turns his head slowly toward the camera, wind in his hair, 4 seconds, no dialogue.", "reference_image_paths": [hero.output_path, view.output_path], "reference_manifest": [ref(hero.output_path, "hero"), ref(view.output_path, "three_quarter")], "resolution": "480p", "duration": "4", "aspect_ratio": "16:9", "generate_audio": False, "output_path": str(out / "smoke.mp4"), "project_dir": str(PROJECT)})
     print(json.dumps({"hero": hero.output_path, "view": view.output_path, "clip": clip.output_path}, indent=2))
 
 if __name__ == "__main__":

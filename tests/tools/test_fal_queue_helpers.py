@@ -47,7 +47,7 @@ def test_wait_polls_fixture_urls_and_returns_result():
     assert out["video"]["url"].endswith("f.mp4")
     urls = [c.args[0] for c in get.call_args_list]
     assert urls[:3] == ["https://queue.fal.run/vendor/model/requests/req-1/status"] * 3
-    assert urls[3] == "https://queue.fal.run/vendor/model/requests/req-1/response"
+    assert urls[3] == "https://queue.fal.run/vendor/model/requests/req-1"
     assert all(c.kwargs["headers"]["X-Fal-No-Retry"] == "1" for c in get.call_args_list)
 
 
@@ -165,3 +165,29 @@ def test_paid_call_context_halts_on_nonterminal_reservation_before_config_load(t
         _shared.paid_call_context({"project_dir": str(project)})
     root, _tracker, _config = _shared.paid_call_context({"project_dir": str(project)}, check_resume=False)
     assert root == project.resolve()
+
+
+def test_request_urls_use_owner_app_prefix_only():
+    from tools.video import _shared
+
+    url = _shared.fal_request_url("bytedance/seedream/v5/pro/text-to-image", "req-1", "status")
+    assert url == "https://queue.fal.run/bytedance/seedream/requests/req-1/status"
+    assert _shared.fal_app_id("fal-ai/flux-pro/kontext") == "fal-ai/flux-pro"
+    with pytest.raises(_shared.FalQueueError):
+        _shared.fal_app_id("nope")
+
+
+def test_result_url_has_no_leaf():
+    from tools.video import _shared
+
+    assert _shared.fal_request_url("bytedance/seedream/v5/pro/edit", "r", "response") == "https://queue.fal.run/bytedance/seedream/requests/r"
+    assert _shared.fal_request_url("bytedance/seedream/v5/pro/edit", "r", "cancel").endswith("/requests/r/cancel")
+
+
+def test_download_host_allows_fal_media_subdomains_only():
+    from tools.video import _shared
+
+    assert _shared._host_allowed("v3b.fal.media", _shared.FAL_ALLOWED_HOSTS)
+    assert _shared._host_allowed("fal.media", _shared.FAL_ALLOWED_HOSTS)
+    assert not _shared._host_allowed("evil-fal.media", _shared.FAL_ALLOWED_HOSTS)
+    assert not _shared._host_allowed("fal.media.attacker.com", _shared.FAL_ALLOWED_HOSTS)

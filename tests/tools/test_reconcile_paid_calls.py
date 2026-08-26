@@ -218,3 +218,23 @@ def test_reconciler_replays_generation_wal_and_reports_missing_output(env, capsy
     assert [p.stem for p in gates.generation_wal_dir().glob("*.json")] == ["exec-wal-2"]
     with pytest.raises(receipts.GenerationWalError):
         resume_check(env)
+
+
+def test_completed_status_with_422_result_is_refunded(env, capsys, monkeypatch):
+    import requests as _requests
+    from scripts import reconcile_paid_calls as rp
+    from tools.cost_tracker import load_reservations
+
+    rid = _reserve(env, usd=0.9, request_id="req-422", state="pending_billing",
+                   hint={"kind": "video", "output_path": str(env / "assets" / "v.mp4"), "generate_audio": False})
+    monkeypatch.setattr(rp, "fal_queue_status", lambda *a, **k: {"status": "COMPLETED"})
+
+    def boom(*a, **k):
+        resp = _requests.Response(); resp.status_code = 422; resp._content = b'{"detail":[{"type":"content_policy_violation"}]}'
+        raise _requests.HTTPError("422", response=resp)
+
+    monkeypatch.setattr(rp, "recover_output", boom)
+    summary = rp.reconcile_project(env, api_key="k")
+    assert rid in summary["failed"]
+    assert load_reservations(env)[rid]["state"] == "failed"
+    assert "content_policy_violation" in capsys.readouterr().out

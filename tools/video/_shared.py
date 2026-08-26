@@ -751,9 +751,25 @@ def fal_queue_submit(
     return data
 
 
+def fal_app_id(model_id: str) -> str:
+    """FAL addresses queue requests by the app id — the first two path segments
+    (``owner/app``) — even when the model id has sub-paths
+    (``bytedance/seedream/v5/pro/text-to-image`` -> ``bytedance/seedream``).
+    Verified against a live 405 on 2026-08-25 and fal.ai/docs/model-endpoints/queue."""
+    parts = [p for p in model_id.split("/") if p]
+    if len(parts) < 2:
+        raise FalQueueError(f"model id {model_id!r} has no owner/app prefix")
+    return "/".join(parts[:2])
+
+
 def fal_request_url(model_id: str, request_id: str, leaf: str) -> str:
     """Status/response/cancel URL built from the fixture pattern (never from the server)."""
-    return f"{FAL_QUEUE_BASE}/{model_id}/requests/{request_id}/{leaf}"
+    base = f"{FAL_QUEUE_BASE}/{fal_app_id(model_id)}/requests/{request_id}"
+    # The result is served at the bare request URL; only status/cancel have a leaf.
+    # Verified live 2026-08-25 (GET .../response -> 405).
+    if leaf in ("", "response", "result"):
+        return base
+    return f"{base}/{leaf}"
 
 
 def fal_queue_cancel(model_id: str, request_id: str, *, api_key: str, timeout_s: float = 15.0) -> None:
@@ -815,6 +831,18 @@ def fal_queue_wait(
     return result.json()
 
 
+def _host_allowed(host: str, allowed_hosts) -> bool:
+    """Exact hostname match, or any subdomain of an allowlisted registered domain
+    (FAL serves outputs from rotating CDN hosts such as v3.fal.media / v3b.fal.media;
+    verified live 2026-08-25). ``evil-fal.media`` does NOT match ``fal.media``."""
+    host = host.lower()
+    for allowed in allowed_hosts:
+        a = allowed.lower()
+        if host == a or host.endswith("." + a):
+            return True
+    return False
+
+
 def fal_download(
     url: str,
     dest_staging_path: Path | str,
@@ -837,7 +865,7 @@ def fal_download(
 
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
-    if parsed.scheme != "https" or host not in tuple(h.lower() for h in allowed_hosts):
+    if parsed.scheme != "https" or not _host_allowed(host, allowed_hosts):
         raise FalDownloadError(f"download host not allowed: {parsed.scheme}://{host}")
 
     dest = Path(dest_staging_path)

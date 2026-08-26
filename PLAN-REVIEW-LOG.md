@@ -244,3 +244,8 @@ Remaining/new findings:
 ### Final fixes applied: suite 1350 passed, 11 skipped. Presented to Ben for diff approval; nothing committed.
 
 ### Deferred slice applied (storyboard-in-payload proof, generation WAL, compositor/provenance comparison): 1350 → 1371 passed. Smoke scaffold added (projects/smoke-visual-bible, scripts/smoke_visual_bible.py).
+
+### Paid smoke test (2026-08-25 evening, project smoke-visual-bible, cap $5)
+- Live fixes: FAL queue URLs use owner/app prefix and bare result URL; CDN download allowlist is domain-based (*.fal.media); reconciler loads .env. Crash-recovery path exercised for real: a status-URL bug left a Seedream call pending_billing; after the fix the reconciler recovered the image, receipted it, and closed the reservation.
+- Seedream 5 Pro text_to_image and edit-with-reference: WORK live ($0.0675 each, 6 images total).
+- Seedance 2.5 reference_to_video: REJECTED at validation — content_policy_violation 'may contain likenesses of real people' (partner_validation_failed) on two pipeline-generated photoreal portraits. Not billed. This is a design-level risk: photoreal synthetic faces as references trip ByteDance's real-person filter. Open question for Ben: stylization level, or a different reference-to-video model (Kling 3.0 Elements, MiniMax H3, Wan 3.0) for face-bearing shots.

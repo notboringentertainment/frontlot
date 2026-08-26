@@ -29,6 +29,7 @@ No TTY is required.
 from __future__ import annotations
 
 import argparse
+import requests
 import os
 import sys
 from datetime import datetime, timezone
@@ -196,7 +197,20 @@ def reconcile_project(project_root: Path, *, api_key: str | None, out=None) -> d
             raise ReconcileError("FAL_KEY is required to poll reservations that carry a request id")
         status = str(fal_queue_status(r["endpoint"], r["provider_request_id"], api_key=api_key).get("status", "UNKNOWN")).upper()
         if status == "COMPLETED":
-            recovered = recover_output(project_root, r, api_key=api_key)
+            try:
+                recovered = recover_output(project_root, r, api_key=api_key)
+            except requests.HTTPError as exc:
+                code = getattr(exc.response, "status_code", None)
+                if code in (400, 422):
+                    # Queue says COMPLETED but the result is a validation/content-policy
+                    # rejection: nothing was rendered or billed. Refund the reservation.
+                    detail = (exc.response.text or "")[:300]
+                    reconcile_paid_call(project_root, rid, 0.0, "failed", tracker)
+                    summary["failed"].append(rid)
+                    print(f"[failed] {rid}: request {r['provider_request_id']} rejected by provider "
+                          f"({code}); reservation refunded. detail: {detail}", file=out)
+                    continue
+                raise
             reconcile_paid_call(project_root, rid, float(r.get("reserved_usd") or 0.0), "completed", tracker)
             summary["completed"].append(rid)
             print(f"[completed] {rid}: request {r['provider_request_id']} completed; "
@@ -215,6 +229,12 @@ def reconcile_project(project_root: Path, *, api_key: str | None, out=None) -> d
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        from lib.env_loader import load_env
+
+        load_env()
+    except Exception:  # noqa: BLE001 — env file is optional; FAL_KEY may already be exported
+        pass
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--project", required=True, help="project slug under PROJECTS_DIR")
     args = parser.parse_args(argv)
