@@ -163,10 +163,96 @@ def confine_ticket_path(path: Path | str, wayfinder_root: Path | str) -> Path:
     return resolved
 
 
-def _front_matter(path: Path, text: str) -> tuple[dict[str, Any], int]:
+_HEADER_LINE_RE = re.compile(r"^([a-z][a-z0-9-]*):[ \t]*(.*)$")
+
+
+def _known_ticket_titles(wayfinder_root: Optional[Path]) -> list[str]:
+    """H1 titles of every ticket under ``wayfinder/{resolved,tickets}`` (longest first)."""
+    titles: set[str] = set()
+    if wayfinder_root is None:
+        return []
+    for sub in ("resolved", "tickets"):
+        d = Path(wayfinder_root) / "wayfinder" / sub
+        if not d.is_dir():
+            continue
+        for f in d.glob("*.md"):
+            try:
+                first = f.read_text(encoding="utf-8").splitlines()[0]
+            except (OSError, IndexError, UnicodeDecodeError):
+                continue
+            if first.startswith("# "):
+                titles.add(first[2:].strip())
+    return sorted(titles, key=len, reverse=True)
+
+
+def _split_bracket_list(raw: str, path: Path, wayfinder_root: Optional[Path]) -> list[str]:
+    """Parse ``[a, b, c]`` where items are ticket titles that may themselves
+    contain commas: match known ticket titles greedily (longest first) and
+    require them to reconstruct the whole list exactly; fall back to a plain
+    comma split when no wayfinder root is known."""
+    inner = raw.strip()
+    if inner.startswith("[") and inner.endswith("]"):
+        inner = inner[1:-1]
+    inner = inner.strip()
+    if not inner:
+        return []
+    titles = _known_ticket_titles(wayfinder_root)
+    if not titles:
+        return [x.strip() for x in inner.split(",") if x.strip()]
+    found: list[str] = []
+    remaining = inner
+    progress = True
+    while remaining and progress:
+        progress = False
+        for t in titles:
+            if remaining.startswith(t):
+                found.append(t)
+                remaining = remaining[len(t):].lstrip()
+                if remaining.startswith(","):
+                    remaining = remaining[1:].lstrip()
+                progress = True
+                break
+    if remaining:
+        raise LookIngestError(
+            f"look ticket {path.name}: blocked-by entry {remaining[:60]!r} does not match any ticket title "
+            f"under the wayfinder root (titles must be exact)"
+        )
+    return found
+
+
+def _heading_header(path: Path, text: str, wayfinder_root: Optional[Path]) -> Optional[tuple[dict[str, Any], int]]:
+    """The story-wayfinder ticket format: an H1 title line followed by
+    ``key: value`` lines until the first blank line or ``## `` heading. No
+    ``---`` fences. Returns (meta, body_start) or None if the text does not
+    start with an H1."""
+    lines = text.splitlines(keepends=True)
+    if not lines or not lines[0].startswith("# "):
+        return None
+    meta: dict[str, Any] = {"title": lines[0][2:].strip()}
+    pos = len(lines[0])
+    for line in lines[1:]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("## "):
+            break
+        m = _HEADER_LINE_RE.match(stripped)
+        if not m:
+            raise LookIngestError(f"look ticket {path.name}: header line {stripped[:50]!r} is not key: value")
+        key, value = m.group(1), m.group(2).strip()
+        if key in ("blocked-by", "blocked-by-ids"):
+            meta[key] = _split_bracket_list(value, path, wayfinder_root)
+        else:
+            meta[key] = value if value != "" else None
+        pos += len(line)
+    return meta, pos
+
+
+def _front_matter(path: Path, text: str, wayfinder_root: Optional[Path] = None) -> tuple[dict[str, Any], int]:
     fm = _FRONT_MATTER_RE.match(text)
     if not fm:
-        raise LookIngestError(f"look ticket {path.name} has no YAML front matter")
+        heading = _heading_header(path, text, wayfinder_root)
+        if heading is not None:
+            return heading
+        raise LookIngestError(f"look ticket {path.name} has no YAML front matter and no '# Title' header")
     try:
         meta = yaml.safe_load(fm.group(1)) or {}
     except yaml.YAMLError as exc:
@@ -277,7 +363,7 @@ def parse_look_ticket(path: Path | str, *, wayfinder_root: Path | str) -> Ingest
     if text is None:
         raise LookIngestError(f"look ticket {path} is not UTF-8")
 
-    meta, body_start = _front_matter(path, text)
+    meta, body_start = _front_matter(path, text, Path(wayfinder_root) if wayfinder_root is not None else None)
     if meta.get("type") != "grill" or meta.get("mode") != "hitl":
         raise LookIngestError(
             f"look ticket {path.name} is type={meta.get('type')!r} mode={meta.get('mode')!r}; "

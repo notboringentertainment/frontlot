@@ -256,3 +256,17 @@ class TestTicketConfinement:
         (project_dir / "project.yaml").write_text("wayfinder_root: relative/path\n")
         with pytest.raises(LookIngestError, match="absolute"):
             wayfinder_root_for(project_dir)
+
+
+def test_wayfinder_heading_format_with_comma_titles(tmp_path):
+    """The skill's ticket format: '# Title' + key: value lines, no --- fences;
+    blocked-by titles may contain commas and must resolve to known tickets."""
+    from lib import look_ingest as li
+    root = tmp_path / "proj"; (root / "wayfinder" / "resolved").mkdir(parents=True); (root / "wayfinder" / "tickets").mkdir()
+    (root / "wayfinder" / "resolved" / "what-city.md").write_text("# What city, and how long is an episode?\nid: wf-aaaaaaaa\ntype: grill\nmode: hitl\nresolved: 2026-08-01\n\n## Question\nq\n## Answer\na\n")
+    (root / "wayfinder" / "resolved" / "the-front.md").write_text("# The front\ntype: grill\nmode: hitl\nresolved: 2026-08-01\n\n## Question\nq\n## Answer\na\n")
+    ticket = root / "wayfinder" / "resolved" / "look-character-demo.md"
+    ticket.write_text("# What does Demo look like?\nid: wf-12345678\ntype: grill\nmode: hitl\narea: look\ncreated: 2026-08-26\nblocked-by: [The front, What city, and how long is an episode?]\nreference: none\nclaimed: x\nresolved: 2026-08-26\n\n## Question\nq\n\n## Answer\na\n\n## Look spec\n\n```yaml\nversion: \"1.0\"\nentity_kind: character\nentity_id: demo\nsource_ticket_ref:\n  id: wf-12345678\nfictional_subject_attestation: true\nminor: false\nprompt_safe_description: A calm woman in her thirties with short dark hair, a grey wool coat, plain trousers and boots, present-day city, quiet and precise, nothing flashy, everything worn but neat and clean.\ncontinuity_risks:\n  - hair length drifting\nnegative_lines: []\nspoiler: false\ndepends_on: []\nshape_only: false\nage_band: thirties\nbuild:\n  kind: lean\n  note: upright\nhair: short dark\ndistinguishing_marks: []\ndefault_wardrobe:\n  pieces:\n    - grey wool coat\nwardrobe_variants: []\nprops: []\nera_and_class_signals: present-day city, modest\n```\n")
+    meta, _ = li._front_matter(ticket, ticket.read_text(), root)
+    assert meta["id"] == "wf-12345678" and meta["area"] == "look"
+    assert meta["blocked-by"] == ["The front", "What city, and how long is an episode?"]
