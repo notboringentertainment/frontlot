@@ -4,35 +4,85 @@
   "title": "Project Config",
   "description": "Per-project production limits and egress consent, loaded from projects/<slug>/project.yaml. Overrides the pipeline manifest's budget_default_usd / max_wall_time_minutes. The config is not self-attesting: its sha256 must be bound to an approval_policy decision_log entry written through the human-gate path; a run whose current digest has no matching approval is rejected. Loaded via schemas.artifacts.load_project_config_schema() / validate_project_config().",
   "type": "object",
-  "required": ["version", "budget_usd_cap", "wall_time_minutes", "cast_cap", "provider_egress", "default_video_endpoint"],
+  "required": [
+    "version",
+    "budget_usd_cap",
+    "wall_time_minutes",
+    "cast_cap",
+    "provider_egress",
+    "default_video_endpoint"
+  ],
   "properties": {
-    "version": { "type": "string", "const": "1.0" },
-    "budget_usd_cap": { "type": "number", "minimum": 0, "description": "Hard cap on paid calls for the run; a reservation that would exceed it fails preflight" },
-    "wall_time_minutes": { "type": "integer", "minimum": 1 },
-    "default_video_endpoint": { "type": "string", "minLength": 1, "description": "D4: the approved video model for every scene (default fal-ai/kling-video/o3/pro/reference-to-video — Kling o3 pro accepts human-face references; bytedance/seedance-2.5/reference-to-video rejects any human face on FAL and is only for entity-free scenes via model_override). A scene using another endpoint must carry model_override with a reason." },
+    "version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "budget_usd_cap": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Hard cap on paid calls for the run; a reservation that would exceed it fails preflight"
+    },
+    "wall_time_minutes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "default_video_endpoint": {
+      "type": "string",
+      "minLength": 1,
+      "description": "D4: the approved video model for every scene (default fal-ai/kling-video/o3/pro/reference-to-video \u2014 Kling o3 pro accepts human-face references; bytedance/seedance-2.5/reference-to-video rejects any human face on FAL and is only for entity-free scenes via model_override). A scene using another endpoint must carry model_override with a reason."
+    },
     "cast_cap": {
       "type": "object",
-      "required": ["characters", "locations"],
+      "required": [
+        "characters",
+        "locations"
+      ],
       "properties": {
-        "characters": { "type": "integer", "minimum": 1, "description": "Max canon characters the visual bible may build sheets for" },
-        "locations": { "type": "integer", "minimum": 1 }
+        "characters": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Max canon characters the visual bible may build sheets for"
+        },
+        "locations": {
+          "type": "integer",
+          "minimum": 1
+        }
       },
       "additionalProperties": false
     },
     "provider_egress": {
       "type": "object",
       "description": "Explicit one-time human consent that the listed content classes may leave the machine for this provider. visual_bible cannot start without it.",
-      "required": ["provider", "content_classes"],
+      "required": [
+        "provider",
+        "content_classes"
+      ],
       "properties": {
-        "provider": { "type": "string", "enum": ["fal"] },
+        "provider": {
+          "type": "string",
+          "enum": [
+            "fal"
+          ]
+        },
         "content_classes": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "type": "string", "enum": ["prompts", "reference_images"] }
+          "items": {
+            "type": "string",
+            "enum": [
+              "prompts",
+              "reference_images"
+            ]
+          }
         }
       },
       "additionalProperties": false
+    },
+    "wayfinder_root": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Absolute path of the story-wayfinder project directory whose wayfinder/resolved/ tickets carry look canon. Required for authored-film 1.2 projects (look_lock ingestion confines every ticket under it; symlinks rejected)."
     }
   },
   "additionalProperties": false

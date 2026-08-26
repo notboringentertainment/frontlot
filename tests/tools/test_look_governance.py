@@ -24,9 +24,19 @@ from tools.video import _shared
 from tools.video.kling_reference_video import KlingReferenceVideo
 
 from tests.tools._authored_film_helpers import make_project, make_verified_project, tiny_png_bytes, write_receipted_png
+from tests.tools.test_prompt_builder import _character as _character_look
 
 LOOK_HASH = "a" * 64
 CHAR_REF = {"entity_kind": "character", "entity_id": "quill-marrow", "look_hash": LOOK_HASH}
+
+
+class _ActiveLook:
+    def __init__(self, entity_kind, entity_id, payload):
+        from lib.canonical_json import record_sha256
+
+        self.entity_kind, self.entity_id, self.payload = entity_kind, entity_id, payload
+        self.look_hash = record_sha256(payload)
+        self.receipt_id = "rcpt-look"
 LOC_REF = {"entity_kind": "location", "entity_id": "fennick-light", "look_hash": "b" * 64}
 
 
@@ -41,6 +51,10 @@ class Verifiers:
         self.refuse_headshot = False
         self.refuse_lineage = False
         self.tainted: set[str] = set()
+        self.active: dict[tuple[str, str], _ActiveLook] = {}
+
+    def active_look_for(self, project_root, entity_kind, entity_id, *, project_id=None):
+        return self.active.get((entity_kind, entity_id))
 
     def verify_look_refs(self, project_root, look_refs, *, project_id=None):
         for r in look_refs:
@@ -70,6 +84,7 @@ def verifiers(monkeypatch):
     v = Verifiers()
     look_mod = types.ModuleType("lib.look_ingest")
     look_mod.verify_look_refs = v.verify_look_refs
+    look_mod.active_look_for = v.active_look_for
     look_mod.project_look_governed = lambda root, **k: False  # stubbed projects are legacy unless keys say otherwise
     headshot_mod = types.ModuleType("lib.headshots")
     headshot_mod.verify_headshot_ref = v.verify_headshot_ref
@@ -89,7 +104,16 @@ def env(monkeypatch, tmp_path):
 
 
 def _fake_download(url, dest, **kw):
-    Path(dest).write_bytes(tiny_png_bytes())
+    # Distinct from tiny_png_bytes(): provenance is immutable per output hash and
+    # an output can never be its own parent, so the "generated" pixels must not
+    # collide with the reference fixture.
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), (200, 40, 90)).save(buf, format="PNG")
+    Path(dest).write_bytes(buf.getvalue())
     return {"bytes": 1, "content_type": "image/png"}
 
 
@@ -213,6 +237,35 @@ def test_entity_free_is_read_from_approved_scene_plan_only(env, verifiers, monke
             _shared.verify_look_governance({"stage": "assets", "shot_id": "sh-title"}, env)
 
 
+def test_invalidated_scene_plan_never_authorizes_entity_free(env, verifiers, monkeypatch):
+    """Inspection #7: entity_free is resolved through the invalidation-aware projection."""
+    import lib.checkpoint as cp
+    from lib.invalidation import Invalidation
+
+    monkeypatch.setattr(cp, "read_checkpoint", lambda *a: dict(_scene_plan_checkpoint(), pipeline_type="authored-film"))
+    seen = []
+
+    def fake_invalidated(pipeline_dir, project_id, pipeline_type):
+        seen.append((Path(pipeline_dir), project_id, pipeline_type))
+        return {}
+
+    monkeypatch.setattr(cp, "invalidated_stages", fake_invalidated)
+    assert _shared.verify_look_governance({"stage": "assets", "shot_id": "sh-title"}, env)["look_refs"] == []
+    assert seen == [(env.parent, "proj-quill", "authored-film")]
+    # The same approved checkpoint, once a look retirement invalidates scene_plan, authorizes nothing.
+    hit = Invalidation(**{f: "x" for f in Invalidation.__dataclass_fields__})
+    monkeypatch.setattr(cp, "invalidated_stages", lambda *a: {"scene_plan": hit})
+    with pytest.raises(_shared.LookGovernanceError, match="not entity_free"):
+        _shared.verify_look_governance({"stage": "assets", "shot_id": "sh-title"}, env)
+    # An undecidable invalidation state fails closed.
+    def boom(*a):
+        raise cp.CheckpointValidationError("ledger unreadable")
+
+    monkeypatch.setattr(cp, "invalidated_stages", boom)
+    with pytest.raises(_shared.LookGovernanceError, match="not entity_free"):
+        _shared.verify_look_governance({"stage": "assets", "shot_id": "sh-title"}, env)
+
+
 def test_visual_bible_calls_can_never_be_entity_free(env, verifiers, monkeypatch):
     import lib.checkpoint as cp
 
@@ -257,21 +310,78 @@ def test_missing_verify_headshot_ref_fails_closed(env, verifiers, monkeypatch):
 # ---- prompt recipe on visual_bible ---------------------------------------------
 
 
-def test_visual_bible_requires_matching_prompt_recipe(env, verifiers):
-    from tools.prompt_builder import rendered_prompt_sha256
+def _activate(verifiers, payload, entity_kind="character"):
+    look = _ActiveLook(entity_kind, payload["entity_id"], payload)
+    verifiers.active[(entity_kind, payload["entity_id"])] = look
+    return look
 
-    prompt = "a weathered keeper. hair salt-grey braid. single character."
-    recipe = {"look_hash": LOOK_HASH, "builder_version": "1.0", "fields_used": ["prompt_safe_description"],
-              "rendered_sha256": rendered_prompt_sha256(prompt)}
-    base = {"stage": "visual_bible", "look_refs": [CHAR_REF], "asset_role": "hero", "prompt": prompt}
+
+def test_visual_bible_requires_matching_prompt_recipe(env, verifiers):
+    from tools.prompt_builder import build_prompt
+
+    look_a = _activate(verifiers, _character_look())
+    built = build_prompt(look_a.payload, role="hero", palette=["granite grey"])
+    ref = {"entity_kind": "character", "entity_id": "quill-marrow", "look_hash": look_a.look_hash}
+    base = {"stage": "visual_bible", "look_refs": [ref], "asset_role": "hero", "palette": ["granite grey"],
+            "prompt": built["prompt"]}
     with pytest.raises(_shared.LookGovernanceError, match="prompt_recipe"):
         _shared.verify_look_governance(base, env)
-    out = _shared.verify_look_governance({**base, "prompt_recipe": recipe}, env)
-    assert out["prompt_recipe"] == recipe
+    out = _shared.verify_look_governance({**base, "prompt_recipe": built["prompt_recipe"]}, env)
+    assert out["prompt_recipe"] == built["prompt_recipe"]
     with pytest.raises(_shared.LookGovernanceError, match="rendered_sha256"):
-        _shared.verify_look_governance({**base, "prompt": prompt + " extra words", "prompt_recipe": recipe}, env)
+        _shared.verify_look_governance({**base, "prompt": built["prompt"] + " extra words",
+                                        "prompt_recipe": built["prompt_recipe"]}, env)
     with pytest.raises(_shared.LookGovernanceError, match="not one of the verified look_refs"):
-        _shared.verify_look_governance({**base, "prompt_recipe": dict(recipe, look_hash="e" * 64)}, env)
+        _shared.verify_look_governance({**base, "prompt_recipe": dict(built["prompt_recipe"], look_hash="e" * 64)}, env)
+    # The boundary rebuilds with the call's role/palette: a different palette or role does not rebuild.
+    with pytest.raises(_shared.LookGovernanceError, match="does not rebuild from the active look"):
+        _shared.verify_look_governance({**base, "palette": ["rust orange"], "prompt_recipe": built["prompt_recipe"]}, env)
+    with pytest.raises(_shared.LookGovernanceError, match="asset_role"):
+        _shared.verify_look_governance({**base, "asset_role": None, "prompt_recipe": built["prompt_recipe"]}, env)
+    with pytest.raises(_shared.LookGovernanceError, match="builder_version"):
+        _shared.verify_look_governance({**base, "prompt_recipe": dict(built["prompt_recipe"], builder_version="0.9")}, env)
+
+
+def test_prompt_rendered_from_appearance_b_under_look_a_hash_is_refused(env, verifiers):
+    """Inspection #2: the recipe cannot launder appearance B under look A's hash."""
+    from tools.prompt_builder import build_prompt
+
+    look_a = _activate(verifiers, _character_look())
+    appearance_b = _character_look(hair="cropped white hair", distinguishing_marks=["gold tooth"])
+    built_b = build_prompt(appearance_b, role="hero")
+    forged = dict(built_b["prompt_recipe"], look_hash=look_a.look_hash)  # hash claims A, text renders B
+    ref = {"entity_kind": "character", "entity_id": "quill-marrow", "look_hash": look_a.look_hash}
+    inputs = {"stage": "visual_bible", "look_refs": [ref], "asset_role": "hero",
+              "prompt": built_b["prompt"], "prompt_recipe": forged}
+    with pytest.raises(_shared.LookGovernanceError, match="does not rebuild from the active look"):
+        _shared.verify_look_governance(inputs, env)
+    # A recipe naming a hash that is no longer / not the active tip is refused too.
+    verifiers.active.clear()
+    with pytest.raises(_shared.LookGovernanceError, match="not the active look"):
+        _shared.verify_look_governance(inputs, env)
+    # And the missing lib-side lookup fails closed.
+    import sys
+
+    del sys.modules["lib.look_ingest"].active_look_for
+    with pytest.raises(_shared.LookGovernanceError):
+        _shared.verify_look_governance(inputs, env)
+
+
+def test_seedream_refuses_forged_recipe_before_upload(env, verifiers):
+    from tools.prompt_builder import build_prompt
+
+    look_a = _activate(verifiers, _character_look())
+    built_b = build_prompt(_character_look(hair="cropped white hair"), role="hero")
+    ref = {"entity_kind": "character", "entity_id": "quill-marrow", "look_hash": look_a.look_hash}
+    with patch.object(_shared, "fal_queue_submit") as submit, patch.object(_shared, "upload_image_fal") as upload:
+        r = SeedreamImage().execute({
+            "prompt": built_b["prompt"], "project_dir": str(env), "stage": "visual_bible", "asset_role": "hero",
+            "look_refs": [ref], "prompt_recipe": dict(built_b["prompt_recipe"], look_hash=look_a.look_hash),
+            "output_path": str(env / "canon" / "visual" / "objects" / "hero.png"),
+        })
+    assert not r.success and "does not rebuild from the active look" in r.error
+    submit.assert_not_called()
+    upload.assert_not_called()
 
 
 # ---- lineage at the upload boundary --------------------------------------------
@@ -444,7 +554,9 @@ def test_title_card_and_poster_are_governed(font, verifiers, monkeypatch):
     r = TitleCard().execute({**base, "stage": "assets", "shot_id": "sh-title"})
     assert r.success, r.error
     assert r.metadata["look_refs"] == []  # entity-free by the approved plan: bound as an explicit empty list
-    r = TitleCard().execute({**base, "look_refs": [LOC_REF]})
+    # A different card: provenance is immutable per output hash, so the same
+    # pixels cannot be re-receipted under different look_refs.
+    r = TitleCard().execute({**base, "text": "THE FIRST LIGHT — PART TWO", "look_refs": [LOC_REF]})
     assert r.success, r.error
     assert r.metadata["look_refs"] == [LOC_REF]
     assert receipts.find_generation(project, r.data["asset_id"])["look_refs"] == [LOC_REF]

@@ -141,6 +141,34 @@ def _effective_ref(pipeline_dir: Path, project_id: str, pipeline_type: Optional[
     return pin.ref if manifest_versions(pin.name) else pin.name
 
 
+def _pin_mismatch(
+    pipeline_dir: Path, project_id: str, pipeline_type: Optional[str], stage: str, path: Path, checkpoint: dict[str, Any]
+) -> Optional[str]:
+    """Why an on-disk checkpoint does not belong to the project's signed pin
+    (None when it does). Slice A #10: under a receipted pin, a checkpoint
+    either carries the pin's exact ``pipeline`` tuple {name, version,
+    manifest_digest} or — a legacy checkpoint with no tuple / another tuple —
+    its file digest must be in the digest set the migration receipt bound."""
+    pin = _pin_for(pipeline_dir, project_id, pipeline_type)
+    if pin is None or pin.receipt_id is None:
+        return None
+    tuple_ = checkpoint.get("pipeline")
+    if isinstance(tuple_, dict) and tuple_ == pin.to_dict():
+        return None
+    digest = checkpoint_digest(path)
+    if pin.binds_checkpoint(stage, digest):
+        return None
+    if isinstance(tuple_, dict):
+        return (
+            f"checkpoint {stage!r} was written under pipeline tuple {tuple_} but the signed pin is "
+            f"{pin.to_dict()} (receipt {pin.receipt_id}) and the migration receipt did not bind this file"
+        )
+    return (
+        f"legacy checkpoint {stage!r} (no pipeline tuple; digest {digest[:12]}…) is not in the set bound by "
+        f"migration receipt {pin.receipt_id} — an edited or foreign legacy checkpoint never satisfies a 1.2 pin"
+    )
+
+
 def _ref_from_checkpoint(checkpoint: dict[str, Any]) -> Optional[str]:
     """Standalone validation reads the tuple from the checkpoint itself."""
     pipeline_type = checkpoint.get("pipeline_type")
@@ -464,6 +492,8 @@ def _enforce_manifest_artifact_contract(
                     checkpoint = json.load(handle)
             except (OSError, json.JSONDecodeError):
                 continue
+            if _pin_mismatch(pipeline_dir, project_id, pipeline_type, predecessor, path, checkpoint):
+                continue
             if checkpoint.get("status") == "completed" and isinstance(
                 checkpoint.get("artifacts"), dict
             ):
@@ -507,6 +537,7 @@ def _enforce_stage_prerequisites(
     incomplete: list[str] = []
     unapproved: list[str] = []
     stale: list[str] = []
+    unpinned: list[str] = []
     for predecessor in stages[: stages.index(stage)]:
         path = _checkpoint_path(pipeline_dir, project_id, predecessor)
         if not path.exists():
@@ -529,6 +560,10 @@ def _enforce_stage_prerequisites(
         if checkpoint.get("status") != "completed":
             incomplete.append(predecessor)
             continue
+        mismatch = _pin_mismatch(pipeline_dir, project_id, pipeline_type, predecessor, path, checkpoint)
+        if mismatch:
+            unpinned.append(mismatch)
+            continue
         if predecessor in invalidated:
             stale.append(f"{predecessor} (invalidated by receipt {invalidated[predecessor].receipt_id})")
             continue
@@ -537,10 +572,12 @@ def _enforce_stage_prerequisites(
         ):
             unapproved.append(predecessor)
 
-    if incomplete or unapproved or stale:
+    if incomplete or unapproved or stale or unpinned:
         details = []
         if incomplete:
             details.append(f"incomplete or missing: {incomplete}")
+        if unpinned:
+            details.append("PIPELINE PIN VIOLATION — not bound to the signed pin: " + "; ".join(unpinned))
         if unapproved:
             details.append(f"completed without required approval: {unapproved}")
         if stale:
@@ -861,6 +898,8 @@ def _predecessor_digests(
             with open(path, encoding="utf-8") as handle:
                 data = json.load(handle)
         except (OSError, json.JSONDecodeError):
+            continue
+        if _pin_mismatch(pipeline_dir, project_id, pipeline_ref, predecessor, path, data):
             continue
         if data.get("status") == "completed":
             out.append({"stage": predecessor, "checkpoint_digest": checkpoint_digest(path)})

@@ -251,19 +251,33 @@ class TestImportGate:
         assert tainted_hashes(project_dir) == {prepared.normalized_pixel_hash}
 
     def test_lineage_walks_inputs_and_references(self, project_dir):
-        from tests.lib.look_lock_helpers import image
+        from tests.lib.look_lock_helpers import image, pin_project
 
+        (project_dir / "project.json").write_text(json.dumps({"project_id": "p", "pipeline_type": "authored-film"}))
+        pin_project(project_dir, "1.2")  # governed: parents must exist at creation
         prepared = prepare_reference_import(project_dir, "p", _stage(project_dir, "a.png", _png(_pixels())), origin_class=ORIGIN_CASTING)
         _approve_import(project_dir, prepared)
         root = image(project_dir, "root")
         child = image(project_dir, "child", references_applied=[{"asset_id": root["asset_id"], "path": root["path"], "role": "hero"}])
         assert set(verify_lineage(project_dir, child["asset_id"])) == {root["asset_id"], child["asset_id"]}
-        poisoned = image(project_dir, "poisoned", input_asset_ids=[prepared.normalized_pixel_hash])
+        # #5: a casting hash is never a receipted asset, so citing it is refused at creation
+        with pytest.raises(ValueError, match="no verified generation receipt"):
+            image(project_dir, "poisoned", input_asset_ids=[prepared.normalized_pixel_hash])
+        # pixels receipted first and imported as casting_inspiration later are tainted in lineage
+        from lib.reference_import import import_record
+
+        record = import_record(ORIGIN_CASTING, root["asset_id"], origin_tool=None)
+        token = gates.mint_gate_token("p", "look_lock", f"reference:{root['asset_id']}", record_sha256(record))
+        receipts.record_human_approval(project_dir, "p", "look_lock", f"reference:{root['asset_id']}", record, token,
+                                       "reference_import", entity_id="ref-x",
+                                       envelope={"origin_class": ORIGIN_CASTING, "normalized_pixel_hash": root["asset_id"]})
         with pytest.raises(TaintError):
-            verify_lineage(project_dir, poisoned["asset_id"])
-        orphan = image(project_dir, "orphan", input_asset_ids=["b" * 64])
-        with pytest.raises(ReferenceImportError, match="no verified generation receipt"):
-            verify_lineage(project_dir, orphan["asset_id"])
+            verify_lineage(project_dir, child["asset_id"])
+        # #5: an unreceipted parent is refused when the receipt is CREATED
+        with pytest.raises(ValueError, match="no verified generation receipt"):
+            image(project_dir, "orphan", input_asset_ids=["b" * 64])
+        with pytest.raises(ValueError, match="64-hex"):
+            image(project_dir, "orphan2", input_asset_ids=["not-a-hash"])
 
     def test_imported_receipt_requires_attestation(self, project_dir):
         with pytest.raises(ValueError, match="origin_tool and attestation_receipt_id"):

@@ -36,7 +36,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from lib import gates
 from lib.canonical_json import record_sha256 as _record_sha256
@@ -79,6 +79,13 @@ class ReceiptError(RuntimeError):
     """A required verified receipt is absent or does not cover the request."""
 
 
+class ReceiptChainError(ReceiptError):
+    """The project-local receipt file does not reproduce the orchestrator's
+    signed receipt chain (a row was deleted, added, altered or reordered).
+    Every reader fails closed on this; nothing is derived from a partial
+    projection (Slice A inspection #1)."""
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -114,8 +121,16 @@ def record_human_approval(
     artifact: Optional[dict] = None,
     source_checkpoint_digest: Optional[str] = None,
     envelope: Optional[dict] = None,
+    pre_commit_check: Optional[Callable[[], None]] = None,
 ) -> dict:
     """Consume ``gate_token`` for ``approval_record`` and append a signed receipt.
+
+    ``pre_commit_check`` (Slice A #14) runs INSIDE the transaction: after the
+    one-use token is consumed (the atomic rename) and before anything is
+    appended, ledgered or chained. If it raises, the WAL entry is removed and
+    the approval is aborted with the token spent — nothing was signed into
+    the ledger. The gate handler uses it to re-derive origin uniqueness for a
+    reference import under the consumed token.
 
     ``kind == 'artifact_review'`` requires ``artifact`` with
     ``artifact_type, artifact_version, artifact_digest, migration_status``;
@@ -174,6 +189,12 @@ def record_human_approval(
         "receipt": receipt,
     })
     binding = gates.consume_gate_token(gate_token, project_id, stage, scope, digest)
+    if pre_commit_check is not None:
+        try:
+            pre_commit_check()
+        except BaseException:
+            gates.wal_delete(token_hmac)
+            raise
     _commit_approval(root, binding, receipt)
     return receipt
 
@@ -233,17 +254,65 @@ def validate_envelope(
     return {k: env.get(k) for k in spec}
 
 
-def _commit_approval(root: Path, binding: gates.GateBinding, receipt: dict) -> None:
-    """Idempotent tail of an approval: receipt row, ledger row, WAL removal."""
+def _rows_for_commit(root: Path, stream: str, receipt: dict) -> tuple[list[dict], bool]:
+    """``(chained rows, already_present)`` for a commit of ``receipt``. The
+    one tolerated divergence is a crash between the local append and the
+    chain append of THIS receipt (it is the unchained last row); anything
+    else fails closed."""
     rid = receipt["receipt_id"]
-    if not any(
-        isinstance(r, dict) and r.get("receipt_id") == rid
-        for r in read_jsonl(approvals_path(root))
-    ):
+    try:
+        rows = chained_rows(root, stream, project_id=receipt["project_id"])
+    except ReceiptChainError:
+        path = approvals_path(root) if stream == "approval" else generation_receipts_path(root)
+        raw = list(read_jsonl(path))
+        tail = raw[-1] if raw else None
+        if (
+            isinstance(tail, dict) and tail.get("receipt_id") == rid
+            and gates.receipt_digest(tail) == gates.receipt_digest(receipt)
+        ):
+            try:
+                gates.verify_local_projection(receipt["project_id"], stream, raw[:-1])
+            except gates.ReceiptChainError as exc:
+                raise ReceiptChainError(str(exc)) from exc
+            return raw[:-1], True
+        raise
+    return rows, any(r.get("receipt_id") == rid for r in rows)
+
+
+def _commit_approval(root: Path, binding: gates.GateBinding, receipt: dict) -> None:
+    """Idempotent tail of an approval: receipt row, ledger row, chain row, WAL removal."""
+    rid = receipt["receipt_id"]
+    _, present = _rows_for_commit(root, "approval", receipt)
+    if not present:
         append_jsonl(approvals_path(root), receipt)
     if not gates.ledger_has(rid, receipt["record_sha256"], receipt["project_id"], binding.token_hmac):
         gates.ledger_append(binding, rid)
+    gates.chain_append(receipt["project_id"], "approval", receipt)
     gates.wal_delete(binding.token_hmac)
+
+
+def chained_rows(project_root: Path | str, stream: str, *, project_id: Optional[str] = None) -> list[dict]:
+    """Every row of the project-local receipt file for ``stream``
+    (``approval`` → approvals.jsonl, ``generation`` → generation-receipts.jsonl)
+    after proving the file reproduces the orchestrator's signed chain for
+    this project root→tip exactly. Raises ReceiptChainError on the first
+    divergence; a foreign ``project_id`` row is an extra row."""
+    expected_project = project_id_for(project_root, project_id)
+    path = approvals_path(project_root) if stream == "approval" else generation_receipts_path(project_root)
+    rows = list(read_jsonl(path))
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ReceiptChainError(f"{expected_project}/{stream}: local receipt file row {i} is not an object")
+        if row.get("project_id") != expected_project:
+            raise ReceiptChainError(
+                f"{expected_project}/{stream}: local receipt file row {i} ({row.get('receipt_id')!r}) "
+                f"carries project_id {row.get('project_id')!r} — not this project's receipt"
+            )
+    try:
+        gates.verify_local_projection(expected_project, stream, rows)
+    except gates.ReceiptChainError as exc:
+        raise ReceiptChainError(str(exc)) from exc
+    return rows
 
 
 def recover_pending_approvals(project_root: Path | str) -> list[dict]:
@@ -284,12 +353,9 @@ def find_approval(
     ``project_id`` other than this project's, are ignored as forged.
     """
     recover_pending_approvals(project_root)
-    expected_project = project_id_for(project_root, project_id)
     match: Optional[dict] = None
-    for row in read_jsonl(approvals_path(project_root)):
-        if not isinstance(row, dict) or row.get("kind") != kind:
-            continue
-        if row.get("project_id") != expected_project:
+    for row in chained_rows(project_root, "approval", project_id=project_id):
+        if row.get("kind") != kind:
             continue
         if entity_id is not None and row.get("entity_id") != entity_id:
             continue
@@ -312,12 +378,9 @@ def verified_approvals(
     Supersession chains (looks, headshots, manifest pins) are replayed over
     this list; forged or foreign rows are invisible."""
     recover_pending_approvals(project_root)
-    expected_project = project_id_for(project_root, project_id)
     out: list[dict] = []
-    for row in read_jsonl(approvals_path(project_root)):
-        if not isinstance(row, dict) or row.get("kind") != kind:
-            continue
-        if row.get("project_id") != expected_project:
+    for row in chained_rows(project_root, "approval", project_id=project_id):
+        if row.get("kind") != kind:
             continue
         if entity_id is not None and row.get("entity_id") != entity_id:
             continue
@@ -342,9 +405,8 @@ def require_storyboard_receipt(
     recover_pending_approvals(project_root)
     expected_project = project_id_for(project_root, project_id)
     rows = [
-        r for r in read_jsonl(approvals_path(project_root))
-        if isinstance(r, dict) and r.get("kind") == "storyboard_batch"
-        and r.get("project_id") == expected_project
+        r for r in chained_rows(project_root, "approval", project_id=project_id)
+        if r.get("kind") == "storyboard_batch"
     ]
     for row in reversed(rows):
         record = row.get("record")
@@ -440,6 +502,9 @@ def _build_generation_receipt(
             raise ValueError(
                 "normalized_pixel_hash must equal output_sha256 (canon objects are the normalized PNG bytes)"
             )
+    if not _is_sha256(output_sha256):
+        raise ValueError("output_sha256 must be a 64-hex sha256")
+    _validate_parents(project_root, output_sha256, input_asset_ids, references_applied)
 
     receipt = {
         "receipt_id": str(uuid.uuid4()),
@@ -541,16 +606,72 @@ def normalize_headshot_ref(ref: dict) -> dict:
     return out
 
 
+PROVENANCE_FIELDS = (
+    "generator_kind", "model_endpoint", "local_tool", "local_tool_version", "normalized_inputs_hash",
+    "parameters_hash", "input_asset_ids", "prompt", "seed", "references_applied", "origin_tool",
+    "attestation_receipt_id", "look_refs", "headshot_ref", "prompt_recipe", "import_receipt_id",
+    "normalized_pixel_hash", "output_sha256",
+)
+
+
+def provenance_of(receipt: dict) -> dict:
+    """The immutable provenance a generation receipt binds to its output hash
+    (everything but ids, cost, timestamps and the signature)."""
+    return {k: receipt.get(k) for k in PROVENANCE_FIELDS}
+
+
+def _validate_parents(
+    project_root: Path | str,
+    output_sha256: str,
+    input_asset_ids: Optional[list[str]],
+    references_applied: Optional[list[dict]],
+) -> None:
+    """Every parent named by a new receipt must be a 64-hex hash (always)
+    with a verified generation receipt in this project (Slice A inspection
+    #5): lineage can never point at a fabricated or unreceipted ancestor.
+    The existence check applies to look-governed projects (a manifest pin
+    that declares ``look_lock``); a legacy 1.1 project keeps citing its
+    unreceipted references, as the Slice A contract leaves legacy untouched
+    — its lineage is still refused by ``verify_lineage`` wherever governance
+    reads it."""
+    parents: list[Any] = list(input_asset_ids or []) + [r.get("asset_id") for r in (references_applied or [])]
+    if not parents:
+        return
+    for parent in parents:
+        if not _is_sha256(parent):
+            raise ValueError(f"parent asset id {parent!r} is not a 64-hex sha256")
+    from lib.look_ingest import project_look_governed
+
+    if not project_look_governed(project_root):
+        return
+    receipted = {r["output_sha256"] for r in verified_generation_receipts(project_root)}
+    missing = sorted(p for p in set(parents) if p not in receipted)
+    if missing:
+        raise ValueError(
+            f"parent assets {missing} have no verified generation receipt in this project — "
+            f"every ancestor must be receipted before a derived output can cite it"
+        )
+
+
 def _commit_generation(root: Path, receipt: dict) -> None:
-    """Idempotent tail of a generation: receipt row, then ledger row."""
+    """Idempotent tail of a generation: receipt row, ledger row, chain row.
+    Provenance is immutable per output hash: a second receipt for an
+    already-receipted output is refused unless its provenance is identical."""
     rid = receipt["receipt_id"]
-    if not any(
-        isinstance(r, dict) and r.get("receipt_id") == rid
-        for r in read_jsonl(generation_receipts_path(root))
-    ):
+    rows, present = _rows_for_commit(root, "generation", receipt)
+    if not present:
+        for row in rows:
+            if row.get("output_sha256") == receipt["output_sha256"] and gates.verify_generation_receipt(row):
+                if provenance_of(row) != provenance_of(receipt):
+                    raise ValueError(
+                        f"output {receipt['output_sha256']} already has generation receipt "
+                        f"{row['receipt_id']} with different provenance — provenance is immutable per "
+                        f"output hash; a receipt can never relabel an existing asset's lineage"
+                    )
         append_jsonl(generation_receipts_path(root), receipt)
     if not gates.generation_ledger_has(rid, receipt["output_sha256"], receipt["project_id"]):
         gates.generation_ledger_append(receipt)
+    gates.chain_append(receipt["project_id"], "generation", receipt)
 
 
 def record_generation(project_root: Path | str, **fields: Any) -> dict:
@@ -566,15 +687,12 @@ def record_generation(project_root: Path | str, **fields: Any) -> dict:
 def verified_generation_receipts(
     project_root: Path | str, *, project_id: Optional[str] = None
 ) -> list[dict]:
-    """Every generation receipt row that passes signature + ledger + project checks."""
-    expected_project = project_id_for(project_root, project_id)
-    out = []
-    for row in read_jsonl(generation_receipts_path(project_root)):
-        if not isinstance(row, dict) or row.get("project_id") != expected_project:
-            continue
-        if gates.verify_generation_receipt(row):
-            out.append(row)
-    return out
+    """Every generation receipt row that passes chain + signature + ledger +
+    project checks (chain divergence raises ReceiptChainError)."""
+    return [
+        row for row in chained_rows(project_root, "generation", project_id=project_id)
+        if gates.verify_generation_receipt(row)
+    ]
 
 
 def find_generation(

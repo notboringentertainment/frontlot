@@ -13,7 +13,15 @@ export in Slice B — goes through ``ingest_look_ticket``:
 3. ``look_hash`` = sha256 of the canonical JSON of the validated payload;
 4. the source ticket is referenced by ``{id}`` when the ticket carries an
    immutable ``id: wf-<8hex>``, else (legacy tickets, never edited) by
-   ``{path, content_sha256}``.
+   ``{path (relative to the wayfinder root), content_sha256}``.
+
+Ticket authority is confined (Slice A #4): the ticket path is resolved
+strictly under the project's configured ``project.yaml: wayfinder_root``
+(symlinks rejected) and must sit under ``<root>/wayfinder/resolved/``; the
+front matter must carry ``area: look``, ``type: grill``, ``mode: hitl`` and
+a non-empty ``resolved:`` claim; and ``depends_on`` is DERIVED from the
+ticket's ``blocked-by`` (ids, or titles of resolved tickets) — a block that
+declares a different ``depends_on`` is rejected.
 
 Ratification is NOT read from the ticket (D12): ``active_looks`` replays the
 project's verified ``look_lock`` receipts into a per-key monotonic
@@ -90,20 +98,71 @@ def _sections(body: str) -> dict[str, list[str]]:
     return out
 
 
-def parse_look_ticket(path: Path | str) -> IngestedLook:
-    """Read one wayfinder look ticket and return its validated look.
+WAYFINDER_ROOT_FIELD = "wayfinder_root"
+RESOLVED_SUBDIR = Path("wayfinder") / "resolved"
 
-    Raises LookIngestError for anything short of the authority contract.
-    """
-    path = Path(path)
+
+def wayfinder_root_for(project_dir: Path | str) -> Path:
+    """The configured wayfinder root of a project (``project.yaml:
+    wayfinder_root``), resolved strictly. Required for every 1.2 project
+    that ingests looks — there is no default and no fallback."""
+    import yaml
+
+    config = Path(project_dir) / "project.yaml"
     try:
-        raw = path.read_bytes()
+        data = yaml.safe_load(config.read_bytes())
     except OSError as exc:
-        raise LookIngestError(f"cannot read look ticket {path}: {exc}") from exc
-    text = raw.decode("utf-8", errors="strict") if _is_utf8(raw) else None
-    if text is None:
-        raise LookIngestError(f"look ticket {path} is not UTF-8")
+        raise LookIngestError(f"{config} is required to locate the wayfinder root: {exc}") from exc
+    except yaml.YAMLError as exc:
+        raise LookIngestError(f"{config} is not YAML: {exc}") from exc
+    value = (data or {}).get(WAYFINDER_ROOT_FIELD) if isinstance(data, dict) else None
+    if not isinstance(value, str) or not value.strip():
+        raise LookIngestError(
+            f"{config} has no {WAYFINDER_ROOT_FIELD} — a 1.2 project must name the story-wayfinder "
+            f"project directory whose resolved tickets carry look canon"
+        )
+    return _resolved_wayfinder_root(value)
 
+
+def _resolved_wayfinder_root(root: Path | str) -> Path:
+    path = Path(root).expanduser()
+    if not path.is_absolute():
+        raise LookIngestError(f"wayfinder_root must be an absolute path, got {root!r}")
+    if path.is_symlink():
+        raise LookIngestError(f"wayfinder_root {path} is a symlink — refused")
+    try:
+        resolved = path.resolve(strict=True)
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise LookIngestError(f"wayfinder_root {path} does not exist: {exc}") from exc
+    if resolved != path or not resolved.is_dir():
+        raise LookIngestError(f"wayfinder_root {path} must be an existing directory reached without symlinks")
+    return resolved
+
+
+def confine_ticket_path(path: Path | str, wayfinder_root: Path | str) -> Path:
+    """Strictly resolve ``path`` and require it to be a regular file under
+    ``<wayfinder_root>/wayfinder/resolved/`` with no symlink in any component."""
+    from lib.pathsafe import PathSafetyError, resolve_input
+
+    root = _resolved_wayfinder_root(wayfinder_root)
+    try:
+        resolved = resolve_input(path, root)
+    except PathSafetyError as exc:
+        raise LookIngestError(f"look ticket {path} is not confined under wayfinder root {root}: {exc}") from exc
+    resolved_dir = root / RESOLVED_SUBDIR
+    try:
+        resolved.relative_to(resolved_dir)
+    except ValueError:
+        raise LookIngestError(
+            f"look ticket {resolved} is not under {resolved_dir} — only tickets the wayfinder moved to "
+            f"resolved/ are ingested"
+        ) from None
+    if not resolved.is_file():
+        raise LookIngestError(f"look ticket {resolved} is not a regular file")
+    return resolved
+
+
+def _front_matter(path: Path, text: str) -> tuple[dict[str, Any], int]:
     fm = _FRONT_MATTER_RE.match(text)
     if not fm:
         raise LookIngestError(f"look ticket {path.name} has no YAML front matter")
@@ -113,20 +172,110 @@ def parse_look_ticket(path: Path | str) -> IngestedLook:
         raise LookIngestError(f"look ticket {path.name}: front matter is not YAML: {exc}") from exc
     if not isinstance(meta, dict):
         raise LookIngestError(f"look ticket {path.name}: front matter must be a mapping")
+    return meta, fm.end()
+
+
+def _read_ticket_text(path: Path) -> tuple[bytes, str]:
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise LookIngestError(f"cannot read look ticket {path}: {exc}") from exc
+    if not _is_utf8(raw):
+        raise LookIngestError(f"look ticket {path} is not UTF-8")
+    return raw, raw.decode("utf-8")
+
+
+def _ticket_ref(path: Path, meta: dict[str, Any], raw: bytes, wayfinder_root: Path) -> dict[str, Any]:
+    """``{id}`` for a ticket with an immutable id, else ``{path (relative to
+    the wayfinder root), content_sha256}``."""
+    ticket_id = meta.get("id")
+    if ticket_id is not None:
+        if not isinstance(ticket_id, str) or not TICKET_ID_RE.match(ticket_id):
+            raise LookIngestError(f"look ticket {path.name}: id {ticket_id!r} must match wf-<8 hex>")
+        return {"id": ticket_id}
+    return {"path": str(path.relative_to(wayfinder_root)), "content_sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def derive_depends_on(path: Path, meta: dict[str, Any], wayfinder_root: Path) -> list[dict[str, Any]]:
+    """The ``depends_on`` refs a look block MUST carry, derived from the
+    ticket's ``blocked-by`` front matter (Slice A #4): each entry is a ticket
+    id (``wf-<8hex>`` → ``{id}``) or the exact title of a RESOLVED ticket
+    under the wayfinder root (→ ``{path, content_sha256}`` of that ticket,
+    or ``{id}`` when it carries one). A blocker that is not resolved makes
+    this ticket un-ingestible: canon cannot depend on an open decision."""
+    blockers = meta.get("blocked-by")
+    if blockers is None:
+        blockers = []
+    if isinstance(blockers, str):
+        blockers = [blockers]
+    if not isinstance(blockers, list) or not all(isinstance(b, str) and b.strip() for b in blockers):
+        raise LookIngestError(f"look ticket {path.name}: blocked-by must be a list of ticket ids or titles")
+    refs: list[dict[str, Any]] = []
+    resolved_dir = wayfinder_root / RESOLVED_SUBDIR
+    for blocker in blockers:
+        blocker = blocker.strip()
+        if TICKET_ID_RE.match(blocker):
+            refs.append({"id": blocker})
+            continue
+        matches = []
+        for candidate in sorted(resolved_dir.rglob("*.md")):
+            if candidate == path or candidate.is_symlink() or not candidate.is_file():
+                continue
+            c_raw, c_text = _read_ticket_text(candidate)
+            try:
+                c_meta, _ = _front_matter(candidate, c_text)
+            except LookIngestError:
+                continue
+            if str(c_meta.get("title", "")).strip() == blocker:
+                matches.append((candidate, c_meta, c_raw))
+        if len(matches) != 1:
+            raise LookIngestError(
+                f"look ticket {path.name}: blocked-by {blocker!r} matches {len(matches)} resolved ticket(s) "
+                f"under {resolved_dir} — every blocker must be exactly one resolved ticket"
+            )
+        c_path, c_meta, c_raw = matches[0]
+        refs.append(_ticket_ref(c_path, c_meta, c_raw, wayfinder_root))
+    return refs
+
+
+def parse_look_ticket(path: Path | str, *, wayfinder_root: Path | str) -> IngestedLook:
+    """Read one wayfinder look ticket and return its validated look.
+
+    The ticket is confined under ``<wayfinder_root>/wayfinder/resolved/``
+    (strict resolution, symlinks rejected), must carry ``area: look``,
+    ``type: grill``, ``mode: hitl`` and a non-empty ``resolved:`` claim, and
+    its ``depends_on`` is derived from ``blocked-by`` (a declared value that
+    disagrees is rejected). Raises LookIngestError for anything short of
+    the authority contract.
+    """
+    root = _resolved_wayfinder_root(wayfinder_root)
+    path = confine_ticket_path(path, root)
+    raw, text = _read_ticket_text(path)
+    text = raw.decode("utf-8", errors="strict") if _is_utf8(raw) else None
+    if text is None:
+        raise LookIngestError(f"look ticket {path} is not UTF-8")
+
+    meta, body_start = _front_matter(path, text)
     if meta.get("type") != "grill" or meta.get("mode") != "hitl":
         raise LookIngestError(
             f"look ticket {path.name} is type={meta.get('type')!r} mode={meta.get('mode')!r}; "
             f"only type: grill, mode: hitl tickets can carry canon"
         )
-    body = text[fm.end():]
+    if meta.get("area") != "look":
+        raise LookIngestError(
+            f"look ticket {path.name} is area={meta.get('area')!r}; only area: look tickets carry look canon"
+        )
+    resolved_claim = meta.get("resolved")
+    if resolved_claim is None or (isinstance(resolved_claim, str) and not resolved_claim.strip()) or resolved_claim is False:
+        raise LookIngestError(
+            f"look ticket {path.name} has no non-empty 'resolved:' front matter — the wayfinder marks a "
+            f"ticket resolved; an unresolved ticket carries no canon"
+        )
+    body = text[body_start:]
     sections = _sections(body)
     answer = "".join(sections.get("answer", [])).strip()
     if not sections.get("answer") or not answer:
         raise LookIngestError(f"look ticket {path.name} has no resolved '## Answer' section")
-    if path.parent.name != "resolved":
-        raise LookIngestError(
-            f"look ticket {path.name} is not under a resolved/ directory — only resolved tickets are ingested"
-        )
     spec_sections = sections.get("look spec", [])
     if len(spec_sections) != 1:
         raise LookIngestError(
@@ -141,28 +290,34 @@ def parse_look_ticket(path: Path | str) -> IngestedLook:
         payload = yaml.safe_load(fences[0])
     except yaml.YAMLError as exc:
         raise LookIngestError(f"look ticket {path.name}: look spec block is not YAML: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise LookIngestError(f"look ticket {path.name}: look spec block must be a mapping")
+    derived = derive_depends_on(path, meta, root)
+    declared_deps = payload.get("depends_on")
+    if declared_deps is not None and declared_deps != derived:
+        raise LookIngestError(
+            f"look ticket {path.name}: the block declares depends_on {declared_deps!r} but the ticket's "
+            f"blocked-by derives {derived!r} — depends_on is derived from the wayfinder, never authored"
+        )
+    payload = dict(payload)
+    payload["depends_on"] = derived
     try:
         validate_look_spec(payload)
     except LookSpecError as exc:
         raise LookIngestError(f"look ticket {path.name}: {exc}") from exc
 
-    ticket_id = meta.get("id")
-    if ticket_id is not None:
-        if not isinstance(ticket_id, str) or not TICKET_ID_RE.match(ticket_id):
-            raise LookIngestError(f"look ticket {path.name}: id {ticket_id!r} must match wf-<8 hex>")
-        ref: dict[str, Any] = {"id": ticket_id}
-        declared = payload.get("source_ticket_ref")
+    ref = _ticket_ref(path, meta, raw, root)
+    declared = payload.get("source_ticket_ref")
+    if "id" in ref:
         if declared is not None and declared != ref:
             raise LookIngestError(
-                f"look ticket {path.name}: source_ticket_ref {declared!r} does not name this ticket's id {ticket_id!r}"
+                f"look ticket {path.name}: source_ticket_ref {declared!r} does not name this ticket's id {ref['id']!r}"
             )
-    else:
-        if payload.get("source_ticket_ref") is not None:
-            raise LookIngestError(
-                f"look ticket {path.name}: a legacy ticket (no id:) cannot declare source_ticket_ref "
-                f"(its content hash is the reference and would be self-referential)"
-            )
-        ref = {"path": str(path), "content_sha256": hashlib.sha256(raw).hexdigest()}
+    elif declared is not None:
+        raise LookIngestError(
+            f"look ticket {path.name}: a legacy ticket (no id:) cannot declare source_ticket_ref "
+            f"(its content hash is the reference and would be self-referential)"
+        )
 
     return IngestedLook(
         entity_kind=str(payload["entity_kind"]),
@@ -301,12 +456,14 @@ def project_look_governed(project_root: Path | str, *, project_id: Optional[str]
 # ---- look_packet ----
 
 
-def ingest_look_tickets(tickets: Mapping[tuple[str, str], Path | str]) -> dict[tuple[str, str], IngestedLook]:
-    """Parse one ticket per (entity_kind, entity_id) and require each ticket
-    to describe exactly the key it was given."""
+def ingest_look_tickets(
+    tickets: Mapping[tuple[str, str], Path | str], *, wayfinder_root: Path | str
+) -> dict[tuple[str, str], IngestedLook]:
+    """Parse one ticket per (entity_kind, entity_id) under ``wayfinder_root``
+    and require each ticket to describe exactly the key it was given."""
     out: dict[tuple[str, str], IngestedLook] = {}
     for key, path in tickets.items():
-        look = parse_look_ticket(path)
+        look = parse_look_ticket(path, wayfinder_root=wayfinder_root)
         if look.key != tuple(key):
             raise LookIngestError(
                 f"ticket {Path(path).name} describes {look.key} but was given for {tuple(key)}"
@@ -323,9 +480,12 @@ def look_lock_request(
     request_id: Optional[str] = None,
     promotion_refs: Optional[list[dict]] = None,
     summary: Optional[str] = None,
+    ticket_path: Optional[Path | str] = None,
 ) -> Path:
     """Write the gate request for a look_lock activate receipt (mints nothing).
-    Supersedes the active look for the key when one exists."""
+    Supersedes the active look for the key when one exists. ``ticket_path``
+    (relative to the wayfinder root) lets the gate handler re-ingest the
+    ticket itself; the record in the request is only a hint it must match."""
     import json
 
     project_dir = Path(project_dir)
@@ -351,6 +511,7 @@ def look_lock_request(
             "source_ticket_ref": look.source_ticket_ref,
         },
         "source_checkpoint_digest": None,
+        "source_ticket_path": str(ticket_path) if ticket_path is not None else look.source_ticket_ref.get("path"),
         "summary": summary or (
             f"Ratify the look for {look.entity_kind} {look.entity_id!r} (look_hash {look.look_hash}). "
             f"The writer attested a fictional subject: {look.payload.get('fictional_subject_attestation')}. "

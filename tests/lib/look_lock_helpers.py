@@ -17,7 +17,7 @@ from lib.canonical_json import record_sha256
 from lib.headshots import headshot_record
 from lib.look_spec import look_hash as _look_hash
 from lib.pipeline_loader import manifest_digest
-from lib.pipeline_pin import migration_record
+from lib.pipeline_pin import checkpoint_digests_on_disk, migration_record
 
 PROJECT = "p"
 CHAR = "char-01-deadbeef"
@@ -88,14 +88,25 @@ def location_look(lid: str = LOC, **overrides) -> dict:
 def write_ticket(
     root: Path, payload: dict, *, ticket_id: str | None = "wf-0badc0de", resolved: bool = True,
     answer: str = "Locked as written.", extra_spec_sections: int = 0, type_: str = "grill", mode: str = "hitl",
+    area: str = "look", resolved_claim: str | None = "2026-08-26", title: str | None = None,
+    blocked_by: list[str] | None = None, name: str | None = None,
 ) -> Path:
+    """Write a wayfinder ticket under ``<root>/wayfinder/resolved/`` (or
+    ``wayfinder/open/``). ``root`` is the wayfinder root a test passes as
+    ``wayfinder_root=``."""
     import yaml
 
-    folder = root / ("resolved" if resolved else "open")
+    folder = root / "wayfinder" / ("resolved" if resolved else "open")
     folder.mkdir(parents=True, exist_ok=True)
-    front = {"type": type_, "mode": mode, "area": "look"}
+    front: dict = {"type": type_, "mode": mode, "area": area}
     if ticket_id:
         front["id"] = ticket_id
+    if title:
+        front["title"] = title
+    if resolved and resolved_claim:
+        front["resolved"] = resolved_claim
+    if blocked_by:
+        front["blocked-by"] = list(blocked_by)
     spec = yaml.safe_dump(payload, sort_keys=False)
     body = f"---\n{yaml.safe_dump(front, sort_keys=False)}---\n# Look: {payload['entity_id']}\n\n## Question\nWhat does this look like?\n\n"
     if answer:
@@ -103,7 +114,7 @@ def write_ticket(
     body += f"## Look spec\n```yaml\n{spec}```\n"
     for _ in range(extra_spec_sections):
         body += f"\n## Look spec\n```yaml\n{spec}```\n"
-    path = folder / f"look-{payload['entity_kind']}-{payload['entity_id']}.md"
+    path = folder / (name or f"look-{payload['entity_kind']}-{payload['entity_id']}.md")
     path.write_text(body, encoding="utf-8")
     return path
 
@@ -134,7 +145,9 @@ def retire_look(project_dir: Path, payload: dict) -> dict:
 
 
 def pin_project(project_dir: Path, version: str, *, supersedes: str | None = None) -> dict:
-    record = migration_record("authored-film", version, manifest_digest(f"authored-film@{version}"))
+    record = migration_record(
+        "authored-film", version, manifest_digest(f"authored-film@{version}"), checkpoint_digests_on_disk(project_dir),
+    )
     return _approve(
         project_dir, "pipeline", "pipeline:authored-film", record, "pipeline_migration", "authored-film",
         {"supersedes_receipt_id": supersedes},
@@ -155,12 +168,13 @@ def image(
     project_dir: Path, seed: str, *, role: str = "hero", look_refs: list[dict] | None = None,
     headshot_ref: dict | None = None, references_applied: list[dict] | None = None,
     input_asset_ids: list[str] | None = None, subdir: str = "canon/visual/objects",
-    receipt_prompt_recipe: dict | None = None,
+    receipt_prompt_recipe: dict | None = None, prompt: str | None = None,
 ) -> dict:
     """A real PNG under the project, receipted with look_refs/headshot_ref, as a model ImageRef.
     ``receipt_prompt_recipe`` seals a builder recipe into the generation receipt."""
     data = png_bytes(seed)
     sha = hashlib.sha256(data).hexdigest()
+    prompt = prompt if prompt is not None else f"{role} of {seed}"
     rel = f"{subdir}/{sha}.png"
     path = project_dir / rel
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -169,14 +183,14 @@ def image(
         project_dir, execution_id=f"exec-{seed}", tool="seedream_image",
         normalized_inputs_hash="a" * 64, output_sha256=sha, cost_usd=0.01,
         started_at="2026-08-26T00:00:00+00:00", finished_at="2026-08-26T00:00:01+00:00",
-        model_endpoint=IMAGE_MODEL, prompt=f"{role} of {seed}", references_applied=references_applied,
+        model_endpoint=IMAGE_MODEL, prompt=prompt, references_applied=references_applied,
         input_asset_ids=input_asset_ids, look_refs=look_refs, headshot_ref=headshot_ref or None,
         prompt_recipe=receipt_prompt_recipe,
     )
     return {
         "asset_id": sha, "path": rel, "role": role,
         "provenance": {"generator_kind": "model", "model_endpoint": IMAGE_MODEL,
-                       "prompt": f"{role} of {seed}", "generation_receipt_id": row["receipt_id"]},
+                       "prompt": prompt, "generation_receipt_id": row["receipt_id"]},
     }
 
 

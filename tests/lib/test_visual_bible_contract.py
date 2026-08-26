@@ -244,7 +244,9 @@ class TestVisualBibleStage:
             "record_sha256": record_sha256(character_approval_record(entry, PALETTE)),
             "approved_at": "2026-08-25T00:00:00+00:00", "user_response": "approve",
         })
-        with pytest.raises(CheckpointValidationError, match="no verified approval receipt"):
+        # Slice A #1: an extra row is a divergence from the signed per-project
+        # chain — the stage fails closed rather than skipping the row.
+        with pytest.raises((CheckpointValidationError, receipts.ReceiptChainError), match="not in the signed chain"):
             write(pipeline_dir, "visual_bible", {"visual_bible": bible})
 
     def test_hash_mismatch_is_rejected(self, project):
@@ -750,8 +752,10 @@ class TestGenerationReceiptForgery:
         forged = dict(genuine, receipt_id="forged-gen", output_sha256=sha)
         forged["signature"] = gates_sign(forged)
         append_jsonl(receipts.generation_receipts_path(project_dir), forged)
-        assert receipts.find_generation(project_dir, sha) is None
-        with pytest.raises(CheckpointValidationError, match="no generation receipt"):
+        # Slice A #1: the forged row diverges from the signed chain — every reader fails closed
+        with pytest.raises(receipts.ReceiptChainError, match="not in the signed chain"):
+            receipts.find_generation(project_dir, sha)
+        with pytest.raises((CheckpointValidationError, receipts.ReceiptChainError), match="not in the signed chain"):
             write(pipeline_dir, "assets", {"asset_manifest": {"version": "1.1", "assets": [board]}})
 
     def test_fabricated_row_does_not_make_an_imported_hero_canon(self, project):
@@ -766,7 +770,7 @@ class TestGenerationReceiptForgery:
         imported["provenance"]["generation_receipt_id"] = "forged-hero"
         entry["hero"] = imported
         bible["characters"].append(entry)
-        with pytest.raises(CheckpointValidationError, match="no generation receipt"):
+        with pytest.raises((CheckpointValidationError, receipts.ReceiptChainError), match="not in the signed chain"):
             write(pipeline_dir, "visual_bible", {"visual_bible": bible})
 
 

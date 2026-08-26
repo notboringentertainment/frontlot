@@ -101,10 +101,49 @@ class TestPin:
         req = json.loads(path.read_text())
         assert req["kind"] == "pipeline_migration" and req["envelope"] == {"supersedes_receipt_id": None}
         assert req["approval_record"] == {"pipeline_name": "authored-film", "version": "1.1",
-                                          "manifest_digest": manifest_digest("authored-film@1.1")}
+                                          "manifest_digest": manifest_digest("authored-film@1.1"),
+                                          "bound_checkpoints": []}
         assert not (project_dir / "approvals.jsonl").exists()
         r = pin_project(project_dir, "1.1")
         req = json.loads(prepare_migration_request(project_dir, "p", "authored-film", "1.2").read_text())
         assert req["envelope"]["supersedes_receipt_id"] == r["receipt_id"]
         with pytest.raises(PipelinePinError):
             prepare_migration_request(project_dir, "p", "authored-film", "7.7")
+
+
+class TestChainWalk:
+    """Slice A #15: the tip-backward walk must visit every receipt exactly once."""
+
+    def _row(self, rid, prev, version="1.2"):
+        return {"receipt_id": rid, "supersedes_receipt_id": prev,
+                "record": {"pipeline_name": "authored-film", "version": version, "manifest_digest": "0" * 64}}
+
+    def test_disconnected_cycle_beside_a_valid_chain_is_refused(self):
+        from lib.pipeline_pin import _chain_tip
+
+        rows = [self._row("r0", None), self._row("r1", "r0"), self._row("a", "b"), self._row("b", "a")]
+        with pytest.raises(PipelinePinError, match="not on the root-to-tip path"):
+            _chain_tip(rows, "authored-film")
+
+    def test_two_roots_with_one_tip_are_refused(self):
+        from lib.pipeline_pin import _chain_tip
+
+        rows = [self._row("r0", None), self._row("x", None), self._row("r1", "r0"), self._row("r2", "x")]
+        with pytest.raises(PipelinePinError, match="tips"):
+            _chain_tip(rows, "authored-film")
+        rows = [self._row("r0", None), self._row("x", None), self._row("r1", "r0")]
+        with pytest.raises(PipelinePinError, match="tips"):
+            _chain_tip(rows, "authored-film")
+
+    def test_linear_chain_resolves_to_tip(self):
+        from lib.pipeline_pin import _chain_tip
+
+        rows = [self._row("r0", None), self._row("r1", "r0"), self._row("r2", "r1")]
+        assert _chain_tip(rows, "authored-film")["receipt_id"] == "r2"
+        assert _chain_tip([], "authored-film") is None
+
+    def test_dangling_supersedes_is_refused(self):
+        from lib.pipeline_pin import _chain_tip
+
+        with pytest.raises(PipelinePinError, match="unknown receipt"):
+            _chain_tip([self._row("r1", "ghost")], "authored-film")

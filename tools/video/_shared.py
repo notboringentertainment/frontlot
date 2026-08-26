@@ -1226,12 +1226,25 @@ def shot_is_entity_free(project_root: Path | str, shot_id: str) -> bool:
     """Server-side lookup (R4#2): True only when the APPROVED ``scene_plan``
     checkpoint (status completed, human_approved) has a scene whose ``shots``
     contain ``shot_id`` and that scene records ``entity_free: true``. The
-    tool-call inputs are never consulted."""
-    from lib.checkpoint import read_checkpoint
+    tool-call inputs are never consulted.
+
+    The checkpoint is resolved through the invalidation-aware projection
+    (inspection #7): ``lib.checkpoint.invalidated_stages`` replays the
+    approval ledger, and a scene plan invalidated by a look/headshot
+    retirement or replacement never authorizes an entity-free call. Any
+    failure to compute invalidation fails closed.
+    """
+    import lib.checkpoint as checkpoint_mod
 
     root = Path(project_root)
-    checkpoint = read_checkpoint(root.parent, root.name, "scene_plan")
+    checkpoint = checkpoint_mod.read_checkpoint(root.parent, root.name, "scene_plan")
     if not checkpoint or checkpoint.get("status") != "completed" or checkpoint.get("human_approved") is not True:
+        return False
+    try:
+        invalidated = checkpoint_mod.invalidated_stages(root.parent, root.name, checkpoint.get("pipeline_type"))
+    except Exception:  # noqa: BLE001 — unknown invalidation state is not authorization
+        return False
+    if "scene_plan" in invalidated:
         return False
     plan = (checkpoint.get("artifacts") or {}).get("scene_plan") or {}
     for scene in plan.get("scenes") or []:
@@ -1308,10 +1321,18 @@ def _verify_headshot_ref(
     return normalized
 
 
-def _verify_prompt_recipe(inputs: dict[str, Any], look_refs: list[dict[str, str]]) -> dict[str, Any] | None:
+def _verify_prompt_recipe(
+    inputs: dict[str, Any], look_refs: list[dict[str, str]], project_root: Path
+) -> dict[str, Any] | None:
     """On ``stage: visual_bible`` the prompt must be a builder rendering: the
-    ``prompt_recipe`` names a look in ``look_refs`` and ``rendered_sha256``
-    equals the hash of the prompt actually sent (no verbatim text)."""
+    ``prompt_recipe`` names a look in ``look_refs``, ``rendered_sha256``
+    equals the hash of the prompt actually sent (no verbatim text), AND the
+    prompt rebuilds from the signed ACTIVE look payload (inspection #2): the
+    boundary calls ``tools.prompt_builder.build_prompt`` on the active
+    look's payload with the same builder version, ``asset_role`` and
+    ``palette`` as the call, and requires ``rendered_sha256`` equality. A
+    rendering of appearance B submitted under look A's hash is refused before
+    any upload."""
     recipe = inputs.get("prompt_recipe")
     if inputs.get("stage") != "visual_bible" and recipe is None:
         return None
@@ -1320,15 +1341,44 @@ def _verify_prompt_recipe(inputs: dict[str, Any], look_refs: list[dict[str, str]
             "visual_bible generation requires prompt_recipe {look_hash, builder_version, fields_used[], rendered_sha256} "
             "from tools.prompt_builder"
         )
-    from tools.prompt_builder import rendered_prompt_sha256
+    from tools.prompt_builder import BUILDER_VERSION, ROLES, PromptBuildError, build_prompt, rendered_prompt_sha256
 
     look_hash = recipe.get("look_hash")
-    if not any(r["look_hash"] == look_hash for r in look_refs):
+    ref = next((r for r in look_refs if r["look_hash"] == look_hash), None)
+    if ref is None:
         raise LookGovernanceError("prompt_recipe.look_hash is not one of the verified look_refs")
     prompt = inputs.get("prompt")
     if not isinstance(prompt, str) or rendered_prompt_sha256(prompt) != recipe.get("rendered_sha256"):
         raise LookGovernanceError(
             "prompt does not match prompt_recipe.rendered_sha256 — rebuild it with tools.prompt_builder"
+        )
+    if recipe.get("builder_version") != BUILDER_VERSION:
+        raise LookGovernanceError(
+            f"prompt_recipe.builder_version {recipe.get('builder_version')!r} is not the boundary builder "
+            f"{BUILDER_VERSION!r} — rebuild the prompt"
+        )
+    role = inputs.get("asset_role")
+    if role not in ROLES:
+        raise LookGovernanceError(
+            f"a prompt_recipe call must name asset_role (one of {ROLES}) so the boundary can rebuild the prompt"
+        )
+    # lib.look_ingest.active_look_for: the signed ACTIVE look_lock tip for the key
+    # (payload + look_hash); imported by name and fails closed if absent.
+    active = _lazy("lib.look_ingest", "active_look_for")(project_root, ref["entity_kind"], ref["entity_id"])
+    if active is None or getattr(active, "look_hash", None) != look_hash:
+        raise LookGovernanceError(
+            f"prompt_recipe.look_hash {look_hash} is not the active look for ({ref['entity_kind']}, {ref['entity_id']})"
+        )
+    try:
+        rebuilt = build_prompt(dict(active.payload), role=role, palette=inputs.get("palette"))
+    except PromptBuildError as exc:
+        raise LookGovernanceError(f"active look cannot be rendered by the boundary builder: {exc}") from exc
+    if rebuilt["prompt_recipe"]["look_hash"] != look_hash:
+        raise LookGovernanceError("active look payload does not hash to prompt_recipe.look_hash")
+    if rebuilt["prompt_recipe"]["rendered_sha256"] != recipe.get("rendered_sha256"):
+        raise LookGovernanceError(
+            "prompt_recipe.rendered_sha256 does not rebuild from the active look payload "
+            f"(role {role!r}) — the prompt was not rendered from the look it names"
         )
     return {
         "look_hash": look_hash,
@@ -1351,7 +1401,7 @@ def verify_look_governance(inputs: dict[str, Any], project_root: Path | str) -> 
         return {"governed": False, "look_refs": None, "headshot_ref": None, "prompt_recipe": None}
     look_refs = _verify_look_refs(inputs, root)
     headshot_ref = _verify_headshot_ref(inputs, root, look_refs)
-    prompt_recipe = _verify_prompt_recipe(inputs, look_refs)
+    prompt_recipe = _verify_prompt_recipe(inputs, look_refs, root)
     return {"governed": True, "look_refs": look_refs, "headshot_ref": headshot_ref, "prompt_recipe": prompt_recipe}
 
 
@@ -1405,3 +1455,44 @@ def receipt_governance_fields(governance: dict[str, Any] | None) -> dict[str, An
         if governance.get(key) is not None:
             out[key] = governance[key]
     return out
+
+
+# ---- selector boundary (inspection #9) --------------------------------------
+
+SELECTOR_LOCAL_REFERENCE_KEYS = ("reference_image_path", "reference_image_paths", "image_path", "image_paths")
+
+
+def selector_governance(inputs: dict[str, Any]) -> dict[str, Any] | None:
+    """Governance for the generic selectors, run BEFORE any upload or delegation.
+
+    Returns ``None`` for a legacy call (no ``project_dir``, no governed keys)
+    — the selector then behaves as before. Otherwise the call is governed:
+    ``paid_call_context`` (registered project, resume check, verified
+    ``project.yaml``, ``verify_look_governance``) and
+    ``verify_reference_lineage`` over every local reference run here, and the
+    verified governance dict is returned so the selector restricts delegation
+    to ``governance_bound`` providers. Raises on any refusal.
+    """
+    from lib import pathsafe
+    from lib.events import infer_project_dir
+
+    has_keys = any(inputs.get(k) is not None for k in GOVERNED_CALL_KEYS)
+    if not inputs.get("project_dir") and not has_keys:
+        return None
+    root = infer_project_dir(inputs) if inputs.get("project_dir") else None
+    if root is None and not has_keys:
+        return None
+    if root is not None and not has_keys and not project_look_governed(root):
+        return None
+    governance: dict[str, Any] = {}
+    project_root, _tracker, _config = paid_call_context(inputs, governance=governance)
+    local_refs: list[Path] = []
+    for key in SELECTOR_LOCAL_REFERENCE_KEYS:
+        value = inputs.get(key)
+        if not value:
+            continue
+        for item in value if isinstance(value, list) else [value]:
+            local_refs.append(pathsafe.resolve_input(str(item), project_root))
+    verify_reference_lineage(inputs, project_root, local_refs, governed=True)
+    governance["project_root"] = project_root
+    return governance

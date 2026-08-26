@@ -16,15 +16,29 @@ def gates_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENMONTAGE_GATES_DIR", str(tmp_path / "gates"))
 
 
+PROJECT_CONFIG = {
+    "version": "1.0", "budget_usd_cap": 50.0, "wall_time_minutes": 30,
+    "cast_cap": {"characters": 2, "locations": 2},
+    "default_video_endpoint": "fal-ai/kling-video/o3/pro/reference-to-video",
+    "provider_egress": {"provider": "fal", "content_classes": ["prompts", "reference_images"]},
+}
+
+
 def _project(tmp_path):
+    import hashlib
+
+    import yaml
+
     root = tmp_path / "projects" / "demo"
     (root / ".gate-requests").mkdir(parents=True)
+    raw = yaml.safe_dump(PROJECT_CONFIG, sort_keys=True).encode("utf-8")
+    (root / "project.yaml").write_bytes(raw)
     req = {
-        "request_id": "req-1", "project_id": "demo", "stage": "visual_bible",
-        "scope": "character:character-0-abcd1234", "kind": "hero",
-        "entity_id": "character-0-abcd1234", "artifact": None,
-        "approval_record": {"id": "character-0-abcd1234", "assets": {"hero": "a" * 64}},
-        "source_checkpoint_digest": None, "summary": "Pick hero portrait.", "preview_paths": [],
+        "request_id": "req-1", "project_id": "demo", "stage": "proposal",
+        "scope": "config", "kind": "config",
+        "entity_id": "project_config", "artifact": None,
+        "approval_record": {"config_sha256": hashlib.sha256(raw).hexdigest()},
+        "source_checkpoint_digest": None, "summary": "Approve project.yaml.", "preview_paths": [],
     }
     (root / ".gate-requests" / "req-1.json").write_text(json.dumps(req))
     return root, req
@@ -66,8 +80,8 @@ def test_main_exits_2_without_tty(tmp_path, monkeypatch, capsys):
 def test_approve_writes_verified_receipt_and_moves_request(tmp_path, human_tty):
     root, req = _project(tmp_path)
     receipt = gate_approve.decide(req, root, answer="y", note="looks right")
-    assert receipt["kind"] == "hero"
-    found = find_approval(root, "hero", entity_id=req["entity_id"], record_sha256=record_sha256(req["approval_record"]))
+    assert receipt["kind"] == "config"
+    found = find_approval(root, "config", record_sha256=record_sha256(req["approval_record"]))
     assert found and found["receipt_id"] == receipt["receipt_id"]
     assert not (root / ".gate-requests" / "req-1.json").exists()
     assert (root / ".gate-requests" / "done" / "req-1.json").exists()

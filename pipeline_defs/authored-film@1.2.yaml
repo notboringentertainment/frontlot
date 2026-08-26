@@ -178,8 +178,7 @@ stages:
     produces:
       - headshot_packet
     tools_available:
-      - seedream_image
-      - image_selector
+      - seedream_image          # governance-bound only (inspection #9): no generic selector
     checkpoint_required: true
     human_approval_default: true
     review_focus:
@@ -205,13 +204,10 @@ stages:
       - headshot_packet
     produces:
       - visual_bible
-    tools_available:
+    tools_available:              # governance-bound providers only (inspection #9)
       - seedream_image
-      - image_selector
       - title_card
       - poster_composite
-    optional_tools:
-      - flux_image
     checkpoint_required: true
     human_approval_default: true
     review_focus:
@@ -313,19 +309,15 @@ stages:
       - seedance_video      # entity-free scenes only (model_override with reason); rejects human-face references on FAL
       - subtitle_gen
       - audio_enhance
-      - image_selector
-      - video_selector
       - pixabay_music
       - freesound_music
       - music_gen
     tools_available:
       - kling_reference_video   # default video endpoint (D4 revised 2026-08-25): fal-ai/kling-video/o3/pro/reference-to-video
       - seedream_image          # storyboard frames
-      - seedance_video
+      - seedance_video          # 2.5 only; the 2.0 path is refused for every project
       - subtitle_gen
       - audio_enhance
-      - image_selector
-      - video_selector
       - pixabay_music
       - freesound_music
       - music_gen

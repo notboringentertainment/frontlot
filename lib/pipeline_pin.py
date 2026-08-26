@@ -54,6 +54,7 @@ class PinnedPipeline:
     version: str
     manifest_digest: str
     receipt_id: Optional[str]
+    bound_checkpoints: tuple[tuple[str, str], ...] = ()
 
     @property
     def ref(self) -> str:
@@ -62,36 +63,86 @@ class PinnedPipeline:
     def to_dict(self) -> dict[str, str]:
         return {"name": self.name, "version": self.version, "manifest_digest": self.manifest_digest}
 
+    def binds_checkpoint(self, stage: str, checkpoint_digest: str) -> bool:
+        """True iff the migration receipt bound this exact checkpoint file
+        (its stage + sha256) at migration time — the only way a checkpoint
+        written under another tuple (a legacy one) can satisfy this pin."""
+        return (stage, checkpoint_digest) in self.bound_checkpoints
 
-def migration_record(pipeline_name: str, version: str, digest: str) -> dict[str, str]:
-    """The record hashed into a pipeline_migration receipt."""
-    return {"pipeline_name": pipeline_name, "version": version, "manifest_digest": digest}
+
+def checkpoint_digests_on_disk(project_dir: Path | str) -> list[dict[str, str]]:
+    """``[{stage, checkpoint_digest}]`` for every ``checkpoint_<stage>.json``
+    in the project dir, sorted by stage — the set a migration receipt binds
+    (Slice A #10). Computed from the bytes on disk at request AND at signing
+    time; the gate refuses to sign if they differ."""
+    import hashlib
+
+    project_dir = Path(project_dir)
+    out: list[dict[str, str]] = []
+    for path in sorted(project_dir.glob("checkpoint_*.json")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        stage = path.name[len("checkpoint_"):-len(".json")]
+        if not stage:
+            continue
+        out.append({"stage": stage, "checkpoint_digest": hashlib.sha256(path.read_bytes()).hexdigest()})
+    return out
+
+
+def migration_record(
+    pipeline_name: str, version: str, digest: str, bound_checkpoints: Optional[list[dict[str, str]]] = None
+) -> dict[str, Any]:
+    """The record hashed into a pipeline_migration receipt: the manifest
+    tuple plus the digest set of every checkpoint that existed at migration
+    time (#10). Readers accept a legacy checkpoint only if it is in this set."""
+    bound = []
+    for item in bound_checkpoints or []:
+        stage, cd = item.get("stage"), item.get("checkpoint_digest")
+        if not isinstance(stage, str) or not stage or not isinstance(cd, str) or len(cd) != 64:
+            raise PipelinePinError(f"bound checkpoint entry {item!r} is not {{stage, checkpoint_digest}}")
+        bound.append({"stage": stage, "checkpoint_digest": cd})
+    bound.sort(key=lambda e: (e["stage"], e["checkpoint_digest"]))
+    return {
+        "pipeline_name": pipeline_name,
+        "version": version,
+        "manifest_digest": digest,
+        "bound_checkpoints": bound,
+    }
+
+
+def _bound_set(record: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    bound = record.get("bound_checkpoints")
+    if bound is None:
+        return ()
+    if not isinstance(bound, list):
+        raise PipelinePinError("pipeline_migration record bound_checkpoints must be a list")
+    out = []
+    for item in bound:
+        if not isinstance(item, dict):
+            raise PipelinePinError("pipeline_migration record bound_checkpoints entries must be objects")
+        out.append((str(item.get("stage")), str(item.get("checkpoint_digest"))))
+    return tuple(out)
 
 
 def _chain_tip(receipts: list[dict], pipeline_name: str) -> Optional[dict]:
-    """Replay the supersession chain and return its unique tip (or None when
-    there are no receipts). Raises PipelinePinError on any ambiguity."""
+    """Walk the supersession chain BACKWARD from its unique tip and return
+    the tip (None when there are no receipts). Slice A #15: the walk must
+    reach a root (``supersedes_receipt_id`` None) without revisiting a
+    receipt, and must visit every migration receipt for this pipeline
+    exactly once — a disconnected cycle or a second root fails closed."""
     rows = [
         r for r in receipts
         if isinstance(r.get("record"), dict) and r["record"].get("pipeline_name") == pipeline_name
     ]
     if not rows:
         return None
-    by_id = {r["receipt_id"]: r for r in rows}
-    superseded: set[str] = set()
+    by_id: dict[str, dict] = {}
     for r in rows:
-        prev = r.get("supersedes_receipt_id")
-        if prev is None:
-            continue
-        if prev not in by_id:
-            raise PipelinePinError(
-                f"pipeline_migration receipt {r['receipt_id']} supersedes unknown receipt {prev!r}"
-            )
-        if prev in superseded:
-            raise PipelinePinError(
-                f"pipeline_migration receipt {prev} is superseded twice — the chain must be monotonic"
-            )
-        superseded.add(prev)
+        rid = r.get("receipt_id")
+        if not isinstance(rid, str) or not rid or rid in by_id:
+            raise PipelinePinError(f"pipeline_migration chain for {pipeline_name!r} has a duplicate or missing receipt_id {rid!r}")
+        by_id[rid] = r
+    superseded = {r.get("supersedes_receipt_id") for r in rows if r.get("supersedes_receipt_id") is not None}
     tips = [r for r in rows if r["receipt_id"] not in superseded]
     if len(tips) != 1:
         raise PipelinePinError(
@@ -99,10 +150,29 @@ def _chain_tip(receipts: list[dict], pipeline_name: str) -> Optional[dict]:
             f"({[t['receipt_id'] for t in tips]}); exactly one unsuperseded receipt is required"
         )
     tip = tips[0]
-    firsts = [r for r in rows if r.get("supersedes_receipt_id") is None]
-    if len(firsts) != 1:
+    visited: list[str] = []
+    seen: set[str] = set()
+    current: Optional[dict] = tip
+    while current is not None:
+        rid = current["receipt_id"]
+        if rid in seen:
+            raise PipelinePinError(
+                f"pipeline_migration chain for {pipeline_name!r} cycles at {rid} "
+                f"(walk: {' <- '.join(visited + [rid])})"
+            )
+        seen.add(rid)
+        visited.append(rid)
+        prev = current.get("supersedes_receipt_id")
+        if prev is None:
+            break
+        if not isinstance(prev, str) or prev not in by_id:
+            raise PipelinePinError(f"pipeline_migration receipt {rid} supersedes unknown receipt {prev!r}")
+        current = by_id[prev]
+    unvisited = sorted(set(by_id) - seen)
+    if unvisited:
         raise PipelinePinError(
-            f"pipeline_migration chain for {pipeline_name!r} has {len(firsts)} roots; expected one"
+            f"pipeline_migration chain for {pipeline_name!r}: receipts {unvisited} are not on the "
+            f"root-to-tip path (disconnected chain or cycle); every migration receipt must be visited exactly once"
         )
     return tip
 
@@ -154,6 +224,7 @@ def pinned_pipeline(
             f"project pins {name}@{version} but no pipeline_defs/{name}@{version}.yaml exists"
         )
     digest = manifest_digest(f"{name}@{version}")
+    bound = _bound_set(tip["record"]) if tip is not None else ()
     if tip is not None and tip["record"].get("manifest_digest") != digest:
         raise PipelinePinError(
             f"pipeline_migration receipt {receipt_id} binds {name}@{version} to digest "
@@ -170,7 +241,7 @@ def pinned_pipeline(
             f"project.json {CACHE_FIELD}={cached!r} disagrees with the signed pin {version!r}; "
             f"the cache is verified, never authoritative — run refresh_cache after the migration receipt"
         )
-    return PinnedPipeline(name, version, digest, receipt_id)
+    return PinnedPipeline(name, version, digest, receipt_id, bound)
 
 
 def refresh_cache(project_dir: Path | str, pipeline_type: str) -> PinnedPipeline:
@@ -209,7 +280,7 @@ def prepare_migration_request(
     from lib.receipts import verified_approvals
 
     tip = _chain_tip(verified_approvals(project_dir, MIGRATION_KIND, entity_id=pipeline_name), pipeline_name)
-    record = migration_record(pipeline_name, version, digest)
+    record = migration_record(pipeline_name, version, digest, checkpoint_digests_on_disk(project_dir))
     request_id = request_id or f"pipeline-migration-{version.replace('.', '-')}"
     request = {
         "request_id": request_id,
@@ -219,12 +290,13 @@ def prepare_migration_request(
         "kind": MIGRATION_KIND,
         "entity_id": pipeline_name,
         "artifact": None,
+        "pipeline_version": version,
         "approval_record": record,
         "envelope": {"supersedes_receipt_id": tip["receipt_id"] if tip else None},
         "source_checkpoint_digest": None,
         "summary": summary or (
             f"Pin project {project_id!r} to pipeline manifest {pipeline_name}@{version} "
-            f"(digest {digest}). "
+            f"(digest {digest}); binds {len(record['bound_checkpoints'])} existing checkpoint file(s). "
             + (f"Supersedes migration receipt {tip['receipt_id']}." if tip else "First pin for this project.")
         ),
         "preview_paths": [],

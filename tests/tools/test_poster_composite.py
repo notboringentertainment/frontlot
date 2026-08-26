@@ -136,6 +136,7 @@ def test_unreceipted_input_is_rejected(env):
     forged = dict(genuine, receipt_id="forged", output_sha256=sha256_file(imported))
     append_jsonl(generation_receipts_path(project), forged)
     r = PosterComposite().execute(_inputs(project, imported, title))
-    assert not r.success and "no verified generation receipt" in r.error
+    # the signed per-project chain rejects the extra row before any receipt lookup succeeds
+    assert not r.success and ("no verified generation receipt" in r.error or "not in the signed chain" in r.error)
     assert len(list((project / "canon" / "visual" / "objects").iterdir())) == 3  # nothing composited
     assert not any((project / ".staging").iterdir()) if (project / ".staging").exists() else True

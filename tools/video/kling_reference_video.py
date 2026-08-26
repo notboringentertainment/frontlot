@@ -64,6 +64,7 @@ class KlingReferenceVideo(BaseTool):
     tier = ToolTier.GENERATE
     capability = "video_generation"
     provider = "kling_fal"
+    governance_bound = True  # governed boundary runs before any upload (inspection #9)
     stability = ToolStability.BETA
     execution_mode = ExecutionMode.SYNC
     determinism = Determinism.STOCHASTIC

@@ -231,6 +231,21 @@ class ImageSelector(BaseTool):
                 },
             )
 
+        # Governance runs BEFORE any delegation (inspection #9): a governed
+        # call is verified here and may only be delegated to providers that run
+        # the same boundary and return governance-bound receipts (never e.g.
+        # flux_image, which implements no look-governance boundary).
+        from tools.video import _shared
+
+        try:
+            governance = _shared.selector_governance(inputs)
+        except Exception as exc:  # noqa: BLE001 — every refusal stops delegation
+            return ToolResult(success=False, error=f"image_selector refused before delegation: {exc}")
+        if governance is not None:
+            candidates = [t for t in candidates if getattr(t, "governance_bound", False) is True]
+            if not candidates:
+                return ToolResult(success=False, error="No governance-bound image provider available for a governed call.")
+
         # Normal generation — use scored selection
         tool, score = self._select_best_tool(inputs, candidates, task_context)
         if tool is None:

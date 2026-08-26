@@ -421,6 +421,11 @@ class BaseTool(ABC):
     best_for: list[str] = []
     not_good_for: list[str] = []
     provider_matrix: dict[str, Any] = {}
+    # True only for tools whose execute() runs the look-governance boundary
+    # (paid_call_context / verify_look_governance / verify_reference_lineage)
+    # before any upload and seals look_refs / prompt_recipe into the receipt.
+    # Generic selectors delegate governed calls only to these (inspection #9).
+    governance_bound: bool = False
 
     # --- Resource & retry ---
     resource_profile: ResourceProfile = ResourceProfile()

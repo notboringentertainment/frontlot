@@ -40,6 +40,7 @@ class TitleCard(BaseTool):
     tier = ToolTier.GENERATE
     capability = "title_card"
     provider = "openmontage"
+    governance_bound = True  # governed boundary runs before any upload (inspection #9)
     stability = ToolStability.BETA
     execution_mode = ExecutionMode.SYNC
     determinism = Determinism.DETERMINISTIC

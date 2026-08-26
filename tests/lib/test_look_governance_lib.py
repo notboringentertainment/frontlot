@@ -73,7 +73,8 @@ class TestGenerationReceiptPassthrough:
         tampered = json.loads(path.read_text())
         tampered["prompt_recipe"]["rendered_sha256"] = "d" * 64
         path.write_text(json.dumps(tampered) + "\n")
-        assert receipts.find_generation(project, "b" * 64) is None
+        with pytest.raises(receipts.ReceiptChainError, match="altered"):
+            receipts.find_generation(project, "b" * 64)
 
     @pytest.mark.parametrize("bad", [
         "not a dict",

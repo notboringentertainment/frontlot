@@ -59,6 +59,7 @@ class SeedreamImage(BaseTool):
     tier = ToolTier.GENERATE
     capability = "image_generation"
     provider = "seedream"
+    governance_bound = True  # governed boundary runs before any upload (inspection #9)
     stability = ToolStability.BETA
     execution_mode = ExecutionMode.SYNC
     determinism = Determinism.STOCHASTIC

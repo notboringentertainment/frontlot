@@ -100,13 +100,18 @@ def test_find_approval_ignores_forged_rows(project):
     # (c) valid signature but no ledger entry (attacker who somehow got a signature)
     signed_no_ledger = dict(forged, receipt_id="forged-2")
     signed_no_ledger["signature"] = gates.sign_receipt(signed_no_ledger)
-    with open(project / "approvals.jsonl", "a") as fh:
-        for row in (unsigned, wrong_sig, signed_no_ledger):
-            fh.write(json.dumps(row) + "\n")
-
-    assert receipts.find_approval(project, "hero", entity_id="ch-002") is None
-    assert receipts.find_approval(project, "hero", record_sha256=record_sha256(forged_record)) is None
     assert receipts.find_approval(project, "hero", entity_id="ch-001") == real
+    # Slice A #1: a forged row is an EXTRA row against the signed per-project
+    # chain — every reader fails closed instead of skipping it.
+    for row in (unsigned, wrong_sig, signed_no_ledger):
+        original = (project / "approvals.jsonl").read_bytes()
+        with open(project / "approvals.jsonl", "a") as fh:
+            fh.write(json.dumps(row) + "\n")
+        with pytest.raises(receipts.ReceiptChainError, match="not in the signed chain"):
+            receipts.find_approval(project, "hero", entity_id="ch-002")
+        with pytest.raises(receipts.ReceiptChainError):
+            receipts.find_approval(project, "hero", entity_id="ch-001")
+        (project / "approvals.jsonl").write_bytes(original)
     assert receipts.find_approval(project, "hero", entity_id="ch-001", record_sha256=real["record_sha256"]) == real
     assert receipts.find_approval(project, "hero", entity_id="ch-001", record_sha256="00" * 32) is None
     assert receipts.find_approval(project, "poster") is None
@@ -119,7 +124,25 @@ def test_find_approval_returns_latest_valid(project):
     assert receipts.find_approval(project, "hero", entity_id="ch-001") == r2
 
 
+def _gen_common(sha="44" * 32):
+    return dict(execution_id="e-x", tool="image_gen", model_endpoint="fal-ai/example/edit", normalized_inputs_hash="11" * 32,
+                output_sha256=sha, cost_usd=0.0, started_at="t0", finished_at="t1")
+
+
+def _pin_12(project):
+    from lib.pipeline_loader import manifest_digest
+    from lib.pipeline_pin import checkpoint_digests_on_disk, migration_record
+
+    (project / "project.json").write_text(json.dumps({"project_id": PROJECT_ID, "pipeline_type": "authored-film"}))
+    record = migration_record("authored-film", "1.2", manifest_digest("authored-film@1.2"), checkpoint_digests_on_disk(project))
+    token = _mint(record, stage="pipeline", scope="pipeline:authored-film")
+    receipts.record_human_approval(project, PROJECT_ID, "pipeline", "pipeline:authored-film", record, token,
+                                   "pipeline_migration", entity_id="authored-film", envelope={"supersedes_receipt_id": None})
+
+
 def test_generation_receipt_roundtrip(project):
+    _pin_12(project)  # look-governed: parents must exist at receipt creation
+    parent = _gen(project, "33" * 32)
     receipt = receipts.record_generation(
         project,
         execution_id="exec-1",
@@ -131,12 +154,17 @@ def test_generation_receipt_roundtrip(project):
         cost_usd=0.04,
         started_at="2026-01-01T00:00:00+00:00",
         finished_at="2026-01-01T00:00:05+00:00",
-        input_asset_ids=["33" * 32],
+        input_asset_ids=[parent["output_sha256"]],
     )
     assert receipt["generator_kind"] == "model"
     assert receipts.find_generation(project, "22" * 32) == receipt
     assert receipts.find_generation(project, "99" * 32) is None
-    assert read_jsonl(project / "generation-receipts.jsonl") == [receipt]
+    assert read_jsonl(project / "generation-receipts.jsonl") == [parent, receipt]
+    # Slice A #5: a parent must be an existing receipted 64-hex asset.
+    with pytest.raises(ValueError, match="no verified generation receipt"):
+        receipts.record_generation(project, **dict(_gen_common(), input_asset_ids=["55" * 32]))
+    with pytest.raises(ValueError, match="64-hex"):
+        receipts.record_generation(project, **dict(_gen_common(), input_asset_ids=["nope"]))
 
 
 def test_generation_receipt_local_kind_and_validation(project):
@@ -177,12 +205,16 @@ def test_receipt_copied_into_another_project_is_ignored(tmp_path):
     assert gates.verify_receipt(real)
     other = tmp_path / "proj-beta"; other.mkdir()
     (other / "approvals.jsonl").write_text(json.dumps(real) + "\n")
-    # Same signed, ledgered receipt — but it names proj-alpha, and this is proj-beta.
-    assert receipts.find_approval(other, "hero", entity_id="ch-001") is None
-    assert receipts.find_approval(other, "hero", entity_id="ch-001", project_id="proj-beta") is None
+    # Same signed, ledgered receipt — but it names proj-alpha, and this is
+    # proj-beta: a foreign row is an extra row against proj-beta's (empty) chain.
+    with pytest.raises(receipts.ReceiptChainError, match="not this project's receipt"):
+        receipts.find_approval(other, "hero", entity_id="ch-001")
+    with pytest.raises(receipts.ReceiptChainError):
+        receipts.find_approval(other, "hero", entity_id="ch-001", project_id="proj-beta")
     # Explicit project_id overrides the directory-derived default.
     assert receipts.find_approval(other, "hero", entity_id="ch-001", project_id=PROJECT_ID) == real
-    assert receipts.find_approval(src, "hero", entity_id="ch-001", project_id="proj-beta") is None
+    with pytest.raises(receipts.ReceiptChainError):
+        receipts.find_approval(src, "hero", entity_id="ch-001", project_id="proj-beta")
 
 
 # ---- #18 crash-safe approval (WAL) ----
@@ -273,7 +305,8 @@ def test_generation_receipt_is_signed_ledgered_and_project_bound(project):
     assert r["project_id"] == "proj-alpha"
     assert gates.verify_generation_receipt(r)
     assert receipts.find_generation(project, "aa" * 32) == r
-    assert receipts.find_generation(project, "aa" * 32, project_id="proj-beta") is None
+    with pytest.raises(receipts.ReceiptChainError, match="not this project's receipt"):
+        receipts.find_generation(project, "aa" * 32, project_id="proj-beta")
 
 
 def test_fabricated_generation_row_is_invisible(project):
@@ -285,10 +318,20 @@ def test_fabricated_generation_row_is_invisible(project):
     forged_b = dict(real, receipt_id="f-b", output_sha256=imported)
     forged_c = dict(real, receipt_id="f-c", output_sha256=imported)
     forged_c["signature"] = gates.sign_receipt(forged_c)
-    with open(project / "generation-receipts.jsonl", "a") as fh:
-        for row in (forged_a, forged_b, forged_c):
+    original = (project / "generation-receipts.jsonl").read_bytes()
+    for row in (forged_a, forged_b, forged_c):
+        with open(project / "generation-receipts.jsonl", "a") as fh:
             fh.write(json.dumps(row) + "\n")
+        # Slice A #1: an extra row diverges from the signed chain — fail closed.
+        with pytest.raises(receipts.ReceiptChainError, match="not in the signed chain"):
+            receipts.find_generation(project, imported)
+        (project / "generation-receipts.jsonl").write_bytes(original)
     assert receipts.find_generation(project, imported) is None
+    # A deleted row is a missing chain position, not a clean slate.
+    (project / "generation-receipts.jsonl").write_bytes(b"")
+    with pytest.raises(receipts.ReceiptChainError, match="missing from the local receipt file"):
+        receipts.find_generation(project, "aa" * 32)
+    (project / "generation-receipts.jsonl").write_bytes(original)
     assert receipts.find_generation(project, "aa" * 32) == real
     assert [r["receipt_id"] for r in receipts.verified_generation_receipts(project)] == [real["receipt_id"]]
 
@@ -309,7 +352,7 @@ def test_require_storyboard_receipt_matches_exact_shot_and_hash(project):
     for shot, sha in (("shot-1", "bb" * 32), ("shot-3", "aa" * 32), ("shot-1", "cc" * 32)):
         with pytest.raises(receipts.ReceiptError, match=shot):
             receipts.require_storyboard_receipt(project, shot, sha)
-    with pytest.raises(receipts.ReceiptError):
+    with pytest.raises(receipts.ReceiptError):  # chain divergence is a ReceiptError too
         receipts.require_storyboard_receipt(project, "shot-1", "aa" * 32, project_id="proj-beta")
     # ordering of the map does not matter (canonical hashing sorts keys)
     assert record_sha256(storyboard_batch_record({"shot-2": "bb" * 32, "shot-1": "aa" * 32})) == record_sha256(record)

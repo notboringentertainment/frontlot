@@ -43,7 +43,7 @@ def env(monkeypatch, tmp_path):
 
 @pytest.fixture
 def legacy_env(monkeypatch, tmp_path):
-    """A registered project WITHOUT project.yaml — the only place Seedance 2.0 still runs."""
+    """A registered project WITHOUT project.yaml and without a pipeline pin (legacy 1.1)."""
     from tests.tools._authored_film_helpers import make_project
 
     monkeypatch.setenv("FAL_KEY", "test-key")
@@ -581,110 +581,66 @@ def test_pending_billing_blocks_repeated_calls_at_the_boundary(tmp_path, monkeyp
     assert t.budget_reserved_usd + t.budget_spent_usd > 0  # retained, never refunded
 
 
-# ---- 2.0 legacy path: payload/caps unchanged, transport hardened ----
+# ---- 2.0: no ungoverned path (inspection #8) ----
 
-def test_v20_path_routed_through_queue_helpers(legacy_env):
-    tool = SeedanceVideo()
-    too_many = {"prompt": "p", "model_version": "2.0", "operation": "reference_to_video",
-                "reference_image_urls": [f"https://fal.media/{i}.png" for i in range(10)]}
-    with patch.object(_shared, "fal_queue_submit") as submit:
-        r = tool.execute(too_many)
-    assert not r.success and "at most 9 reference images" in r.error
-    submit.assert_not_called()
-    assert tool.estimate_cost({"model_version": "2.0", "duration": "5"}) == pytest.approx(0.3034 * 5, abs=0.01)
-
-    out = legacy_env / "assets" / "video" / "legacy.mp4"
-    captured = {}
-
-    def fake_submit(model_id, payload, *, api_key, timeout_s=30.0):
-        captured["model_id"], captured["payload"] = model_id, payload
-        return {"request_id": "r20", "status_url": "https://evil.example/s", "response_url": "https://evil.example/r"}
-
-    def fake_wait(model_id, request_id, *, api_key, deadline_s, poll_s=5.0, **kw):
-        captured["wait"] = (model_id, request_id, api_key, deadline_s)
-        return {"video": {"url": "https://v3.fal.media/x.mp4"}, "seed": 1}
-
-    def fake_download(url, dest, **kw):
-        captured["download"] = (url, kw["max_bytes"])
-        Path(dest).write_bytes(b"legacy")
-        return {"bytes": 6, "content_type": "video/mp4"}
-
-    with patch.object(_shared, "fal_queue_submit", side_effect=fake_submit), \
-         patch.object(_shared, "fal_queue_wait", side_effect=fake_wait), \
-         patch.object(_shared, "fal_download", side_effect=fake_download), \
-         patch.object(_shared, "verify_video_file", return_value=dict(PROBED)) as verify, \
-         patch("requests.post") as raw_post, patch("requests.get") as raw_get:
-        r = tool.execute({"prompt": "p", "model_version": "2.0", "output_path": str(out), "seed": 7,
-                          "reference_image_urls": ["https://fal.media/a.png"], "operation": "reference_to_video"})
-    assert r.success, r.error
-    raw_post.assert_not_called()
-    raw_get.assert_not_called()
-    assert captured["model_id"] == "bytedance/seedance-2.0/reference-to-video"
-    assert captured["payload"] == {"prompt": "p", "duration": "5", "aspect_ratio": "16:9", "resolution": "720p",
-                                   "generate_audio": True, "seed": 7, "reference_image_urls": ["https://fal.media/a.png"]} \
-        or captured["payload"]["reference_image_urls"] == ["https://fal.media/a.png"]
-    assert captured["wait"][:3] == ("bytedance/seedance-2.0/reference-to-video", "r20", "test-key")
-    assert captured["download"] == ("https://v3.fal.media/x.mp4", SeedanceVideo.V25_MAX_DOWNLOAD_BYTES)
-    verify.assert_called_once()
-    assert out.read_bytes() == b"legacy"
-    assert not list(out.parent.glob(".legacy.mp4.*.part"))
-    assert not (legacy_env / "cost-reservations.jsonl").exists()  # 2.0 keeps no reservations
-    assert r.metadata["provider_request_id"] == "r20"
-    assert find_generation(legacy_env, sha256_file(out))["model_endpoint"] == "bytedance/seedance-2.0/reference-to-video"
-
-
-def test_v20_queue_submit_sends_no_retry_header(legacy_env):
-    """The legacy path now inherits X-Fal-No-Retry from fal_queue_submit."""
-    class _R:
-        content = b"{}"
-        def raise_for_status(self): pass
-        def json(self): return {"request_id": "r", "status_url": "s", "response_url": "r"}
-
-    with patch("requests.post", return_value=_R()) as post, \
-         patch.object(_shared, "fal_queue_wait", side_effect=_shared.FalQueueError("stop here")):
-        r = SeedanceVideo().execute({"prompt": "p", "model_version": "2.0", "output_path": str(legacy_env / "assets" / "video" / "l.mp4")})
-    assert not r.success
-    assert post.call_args.args[0] == "https://queue.fal.run/bytedance/seedance-2.0/text-to-video"
-    assert post.call_args.kwargs["headers"]["X-Fal-No-Retry"] == "1"
-
-
-def test_v20_verification_failure_leaves_no_output(legacy_env):
-    out = legacy_env / "assets" / "video" / "bad.mp4"
-    with patch.object(_shared, "fal_queue_submit", return_value={"request_id": "r"}), \
-         patch.object(_shared, "fal_queue_wait", return_value={"video": {"url": "https://v3.fal.media/x.mp4"}}), \
-         patch.object(_shared, "fal_download", side_effect=_fake_download), \
-         patch.object(_shared, "verify_video_file", side_effect=_shared.VideoVerificationError("ffprobe is not installed")):
-        r = SeedanceVideo().execute({"prompt": "p", "model_version": "2.0", "output_path": str(out)})
-    assert not r.success and "ffprobe" in r.error
-    assert not out.exists() and not list(out.parent.iterdir())
-
-
-def test_v20_refused_for_authored_canon_project(env):
-    """Any project with project.yaml is authored-canon: 2.0 must not run there."""
-    out = env / "assets" / "video" / "legacy.mp4"
-    with patch.object(_shared, "fal_queue_submit") as submit, \
-         patch.object(_shared, "upload_image_fal") as upload, \
-         patch("requests.post") as raw_post:
-        r = SeedanceVideo().execute({"prompt": "p", "model_version": "2.0", "output_path": str(out)})
-    assert not r.success and "2.5" in r.error and "project.yaml" in r.error
+def _assert_nothing_left_the_machine(submit, upload, raw_post):
     submit.assert_not_called()
     upload.assert_not_called()
     raw_post.assert_not_called()
 
 
-def test_v20_never_uploads_a_path_outside_the_inferred_project(legacy_env, tmp_path):
-    outside = tmp_path / "elsewhere.png"
-    outside.write_bytes(tiny_png_bytes())
+def test_v20_cost_estimate_still_answers():
+    assert SeedanceVideo().estimate_cost({"model_version": "2.0", "duration": "5"}) == pytest.approx(0.3034 * 5, abs=0.01)
+
+
+def test_v20_refused_without_a_resolvable_project(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAL_KEY", "test-key")
+    with patch.object(_shared, "fal_queue_submit") as submit, \
+         patch.object(_shared, "upload_image_fal") as upload, \
+         patch("requests.post") as raw_post:
+        r = SeedanceVideo().execute({"prompt": "p", "model_version": "2.0", "output_path": str(tmp_path / "x.mp4")})
+    assert not r.success and "registered project" in r.error and "2.5" in r.error
+    _assert_nothing_left_the_machine(submit, upload, raw_post)
+
+
+def test_v20_refused_for_governed_project_by_signed_pin(env, monkeypatch):
+    """Governance is decided from the signed pin (lib.look_ingest.project_look_governed), not project.yaml."""
+    monkeypatch.setattr(_shared, "project_look_governed", lambda root: True)
+    out = env / "assets" / "video" / "legacy.mp4"
+    with patch.object(_shared, "fal_queue_submit") as submit, \
+         patch.object(_shared, "upload_image_fal") as upload, \
+         patch("requests.post") as raw_post:
+        r = SeedanceVideo().execute({"prompt": "p", "model_version": "2.0", "output_path": str(out), "project_dir": str(env)})
+    assert not r.success and "look-governed per the signed pipeline pin" in r.error and "2.5" in r.error
+    assert "project.yaml" not in r.error
+    _assert_nothing_left_the_machine(submit, upload, raw_post)
+
+
+def test_v20_refused_for_unpinned_project_too(legacy_env):
+    """A resolvable project without project.yaml and without a pin (1.1) is refused just the same."""
     out = legacy_env / "assets" / "video" / "legacy.mp4"
     with patch.object(_shared, "fal_queue_submit") as submit, \
          patch.object(_shared, "upload_image_fal") as upload, \
          patch("requests.post") as raw_post:
         r = SeedanceVideo().execute({"prompt": "p", "model_version": "2.0", "operation": "image_to_video",
-                                     "image_path": str(outside), "output_path": str(out)})
-    assert not r.success and "elsewhere.png" in r.error
-    upload.assert_not_called()
-    submit.assert_not_called()
-    raw_post.assert_not_called()
+                                     "image_path": str(legacy_env / "anything.png"), "output_path": str(out)})
+    assert not r.success and "not look-governed per the signed pipeline pin" in r.error and "kling_reference_video" in r.error
+    _assert_nothing_left_the_machine(submit, upload, raw_post)
+    assert not (legacy_env / "cost-reservations.jsonl").exists()
+
+
+def test_v20_undecidable_pin_is_treated_as_governed(env, monkeypatch):
+    def boom(root):
+        raise RuntimeError("chain violation")
+
+    monkeypatch.setattr(_shared, "project_look_governed", boom)
+    with patch.object(_shared, "fal_queue_submit") as submit, \
+         patch.object(_shared, "upload_image_fal") as upload, \
+         patch("requests.post") as raw_post:
+        r = SeedanceVideo().execute({"prompt": "p", "model_version": "2.0", "project_dir": str(env),
+                                     "output_path": str(env / "assets" / "video" / "l.mp4")})
+    assert not r.success and "look-governed per the signed pipeline pin" in r.error
+    _assert_nothing_left_the_machine(submit, upload, raw_post)
 
 
 def test_nonterminal_reservation_blocks_new_paid_call_before_any_upload(env, monkeypatch):

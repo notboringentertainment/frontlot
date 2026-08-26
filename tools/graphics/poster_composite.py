@@ -41,6 +41,7 @@ class PosterComposite(BaseTool):
     tier = ToolTier.GENERATE
     capability = "poster_composite"
     provider = "openmontage"
+    governance_bound = True  # governed boundary runs before any upload (inspection #9)
     stability = ToolStability.BETA
     execution_mode = ExecutionMode.SYNC
     determinism = Determinism.DETERMINISTIC

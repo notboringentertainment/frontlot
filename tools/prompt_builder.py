@@ -17,10 +17,18 @@ validated ``look_spec`` payload (version 1.0), a palette and a role, so that:
   rubric remain the primary controls (D16).
 
 The result carries a ``prompt_recipe`` ``{look_hash, builder_version,
-fields_used[], rendered_sha256}``. ``rendered_sha256`` is the sha256 of the
-exact prompt string; a governed ``stage: visual_bible`` call must present a
-prompt hashing to it (``tools.video._shared._verify_prompt_recipe``), which
-replaces the former ``approved_prompt_block`` verbatim-copy contract.
+fields_used[], rendered_sha256}``. ``look_hash`` is computed HERE from the
+payload (RFC 8785 canonical JSON, ``lib.canonical_json.record_sha256``) —
+never caller-supplied — so a recipe can only ever name the look it was
+rendered from (inspection #2). ``rendered_sha256`` is the sha256 of the FULL
+provider input: the positive text plus a fixed ``Avoid: …`` block carrying
+the look's ``negative_lines`` (inspection #11 — Seedream / Kling / Seedance
+have no negative_prompt field, so the constraints ride inside the prompt and
+are bound by the hash). ``continuity_risks`` and ``build.kind`` are rendered
+into the positive text. A governed ``stage: visual_bible`` call must present
+a prompt hashing to it AND the boundary rebuilds the prompt from the signed
+ACTIVE look payload (``tools.video._shared._verify_prompt_recipe``) — the
+former ``approved_prompt_block`` verbatim-copy contract is gone.
 """
 
 from __future__ import annotations
@@ -30,7 +38,7 @@ import re
 import unicodedata
 from typing import Any
 
-BUILDER_VERSION = "1.0"
+BUILDER_VERSION = "1.1"
 LOOK_SPEC_VERSION = "1.0"
 
 CHARACTER_ROLES = ("hero", "front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")
@@ -40,6 +48,11 @@ ROLES = CHARACTER_ROLES + LOCATION_ROLES
 MAX_FIELD_CHARS = 400
 MAX_LIST_ITEMS = 12
 MAX_PALETTE = 6
+
+# Always-on negative constraints, appended after the look's own negative_lines.
+NEGATIVE_DEFAULTS = ("text", "watermark", "logo", "extra limbs", "deformed")
+NEGATIVE_BLOCK_PREFIX = "Avoid: "
+NEGATIVE_BLOCK_SEPARATOR = "\n"
 
 _ROLE_FRAMING = {
     "hero": "single character, head and shoulders portrait, neutral expression, facing camera",
@@ -175,7 +188,7 @@ def _character_sections(spec: dict[str, Any]) -> list[tuple[str, str]]:
         sections.append(("age_band", f"age band {_clean(spec['age_band'], 'age_band')}"))
     build = spec.get("build")
     if isinstance(build, dict):
-        parts = [_clean(build[k], f"build.{k}") for k in ("type", "note") if isinstance(build.get(k), str) and build[k].strip()]
+        parts = [_clean(build[k], f"build.{k}") for k in ("kind", "note") if isinstance(build.get(k), str) and build[k].strip()]
         if parts:
             sections.append(("build", "build " + ", ".join(parts)))
     elif isinstance(build, str) and build.strip():
@@ -220,20 +233,28 @@ def _location_sections(spec: dict[str, Any]) -> list[tuple[str, str]]:
     return sections
 
 
+def render_negative_block(negative_lines: list[str]) -> str:
+    """The fixed ``Avoid: …`` block appended to every rendered prompt."""
+    return NEGATIVE_BLOCK_PREFIX + ", ".join(list(negative_lines) + list(NEGATIVE_DEFAULTS))
+
+
 def build_prompt(
     look_spec: dict[str, Any],
     *,
-    look_hash: str,
     role: str,
     palette: list[Any] | None = None,
 ) -> dict[str, Any]:
-    """Render ``{prompt, negative, prompt_recipe}`` from a validated look_spec.
+    """Render ``{prompt, positive, negative, prompt_recipe}`` from a validated look_spec.
 
     ``look_spec`` must already have passed schema validation (lib side); this
     builder re-checks only what it needs to render safely. ``look_hash`` is
-    the caller-supplied digest of that validated payload and is bound into the
-    recipe unchanged.
+    computed here (``record_sha256`` of the payload) — a caller cannot bind a
+    rendering of appearance B to the hash of look A. ``prompt`` is the full
+    provider input (positive + negative block) and is what ``rendered_sha256``
+    covers; ``positive`` / ``negative`` are the two halves for inspection.
     """
+    from lib.canonical_json import record_sha256
+
     if not isinstance(look_spec, dict):
         raise PromptBuildError("look_spec must be an object")
     if str(look_spec.get("version")) != LOOK_SPEC_VERSION:
@@ -247,8 +268,6 @@ def build_prompt(
         raise PromptBuildError("looks for minors are refused for generation")
     if look_spec.get("fictional_subject_attestation") is not True:
         raise PromptBuildError("fictional_subject_attestation must be true")
-    if not isinstance(look_hash, str) or len(look_hash) != 64:
-        raise PromptBuildError("look_hash must be a 64-hex sha256")
     if role not in ROLES:
         raise PromptBuildError(f"role must be one of {ROLES}")
     if (kind == "character") != (role in CHARACTER_ROLES):
@@ -261,18 +280,23 @@ def build_prompt(
     palette_names = _palette(palette)
     if palette_names:
         sections.append(("palette", "palette: " + ", ".join(palette_names)))
+    risks = _clean_list(look_spec.get("continuity_risks"), "continuity_risks", limit=12)
+    if risks:
+        sections.append(("continuity_risks", "keep consistent: " + "; ".join(risks)))
     sections.append(("role", _ROLE_FRAMING[role]))
 
     negative_lines = _clean_list(look_spec.get("negative_lines"), "negative_lines", limit=12)
-    negative = ", ".join(negative_lines + ["text", "watermark", "logo", "extra limbs", "deformed"])
+    negative = render_negative_block(negative_lines)
 
-    prompt = ". ".join(text for _, text in sections) + "."
-    fields_used = [name for name, _ in sections]
+    positive = ". ".join(text for _, text in sections) + "."
+    prompt = positive + NEGATIVE_BLOCK_SEPARATOR + negative
+    fields_used = [name for name, _ in sections] + ["negative_lines"]
     return {
         "prompt": prompt,
+        "positive": positive,
         "negative": negative,
         "prompt_recipe": {
-            "look_hash": look_hash,
+            "look_hash": record_sha256(look_spec),
             "builder_version": BUILDER_VERSION,
             "fields_used": fields_used,
             "rendered_sha256": rendered_prompt_sha256(prompt),

@@ -54,6 +54,7 @@ class SeedanceVideo(BaseTool):
     tier = ToolTier.GENERATE
     capability = "video_generation"
     provider = "seedance"
+    governance_bound = True  # governed boundary runs before any upload (inspection #9)
     stability = ToolStability.BETA
     execution_mode = ExecutionMode.SYNC
     determinism = Determinism.STOCHASTIC
@@ -512,164 +513,34 @@ class SeedanceVideo(BaseTool):
         if str(inputs.get("model_version", "2.5")) == "2.5":
             return self._execute_v25(inputs, api_key)
 
-        start = time.time()
-        operation = inputs.get("operation", "text_to_video")
-        variant = inputs.get("model_variant", "standard")
-        operation_path = operation.replace("_", "-")
-
-        # Seedance 2.0 is the ungoverned legacy path (no reservation, no egress
-        # approval, no storyboard receipt). It is refused for any authored-canon
-        # project — one whose inferred root carries project.yaml — and, where a
-        # project root exists at all, it may only upload files inside it.
-        from lib import pathsafe
+        # Seedance 2.0 (inspection #8): there is no ungoverned path. Project
+        # resolution is required for every call, governance is decided from the
+        # signed pipeline pin (lib.look_ingest.project_look_governed via
+        # _shared) — never from a project.yaml-presence heuristic — and the
+        # 2.0 endpoint is refused for every resolvable project. Nothing is
+        # uploaded or submitted on this branch.
         from lib.events import infer_project_dir
+        from tools.video import _shared
 
-        legacy_root = infer_project_dir(inputs)
-        if legacy_root is not None and (Path(legacy_root) / "project.yaml").exists():
+        project_root = infer_project_dir(inputs) if isinstance(inputs, dict) else None
+        if project_root is None:
             return ToolResult(
                 success=False,
                 error=(
-                    f"Seedance 2.0 is refused for authored-canon project {Path(legacy_root).name!r} "
-                    f"(project.yaml present): use model_version '2.5', which runs through the "
-                    f"governed budget/egress/storyboard path."
+                    "Seedance 2.0 requires a resolvable registered project (inputs['project_dir']) — "
+                    "there is no ungoverned generation path; use model_version '2.5' or kling_reference_video."
                 ),
             )
-
-        def _local_upload(local_path: str) -> str:
-            from tools.video._shared import upload_image_fal
-
-            if legacy_root is not None:
-                local_path = str(pathsafe.resolve_input(local_path, legacy_root))
-            return upload_image_fal(local_path)
-
-        if variant == "fast":
-            model_path = f"bytedance/seedance-2.0/fast/{operation_path}"
-        else:
-            model_path = f"bytedance/seedance-2.0/{operation_path}"
-
-        payload: dict[str, Any] = {"prompt": inputs["prompt"]}
-
-        if inputs.get("duration"):
-            payload["duration"] = inputs["duration"]
-        if inputs.get("aspect_ratio"):
-            payload["aspect_ratio"] = inputs["aspect_ratio"]
-        if inputs.get("resolution"):
-            payload["resolution"] = inputs["resolution"]
-        if "generate_audio" in inputs:
-            payload["generate_audio"] = inputs["generate_audio"]
-        if inputs.get("seed") is not None:
-            payload["seed"] = inputs["seed"]
-
-        if operation == "image_to_video":
-            if inputs.get("image_url"):
-                payload["image_url"] = inputs["image_url"]
-            elif inputs.get("image_path"):
-                try:
-                    payload["image_url"] = _local_upload(inputs["image_path"])
-                except pathsafe.PathSafetyError as e:
-                    return ToolResult(success=False, error=f"Seedance 2.0 refused to upload image_path: {e}")
-            if inputs.get("end_image_url"):
-                payload["end_image_url"] = inputs["end_image_url"]
-
-        if operation == "reference_to_video":
-            ref_image_urls = list(inputs.get("reference_image_urls") or [])
-            for local_path in inputs.get("reference_image_paths") or []:
-                try:
-                    ref_image_urls.append(_local_upload(local_path))
-                except pathsafe.PathSafetyError as e:
-                    return ToolResult(success=False, error=f"Seedance 2.0 refused to upload reference image: {e}")
-            # Seedance 2.0 reference-to-video ceilings: 9 images + 3 video + 3 audio.
-            if len(ref_image_urls) > 9:
-                return ToolResult(
-                    success=False,
-                    error=f"Seedance 2.0 reference_to_video accepts at most 9 reference images; got {len(ref_image_urls)}",
-                )
-            ref_video_urls = list(inputs.get("reference_video_urls") or [])
-            if len(ref_video_urls) > 3:
-                return ToolResult(
-                    success=False,
-                    error=f"Seedance 2.0 reference_to_video accepts at most 3 reference videos; got {len(ref_video_urls)}",
-                )
-            ref_audio_urls = list(inputs.get("reference_audio_urls") or [])
-            if len(ref_audio_urls) > 3:
-                return ToolResult(
-                    success=False,
-                    error=f"Seedance 2.0 reference_to_video accepts at most 3 reference audio clips; got {len(ref_audio_urls)}",
-                )
-            if ref_image_urls:
-                payload["reference_image_urls"] = ref_image_urls
-            if ref_video_urls:
-                payload["reference_video_urls"] = ref_video_urls
-            if ref_audio_urls:
-                payload["reference_audio_urls"] = ref_audio_urls
-
-        # Legacy 2.0 payload and caps are unchanged; the transport now goes
-        # through the hardened queue helpers (X-Fal-No-Retry, fixture-built
-        # status/result URLs, host allowlist, bounded streamed download,
-        # deadline + cancel) and the download must pass ffprobe before it is
-        # moved into place (inspection #15/#16).
-        import uuid
-
-        from lib.state_io import atomic_move
-        from tools.video import _shared
-
-        output_path = Path(inputs.get("output_path", "seedance_output.mp4"))
-        staging = output_path.parent / f".{output_path.name}.{uuid.uuid4().hex}.part"
         try:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            queue_data = _shared.fal_queue_submit(model_path, payload, api_key=api_key)
-            data = _shared.fal_queue_wait(
-                model_path,
-                str(queue_data["request_id"]),
-                api_key=api_key,
-                deadline_s=float(inputs.get("deadline_s", self.V25_DEFAULT_DEADLINE_S)),
-                poll_s=float(inputs.get("poll_s", 5.0)),
-            )
-            video_url = data["video"]["url"]
-            _shared.fal_download(
-                video_url,
-                staging,
-                max_bytes=self.V25_MAX_DOWNLOAD_BYTES,
-                allowed_mime_prefixes=("video/", "application/octet-stream"),
-            )
-            probed = _shared.verify_video_file(staging, require_audio=bool(payload.get("generate_audio", False)))
-            atomic_move(staging, output_path)
-        except Exception as e:
-            try:
-                staging.unlink()
-            except FileNotFoundError:
-                pass
-            return ToolResult(
-                success=False,
-                error=f"Seedance 2.0 video generation failed: {e}",
-            )
-
+            governed = _shared.project_look_governed(project_root)
+        except Exception:  # noqa: BLE001 — an undecidable pin is treated as governed
+            governed = True
         return ToolResult(
-            success=True,
-            data={
-                "provider": "seedance",
-                "model": model_path,
-                "prompt": inputs["prompt"],
-                "operation": operation,
-                "variant": variant,
-                "aspect_ratio": inputs.get("aspect_ratio", "16:9"),
-                "resolution": inputs.get("resolution", "720p"),
-                "generate_audio": inputs.get("generate_audio", True),
-                "seed": data.get("seed"),
-                "output": str(output_path),
-                "output_path": str(output_path),
-                "format": "mp4",
-                **probed,
-            },
-            artifacts=[str(output_path)],
-            cost_usd=self.estimate_cost(inputs),
-            duration_seconds=round(time.time() - start, 2),
-            model=model_path,
-            metadata={
-                "model_endpoint": model_path,
-                "provider_request_id": queue_data.get("request_id"),
-                "generator_kind": "model",
-                "prompt": inputs["prompt"],
-                "seed": data.get("seed"),
-            },
+            success=False,
+            error=(
+                f"Seedance 2.0 is refused for project {Path(project_root).name!r} "
+                f"({'look-governed' if governed else 'not look-governed'} per the signed pipeline pin): "
+                f"use model_version '2.5' or kling_reference_video, which run through the governed "
+                f"budget/egress/look/storyboard path."
+            ),
         )

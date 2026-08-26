@@ -179,12 +179,19 @@ def _apply_icc_to_srgb(image: Any, icc: bytes) -> Any:
     try:
         src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
         dst = ImageCms.createProfile("sRGB")
-        return ImageCms.profileToProfile(image, src, dst, outputMode=image.mode)
-    except Exception:
-        # An unreadable profile is dropped; the pixels are treated as sRGB.
-        out = image.copy()
-        out.info.pop("icc_profile", None)
-        return out
+        out = ImageCms.profileToProfile(image, src, dst, outputMode=image.mode)
+    except Exception as exc:
+        # Slice A #13: an unreadable profile is NOT silently reinterpreted as
+        # sRGB — the approved colors would drift. Refuse the import.
+        raise ReferenceImportError(
+            f"embedded ICC profile could not be read or applied ({exc}); the source's encoded "
+            f"colors cannot be normalized to sRGB — re-export the image with a valid profile or "
+            f"without one"
+        ) from exc
+    if out is None:
+        raise ReferenceImportError("embedded ICC profile could not be applied (conversion returned nothing)")
+    out.info.pop("icc_profile", None)
+    return out
 
 
 def normalize_staged_file(source_path: Path | str) -> NormalizedImage:
@@ -257,6 +264,17 @@ def refuse_conflicting_origin(
         )
 
 
+def assert_origin_unique_for_signing(
+    project_dir: Path | str, pixel_hash: str, origin_class: str, *, project_id: Optional[str] = None
+) -> None:
+    """Slice A #14: re-derive the origin bound to ``pixel_hash`` from the
+    verified ledger and refuse a conflicting class. Run by the gate handler
+    INSIDE the approval transaction (after the one-use token is consumed,
+    before the receipt is signed) so two pending requests for the same
+    pixels can never both land."""
+    refuse_conflicting_origin(project_dir, pixel_hash, origin_class, project_id=project_id)
+
+
 def synthetic_import_receipt(
     project_dir: Path | str, pixel_hash: str, *, project_id: Optional[str] = None
 ) -> Optional[dict]:
@@ -271,24 +289,56 @@ def synthetic_import_receipt(
 # ---- the import gate ----
 
 
-def import_record(
-    origin_class: str, pixel_hash: str, *, origin_tool: Optional[str], source_name: Optional[str]
-) -> dict[str, Any]:
-    """The record hashed into a reference_import receipt."""
+IMPORT_RECORD_FIELDS = {
+    ORIGIN_CASTING: ("origin_class", "normalized_pixel_hash", "attestation_text", "normalizer_version"),
+    ORIGIN_IMPORTED_SYNTHETIC: (
+        "origin_class", "normalized_pixel_hash", "attestation_text", "normalizer_version", "origin_tool",
+    ),
+}
+
+
+def import_record(origin_class: str, pixel_hash: str, *, origin_tool: Optional[str] = None) -> dict[str, Any]:
+    """The record hashed into a reference_import receipt: the normalized
+    pixel hash, the FIXED attestation string for the class, the normalizer
+    version and (imported_synthetic only) the origin tool. Nothing the caller
+    typed — no filename, source name or note — is ever persisted (Slice A
+    #12): a casting_inspiration receipt must not outlive the pixels with a
+    real person's name attached."""
     if origin_class not in ORIGIN_CLASSES:
         raise ReferenceImportError(f"origin_class must be one of {ORIGIN_CLASSES}")
-    record = {
+    if not isinstance(pixel_hash, str) or len(pixel_hash) != 64 or set(pixel_hash) - set("0123456789abcdef"):
+        raise ReferenceImportError("normalized_pixel_hash must be a 64-hex sha256")
+    record: dict[str, Any] = {
         "origin_class": origin_class,
         "normalized_pixel_hash": pixel_hash,
         "attestation_text": ATTESTATIONS[origin_class],
         "normalizer_version": NORMALIZER_VERSION,
-        "source_name": source_name,
     }
     if origin_class == ORIGIN_IMPORTED_SYNTHETIC:
-        if not origin_tool:
+        if not isinstance(origin_tool, str) or not origin_tool.strip():
             raise ReferenceImportError("imported_synthetic imports must name origin_tool")
         record["origin_tool"] = origin_tool
+    elif origin_tool is not None:
+        raise ReferenceImportError("casting_inspiration imports carry no origin_tool (no caller metadata at all)")
     return record
+
+
+def validate_import_record(record: Any) -> dict[str, Any]:
+    """Require ``record`` to be EXACTLY what ``import_record`` builds for its
+    class: fixed attestation, known normalizer, no extra keys."""
+    if not isinstance(record, dict):
+        raise ReferenceImportError("reference_import record must be an object")
+    origin_class = record.get("origin_class")
+    if origin_class not in ORIGIN_CLASSES:
+        raise ReferenceImportError(f"origin_class must be one of {ORIGIN_CLASSES}")
+    expected = import_record(origin_class, str(record.get("normalized_pixel_hash")), origin_tool=record.get("origin_tool"))
+    if record != expected:
+        extra = sorted(set(record) - set(expected))
+        raise ReferenceImportError(
+            f"reference_import record is not the canonical {origin_class} record"
+            + (f" (unexpected fields {extra})" if extra else " (attestation/normalizer mismatch)")
+        )
+    return expected
 
 
 @dataclass(frozen=True)
@@ -320,18 +370,20 @@ def prepare_reference_import(
     *,
     origin_class: str,
     origin_tool: Optional[str] = None,
-    source_name: Optional[str] = None,
     request_id: Optional[str] = None,
     entity_id: Optional[str] = None,
+    **ignored_caller_metadata: Any,
 ) -> PreparedImport:
     """Normalize a staged source (deleting it), refuse origin conflicts, stage
-    the normalized PNG, and write the gate request. Mints nothing."""
+    the normalized PNG, and write the gate request. Mints nothing. Any extra
+    keyword (``source_name`` and the like) is dropped on the floor: caller
+    metadata never reaches the request or the record (#12)."""
     project_dir = Path(project_dir)
     if origin_class not in ORIGIN_CLASSES:
         raise ReferenceImportError(f"origin_class must be one of {ORIGIN_CLASSES}")
     normalized = normalize_staged_file(source_path)
     refuse_conflicting_origin(project_dir, normalized.sha256, origin_class)
-    record = import_record(origin_class, normalized.sha256, origin_tool=origin_tool, source_name=source_name)
+    record = import_record(origin_class, normalized.sha256, origin_tool=origin_tool if origin_class == ORIGIN_IMPORTED_SYNTHETIC else None)
 
     from lib.state_io import atomic_write_bytes
 
@@ -512,31 +564,65 @@ def verify_lineage(
     project_id: Optional[str] = None,
     label: str = "asset",
 ) -> list[str]:
-    """Walk ``input_asset_ids`` / ``references_applied`` from ``asset_id``
-    down to the roots (bounded depth, cycle-safe). Every node needs a
-    verified generation receipt; no node may be tainted; every ROOT must be
-    a pipeline generation receipt (model/local with no inputs) or an
-    attested ``imported`` receipt whose reference_import receipt is
-    imported_synthetic. Returns the visited hashes; raises on violation."""
+    """Prove every branch of ``asset_id``'s ancestry ends at an allowed root.
+
+    Depth-first over ``input_asset_ids`` / ``references_applied`` with an
+    explicit path stack (Slice A #5): a cycle is a violation (never "already
+    verified"), every node needs a verified generation receipt, no node may
+    be tainted, parents must be 64-hex strings (anything else is rejected,
+    not skipped), and every ROOT must be a pipeline model/local receipt with
+    no parents or an attested ``imported`` receipt whose reference_import
+    receipt is imported_synthetic. Provenance is immutable per output hash
+    (``lib.receipts``), so a later receipt cannot replace an earlier one.
+    Returns the visited hashes in first-visit order; raises on violation.
+    """
     if receipts_by_sha is None:
-        from lib.receipts import verified_generation_receipts
+        from lib.receipts import provenance_of, verified_generation_receipts
 
         receipts_by_sha = {}
         for row in verified_generation_receipts(project_dir, project_id=project_id):
-            receipts_by_sha[row["output_sha256"]] = row
+            sha = row["output_sha256"]
+            prior = receipts_by_sha.get(sha)
+            if prior is not None and provenance_of(prior) != provenance_of(row):
+                raise ReferenceImportError(
+                    f"{label}: output {sha} carries two generation receipts with different provenance "
+                    f"({prior.get('receipt_id')} vs {row.get('receipt_id')}) — lineage is ambiguous, refused"
+                )
+            receipts_by_sha.setdefault(sha, row)
+    if not isinstance(asset_id, str) or len(asset_id) != 64 or set(asset_id) - _HEX:
+        raise ReferenceImportError(f"{label}: asset id {asset_id!r} is not a 64-hex sha256")
     tainted = tainted_hashes(project_dir, project_id=project_id)
     visited: list[str] = []
-    seen: set[str] = set()
-    stack: list[tuple[str, int]] = [(asset_id, 0)]
-    while stack:
-        sha, depth = stack.pop()
-        if sha in seen:
-            continue
-        seen.add(sha)
-        visited.append(sha)
+    done: set[str] = set()
+    path: list[str] = []
+    on_path: set[str] = set()
+
+    def parents_of(receipt: dict, sha: str) -> list[str]:
+        raw = list(receipt.get("input_asset_ids") or [])
+        refs = receipt.get("references_applied") or []
+        if not isinstance(refs, list):
+            raise ReferenceImportError(f"{label}: node {sha} has a malformed references_applied")
+        for r in refs:
+            if not isinstance(r, dict):
+                raise ReferenceImportError(f"{label}: node {sha} has a non-object reference {r!r}")
+            raw.append(r.get("asset_id"))
+        out: list[str] = []
+        for parent in raw:
+            if not isinstance(parent, str) or len(parent) != 64 or set(parent) - _HEX:
+                raise ReferenceImportError(
+                    f"{label}: node {sha} names parent {parent!r}, which is not a 64-hex sha256 — rejected"
+                )
+            out.append(parent)
+        return out
+
+    # explicit DFS: stack of (sha, iterator over parents) so the current path is known
+    def enter(sha: str) -> list[str]:
+        if sha in on_path:
+            cycle = path[path.index(sha):] + [sha]
+            raise ReferenceImportError(f"{label}: lineage cycle {' -> '.join(cycle)} — refused")
         if sha in tainted:
             raise TaintError(f"{label}: lineage node {sha} is casting_inspiration pixels — refused")
-        if depth > MAX_LINEAGE_DEPTH:
+        if len(path) >= MAX_LINEAGE_DEPTH:
             raise ReferenceImportError(f"{label}: lineage deeper than {MAX_LINEAGE_DEPTH} at {sha}")
         receipt = receipts_by_sha.get(sha)
         if receipt is None:
@@ -545,9 +631,7 @@ def verify_lineage(
                 f"must be a receipted pipeline output or an attested imported_synthetic import"
             )
         kind = receipt.get("generator_kind")
-        parents = list(receipt.get("input_asset_ids") or []) + [
-            r.get("asset_id") for r in (receipt.get("references_applied") or []) if isinstance(r, dict)
-        ]
+        parents = parents_of(receipt, sha)
         if kind == "imported":
             attestation = synthetic_import_receipt(project_dir, sha, project_id=project_id)
             if attestation is None or attestation.get("receipt_id") != receipt.get("attestation_receipt_id"):
@@ -557,10 +641,35 @@ def verify_lineage(
                 )
             if parents:
                 raise ReferenceImportError(f"{label}: imported node {sha} cannot have inputs")
-            continue
+            return []
         if kind not in ("model", "local"):
             raise ReferenceImportError(f"{label}: node {sha} has generator_kind {kind!r}")
-        for parent in parents:
-            if isinstance(parent, str) and parent:
-                stack.append((parent, depth + 1))
+        return parents
+
+    stack: list[tuple[str, list[str], int]] = []
+    visited.append(asset_id)
+    stack.append((asset_id, enter(asset_id), 0))
+    path.append(asset_id)
+    on_path.add(asset_id)
+    while stack:
+        sha, parents, i = stack[-1]
+        if i < len(parents):
+            stack[-1] = (sha, parents, i + 1)
+            child = parents[i]
+            if child in done:
+                continue
+            if child not in visited:
+                visited.append(child)
+            kids = enter(child)
+            path.append(child)
+            on_path.add(child)
+            stack.append((child, kids, 0))
+            continue
+        stack.pop()
+        path.pop()
+        on_path.discard(sha)
+        done.add(sha)
     return visited
+
+
+_HEX = frozenset("0123456789abcdef")

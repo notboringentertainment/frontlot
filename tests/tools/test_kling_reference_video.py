@@ -275,7 +275,7 @@ def _shot_setup(project, *, approve=True, extra_manifest=()):
                  "visual_bible_entity_id": "char-01-aaaaaaaa"}]
     paths = [str(hero["path"])]
     for name, role, entity in extra_manifest:
-        img = write_receipted_png(project, f"canon/visual/objects/{name}.png", _png((len(name), 1, 1)))
+        img = write_receipted_png(project, f"canon/visual/objects/{name}.png", _png((len(name), (sum(map(ord, name)) % 251) + 1, (sum(map(ord, role)) % 251) + 1)))
         manifest.append({"asset_id": img["sha256"], "path": f"canon/visual/objects/{name}.png", "role": role,
                          "visual_bible_entity_id": entity})
         paths.append(str(img["path"]))

@@ -8,6 +8,9 @@ State lives in an orchestrator-owned directory outside any project tree:
     consumed/<hmac>.json  bindings moved here atomically on consume
     ledger.jsonl      {token_hmac, receipt_id, record_sha256, project_id}
     generation-ledger.jsonl  {receipt_id, output_sha256, project_id, execution_id}
+    chains/<sha256(project_id)>.<stream>.jsonl  signed per-project receipt chain
+                      ({project_id, stream, receipt_id, kind, prev_receipt_id,
+                      record_sha256, signature}); ``.tip.json`` beside it is the head
     wal/<hmac>.json   approval write-ahead entries (crash recovery, see lib.receipts)
     generation-wal/<execution_id>.json  paid-output write-ahead entries (lib.receipts.recover_generation_wal)
 
@@ -354,6 +357,172 @@ def verify_generation_receipt(receipt: dict) -> bool:
     if not all(isinstance(f, str) and f for f in fields):
         return False
     return generation_ledger_has(*fields)
+
+
+# ---- Per-project receipt chain (Slice A inspection #1) ----
+#
+# The project-local approvals.jsonl / generation-receipts.jsonl are writable
+# by the agent. Signatures + ledger rows stop a FORGED row, but not a DELETED
+# one: dropping a casting receipt clears taint, dropping a retire receipt
+# restores an old look. So every append is also linked into a signed,
+# orchestrator-owned chain per (project_id, stream): each row names its
+# predecessor, and a per-chain ``tip`` file records the head. Readers require
+# the local file to reproduce the chain from root to tip EXACTLY (same
+# receipts, same digests, same order) and fail closed on the first
+# divergence.
+
+CHAIN_STREAMS = ("approval", "generation")
+
+
+class ReceiptChainError(GateError):
+    """The orchestrator-owned receipt chain is internally inconsistent."""
+
+
+def chain_dir() -> Path:
+    d = gates_dir() / "chains"
+    _ensure_dirs(gates_dir())
+    d.mkdir(exist_ok=True, mode=0o700)
+    return d
+
+
+def _chain_name(project_id: str, stream: str) -> str:
+    if stream not in CHAIN_STREAMS:
+        raise ValueError(f"unknown receipt chain stream {stream!r}")
+    if not isinstance(project_id, str) or not project_id:
+        raise ValueError("receipt chain needs a project_id")
+    return f"{hashlib.sha256(project_id.encode('utf-8')).hexdigest()}.{stream}"
+
+
+def chain_path(project_id: str, stream: str) -> Path:
+    return chain_dir() / f"{_chain_name(project_id, stream)}.jsonl"
+
+
+def chain_tip_path(project_id: str, stream: str) -> Path:
+    return chain_dir() / f"{_chain_name(project_id, stream)}.tip.json"
+
+
+def receipt_digest(receipt: dict) -> str:
+    """sha256 of the canonical JSON of a receipt minus ``signature`` — what a
+    chain row binds (the whole signed row: record, envelope, ids)."""
+    return hashlib.sha256(canonical_bytes(_unsigned(receipt))).hexdigest()
+
+
+def _sign_chain_row(row: dict) -> str:
+    return hmac.new(_load_key(), canonical_bytes(_unsigned(row)), hashlib.sha256).hexdigest()
+
+
+def chain_rows(project_id: str, stream: str) -> list[dict]:
+    """The verified chain for ``(project_id, stream)`` in root→tip order.
+    Raises ReceiptChainError if any row is unsigned, mislinked, or the tip
+    file disagrees with the last row."""
+    rows: list[dict] = []
+    prev: Optional[str] = None
+    for i, row in enumerate(read_jsonl(chain_path(project_id, stream))):
+        if not isinstance(row, dict):
+            raise ReceiptChainError(f"receipt chain {project_id}/{stream} row {i} is not an object")
+        sig = row.get("signature")
+        if not isinstance(sig, str) or not hmac.compare_digest(_sign_chain_row(row), sig):
+            raise ReceiptChainError(f"receipt chain {project_id}/{stream} row {i} has a bad signature")
+        if row.get("project_id") != project_id or row.get("stream") != stream:
+            raise ReceiptChainError(f"receipt chain {project_id}/{stream} row {i} belongs to another chain")
+        if row.get("prev_receipt_id") != prev:
+            raise ReceiptChainError(
+                f"receipt chain {project_id}/{stream} row {i} ({row.get('receipt_id')}) links to "
+                f"{row.get('prev_receipt_id')!r}, expected {prev!r}"
+            )
+        prev = row.get("receipt_id")
+        if not isinstance(prev, str) or not prev:
+            raise ReceiptChainError(f"receipt chain {project_id}/{stream} row {i} has no receipt_id")
+        rows.append(row)
+    tip = chain_tip(project_id, stream)
+    if tip != prev:
+        raise ReceiptChainError(
+            f"receipt chain {project_id}/{stream} tip file names {tip!r} but the chain ends at {prev!r}"
+        )
+    return rows
+
+
+def chain_tip(project_id: str, stream: str) -> Optional[str]:
+    path = chain_tip_path(project_id, stream)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    if not isinstance(data, dict) or data.get("project_id") != project_id or data.get("stream") != stream:
+        raise ReceiptChainError(f"receipt chain tip file for {project_id}/{stream} is malformed")
+    tip = data.get("tip_receipt_id")
+    return tip if isinstance(tip, str) and tip else None
+
+
+def chain_has(project_id: str, stream: str, receipt_id: str) -> bool:
+    return any(r.get("receipt_id") == receipt_id for r in chain_rows(project_id, stream))
+
+
+def chain_append(project_id: str, stream: str, receipt: dict) -> dict:
+    """Link ``receipt`` onto the chain (idempotent on receipt_id) and advance
+    the tip. The chain is verified before the append so a corrupt chain is
+    never extended."""
+    rows = chain_rows(project_id, stream)
+    rid = receipt["receipt_id"]
+    for row in rows:
+        if row.get("receipt_id") == rid:
+            if row.get("record_sha256") != receipt_digest(receipt):
+                raise ReceiptChainError(
+                    f"receipt {rid} is already chained with a different digest in {project_id}/{stream}"
+                )
+            return row
+    row = {
+        "project_id": project_id,
+        "stream": stream,
+        "receipt_id": rid,
+        "kind": receipt.get("kind") or ("generation" if stream == "generation" else None),
+        "prev_receipt_id": rows[-1]["receipt_id"] if rows else None,
+        "record_sha256": receipt_digest(receipt),
+        "recorded_at": _now().isoformat(),
+    }
+    row["signature"] = _sign_chain_row(row)
+    append_jsonl(chain_path(project_id, stream), row)
+    atomic_write_json(
+        chain_tip_path(project_id, stream),
+        {"project_id": project_id, "stream": stream, "tip_receipt_id": rid, "length": len(rows) + 1},
+    )
+    return row
+
+
+def verify_local_projection(project_id: str, stream: str, local_receipts: list[dict]) -> None:
+    """Require ``local_receipts`` (every row of the project-local file, in
+    file order) to reproduce the chain root→tip exactly. Raises
+    ReceiptChainError naming the first divergence."""
+    chain = chain_rows(project_id, stream)
+    label = f"{project_id}/{stream}"
+    for i in range(max(len(chain), len(local_receipts))):
+        if i >= len(chain):
+            row = local_receipts[i]
+            rid = row.get("receipt_id") if isinstance(row, dict) else None
+            raise ReceiptChainError(
+                f"{label}: local receipt file row {i} ({rid!r}) is not in the signed chain "
+                f"(chain has {len(chain)} receipts) — extra or forged row"
+            )
+        expected = chain[i]
+        if i >= len(local_receipts):
+            raise ReceiptChainError(
+                f"{label}: chained receipt {expected['receipt_id']} ({expected.get('kind')}) at "
+                f"position {i} is missing from the local receipt file — a receipt was deleted"
+            )
+        row = local_receipts[i]
+        if not isinstance(row, dict):
+            raise ReceiptChainError(f"{label}: local receipt file row {i} is not an object")
+        if row.get("receipt_id") != expected["receipt_id"]:
+            raise ReceiptChainError(
+                f"{label}: local receipt file row {i} is {row.get('receipt_id')!r} but the chain "
+                f"has {expected['receipt_id']} ({expected.get('kind')}) there — missing, extra or "
+                f"reordered receipt"
+            )
+        if receipt_digest(row) != expected["record_sha256"]:
+            raise ReceiptChainError(
+                f"{label}: local receipt {expected['receipt_id']} at position {i} does not hash to "
+                f"its chained digest — the row was altered"
+            )
 
 
 # ---- Approval write-ahead log (inspection fix #18) ----

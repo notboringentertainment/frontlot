@@ -261,14 +261,15 @@ class TestVisualBibleV12:
         with pytest.raises(CheckpointValidationError, match="does not name the approved hero"):
             write(pipeline_dir, "visual_bible", {"visual_bible": bible})
 
-    def _sheet_with_receipt_recipe(self, project_dir, c, hero, hs, *, rendered_of: str, look_hash_override=None):
+    def _sheet_with_receipt_recipe(self, project_dir, c, hero, hs, *, rendered_of: str, look_hash_override=None,
+                                   seed: str = f"{CHAR}-front-recipe"):
         import hashlib
 
         href = {"entity_id": CHAR, "asset_id": hero["asset_id"], "approval_receipt_id": hs["receipt_id"]}
         recipe = {"look_hash": look_hash_override or look_hash(c), "builder_version": "1.0",
                   "fields_used": ["prompt_safe_description"],
                   "rendered_sha256": hashlib.sha256(rendered_of.encode()).hexdigest()}
-        return image(project_dir, f"{CHAR}-front-recipe", role="front", look_refs=look_refs_for(c), headshot_ref=href,
+        return image(project_dir, seed, role="front", look_refs=look_refs_for(c), headshot_ref=href,
                      references_applied=[{"asset_id": hero["asset_id"], "path": hero["path"], "role": "hero"}],
                      receipt_prompt_recipe=recipe)
 
@@ -290,9 +291,12 @@ class TestVisualBibleV12:
         self._swap_front(project_dir, bible, self._sheet_with_receipt_recipe(
             project_dir, c, hero, hs, rendered_of=f"front of {CHAR}-front-recipe"))
         write(pipeline_dir, "visual_bible", {"visual_bible": bible})
-        # ...and one sealing a different rendering (an edited prompt) is refused.
+        # ...a second receipt for the SAME pixels with another recipe is refused outright (#5)...
+        with pytest.raises(ValueError, match="provenance is immutable"):
+            self._sheet_with_receipt_recipe(project_dir, c, hero, hs, rendered_of="hand-edited prompt text")
+        # ...and a new image sealing a different rendering (an edited prompt) is refused at the gate.
         self._swap_front(project_dir, bible, self._sheet_with_receipt_recipe(
-            project_dir, c, hero, hs, rendered_of="hand-edited prompt text"))
+            project_dir, c, hero, hs, rendered_of="hand-edited prompt text", seed=f"{CHAR}-front-recipe-2"))
         with pytest.raises(CheckpointValidationError, match="prompt_recipe.rendered_sha256"):
             write(pipeline_dir, "visual_bible", {"visual_bible": bible})
 
@@ -459,8 +463,23 @@ class TestImportedAndTaint:
         assert casting.import_receipt_id is None
         write(pipeline_dir, "visual_bible", {}, status="in_progress")
         bible = bible_v11(project_dir, c, l, approved["characters"][0]["hero"], hs)
+        # #5: casting pixels are never a receipted asset, so citing them is refused at receipt creation
+        with pytest.raises(ValueError, match="no verified generation receipt"):
+            image(project_dir, "poisoned-angle", role="angle", look_refs=look_refs_for(l),
+                  input_asset_ids=[casting.normalized_pixel_hash])
+        # pixels that were receipted BEFORE being imported as casting_inspiration taint the lineage
+        from lib import gates, receipts
+        from lib.canonical_json import record_sha256
+        from lib.reference_import import import_record
+
+        root = image(project_dir, "later-tainted-root", role="angle", look_refs=look_refs_for(l))
+        record = import_record("casting_inspiration", root["asset_id"])
+        token = gates.mint_gate_token(PROJECT, "look_lock", f"reference:{root['asset_id']}", record_sha256(record))
+        receipts.record_human_approval(project_dir, PROJECT, "look_lock", f"reference:{root['asset_id']}", record, token,
+                                       "reference_import", entity_id="ref-tainted",
+                                       envelope={"origin_class": "casting_inspiration", "normalized_pixel_hash": root["asset_id"]})
         poisoned = image(project_dir, "poisoned-angle", role="angle", look_refs=look_refs_for(l),
-                         input_asset_ids=[casting.normalized_pixel_hash])
+                         input_asset_ids=[root["asset_id"]])
         bible["locations"][0]["angles"][0] = poisoned
         loc = bible["locations"][0]
         r = approve(project_dir, "visual_bible", f"location:{LOC}", location_approval_record(loc, PALETTE), "location", LOC)
