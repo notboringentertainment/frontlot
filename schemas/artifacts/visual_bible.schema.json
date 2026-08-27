@@ -605,6 +605,12 @@
                 },
                 "additionalProperties": false
               },
+              "qc_receipts": {
+                "type": "object",
+                "description": "D19: role -> QC receipt id relied on for this sheet revision (required by enforcement under authored-film >= 1.3; sealed into the approval record).",
+                "propertyNames": {"enum": ["turnaround", "expressions", "wardrobe"]},
+                "additionalProperties": {"type": "string", "minLength": 1}
+              },
               "wardrobe_negative": {
                 "type": "string",
                 "description": "Negative-prompt text guarding wardrobe drift (may be empty)"

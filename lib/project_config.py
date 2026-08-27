@@ -1,25 +1,41 @@
-"""Verified project configuration (PLAN §0, inspection fixes #2/#13/#14).
+"""Verified project configuration (PLAN §0, inspection fixes #2/#13/#14; D19 1.1).
 
 ``load_verified_project_config`` is the ONLY way runtime code (tools, enforcement,
 orchestration) may learn a project's budget cap, cast cap, default video endpoint,
-and provider-egress consent. It refuses to return a config that is not bound to a
-human-approved ``config`` receipt for the exact file digest, so a caller can never
-act on an edited-but-unapproved ``project.yaml``.
+provider-egress consent and (1.1) the sheet-QC judge. It refuses to return a
+config that is not bound to a human-approved ``config`` receipt for the exact
+file digest, so a caller can never act on an edited-but-unapproved ``project.yaml``.
+
+Two schema versions are accepted and normalised to ONE in-memory shape
+(D19 R2#2): 1.0 carries a single FAL ``provider_egress`` object; 1.1 carries a
+list of per-provider entries plus a ``qc`` block. Consumers read only the
+normalised accessors (``egress_for``, ``require_egress``, ``qc``), never the
+raw ``provider_egress`` field.
 """
 from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 PROJECT_CONFIG_FILENAME = "project.yaml"
 EGRESS_CLASS_PROMPTS = "prompts"
 EGRESS_CLASS_REFERENCE_IMAGES = "reference_images"
+EGRESS_CLASS_GENERATED_SHEET_IMAGES = "generated_sheet_images"
+SUPPORTED_VERSIONS = ("1.0", "1.1")
 
 
 class ProjectConfigError(RuntimeError):
     """Missing, malformed, or unapproved project configuration."""
+
+
+@dataclass(frozen=True)
+class QCConfig:
+    judge_provider: str
+    judge_model: str
+    policy_bundle_sha256: str
+    max_attempts_per_series: int
 
 
 @dataclass(frozen=True)
@@ -29,6 +45,10 @@ class VerifiedProjectConfig:
     data: dict[str, Any]
 
     @property
+    def version(self) -> str:
+        return str(self.data.get("version"))
+
+    @property
     def budget_usd_cap(self) -> float:
         return float(self.data["budget_usd_cap"])
 
@@ -36,26 +56,84 @@ class VerifiedProjectConfig:
     def default_video_endpoint(self) -> str:
         return str(self.data["default_video_endpoint"])
 
+    # ---- egress (normalised: provider -> frozenset of classes) ----
+
+    @property
+    def egress(self) -> dict[str, frozenset[str]]:
+        return normalize_egress(self.data)
+
     @property
     def egress_provider(self) -> str:
-        return str(self.data["provider_egress"]["provider"])
+        """The single provider of a 1.0 config; for 1.1 the first listed.
+        Kept for callers that only print it — never use it to authorise."""
+        return next(iter(self.egress))
 
     @property
     def egress_classes(self) -> frozenset[str]:
-        return frozenset(self.data["provider_egress"]["content_classes"])
+        """Union of consented classes across providers (display only)."""
+        out: set[str] = set()
+        for classes in self.egress.values():
+            out |= classes
+        return frozenset(out)
+
+    def egress_for(self, provider: str) -> frozenset[str]:
+        return self.egress.get(provider, frozenset())
 
     def require_egress(self, provider: str, *content_classes: str) -> None:
         """Raise unless every content class is approved for ``provider``."""
-        if self.egress_provider != provider:
+        approved = self.egress.get(provider)
+        if approved is None:
             raise ProjectConfigError(
-                f"provider egress approved for {self.egress_provider!r}, not {provider!r}"
+                f"provider egress approved for {sorted(self.egress)}, not {provider!r}"
             )
-        missing = [c for c in content_classes if c not in self.egress_classes]
+        missing = [c for c in content_classes if c not in approved]
         if missing:
             raise ProjectConfigError(
                 f"provider egress for {provider!r} does not cover {missing}; "
-                f"approved classes: {sorted(self.egress_classes)}"
+                f"approved classes: {sorted(approved)}"
             )
+
+    # ---- D19 QC ----
+
+    @property
+    def qc(self) -> Optional[QCConfig]:
+        block = self.data.get("qc")
+        if not isinstance(block, dict):
+            return None
+        return QCConfig(
+            judge_provider=str(block["judge_provider"]),
+            judge_model=str(block["judge_model"]),
+            policy_bundle_sha256=str(block["policy_bundle_sha256"]),
+            max_attempts_per_series=int(block["max_attempts_per_series"]),
+        )
+
+    def require_qc(self) -> QCConfig:
+        qc = self.qc
+        if qc is None:
+            raise ProjectConfigError(
+                f"{PROJECT_CONFIG_FILENAME} {self.version} has no qc block; sheet QC needs a "
+                f"1.1 config naming the judge (judge_provider, judge_model, policy_bundle_sha256, "
+                f"max_attempts_per_series) approved through the human gate."
+            )
+        return qc
+
+
+def normalize_egress(data: dict[str, Any]) -> dict[str, frozenset[str]]:
+    """``provider -> classes`` for either schema version. A 1.1 list with two
+    entries for one provider is rejected here (R3 nb#2): ``uniqueItems`` alone
+    would let conflicting entries through."""
+    raw = data.get("provider_egress")
+    if isinstance(raw, dict):
+        return {str(raw["provider"]): frozenset(raw["content_classes"])}
+    if isinstance(raw, list):
+        out: dict[str, frozenset[str]] = {}
+        for entry in raw:
+            provider = str(entry["provider"])
+            if provider in out:
+                raise ProjectConfigError(f"provider_egress lists {provider!r} more than once")
+            out[provider] = frozenset(entry["content_classes"])
+        return out
+    raise ProjectConfigError("provider_egress must be an object (1.0) or a list (1.1)")
 
 
 def read_project_config(project_root: Path | str) -> tuple[dict[str, Any], str]:
@@ -74,10 +152,15 @@ def read_project_config(project_root: Path | str) -> tuple[dict[str, Any], str]:
         raise ProjectConfigError(f"{path} could not be parsed: {exc}") from exc
     if not isinstance(data, dict):
         raise ProjectConfigError(f"{path} must be a mapping")
+    if str(data.get("version")) not in SUPPORTED_VERSIONS:
+        raise ProjectConfigError(
+            f"{path} version {data.get('version')!r} is not one of {SUPPORTED_VERSIONS}"
+        )
     try:
         validate_project_config(data)
     except Exception as exc:  # noqa: BLE001
         raise ProjectConfigError(f"{path} failed schema validation: {exc}") from exc
+    normalize_egress(data)  # duplicate-provider check runs at read time too
     return data, digest
 
 

@@ -48,6 +48,7 @@ ARTIFACT_NAMES = [
     "visual_bible",
     "look_packet",
     "headshot_packet",
+    "qc_verdict",
 ]
 
 
@@ -79,8 +80,22 @@ def load_project_config_schema() -> dict:
 
 
 def validate_project_config(data: dict[str, Any]) -> None:
-    """Validate a parsed project.yaml against the project config schema."""
-    jsonschema.validate(instance=data, schema=load_project_config_schema())
+    """Validate a parsed project.yaml against the project config schema.
+
+    The schema is versioned (1.0 | 1.1). Dispatch on ``version`` so an error
+    names the branch the file claims, not jsonschema's best guess across
+    ``oneOf`` (an unversioned/unknown version is reported as such)."""
+    schema = load_project_config_schema()
+    branches = _version_branches(schema)
+    version = data.get("version") if isinstance(data, dict) else None
+    if branches and isinstance(version, str) and version in branches:
+        _validate_against_branch("project_config", version, schema, branches[version], data)
+        return
+    if branches:
+        raise ArtifactVersionError(
+            f"project_config version {version!r} is not one of {sorted(branches)}"
+        )
+    jsonschema.validate(instance=data, schema=schema)
 
 
 def artifact_version(data: dict[str, Any]) -> str:
