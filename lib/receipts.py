@@ -49,6 +49,7 @@ _in_flight: set[str] = set()
 
 APPROVALS_FILENAME = "approvals.jsonl"
 GENERATION_RECEIPTS_FILENAME = "generation-receipts.jsonl"
+QC_RECEIPTS_FILENAME = "qc-receipts.jsonl"
 
 APPROVAL_KINDS = frozenset(
     {
@@ -97,6 +98,20 @@ def _now_iso() -> str:
 
 def approvals_path(project_root: Path | str) -> Path:
     return Path(project_root) / APPROVALS_FILENAME
+
+
+def qc_receipts_path(project_root: Path | str) -> Path:
+    return Path(project_root) / QC_RECEIPTS_FILENAME
+
+
+def stream_path(project_root: Path | str, stream: str) -> Path:
+    if stream == "approval":
+        return approvals_path(project_root)
+    if stream == "generation":
+        return generation_receipts_path(project_root)
+    if stream == "qc":
+        return qc_receipts_path(project_root)
+    raise ValueError(f"no project-local projection for stream {stream!r}")
 
 
 def generation_receipts_path(project_root: Path | str) -> Path:
@@ -278,7 +293,7 @@ def _rows_for_commit(root: Path, stream: str, receipt: dict) -> tuple[list[dict]
     try:
         rows = chained_rows(root, stream, project_id=receipt["project_id"])
     except ReceiptChainError:
-        path = approvals_path(root) if stream == "approval" else generation_receipts_path(root)
+        path = stream_path(root, stream)
         raw = list(read_jsonl(path))
         tail = raw[-1] if raw else None
         if (
@@ -314,7 +329,7 @@ def chained_rows(project_root: Path | str, stream: str, *, project_id: Optional[
     this project root→tip exactly. Raises ReceiptChainError on the first
     divergence; a foreign ``project_id`` row is an extra row."""
     expected_project = project_id_for(project_root, project_id)
-    path = approvals_path(project_root) if stream == "approval" else generation_receipts_path(project_root)
+    path = stream_path(project_root, stream)
     rows = list(read_jsonl(path))
     for i, row in enumerate(rows):
         if not isinstance(row, dict):

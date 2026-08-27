@@ -430,6 +430,101 @@ def verify_generation_receipt(receipt: dict) -> bool:
     return generation_ledger_has(*fields)
 
 
+# ---- QC ledger (D19) ----
+#
+# QC rows (verdict / attempt_started / generation_attached / verdict_attached)
+# live in the project-writable qc-receipts.jsonl; every row is signed with the
+# gates key and mirrored here, outside the project, keyed by (receipt_id, kind,
+# project_id, binding) where ``binding`` is tuple_sha256 for verdicts and
+# attempt_id for attempt rows.
+
+
+def qc_ledger_path() -> Path:
+    return gates_dir() / "qc-ledger.jsonl"
+
+
+def qc_binding(row: dict) -> Optional[str]:
+    kind = row.get("kind")
+    if kind == "verdict":
+        return row.get("tuple_sha256")
+    if kind in ("attempt_started", "generation_attached", "verdict_attached"):
+        return row.get("attempt_id")
+    return None
+
+
+def qc_ledger_append(row: dict) -> None:
+    _ensure_dirs(gates_dir())
+    append_jsonl(
+        qc_ledger_path(),
+        {
+            "receipt_id": row["receipt_id"],
+            "kind": row["kind"],
+            "binding": qc_binding(row),
+            "project_id": row["project_id"],
+            "recorded_at": _now().isoformat(),
+        },
+    )
+
+
+def qc_ledger_has(receipt_id: str, kind: str, binding: str, project_id: str) -> bool:
+    for r in read_jsonl(qc_ledger_path()):
+        if (
+            r.get("receipt_id") == receipt_id and r.get("kind") == kind
+            and r.get("binding") == binding and r.get("project_id") == project_id
+        ):
+            return True
+    return False
+
+
+def verify_qc_row(row: dict) -> bool:
+    """Valid signature AND a qc-ledger row for (receipt_id, kind, binding, project_id)."""
+    if not isinstance(row, dict) or not verify_receipt_signature(row):
+        return False
+    binding = qc_binding(row)
+    fields = (row.get("receipt_id"), row.get("kind"), binding, row.get("project_id"))
+    if not all(isinstance(f, str) and f for f in fields):
+        return False
+    return qc_ledger_has(*fields)
+
+
+def qc_wal_dir() -> Path:
+    d = gates_dir() / "qc-wal"
+    _ensure_dirs(gates_dir())
+    d.mkdir(exist_ok=True, mode=0o700)
+    return d
+
+
+def qc_wal_write(tuple_sha256: str, entry: dict) -> Path:
+    path = qc_wal_dir() / f"{_checked_execution_id(tuple_sha256)}.json"
+    atomic_write_json(path, entry)
+    return path
+
+
+def qc_wal_read(tuple_sha256: str) -> Optional[dict]:
+    path = qc_wal_dir() / f"{_checked_execution_id(tuple_sha256)}.json"
+    try:
+        entry = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return entry if isinstance(entry, dict) else None
+
+
+def qc_wal_entries() -> list[dict]:
+    out = []
+    for path in sorted(qc_wal_dir().glob("*.json")):
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(entry, dict):
+            out.append(entry)
+    return out
+
+
+def qc_wal_delete(tuple_sha256: str) -> None:
+    (qc_wal_dir() / f"{_checked_execution_id(tuple_sha256)}.json").unlink(missing_ok=True)
+
+
 # ---- Per-project receipt chain (Slice A inspection #1) ----
 #
 # The project-local approvals.jsonl / generation-receipts.jsonl are writable
@@ -442,7 +537,9 @@ def verify_generation_receipt(receipt: dict) -> bool:
 # receipts, same digests, same order) and fail closed on the first
 # divergence.
 
-CHAIN_STREAMS = ("approval", "generation", "bootstrap")
+CHAIN_STREAMS = ("approval", "generation", "bootstrap", "qc")
+# ``qc`` (D19): sheet-QC verdicts and attempt rows (lib.qc_receipts), projected
+# from the project-local qc-receipts.jsonl like approval/generation.
 # ``bootstrap`` holds at most one row per project: the signed ``chain_bootstrap``
 # marker scripts/chain_bootstrap.py writes after adopting pre-chain receipts.
 # It has no project-local projection, so it is never verified by
