@@ -184,6 +184,30 @@ legacy and optional; a turnaround supersedes them. Never generate separate
 angle views to build a sheet — separate calls cannot hold scale, lighting and
 framing across angles, and cost more.
 
+### Sheet acceptance checklist (verify against the IMAGE before presenting)
+
+Look at every generated view and tick each item. Any miss → regenerate at
+your own cost first; the human is only asked once every item holds. Do not
+present a sheet you have not checked panel by panel.
+
+`turnaround`
+- [ ] Seven panels: four full-body (front, left profile, right profile, back) over three portraits (front, left, right).
+- [ ] The two profiles face OPPOSITE directions (nose to the left edge in one, to the right edge in the other). A repeated profile is the most common failure; check it explicitly.
+- [ ] Every full-body figure is head-to-toe with shoes fully inside the panel; nothing cropped top or bottom.
+- [ ] Hands empty and at the sides; no props, no cigarette, nothing held or at the mouth.
+- [ ] Every `default_wardrobe.pieces[]` item visible where the angle allows (coat, shoes, watch, bag …).
+- [ ] Same head height across the full-body row; same facial scale across the portraits; one light direction throughout.
+- [ ] Identity matches the approved hero in every panel (age band, hair incl. greying, no beard/stubble unless the look says so).
+
+`expressions`
+- [ ] One 2x3 grid, head-and-shoulders, plain background, identical framing per cell.
+- [ ] Same photographic realism as the hero; no caricature, no illustration drift, no exaggerated cells.
+- [ ] Nothing in or at the mouth; no hands; no props.
+- [ ] Six distinct, subtle, adult expressions; identity holds in all six.
+
+`wardrobe` (when present)
+- [ ] Default outfit beside each variant, full body, flat light, every named piece visible.
+
 Present the **sheet as one unit**. The human approves the sheet or names the
 views to redo. Partial approval does not exist: the sheet receipt (`kind:
 sheet`) hashes every asset id the sheet carries together. One redo view →
