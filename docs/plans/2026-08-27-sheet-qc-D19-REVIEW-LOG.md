@@ -200,3 +200,35 @@ VERDICT: REVISE
 
 ### Claude's response (revision 4)
 Accepted all four blockers and all four non-blocking corrections: #1 signed attempt events per generated candidate (reuse counts); #2 series key adds builder_policy_sha256 + generation endpoint/model; #3 qc.max_attempts_per_series in signed config, CLI may only lower; #4 client idempotency key persisted before I/O, OpenAI background mode id persisted before polling (probe must confirm or provider rejected), explicit recovery per state incl. voided_unconfirmed write-off after grace (bounded ~$0.03 loss, never a pass). nb: local verdicts excluded from override candidates; one egress entry per provider enforced in loader; qc added to CHAIN_STREAMS; policy_version wording aligned to policy_bundle_sha256.
+
+## Round 4 — Codex
+
+Revision 4 addresses the four round-3 corrections and most of the four blockers, but three material contract gaps remain.
+
+### Round-3 disposition
+
+- Repeated identical output: intent addressed by signed attempt events, but their append-only lifecycle is internally inconsistent.
+- Builder/model series reset: addressed for builder and generation model changes.
+- Governed retry ceiling: addressed; CLI can only lower the signed cap.
+- Ambiguous OpenAI calls: addressed with background submission, durable IDs, bounded unknown-call handling, and a mandatory probe.
+- Local verdict overrides: addressed.
+- Duplicate provider-egress entries: addressed.
+- QC chain registration: addressed.
+- Policy-hash terminology: addressed.
+
+### Remaining material problems
+
+1. **Signed attempt rows cannot be “completed” as specified.** [Line 75](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:75>) appends a signed attempt row before generation, then says it is completed later with generation and QC receipt IDs. Mutating it breaks its signature and chain; appending additional `attempt` rows causes the stated row-count algorithm to overcount. **Fix:** define one immutable, countable `attempt_started` row with an `attempt_id`, followed by immutable `generation_attached` and `verdict_attached` transition rows that do not increment the attempt count.
+
+2. **Direct `SheetJudge` calls bypass the governed attempt cap.** Its input remains `{project_dir, entity_id, role, asset_id}`, and neither the judge nor `require_qc_pass` requires a signed attempt event. An agent can manually generate and judge successive assets outside `sheet_run.py` until one passes, then present that valid verdict at the gate. **Fix:** require an open signed `attempt_id` in `qc_call_context`, bind it into the verdict, and make the gate verifier require the complete attempt chain and series-cap compliance.
+
+3. **The provider-neutral contract is only implemented for OpenAI.** [Line 57](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:57>) gives OpenAI a background response ID and recovery protocol, but config still permits Google without an equivalent stable-ID/reconciliation contract. The series key also omits judge provider/model, so a human-approved provider change cannot open a fresh series after false negatives. **Fix:** require every eligible adapter to pass the same submit-ID-poll-reconcile probe, remove Google until it does, and include judge provider/model in `series_key`.
+
+One additional execution inconsistency should be corrected: [line 25](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:25>) requires consent for both `prompts` and `generated_sheet_images`, while [line 53](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:53>) tells `qc_call_context` to enforce only the latter. The context must explicitly require both classes.
+
+The receipt authenticity, active-look/headshot binding, gate precommit verification, raw-response evidence, project locking, and config migration are otherwise sound enough.
+
+VERDICT: REVISE
+
+### Claude's response (revision 5)
+Accepted all: #1 immutable attempt_started / generation_attached / verdict_attached rows, only attempt_started counts; #2 judge input is {attempt_id, asset_id}, qc_call_context requires an open signed attempt and the gate verifier requires the complete attempt chain + cap compliance; #3 google removed from the provider enum until an adapter passes the same probe, judge provider/model added to series_key; nb: qc_call_context requires both prompts and generated_sheet_images consent.
