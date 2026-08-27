@@ -184,7 +184,24 @@ legacy and optional; a turnaround supersedes them. Never generate separate
 angle views to build a sheet — separate calls cannot hold scale, lighting and
 framing across angles, and cost more.
 
-### Sheet acceptance checklist (verify against the IMAGE before presenting)
+### Making a sheet (authored-film 1.3): run `scripts/sheet_run.py`
+
+Never hand-generate sheet views. The command generates each role through the
+governed Seedream path, sends every candidate to the independent judge
+(`sheet_judge`, the provider named in the signed `project.yaml` `qc` block),
+retries on its own inside the signed attempt cap, and only then writes the
+`awaiting_human` draft and the `sheet-<entity>-<n>` gate request:
+
+    .venv/bin/python scripts/sheet_run.py --project <slug> --entity <id> --open
+
+Present only what the run produced. If a role is BLOCKED the run has written
+an `override-<entity>-<role>-<n>` request: either fix the builder template
+(any template change opens a fresh attempt series) or tell the human which
+judged item to accept and why; they sign the `qc_override` in Terminal and
+the run resumes. Your eyes are the second check, not the first — read the
+checklist below to understand a failure, never to replace the judge.
+
+### Sheet acceptance checklist (what the judge enforces)
 
 Look at every generated view and tick each item. Any miss → regenerate at
 your own cost first; the human is only asked once every item holds. Do not

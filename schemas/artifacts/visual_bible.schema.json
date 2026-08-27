@@ -271,6 +271,7 @@
           "type": "string",
           "minLength": 1
         },
+        "builder_policy_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$", "description": "D19.6: hash of the builder policy (templates, negatives, rules) that rendered this prompt; absent on pre-1.3 recipes"},
         "fields_used": {
           "type": "array",
           "items": {
