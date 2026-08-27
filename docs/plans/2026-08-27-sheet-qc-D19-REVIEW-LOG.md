@@ -97,3 +97,57 @@ Verified in code before accepting: FAL-only egress enum + additionalProperties:f
 Accepted in full: #1 (threat model narrowed, section added), #2 (project_config 1.1: qc block + multi-provider egress list, no runtime fallback), #3 (qc_call_context), #4/#5 (separate QC receipt stream/ledger/chain/WAL; verified_qc_receipts typed), #6 (full binding tuple), #7 (O_NOFOLLOW, hash the buffer you send), #8 (one verdict per evaluation tuple under lock; no newest-wins), #9 (fake provider test-only + config equality check), #10 (qc_override approval receipt kind), #11 (shared lib/sheet_verify used at write, construct, pre-commit), #12 (qc_receipts in the entry and in the signed approval record), #13 (bijection over item ids in code), #14 (preflight + per-call reservations), #15 (workflow lock + cost-log lock), #16 (qc-attempts.jsonl counted on resume), #17 (idempotency key + reconcile), #18 (authored-film 1.3 + migration), #19 (wardrobe from look data; builder policy hash), #20 (legacy roles prohibited under 1.3).
 
 Narrowed: the "smaller design" deterministic local checks — accepted for file/format/dimension checks, declined for pixel-heuristic panel counting / crop detection / OCR (false confidence on plain-background sheets; a wrong deterministic answer is worse than a model "unsure").
+
+## Round 2 — Codex
+
+Revision 2 is substantially better, but it is not implementation-ready. Of the original 20 findings, 12 are fully addressed, seven only partially addressed, and one remains open.
+
+### Original 20 findings
+
+| # | Status | Re-review |
+|---|---|---|
+| 1 | Addressed by scope | The plan now explicitly adopts the repository’s honest-process trust boundary rather than claiming resistance to a hostile same-user process; this is acceptable if documented as a non-security boundary. |
+| 2 | Partial | Project-config 1.1 introduces the needed QC provider fields, but the current schema and reader assume v1.0’s single `provider_egress` object; **fix:** define dual-version parsing or an atomic migration and test every existing config consumer. |
+| 3 | Addressed | A dedicated `qc_call_context` avoids incorrectly forcing QC calls through generation-specific `paid_call_context`; its new root-validation gap is listed below. |
+| 4 | Addressed | QC now has a separate receipt/WAL model instead of pretending a response-only call can satisfy generation-receipt requirements. |
+| 5 | Addressed | A separate QC stream prevents verdict rows from corrupting the generation output-hash index. |
+| 6 | Partial | Role, entity, assets, receipts, policy and hashes are now signed, but active headshot-receipt identity and raw provider evidence remain incompletely verified; **fix:** bind and verify the exact active receipt and persist the provider response/request ID. |
+| 7 | Addressed | Reading through `O_NOFOLLOW`, hashing the resulting buffer, and sending those same bytes closes path/hash substitution. |
+| 8 | Partial | “One verdict per tuple” blocks ordinary judge shopping, but the tuple omits `headshot_receipt_id` and the complete policy/prompt hash; **fix:** include both in the canonical tuple. |
+| 9 | Addressed | Fake verdict generation is limited to tests outside `PROJECTS_DIR` with an explicit environment opt-in. |
+| 10 | Partial | Overrides are now separately human-approved receipts, but no reachable workflow creates an override request after retry exhaustion; **fix:** add an explicit override-request transition and resume path. |
+| 11 | Addressed | The shared verifier is required at checkpoint construction, gate construction, and approval precommit. |
+| 12 | Addressed | QC receipt IDs are incorporated into the visual-bible entry and therefore into the human-signed approval record. |
+| 13 | Addressed | Exact expected checklist IDs are enforced; duplicates, missing IDs and unknown IDs fail closed. |
+| 14 | Addressed | Preflight plus per-call reservations replaces the incompatible aggregate reservation. |
+| 15 | Partial | Locking is proposed, but entity-scoped leases contradict the existing project-wide director invariant, and locking `_save()` alone does not prevent stale CostTracker overwrites; **fix:** reuse the project-wide lease and perform reload–merge–write under one cost lock. |
+| 16 | Open | The unsigned `qc-attempts.jsonl` controls the retry cap despite being described as non-authoritative; deletion or a crash between verdict commit and append resets the cap; **fix:** derive attempts from signed QC receipts or transactionally sign `attempt_n` into each verdict. |
+| 17 | Partial | Idempotency and “no blind resubmit” are improvements, but reconciliation lacks a signed provider request identifier and a fully specified pending/unknown state; **fix:** persist provider request IDs and define explicit claimed, submitted, unknown and committed states. |
+| 18 | Addressed | Authored-film 1.3 makes QC mandatory and includes a pinned-manifest migration path. |
+| 19 | Partial | Builder-policy hashing is data-driven, but the proposed look-spec 1.1 bump is treated as local even though it is a shared WriterOS/OpenMontage contract; **fix:** either scope the full cross-repository migration and re-ratification or defer `wardrobe_variants[].pieces`. |
+| 20 | Addressed | Pipeline 1.3 prohibits the legacy role set from silently bypassing the QC policy. |
+
+### New material defects
+
+1. **Critical — the signed policy comparison is internally impossible.** The config stores only `policy_version`, while the verifier requires `policy_sha256 == signed config`; moreover, the proposed hash covers only `{version, role, items}`, excluding the system prompt, normalization/scoring logic, preprocessing and local checks. Existing verdicts could therefore survive a behavior-changing prompt edit. **Fix:** place the exact policy hash in signed config and hash the complete executable policy bundle; include it in the idempotency tuple. See [D19 lines 25–28](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:25>) and [line 63](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:63>).
+
+2. **High — stale headshot approvals can be replayed.** The verdict records `headshot_receipt_id`, but tuple selection and verification compare only the asset ID. Reapproval or supersession using identical pixels would leave an old QC verdict valid. **Fix:** include the receipt ID in the tuple and require both asset and receipt to equal the active headshot-chain tip. See [D19 line 56](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:56>) and [line 63](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:63>).
+
+3. **High — provider consent omits prompt egress.** The QC request sends policy text and signed look fields as well as images, but the plan requires consent only for `generated_sheet_images`. **Fix:** require both `prompts` and `generated_sheet_images` for the configured QC provider. See [D19 line 53](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:53>).
+
+4. **High — one-verdict atomicity has no workable lock protocol.** Holding the QC lock across a network request is unsafe; releasing it before submission allows duplicate judge calls. Shared verification during gate precommit also introduces approval-lock/QC-lock ordering risk. **Fix:** atomically claim the tuple in the QC WAL, release the lock before network I/O, then reconcile and commit under a documented global lock order. See [D19 lines 57–65](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:57>).
+
+5. **High — the proposed lease scope violates existing governance.** `lib.run_lease` currently creates one `.run-lease` per project, while revision 2 proposes `(project, entity)`, allowing two characters to run concurrently despite the director’s explicit prohibition. **Fix:** retain the existing project-wide lease unless D18 governance is intentionally revised. See [run_lease.py line 117](</Users/ben/Projects/OpenMontage/lib/run_lease.py:117>), [D19 line 72](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:72>), and [visual-bible-director.md line 121](</Users/ben/Projects/OpenMontage/skills/pipelines/authored-film/visual-bible-director.md:121>).
+
+6. **Medium — role subsets can produce an invalid fresh artifact.** `--roles turnaround` may reach the write step even though the visual-bible schema requires both turnaround and expressions. **Fix:** permit subsets only when updating an already schema-complete revision; fresh runs must complete all mandatory roles. See [D19 line 77](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:77>) and [visual_bible.schema.json line 576](</Users/ben/Projects/OpenMontage/schemas/artifacts/visual_bible.schema.json:576>).
+
+7. **Medium — `qc_call_context` lacks an explicit project-root trust boundary.** A caller-selected root could redirect config and ledger resolution outside registered projects. **Fix:** reuse `infer_project_dir`, require containment under `PROJECTS_DIR`, reject symlink escapes, and isolate the test-only exception.
+
+8. **Medium — response hashes are not auditable evidence.** A signed `response_sha256` is useless if the exact provider response is not durably retained; the canonical verdict is downstream interpretation, not necessarily the hashed source. **Fix:** store the raw response content-addressably and sign its object ID, provider request ID, and provider-returned model version. See [D19 line 58](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:58>).
+
+The simpler implementation is to keep look-spec at 1.0 for D19, QC only the already-required turnaround/expression sheets, reuse the existing project-wide lease, and make the signed QC ledger itself the source of truth for attempts and tuple claims. That removes two migrations and the unsigned retry side channel without weakening the gate.
+
+VERDICT: REVISE
+
+### Claude's response (revision 3)
+Adopted Codex's simpler shape. Accepted: #2 dual-version config loader tested per consumer; #6/#8/new#2 headshot receipt id in the tuple + verified against the chain tip; #10 override-request transition on exhaustion + --resume; #15/new#5 project-wide run_lease (entity-scoped lease rejected, contradicts D18/director invariant); #15 CostTracker transaction = lock+reload+merge+atomic write; #16 attempts derived from signed QC ledger (attempt_n signed; unsigned qc-attempts.jsonl removed); #17/new#4 claim/submitted/unknown/committed WAL states, lock released during network I/O, reconcile by provider request id, documented lock order; #19 look_spec stays 1.0 (wardrobe pieces deferred, cross-repo); new#1 policy_bundle_sha256 over prompt+schema+scoring+local rules, pinned in signed config; new#3 egress consent for prompts AND generated_sheet_images; new#6 fresh runs always complete mandatory roles; new#7 infer_project_dir + PROJECTS_DIR containment; new#8 raw provider response stored content-addressed and its hash signed with provider request id + returned model version. Nothing rejected this round.
