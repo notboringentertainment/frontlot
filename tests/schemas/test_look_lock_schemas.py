@@ -73,7 +73,9 @@ class TestHeadshotPacket:
 
 class TestVisualBible11:
     def _bible(self, version):
-        ch = {"id": "c1", "hero": IMG, "sheet": {r: IMG for r in ("front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")},
+        roles = ("turnaround", "expressions", "wardrobe") if version == "1.1" else (
+            "front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")
+        ch = {"id": "c1", "hero": IMG, "sheet": {r: IMG for r in roles},
               "wardrobe_negative": "", "status": "draft"}
         if version == "1.1":
             ch.update({"prompt_recipe": RECIPE, "look_ref": LOOK_REF, "sheet_revision": 1})

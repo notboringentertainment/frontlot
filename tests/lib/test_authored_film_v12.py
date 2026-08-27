@@ -112,7 +112,7 @@ def bible_v11(project_dir, c, l, hero, hs_receipt, *, headshot_ref=None, sheet_r
         role: image(project_dir, f"{CHAR}-{role}", role=role, look_refs=look_refs_for(c),
                     headshot_ref=sheet_ref_override if sheet_ref_override is not None else href,
                     references_applied=[{"asset_id": hero["asset_id"], "path": hero["path"], "role": "hero"}])
-        for role in ("front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")
+        for role in ("turnaround", "expressions", "wardrobe")
     }
     ch = {"id": CHAR, "hero": hero, "sheet": sheet, "wardrobe_negative": "no hat",
           "prompt_recipe": prompt_recipe(c), "look_ref": look_ref(c, {"receipt_id": active[("character", CHAR)].receipt_id}),

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 VIEW_DIR = Path("canon/visual/by-entity")
-CHARACTER_ROLES = ("front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")
+CHARACTER_ROLES = ("turnaround", "expressions", "wardrobe", "front", "three_quarter", "profile", "full_body")
 
 
 def _read_checkpoint(project_dir: Path, stage: str) -> dict[str, Any] | None:

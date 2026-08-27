@@ -38,10 +38,10 @@ import re
 import unicodedata
 from typing import Any
 
-BUILDER_VERSION = "1.2"
+BUILDER_VERSION = "1.3"
 LOOK_SPEC_VERSION = "1.0"
 
-CHARACTER_ROLES = ("hero", "front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")
+CHARACTER_ROLES = ("hero", "turnaround", "front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")
 LOCATION_ROLES = ("establishing", "detail", "time_variant")
 ROLES = CHARACTER_ROLES + LOCATION_ROLES
 
@@ -60,7 +60,8 @@ _ROLE_FRAMING = {
     "three_quarter": "single character, three-quarter view, neutral pose, plain studio background",
     "profile": "single character, strict side profile, neutral pose, plain studio background",
     "full_body": "single character, full body head to toe, neutral standing pose, plain studio background",
-    "expressions": "expression sheet: one character, head-and-shoulders only, a clean 2x3 grid of six cells on a plain white background, identical framing and lighting in every cell, each cell a different expression (neutral, warm smile, hard stare, weary, listening, shaken), no body below the chest, no props, no vehicle",
+    "turnaround": "professional character reference sheet based strictly on the reference image: a technical model turnaround on a clean, neutral plain background, matching the reference's exact visual style (same realism level, rendering approach, texture, color treatment and overall aesthetic). Two horizontal rows. Top row: four full-body standing views side by side in this order: front view, left profile (facing left), right profile (facing right), back view. Bottom row: three highly detailed close-up portraits aligned beneath the full-body row in this order: front portrait, left profile portrait (facing left), right profile portrait (facing right). Perfect identity consistency across every panel; relaxed A-pose; consistent scale and alignment between views, accurate anatomy, clear silhouette; even spacing and clean panel separation, uniform framing, consistent head height across the full-body lineup and consistent facial scale across the portraits. Lighting identical across all panels (same direction, intensity and softness), natural controlled shadows, no dramatic mood shifts. Crisp, print-ready reference-sheet look, sharp details",
+    "expressions": "expression sheet: one character, head-and-shoulders only, a clean 2x3 grid of six cells on a plain white background, identical framing and lighting in every cell, matching the reference's exact photographic realism in every cell (no illustration, no caricature, no exaggeration), each cell a different subtle adult expression (neutral, faint smile, hard stare, weary, listening, quietly shaken), mouth closed or naturally parted with nothing in or at the mouth, no cigarette, no hands, no props, no body below the chest, no vehicle",
     "wardrobe": "wardrobe study: the character shown twice side by side on a plain white studio background, left in the default outfit, right in the night-cleaner variant (dark coveralls, nitrile gloves, respirator hanging at the neck), full body, neutral standing pose, flat even lighting, no vehicle, no scenery",
     "establishing": "wide establishing view, no people",
     "detail": "medium detail view of the place, no people",

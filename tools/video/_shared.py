@@ -1163,7 +1163,7 @@ def bind_reference_manifest(
 
 LOOK_GOVERNED_STAGE = "look_lock"
 ENTITY_KINDS = ("character", "location")
-SHEET_ASSET_ROLES = frozenset({"front", "three_quarter", "profile", "full_body", "expressions", "wardrobe"})
+SHEET_ASSET_ROLES = frozenset({"turnaround", "front", "three_quarter", "profile", "full_body", "expressions", "wardrobe"})
 # Presence of any of these makes a call governed regardless of the project's
 # manifest: a caller who names looks, a stage, a sheet role or a headshot is
 # making a governed call and gets the full check.

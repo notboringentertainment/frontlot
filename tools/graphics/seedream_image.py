@@ -141,8 +141,8 @@ class SeedreamImage(BaseTool):
             "stage": {"type": "string", "description": "Pipeline stage making the call; visual_bible calls can never be entity-free and require prompt_recipe."},
             "asset_role": {
                 "type": "string",
-                "enum": ["hero", "front", "three_quarter", "profile", "full_body", "expressions", "wardrobe", "establishing", "detail", "time_variant", "key_art"],
-                "description": "Sheet roles (front, three_quarter, profile, full_body, expressions, wardrobe) require headshot_ref.",
+                "enum": ["hero", "turnaround", "front", "three_quarter", "profile", "full_body", "expressions", "wardrobe", "establishing", "detail", "time_variant", "key_art"],
+                "description": "Sheet roles (turnaround, expressions, wardrobe, front, three_quarter, profile, full_body) require headshot_ref.",
             },
             "headshot_ref": {"type": "object", "description": "{entity_id, asset_id, approval_receipt_id} of the approved hero (lib.headshots.verify_headshot_ref)."},
             "prompt_recipe": {"type": "object", "description": "tools.prompt_builder recipe; prompt must hash to rendered_sha256."},

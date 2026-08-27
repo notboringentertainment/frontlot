@@ -171,21 +171,23 @@ lacks a matching `headshot_ref`. A rejected headshot candidate has a receipt
 but cannot satisfy this check; neither can any image that did not come
 through `headshots`. `visual_bible`-stage calls can never be entity-free.
 
-Views, generated in this order, each with the hero as `@Image1`:
+Views, each generated with the approved hero as `@Image1` (builder 1.3):
 
 | Role | Prompt delta |
 |---|---|
-| `front` | Same framing as hero, full even light, confirms identity |
-| `three_quarter` | Head turned 45°, same light |
-| `profile` | True profile, same light |
-| `full_body` | Head-to-toe, `default_wardrobe`, neutral stance, plain ground |
-| `expressions` | Single grid (4–6 cells): neutral, alarmed, guarded, grief-held, one story-specific from `behavioral_anchors` |
-| `wardrobe` | `default_wardrobe.pieces[]` isolated on mannequin/flat lay, every piece the look names |
+| `turnaround` | REQUIRED. One frame, two rows: top row four full-body standing views (front, left profile, right profile, back) in a relaxed A-pose at one head height; bottom row three close-up portraits (front, left profile, right profile). Plain neutral background, identical lighting in every panel, `default_wardrobe`. This is the model sheet. |
+| `expressions` | REQUIRED. Single 2x3 grid, head-and-shoulders, the reference's exact realism (no caricature), subtle adult expressions, nothing in or at the mouth, no hands or props |
+| `wardrobe` | OPTIONAL. Default outfit beside each `wardrobe_variants[]` entry, full body, flat light |
 
-Present the **six views as one unit**. The human approves the sheet or names
-the views to redo. Partial approval does not exist: the sheet receipt (`kind:
-sheet`) hashes all six asset ids together. One redo view → re-present the whole
-sheet.
+Single-angle views (`front`, `three_quarter`, `profile`, `full_body`) are
+legacy and optional; a turnaround supersedes them. Never generate separate
+angle views to build a sheet — separate calls cannot hold scale, lighting and
+framing across angles, and cost more.
+
+Present the **sheet as one unit**. The human approves the sheet or names the
+views to redo. Partial approval does not exist: the sheet receipt (`kind:
+sheet`) hashes every asset id the sheet carries together. One redo view →
+re-present the whole sheet.
 
 If a sheet view cannot hold identity from one hero (expression grids and
 turnarounds are the known weak points on this stack), do not fabricate: present

@@ -471,7 +471,7 @@ def _bible_and_palette(root: Path, req: dict) -> tuple[dict, dict]:
 
 
 def _construct_character(root: Path, req: dict) -> Constructed:
-    from lib.canon_enforcement import CHARACTER_SHEET_ROLES, character_approval_record
+    from lib.canon_enforcement import character_approval_record, sheet_roles
 
     entity_id = _require_entity(req)
     bible, palette = _bible_and_palette(root, req)
@@ -479,7 +479,7 @@ def _construct_character(root: Path, req: dict) -> Constructed:
     if entry is None:
         raise GateHandlerError(f"character {entity_id!r} is not in the pending visual_bible")
     evidence = []
-    refs = [("hero", entry.get("hero"))] + [(role, (entry.get("sheet") or {}).get(role)) for role in CHARACTER_SHEET_ROLES]
+    refs = [("hero", entry.get("hero"))] + [(role, (entry.get("sheet") or {}).get(role)) for role in sheet_roles(entry)]
     for role, ref in refs:
         if ref:
             _verify_image_ref(root, ref, f"character {entity_id!r} {role}")

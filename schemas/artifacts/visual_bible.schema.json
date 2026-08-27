@@ -110,7 +110,7 @@
         "role": {
           "type": "string",
           "minLength": 1,
-          "description": "hero, front, three_quarter, establishing, angle, key_art, title_card, poster_final, ..."
+          "description": "hero, turnaround, front, three_quarter, expressions, wardrobe, establishing, angle, key_art, title_card, poster_final, ..."
         },
         "provenance": {
           "oneOf": [
@@ -576,14 +576,14 @@
               "sheet": {
                 "type": "object",
                 "required": [
-                  "front",
-                  "three_quarter",
-                  "profile",
-                  "full_body",
-                  "expressions",
-                  "wardrobe"
+                  "turnaround",
+                  "expressions"
                 ],
+                "description": "1.1 sheet: turnaround (4 full-body angles + 3 portraits, one frame) and an expression grid are required; wardrobe and the single-angle legacy views are optional.",
                 "properties": {
+                  "turnaround": {
+                    "$ref": "#/$defs/image_ref"
+                  },
                   "front": {
                     "$ref": "#/$defs/image_ref"
                   },

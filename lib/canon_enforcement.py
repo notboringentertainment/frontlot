@@ -38,7 +38,18 @@ PROJECT_CONFIG_FILENAME = "project.yaml"
 CONFIG_ENTITY_ID = "project-config"
 STORYBOARD_BATCH_ENTITY_ID = "storyboard_batch"
 POSTER_ENTITY_ID = "poster"
-CHARACTER_SHEET_ROLES = ("front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")
+# visual_bible 1.1 sheet: one technical turnaround (4 full-body angles + 3
+# portraits in a single frame) plus an expression grid. ``wardrobe`` and the
+# legacy single-angle views are optional; what a sheet carries is whatever
+# roles it names, and every named role is verified and sealed in the receipt.
+CHARACTER_SHEET_ROLES = ("turnaround", "expressions")
+CHARACTER_SHEET_OPTIONAL_ROLES = ("wardrobe", "front", "three_quarter", "profile", "full_body")
+
+
+def sheet_roles(entry: dict[str, Any]) -> tuple[str, ...]:
+    """Roles present on a character entry's sheet, sorted (hash-stable)."""
+    sheet = entry.get("sheet") if isinstance(entry, dict) else None
+    return tuple(sorted(sheet.keys())) if isinstance(sheet, dict) else ()
 CHARACTER_APPROVAL_KINDS = ("sheet", "hero")
 LOOK_LOCK_MANIFEST = ("authored-film", "1.2")
 SPOILER_SENSITIVE_FORMATS = {"trailer", "teaser"}
@@ -711,7 +722,7 @@ def config_approval_record(config_sha256: str) -> dict[str, Any]:
 def character_approval_record(entry: dict[str, Any], palette: dict[str, Any]) -> dict[str, Any]:
     assets = {"hero": (entry.get("hero") or {}).get("asset_id")}
     sheet = entry.get("sheet") or {}
-    for role in CHARACTER_SHEET_ROLES:
+    for role in sheet_roles(entry):
         assets[role] = (sheet.get(role) or {}).get("asset_id")
     record = {
         "id": entry.get("id"),
@@ -1010,7 +1021,7 @@ def _iter_image_refs(bible: dict[str, Any]):
     for ch in bible.get("characters", []):
         cid = ch.get("id")
         yield f"character {cid!r} hero", ch.get("hero") or {}
-        for role in CHARACTER_SHEET_ROLES:
+        for role in sheet_roles(ch):
             yield f"character {cid!r} sheet.{role}", (ch.get("sheet") or {}).get(role) or {}
     for loc in bible.get("locations", []):
         lid = loc.get("id")
@@ -1040,7 +1051,7 @@ def approved_image_owners(bible: dict[str, Any]) -> dict[str, str]:
     owners: dict[str, str] = {}
     for cid, ch in _approved_entries(bible, "characters").items():
         refs = [ch.get("hero") or {}] + [
-            (ch.get("sheet") or {}).get(role) or {} for role in CHARACTER_SHEET_ROLES
+            (ch.get("sheet") or {}).get(role) or {} for role in sheet_roles(ch)
         ]
         for ref in refs:
             if ref.get("asset_id"):
@@ -1775,7 +1786,7 @@ def _check_visual_bible_v12(
                 _fail(f"{kind} {eid!r} prompt_recipe.look_hash is not the active look.")
             if kind == "character":
                 refs = [("hero", entry.get("hero") or {})] + [
-                    (role, (entry.get("sheet") or {}).get(role) or {}) for role in CHARACTER_SHEET_ROLES
+                    (role, (entry.get("sheet") or {}).get(role) or {}) for role in sheet_roles(entry)
                 ]
                 current = active_headshots.get(eid)
                 if current is None:
