@@ -843,8 +843,9 @@ class TestVisualBibleCompletionTightening:
         pipeline_dir, project_dir = project
         setup_through_proposal(pipeline_dir)
         bible = approved_visual_bible(project_dir, characters=[CHAR], locations=[LOC], poster=False)
-        with pytest.raises(Exception, match="poster"):
-            validate_artifact("visual_bible", bible)
+        # D18: the schema allows a bible without a poster while work is per-entity;
+        # completion is where enforcement demands it.
+        validate_artifact("visual_bible", bible)
         with pytest.raises(CheckpointValidationError, match="poster"):
             write(pipeline_dir, "visual_bible", {"visual_bible": bible})
         bible = approved_visual_bible(project_dir, characters=[CHAR], locations=[LOC])

@@ -298,8 +298,7 @@
         "palette",
         "generator_defaults",
         "characters",
-        "locations",
-        "poster"
+        "locations"
       ],
       "properties": {
         "version": {
@@ -517,8 +516,7 @@
         "palette",
         "generator_defaults",
         "characters",
-        "locations",
-        "poster"
+        "locations"
       ],
       "properties": {
         "version": {
