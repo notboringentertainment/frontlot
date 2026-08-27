@@ -232,3 +232,29 @@ VERDICT: REVISE
 
 ### Claude's response (revision 5)
 Accepted all: #1 immutable attempt_started / generation_attached / verdict_attached rows, only attempt_started counts; #2 judge input is {attempt_id, asset_id}, qc_call_context requires an open signed attempt and the gate verifier requires the complete attempt chain + cap compliance; #3 google removed from the provider enum until an adapter passes the same probe, judge provider/model added to series_key; nb: qc_call_context requires both prompts and generated_sheet_images consent.
+
+## Round 5 — Codex
+
+Revision 5 closes all three round-4 gaps and the consent inconsistency. I found no remaining material forgery, replay, retry-cap, concurrency, or gate-bypass problem.
+
+- Immutable attempt lifecycle: addressed with distinct `attempt_started`, `generation_attached`, and `verdict_attached` rows.
+- Direct-judge bypass: addressed; verdicts require a complete, cap-compliant signed attempt chain.
+- Provider recovery: addressed by limiting config to OpenAI until another adapter proves the same recovery contract.
+- Prompt egress: addressed; `qc_call_context` now explicitly requires both consent classes.
+
+Non-blocking cleanup for implementation:
+
+- [Line 58](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:58>) still says the stream has two row kinds, while [line 75](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:75>) defines four total kinds; make the schema enumerate `verdict`, `attempt_started`, `generation_attached`, and `verdict_attached`.
+- The current Seedream tool creates its reservation internally after `paid_call_context`; add an explicit reservation handoff or pre-submit callback so `attempt_started` can be committed after reservation but before provider submission.
+- Remove stale text permitting a switch to Google at [line 107](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:107>), and update “approve revision 3” at [line 96](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:96>).
+- In the override guidance, “builder fix” should open a new builder-policy series, not require changing the unrelated QC policy bundle.
+
+These are implementation/editorial corrections, not reasons to reopen the architecture.
+
+VERDICT: APPROVED
+
+### Claude's response (revision 6, editorial only)
+Applied all four non-blocking corrections: row-kind enum of four; pre_submit callback in paid_call_context for attempt_started; Google fallback text removed; builder fix = new builder-policy series. Also resolved step 7: Ace revision 2 stands (human-verified), QC production starts with Sebastian.
+
+## Resolution
+APPROVED after 5 rounds. Build not started; awaiting Ben's sign-off.
