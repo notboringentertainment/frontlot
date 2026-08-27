@@ -32,7 +32,7 @@ def main():
             "headshot_ref": {"entity_id": "ace-handler", "asset_id": ah.asset_id, "approval_receipt_id": receipt_id},
             "reference_image_paths": [str(hero_path)],
             "reference_manifest": [{"asset_id": ah.asset_id, "path": str(hero_path), "role": "hero", "visual_bible_entity_id": "ace-handler"}],
-            "palette": PALETTE, "image_size": "auto_1K", "num_images": 1, "output_format": "png",
+            "palette": PALETTE, "image_size": ({"width": 2560, "height": 1600} if role == "turnaround" else "auto_1K"), "num_images": 1, "output_format": "png",
             "output_dir": str(out_dir), "project_dir": str(PROJECT),
         }
         r = SeedreamImage().execute(inputs)
