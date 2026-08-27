@@ -79,9 +79,9 @@ def test_text_is_normalized_and_delimiters_neutralized():
     spec = _character(hair="  salt-grey\tbraid   ​to  mid-back ")
     out = pb.build_prompt(spec, role="front")
     assert "hair salt-grey braid to mid-back" in out["prompt"]
-    spec = _character(props=['brass "lantern" {old}'])
+    spec = _character(distinguishing_marks=['brass "lantern" {old} tattoo'])
     out = pb.build_prompt(spec, role="front")
-    assert "brass 'lantern' (old)" in out["prompt"]
+    assert "brass 'lantern' (old) tattoo" in out["prompt"]
 
 
 @pytest.mark.parametrize("line", [
@@ -166,3 +166,11 @@ def test_build_kind_continuity_and_negative_lines_are_rendered_and_hashed():
     # Location looks render continuity risks too.
     loc = pb.build_prompt(_location(), role="establishing")
     assert "keep consistent: gallery colour" in loc["positive"] and loc["negative"].startswith("Avoid: text")
+
+
+def test_props_never_rendered_into_sheet_prompts():
+    spec = _character(props=["pocket beacon (only when lost)"])
+    for role in ("hero", "turnaround", "expressions", "wardrobe"):
+        out = pb.build_prompt(spec, role=role)
+        assert "beacon" not in out["prompt"]
+        assert "props" not in out["prompt_recipe"]["fields_used"]

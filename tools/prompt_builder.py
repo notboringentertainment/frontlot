@@ -60,7 +60,7 @@ _ROLE_FRAMING = {
     "three_quarter": "single character, three-quarter view, neutral pose, plain studio background",
     "profile": "single character, strict side profile, neutral pose, plain studio background",
     "full_body": "single character, full body head to toe, neutral standing pose, plain studio background",
-    "turnaround": "professional character reference sheet based strictly on the reference image: a technical model turnaround on a clean, neutral plain background, matching the reference's exact visual style (same realism level, rendering approach, texture, color treatment and overall aesthetic). Two horizontal rows. Top row: four full-body standing views side by side in this order: front view, left profile (facing left), right profile (facing right), back view. Bottom row: three highly detailed close-up portraits aligned beneath the full-body row in this order: front portrait, left profile portrait (facing left), right profile portrait (facing right). Perfect identity consistency across every panel; relaxed A-pose; consistent scale and alignment between views, accurate anatomy, clear silhouette; even spacing and clean panel separation, uniform framing, consistent head height across the full-body lineup and consistent facial scale across the portraits. Lighting identical across all panels (same direction, intensity and softness), natural controlled shadows, no dramatic mood shifts. Crisp, print-ready reference-sheet look, sharp details",
+    "turnaround": "professional character reference sheet based strictly on the reference image: a technical model turnaround on a clean, neutral plain background, matching the reference's exact visual style (same realism level, rendering approach, texture, color treatment and overall aesthetic). Two horizontal rows. Top row: four full-body standing views side by side in this order: front view, left profile (facing left), right profile (facing right), back view. Bottom row: three highly detailed close-up portraits aligned beneath the full-body row in this order: front portrait, left profile portrait (facing left), right profile portrait (facing right). Perfect identity consistency across every panel; relaxed A-pose; consistent scale and alignment between views, accurate anatomy, clear silhouette; even spacing and clean panel separation, uniform framing, consistent head height across the full-body lineup and consistent facial scale across the portraits. Hands empty and relaxed at the sides, no props, no cigarette, nothing held. Lighting identical across all panels (same direction, intensity and softness), natural controlled shadows, no dramatic mood shifts. Crisp, print-ready reference-sheet look, sharp details",
     "expressions": "expression sheet: one character, head-and-shoulders only, a clean 2x3 grid of six cells on a plain white background, identical framing and lighting in every cell, matching the reference's exact photographic realism in every cell (no illustration, no caricature, no exaggeration), each cell a different subtle adult expression (neutral, faint smile, hard stare, weary, listening, quietly shaken), mouth closed or naturally parted with nothing in or at the mouth, no cigarette, no hands, no props, no body below the chest, no vehicle",
     "wardrobe": "wardrobe study: the character shown twice side by side on a plain white studio background, left in the default outfit, right in the night-cleaner variant (dark coveralls, nitrile gloves, respirator hanging at the neck), full body, neutral standing pose, flat even lighting, no vehicle, no scenery",
     "establishing": "wide establishing view, no people",
@@ -204,9 +204,11 @@ def _character_sections(spec: dict[str, Any]) -> list[tuple[str, str]]:
         pieces = _clean_list(wardrobe.get("pieces"), "default_wardrobe.pieces", limit=8)
         if pieces:
             sections.append(("default_wardrobe", "wearing " + ", ".join(pieces)))
-    props = _clean_list(spec.get("props"), "props", limit=6)
-    if props:
-        sections.append(("props", "props: " + ", ".join(props)))
+    # ``props`` are deliberately NOT rendered for sheet roles: a reference sheet
+    # documents the body, face and default wardrobe, never a scene beat
+    # (a conditional prop such as "cigarette (only when shaken)" otherwise
+    # ends up in the model's hands in every portrait). Props belong to
+    # storyboard prompts, which are not built here.
     if spec.get("era_and_class_signals"):
         sections.append(("era_and_class_signals", _clean(spec["era_and_class_signals"], "era_and_class_signals")))
     if spec.get("heritage_note"):
