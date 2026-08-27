@@ -217,8 +217,15 @@ pre-reveal state). Do not strip the flag and do not edit the description.
 
 ### 9. Stage gate
 
+**Per-entity flow (D18).** You do not wait for the whole cast. As soon as one
+entity has an active receipt, write `checkpoint(status="in_progress")` with a
+PARTIAL `look_packet` (`build_look_packet(..., proposal=proposal_packet)` sets
+`complete: false`); that entity may go straight to `headshots` and its sheet
+while the others are still unwritten. Every entry you carry is held to the
+full receipt rules; `completed` still needs every cast entity.
+
 When every cast entity has an active receipt: checkpoint `awaiting_human` with
-the full `look_packet` — per entity: key, `look_hash`, receipt id, ticket path,
+the full `look_packet` (`complete: true`) — per entity: key, `look_hash`, receipt id, ticket path,
 `spoiler` / `shape_only` flags, import receipt and origin class if any.
 END YOUR TURN. On approval, `write_checkpoint(status="completed",
 human_approved=True)`. Enforcement checks: one active non-`shape_only`,

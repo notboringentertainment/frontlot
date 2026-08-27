@@ -103,7 +103,11 @@ receipt — not the ticket, not a chat "yes" — is what makes a look canon.
 Changing a look later is a reopened ticket plus a retire receipt, and it
 stales every image made from it.
 
-**Gate 4 — Headshots.** One character at a time. If you imported a synthetic
+**Gate 4 — Headshots.** One character at a time — and you do not wait for the
+rest of the cast (D18): as soon as one look is ratified, that character's face
+can be generated, judged, and sheeted while the others are still unwritten.
+The stages read "complete" only when everyone is through, which is what gates
+trailer assembly, not viewing faces. If you imported a synthetic
 image it is the single candidate; otherwise the agent builds a prompt from
 your look block (assembled by a builder from the fields — never typed, never
 copied) and generates four candidates. Then, in the terminal, the gate

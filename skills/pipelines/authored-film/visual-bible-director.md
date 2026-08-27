@@ -59,13 +59,15 @@ Cast cap: `len(cast.character_ids) <= cast_cap.characters` and
 send it back to the proposal gate; do not silently render a subset.
 
 **Look and headshot prerequisites (runtime-enforced, not prose).** The
-checkpoint writer runs `_check_look_packet` before this stage may be
-`in_progress`: every cast entity has an active `look_lock` receipt at the
-ledger tip, non-`shape_only`, non-minor; for `trailer` / `teaser` formats no
-cast entity's active look is `spoiler: true`; every cast character has an
-approved hero at the tip of its `headshot` chain. A missing or retired look, a
-`shape_only` look, or a pending headshot stops the stage before the first
-call. You do not work around any of these — the fix lives in `look_lock` or
+checkpoint writer checks, for every entity the bible CARRIES (D18 per-entity
+flow: `in_progress` / `awaiting_human`) and for the whole cast at
+`completed`: an active `look_lock` receipt at the ledger tip, non-`shape_only`,
+non-minor; for `trailer` / `teaser` formats no active look is `spoiler: true`;
+each carried character has an approved hero at the tip of its `headshot`
+chain. `look_lock` and `headshots` may still be `in_progress` for the others —
+a sheet for character A needs A's face, not B's; a location plate needs that
+location's look. A missing or retired look, a `shape_only` look, or a pending
+headshot stops that entity's work before the first call. You do not work around any of these — the fix lives in `look_lock` or
 `headshots`.
 
 ## The Approval Protocol (Binding)
@@ -344,7 +346,8 @@ before the writer retires anything.
 
 ### 9. Stage Gate Presentation
 
-When every cast entity is approved, palette is written, and the poster is
+Checkpoint `in_progress` with the partial bible as each entity's sheet lands
+(D18). When every cast entity is approved, palette is written, and the poster is
 approved: checkpoint `awaiting_human` with the full bible — per character:
 hero (by `headshot_ref`) + six views + `prompt_recipe` + `wardrobe_negative`;
 per location: establishing + angles; `look_ref` and `sheet_revision` per

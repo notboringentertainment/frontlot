@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "openmontage/artifacts/look_packet",
   "title": "Look Packet",
-  "description": "Output of the look_lock stage (authored-film 1.2): one ratified look per proposal cast entity. Each entry carries the validated look_spec, its look_hash (sha256 of the canonical payload), the receipt_id of the active look_lock approval receipt, and the source ticket reference ({id} for new wayfinder tickets, {path, content_sha256} for legacy ones). (entity_kind, entity_id) is unique (enforced by validate_artifact).",
+  "description": "Output of the look_lock stage (authored-film 1.2): one ratified look per proposal cast entity (D18: an in_progress checkpoint may carry a partial packet, complete=false). Each entry carries the validated look_spec, its look_hash (sha256 of the canonical payload), the receipt_id of the active look_lock approval receipt, and the source ticket reference ({id} for new wayfinder tickets, {path, content_sha256} for legacy ones). (entity_kind, entity_id) is unique (enforced by validate_artifact).",
   "type": "object",
   "required": ["version", "looks"],
   "properties": {
@@ -40,6 +40,10 @@
         },
         "additionalProperties": false
       }
+    },
+    "complete": {
+      "type": "boolean",
+      "description": "D18: true when every proposal_packet.cast entity has an entry; a partial packet (false) may be checkpointed in_progress but never completed."
     },
     "metadata": { "type": "object" }
   },

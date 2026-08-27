@@ -494,7 +494,7 @@ def _enforce_manifest_artifact_contract(
                 continue
             if _pin_mismatch(pipeline_dir, project_id, pipeline_type, predecessor, path, checkpoint):
                 continue
-            if checkpoint.get("status") == "completed" and isinstance(
+            if _predecessor_satisfies(stage, predecessor, checkpoint.get("status")) and isinstance(
                 checkpoint.get("artifacts"), dict
             ):
                 available.update(checkpoint["artifacts"])
@@ -505,6 +505,27 @@ def _enforce_manifest_artifact_contract(
             f"artifact(s) {missing_inputs} were never produced by a completed "
             f"predecessor checkpoint (and are not carried in this one)."
         )
+
+
+# D18 per-entity flow: these predecessors may be PARTIAL (``in_progress`` /
+# ``awaiting_human``) when the named stage advances — one character's
+# ratified look feeds its headshot, one approved face feeds its sheet, while
+# other cast members are still unwritten. The per-entity checks live in
+# lib.canon_enforcement; every later stage (script onward) still needs these
+# stages ``completed``, which is what gates trailer assembly on the full cast.
+PARTIAL_PREDECESSORS: dict[str, frozenset[str]] = {
+    "headshots": frozenset({"look_lock"}),
+    "visual_bible": frozenset({"look_lock", "headshots"}),
+}
+PARTIAL_STATUSES = frozenset({"in_progress", "awaiting_human"})
+
+
+def _predecessor_satisfies(stage: str, predecessor: str, status: Any) -> bool:
+    """Whether a predecessor checkpoint in ``status`` counts as available for
+    ``stage``: completed always; partial only for PARTIAL_PREDECESSORS."""
+    if status == "completed":
+        return True
+    return status in PARTIAL_STATUSES and predecessor in PARTIAL_PREDECESSORS.get(stage, frozenset())
 
 
 def _enforce_stage_prerequisites(
@@ -518,7 +539,9 @@ def _enforce_stage_prerequisites(
 
     ``in_progress`` and failure heartbeats remain writable so an operator can
     inspect or resume a broken run. Only lifecycle advancement
-    (``awaiting_human``/``completed``) is gated.
+    (``awaiting_human``/``completed``) is gated. D18: the predecessors in
+    PARTIAL_PREDECESSORS may be partial (their per-entity receipts are the
+    authority, so the checkpoint-level approval flag is not required).
     """
 
     if status not in {"awaiting_human", "completed"}:
@@ -557,9 +580,10 @@ def _enforce_stage_prerequisites(
         ):
             incomplete.append(predecessor)
             continue
-        if checkpoint.get("status") != "completed":
+        if not _predecessor_satisfies(stage, predecessor, checkpoint.get("status")):
             incomplete.append(predecessor)
             continue
+        partial = checkpoint.get("status") != "completed"
         mismatch = _pin_mismatch(pipeline_dir, project_id, pipeline_type, predecessor, path, checkpoint)
         if mismatch:
             unpinned.append(mismatch)
@@ -567,7 +591,7 @@ def _enforce_stage_prerequisites(
         if predecessor in invalidated:
             stale.append(f"{predecessor} (invalidated by receipt {invalidated[predecessor].receipt_id})")
             continue
-        if _stage_requires_approval(pipeline_type, predecessor) and not checkpoint.get(
+        if not partial and _stage_requires_approval(pipeline_type, predecessor) and not checkpoint.get(
             "human_approved"
         ):
             unapproved.append(predecessor)

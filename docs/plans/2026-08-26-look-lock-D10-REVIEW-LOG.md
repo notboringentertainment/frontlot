@@ -353,3 +353,5 @@ VERDICT: REVISE
 **Accepted, narrowed (1):** #4 — a separate human-facing broker holding the signing key is out of scope for a single-user local tool (recorded in PLAN risks since the first build). Concrete sub-points taken: gate_approve accepts no programmatic answer (the `answer=`/`shown=None` path is removed; decision comes only from the interactive prompt after the canonical record is displayed), and `mint_gate_token` refuses when not invoked from the gate handler process (env marker set only by gate_approve's main, plus a call-site assertion) — a discipline boundary, not a privilege boundary, and documented as such.
 
 ### Reinspection fixes applied (Claude-arbitrated; 7 accepted, #4 narrowed, #1 via bootstrap): suite 1666 → 1704 passed.
+
+### D18 (Ben, 2026-08-26): per-entity look → headshot → sheet flow. Stage completion = all entities, but work proceeds per entity under in_progress. Rationale: cost — never generate a second face before the first is judged. Replaces the all-cast-first behavior Slice A introduced (Codex R2#1 cycle fix).

@@ -1480,17 +1480,24 @@ def _active_headshots(project_dir: Path) -> dict[str, Any]:
         return {}
 
 
-def _check_look_packet_current(project_dir: Path, packet: dict[str, Any], proposal: dict[str, Any], stage: str) -> dict[tuple[str, str], Any]:
-    """Every proposal cast entity has an entry whose look_hash is the active
-    look, hashes its look_spec, names the active receipt, is generation-
-    sufficient, and (trailer/teaser) is not a spoiler. Returns active looks."""
+def _check_look_packet_current(
+    project_dir: Path, packet: dict[str, Any], proposal: dict[str, Any], stage: str,
+    *, required: list[tuple[str, str]] | None = None,
+) -> dict[tuple[str, str], Any]:
+    """Every REQUIRED entity (default: the whole proposal cast) has an entry
+    whose look_hash is the active look, hashes its look_spec, names the
+    active receipt, is generation-sufficient, and (trailer/teaser) is not a
+    spoiler; every entry PRESENT in the packet is checked the same way (D18:
+    a partial packet carries only ratified looks). Returns active looks."""
     from lib.canonical_json import record_sha256
     from lib.look_spec import LookSpecError, generation_sufficient, validate_look_spec
 
     active = _active_looks(project_dir)
     entries = {(e.get("entity_kind"), e.get("entity_id")): e for e in packet.get("looks", []) if isinstance(e, dict)}
     fmt = str((proposal.get("runtime_shape") or {}).get("format") or "")
-    for key in _cast_keys(proposal):
+    keys = list(_cast_keys(proposal) if required is None else required)
+    keys += [k for k in entries if k not in keys]
+    for key in keys:
         entry = entries.get(key)
         if entry is None:
             _fail(f"{stage}: cast entity {key} has no entry in look_packet — every cast entity needs a ratified look.")
@@ -1520,9 +1527,28 @@ def _check_look_packet_current(project_dir: Path, packet: dict[str, Any], propos
 
 
 def _check_look_lock(project_dir: Path, packet: dict[str, Any], proposal: dict[str, Any], status: str) -> None:
-    if status != "completed":
+    """D18: ``completed`` needs every proposal cast entity; ``in_progress`` /
+    ``awaiting_human`` accept a PARTIAL packet whose present entries are all
+    current. A packet claiming ``complete: true`` is held to the full cast."""
+    if status == "completed":
+        if packet.get("complete") is False:
+            _fail("look_lock cannot complete with a look_packet marked complete: false — every cast entity needs a ratified look.")
+        _check_look_packet_current(project_dir, packet, proposal, "look_lock")
         return
-    _check_look_packet_current(project_dir, packet, proposal, "look_lock")
+    _check_look_packet_current(
+        project_dir, packet, proposal, "look_lock",
+        required=None if packet.get("complete") is True else [],
+    )
+
+
+def _look_packet_on_disk(project_dir: Path) -> dict[str, Any]:
+    """The look_packet carried by checkpoint_look_lock.json in ANY status
+    (D18: an in_progress look_lock carries a partial packet). Entries are
+    re-verified against the receipt chain by every consumer, so a partial
+    or stale packet grants nothing by itself."""
+    checkpoint = _read_json(project_dir / "checkpoint_look_lock.json") or {}
+    packet = (checkpoint.get("artifacts") or {}).get("look_packet")
+    return packet if isinstance(packet, dict) else {}
 
 
 def _check_lineage(project_dir: Path, label: str, asset_id: str, receipts_by_sha: dict[str, dict[str, Any]]) -> None:
@@ -1578,20 +1604,24 @@ def _check_sheet_prompt_recipe(label: str, ref: dict[str, Any], receipt: dict[st
 def _check_headshots(project_dir: Path, packet: dict[str, Any], proposal: dict[str, Any], status: str) -> None:
     from lib.headshots import prompt_recipe_sha256
 
-    look_packet_cp = _read_json(project_dir / "checkpoint_look_lock.json") or {}
-    look_packet = (look_packet_cp.get("artifacts") or {}).get("look_packet") or {}
-    active_looks = _check_look_packet_current(project_dir, look_packet, proposal, "headshots")
     char_ids = list((proposal.get("cast") or {}).get("character_ids") or [])
-    receipts = {r["output_sha256"]: r for r in _generation_receipt_rows(project_dir)}
     entries = {e.get("entity_id"): e for e in packet.get("characters", []) if isinstance(e, dict)}
     state = packet.get("state")
     if status == "completed" and state != "approved":
         _fail("headshots cannot complete with a pending headshot_packet — every cast character needs an approved hero.")
-    if status == "awaiting_human" and state not in {"pending", "approved"}:
+    if status != "completed" and state not in {"pending", "approved"}:
         _fail(f"headshot_packet.state {state!r} is not pending|approved.")
     extra = sorted(set(entries) - set(char_ids))
     if extra:
         _fail(f"headshot_packet carries characters {extra} outside proposal_packet.cast.character_ids.")
+    # D18: completion needs a look for every cast character; a pending /
+    # partial packet needs a current look only for the characters it carries.
+    wanted = char_ids if status == "completed" else [c for c in char_ids if c in entries]
+    active_looks = _check_look_packet_current(
+        project_dir, _look_packet_on_disk(project_dir), proposal, "headshots",
+        required=[("character", c) for c in wanted],
+    )
+    receipts = {r["output_sha256"]: r for r in _generation_receipt_rows(project_dir)}
     for cid in char_ids:
         entry = entries.get(cid)
         if entry is None:
@@ -1644,9 +1674,11 @@ def _check_headshots(project_dir: Path, packet: dict[str, Any], proposal: dict[s
             _fail(f"{label} has imported provenance but origin {entry.get('origin')!r}.")
 
 
-def _load_headshot_packet(project_dir: Path, artifacts: dict[str, Any]) -> dict[str, Any] | None:
+def _load_headshot_packet(
+    project_dir: Path, artifacts: dict[str, Any], *, statuses: frozenset[str] = frozenset({"completed"})
+) -> dict[str, Any] | None:
     checkpoint = _read_json(project_dir / "checkpoint_headshots.json")
-    if checkpoint and checkpoint.get("status") == "completed" and isinstance(checkpoint.get("artifacts"), dict):
+    if checkpoint and checkpoint.get("status") in statuses and isinstance(checkpoint.get("artifacts"), dict):
         packet = checkpoint["artifacts"].get("headshot_packet")
         if isinstance(packet, dict):
             return packet
@@ -1654,29 +1686,62 @@ def _load_headshot_packet(project_dir: Path, artifacts: dict[str, Any]) -> dict[
     return packet if isinstance(packet, dict) else None
 
 
+def _bible_entity_keys(bible: Any) -> list[tuple[str, str]]:
+    """(kind, id) of every non-superseded entry carried by a visual_bible."""
+    keys: list[tuple[str, str]] = []
+    if not isinstance(bible, dict):
+        return keys
+    for kind, key in (("character", "characters"), ("location", "locations")):
+        for entry in bible.get(key) or []:
+            if isinstance(entry, dict) and entry.get("status") != "superseded" and entry.get("id"):
+                keys.append((kind, str(entry["id"])))
+    return keys
+
+
 def _check_visual_bible_entry_v12(
-    project_dir: Path, artifacts: dict[str, Any], proposal: dict[str, Any]
+    project_dir: Path, artifacts: dict[str, Any], proposal: dict[str, Any], status: str = "completed",
 ) -> tuple[dict[tuple[str, str], Any], dict[str, Any]]:
-    """visual_bible (in_progress onward): look_packet and headshot_packet
-    must be current. Returns (active looks, active headshots)."""
-    look_packet_cp = _read_json(project_dir / "checkpoint_look_lock.json") or {}
-    look_packet = (look_packet_cp.get("artifacts") or {}).get("look_packet")
-    if not isinstance(look_packet, dict) and isinstance(artifacts.get("look_packet"), dict):
+    """visual_bible: look_packet and headshot_packet must be current.
+
+    D18: ``completed`` needs every cast entity's look and every cast
+    character's approved headshot from a completed headshots checkpoint;
+    ``in_progress`` / ``awaiting_human`` need them only for the entities the
+    bible carries (a sheet for character A needs A's approved face, not
+    B's; a location plate needs that location's look), read from a
+    look_lock / headshots checkpoint in any status. Returns (active looks,
+    active headshots)."""
+    look_packet = _look_packet_on_disk(project_dir)
+    if not look_packet and isinstance(artifacts.get("look_packet"), dict):
         look_packet = artifacts["look_packet"]
-    if not isinstance(look_packet, dict):
-        _fail("visual_bible cannot start: no look_packet from a completed look_lock checkpoint.")
-    active_looks = _check_look_packet_current(project_dir, look_packet, proposal, "visual_bible")
-    packet = _load_headshot_packet(project_dir, artifacts)
-    if not isinstance(packet, dict) or packet.get("state") != "approved":
+    if not look_packet:
+        _fail("visual_bible cannot start: no look_packet from a look_lock checkpoint.")
+    complete = status == "completed"
+    present = _bible_entity_keys(artifacts.get("visual_bible"))
+    active_looks = _check_look_packet_current(
+        project_dir, look_packet, proposal, "visual_bible", required=None if complete else present,
+    )
+    packet = _load_headshot_packet(
+        project_dir, artifacts,
+        statuses=frozenset({"completed"}) if complete else frozenset({"completed", "awaiting_human", "in_progress"}),
+    )
+    if complete and (not isinstance(packet, dict) or packet.get("state") != "approved"):
         _fail("visual_bible cannot start: no approved headshot_packet from a completed headshots checkpoint.")
     active_headshots = _active_headshots(project_dir)
-    entries = {e.get("entity_id"): e for e in packet.get("characters", []) if isinstance(e, dict)}
-    for cid in (proposal.get("cast") or {}).get("character_ids") or []:
+    entries = (
+        {e.get("entity_id"): e for e in packet.get("characters", []) if isinstance(e, dict)}
+        if isinstance(packet, dict) and packet.get("state") == "approved" else {}
+    )
+    cast_chars = list((proposal.get("cast") or {}).get("character_ids") or [])
+    wanted = cast_chars if complete else [cid for kind, cid in present if kind == "character"]
+    for cid in wanted:
         entry = entries.get(cid)
         current = active_headshots.get(cid)
-        if entry is None or current is None:
+        if current is None or (complete and entry is None):
             _fail(f"visual_bible cannot start: character {cid!r} has no approved current headshot.")
-        if current.receipt_id != entry.get("approval_receipt_id") or current.asset_id != (entry.get("hero") or {}).get("asset_id"):
+        if entry is not None and (
+            current.receipt_id != entry.get("approval_receipt_id")
+            or current.asset_id != (entry.get("hero") or {}).get("asset_id")
+        ):
             _fail(f"visual_bible cannot start: headshot for {cid!r} was superseded or retired; re-approve it.")
         look = active_looks.get(("character", cid))
         if look is None or current.look_hash != look.look_hash:
@@ -1760,12 +1825,23 @@ def enforce_authored_canon(
     the project's pinned manifest tuple (lib.pipeline_pin.PinnedPipeline);
     look-lock / headshot / lineage rules apply only under authored-film 1.2."""
     look_lock_profile = _is_look_lock_manifest(pin)
-    if look_lock_profile and stage == "visual_bible" and status == "in_progress":
-        # Stage-entry preflight (R2#12, R2#5): no sheet work starts without a
-        # current look_packet and an approved, current headshot for every
-        # cast character.
+    if look_lock_profile and status == "in_progress":
+        # D18 per-entity flow: an in_progress look_lock / headshots checkpoint
+        # may carry a PARTIAL packet, but every entry it carries is held to
+        # the same receipt rules as at completion. visual_bible stage-entry
+        # preflight (R2#12, R2#5): no sheet work starts without a current
+        # look and an approved, current headshot for every entity the bible
+        # carries.
+        project_dir = pipeline_dir / project_id
         proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}
-        _check_visual_bible_entry_v12(pipeline_dir / project_id, artifacts, proposal)
+        if stage == "look_lock" and isinstance(artifacts.get("look_packet"), dict):
+            _check_look_lock(project_dir, artifacts["look_packet"], proposal, status)
+        elif stage == "headshots" and isinstance(artifacts.get("headshot_packet"), dict):
+            _check_headshots(project_dir, artifacts["headshot_packet"], proposal, status)
+        elif stage == "visual_bible":
+            active_looks, active_headshots = _check_visual_bible_entry_v12(project_dir, artifacts, proposal, status)
+            if isinstance(artifacts.get("visual_bible"), dict):
+                _check_visual_bible_v12(project_dir, artifacts["visual_bible"], proposal, active_looks, active_headshots)
     if status not in {"completed", "awaiting_human"}:
         return
 
@@ -1815,7 +1891,7 @@ def enforce_authored_canon(
             config.data if config else {}, decisions, status,
         )
         if look_lock_profile:
-            active_looks, active_headshots = _check_visual_bible_entry_v12(project_dir, artifacts, proposal)
+            active_looks, active_headshots = _check_visual_bible_entry_v12(project_dir, artifacts, proposal, status)
             _check_visual_bible_v12(
                 project_dir, artifacts.get("visual_bible", {}), proposal, active_looks, active_headshots,
             )

@@ -87,7 +87,12 @@ director, including you, can record one. `headshots` uses the handler's
 selection mode: the writer picks a candidate in the terminal and the handler
 constructs the record; there is no agent-authored record to approve.
 `look_packet` is required by `headshots`; `look_packet` + `headshot_packet`
-by `visual_bible`; `visual_bible` by every later stage. Every checkpoint
+by `visual_bible`; `visual_bible` by every later stage. Per-entity flow (D18):
+`headshots` and `visual_bible` accept those inputs from an `in_progress` /
+`awaiting_human` predecessor (a partial packet) for the entities present, so
+one character's look → face → sheet runs ahead of the rest of the cast;
+`script` onward still needs `look_lock`, `headshots` and `visual_bible`
+`completed` — trailer assembly needs everyone. Every checkpoint
 carries `pipeline {name, version, manifest_digest}`, filled by
 `write_checkpoint` from the loaded manifest.
 

@@ -240,8 +240,15 @@ class TestHeadshotsStage:
         pipeline_dir, project_dir = v12
         c, l = ratified(project_dir)
         write(pipeline_dir, "look_lock", {"look_packet": look_packet_for(project_dir, c, l)})
-        with pytest.raises(CheckpointValidationError, match="no approved headshot_packet"):
-            write(pipeline_dir, "visual_bible", {}, status="in_progress")
+        # D18: entering the stage with no sheets yet is fine (per-entity flow);
+        # a sheet for a character with no approved face is not.
+        write(pipeline_dir, "visual_bible", {}, status="in_progress")
+        hero = image(project_dir, "unapproved-face", look_refs=look_refs_for(c))
+        bible = bible_v11(project_dir, c, l, hero, {"receipt_id": "no-headshot-receipt"})
+        with pytest.raises(CheckpointValidationError, match="no approved current headshot"):
+            write(pipeline_dir, "visual_bible", {"visual_bible": bible}, status="in_progress")
+        with pytest.raises(CheckpointValidationError, match="incomplete or missing: \\['headshots'\\]"):
+            write(pipeline_dir, "visual_bible", {"visual_bible": bible})
 
 
 class TestVisualBibleV12:

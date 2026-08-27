@@ -640,10 +640,16 @@ def build_look_packet(
     looks: Mapping[tuple[str, str], IngestedLook],
     *,
     project_id: Optional[str] = None,
+    proposal: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Emit the ``look_packet`` artifact: one entry per ingested look whose
     hash is the ACTIVE look_lock tip for its key. Any look without an active
-    receipt fails — the packet never carries an unratified look."""
+    receipt fails — the packet never carries an unratified look.
+
+    D18: the packet may be PARTIAL (any subset of the cast). When
+    ``proposal`` (the proposal_packet) is given, ``complete`` is set to
+    whether every ``proposal.cast`` entity has an entry; a partial packet is
+    checkpointed ``in_progress`` and can never complete the stage."""
     active = active_looks(project_dir, project_id=project_id)
     entries = []
     for key in sorted(looks):
@@ -664,4 +670,10 @@ def build_look_packet(
             "receipt_id": current.receipt_id,
             "source_ticket_ref": look.source_ticket_ref,
         })
-    return {"version": "1.0", "looks": entries}
+    packet: dict[str, Any] = {"version": "1.0", "looks": entries}
+    if proposal is not None:
+        cast = proposal.get("cast") or {}
+        wanted = {("character", c) for c in cast.get("character_ids") or []}
+        wanted |= {("location", l) for l in cast.get("location_ids") or []}
+        packet["complete"] = wanted <= set(looks)
+    return packet

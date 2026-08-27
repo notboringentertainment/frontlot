@@ -4,7 +4,12 @@
 
 Fourth stage (`headshots`), between `look_lock` and `visual_bible` (manifest
 1.2). A face is approved as its own stage before any sheet or shot spend
-(D17). For every character in `proposal_packet.cast.character_ids` you get
+(D17). Per-entity flow (D18): a character whose look is ratified may have its
+face generated and chosen while other cast members still have no look — the
+`look_lock` checkpoint may be `in_progress` with a partial packet, and your
+`pending` packet may carry a single character. Only characters PRESENT in your
+packet need a current active look; `completed` still needs every character.
+For every character in `proposal_packet.cast.character_ids` you get
 **one approved hero**: either the writer's attested `imported_synthetic`
 image, or one of up to four candidates generated from the ratified look. The
 writer chooses through a selection gate; the gate handler writes the approval
@@ -165,7 +170,10 @@ write a new `pending` packet, stop again. Each reject-all counts against
 
 ### 8. Completion
 
-When every character in `cast.character_ids` has a headshot receipt at the
+After each approval, rewrite the packet as `state: approved` for the
+characters approved so far and checkpoint `in_progress` — that character's
+sheet may start in `visual_bible` now (D18). When every character in
+`cast.character_ids` has a headshot receipt at the
 ledger tip: rewrite the packet as `state: approved` with, per character,
 `{entity_kind, entity_id, look_ref, hero: ImageRef, origin: generated |
 imported_synthetic, import_receipt_id?, normalized_pixel_hash,
