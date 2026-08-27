@@ -258,3 +258,18 @@ Applied all four non-blocking corrections: row-kind enum of four; pre_submit cal
 
 ## Resolution
 APPROVED after 5 rounds. Build not started; awaiting Ben's sign-off.
+
+## Build (Claude, 2026-08-27)
+Base 4f104f3 → 5cb32f3, six commits, one per plan step:
+- 0ebad50 step 1 — qc_verdict schema; project_config 1.0|1.1 (per-provider egress list, qc block, version-dispatched validation); authored-film 1.3 manifest; visual_bible `qc_receipts`.
+- 93b68c9 step 2 — `lib/sheet_qc/{policy,scoring,local_checks}.py` (policy bundle hash over checklists + system prompt + response schema + scoring rules + local rules); `lib/qc_receipts.py` (stream `qc`: verdict / attempt_started / generation_attached / verdict_attached; ledger, chain, WAL in `lib/gates.py`).
+- 99de6a7 step 3 — `qc_call_context` (open signed attempt required; 1.3 pin; egress prompts + generated_sheet_images); `CostTracker.transaction` (flock + reload + atomic write); `pre_submit_hook` run inside Seedream after reservation, before submit (refusal settles the reservation failed).
+- fbc3393 step 4 — `tools/qa/sheet_judge.py`: O_NOFOLLOW byte read hashed to asset id; judge prompt from policy + signed look/headshot only; claim → submit (OpenAI Responses, background) → commit; raw response content-addressed under canon/qc/objects and its hash signed; one verdict per tuple (reuse); injected adapter only under OPENMONTAGE_TEST_MODE outside the repo projects dir.
+- 11b877b step 5 — `lib/sheet_verify.verify_character_sheet` (shared by checkpoint write, gate construct, gate pre-commit); `lib/sheet_qc/verify.require_qc_pass` (asset/role/entity/look/headshot/policy/judge/attempt-chain/cap/override checks); `qc_override` approval kind + gate constructor; `character_approval_record` seals `qc_receipts`; builder policy hash in prompt_recipe; reconciler QC branch (commit by provider id, void after 15-min grace).
+- 5cb32f3 step 6 — `scripts/sheet_run.py` (lease, cap from signed config and only lowerable, affordability preflight, attempt inside pre-submit hook, judge, bounded retry, override request on block, draft + gate request, canon view rebuild); wardrobe template from look variants; skill doc; `bloodless_sheet_ace.py` removed.
+
+Tests: 5 new files (config/manifest, qc receipts, qc call context, sheet judge, sheet verify, sheet run), regression fixtures for the three 2026-08-26 failures are the judge's real inputs once a key exists.
+
+Blocked on the environment: `OPENAI_API_KEY` in .env is empty (Google/xAI too), so the step-4 probe and the regression run against the four real Ace images have not executed. The adapter is written against the documented Responses API (`background: true`, `text.format json_schema`, image inputs) and must be probed before Sebastian.
+
+Bloodless: `project.yaml` rewritten as 1.1 (OpenAI egress for prompts + generated_sheet_images, judge openai/gpt-5.5, cap 3) — pending signature `config-bloodless-3`; pipeline 1.2→1.3 pending signature `pin-bloodless-1-3`; decision_log approval_policy line added. Until both are signed the project's paid calls are blocked (config digest unsigned), by design.
