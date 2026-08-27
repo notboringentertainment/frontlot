@@ -1567,12 +1567,20 @@ def _verify_prompt_recipe(
             "prompt_recipe.rendered_sha256 does not rebuild from the active look payload "
             f"(role {role!r}) — the prompt was not rendered from the look it names"
         )
-    return {
+    out = {
         "look_hash": look_hash,
         "builder_version": recipe.get("builder_version"),
         "fields_used": list(recipe.get("fields_used") or []),
         "rendered_sha256": recipe.get("rendered_sha256"),
     }
+    # D19.6: the builder policy hash rides in the sealed recipe; it must be the
+    # boundary builder's own (a recipe claiming another policy is refused).
+    claimed = recipe.get("builder_policy_sha256")
+    if claimed is not None:
+        if claimed != rebuilt["prompt_recipe"].get("builder_policy_sha256"):
+            raise LookGovernanceError("prompt_recipe.builder_policy_sha256 is not the boundary builder's policy hash")
+        out["builder_policy_sha256"] = claimed
+    return out
 
 
 def verify_look_governance(
