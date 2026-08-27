@@ -30,7 +30,8 @@ sys.path.insert(0, str(REPO))
 from lib.sheet_qc.verify import MANDATORY_ROLES  # noqa: E402
 
 GENERATION_PRICE_USD = {"turnaround": 0.14, "expressions": 0.07, "wardrobe": 0.07}
-IMAGE_SIZE = {"turnaround": {"width": 2560, "height": 1600}, "expressions": "auto_1K", "wardrobe": "auto_1K"}
+# Explicit sizes: the local pre-check enforces landscape 3:2 for the 2x3 expression grid, so ask for it.
+IMAGE_SIZE = {"turnaround": {"width": 2560, "height": 1600}, "expressions": {"width": 1536, "height": 1024}, "wardrobe": {"width": 1536, "height": 1024}}
 
 
 class SheetRunError(RuntimeError):
@@ -324,8 +325,11 @@ def _image_ref(asset_id: str, role: str, gen: dict) -> dict:
 
 def _hero_ref(asset_id: str, gen: dict) -> dict:
     if gen.get("generator_kind") == "imported":
+        # For an imported hero the import receipt IS its generation receipt and the
+        # pixel hash IS the content address (lib.receipts._build_generation_receipt).
         prov = {"generator_kind": "imported", "origin_tool": gen.get("origin_tool"), "attestation_receipt_id": gen.get("attestation_receipt_id"),
-                "import_receipt_id": gen.get("import_receipt_id"), "normalized_pixel_hash": gen.get("normalized_pixel_hash"),
+                "import_receipt_id": gen.get("import_receipt_id") or gen["receipt_id"],
+                "normalized_pixel_hash": gen.get("normalized_pixel_hash") or asset_id,
                 "generation_receipt_id": gen["receipt_id"]}
         return {"asset_id": asset_id, "path": f"canon/visual/objects/{asset_id}.png", "role": "hero", "provenance": prov}
     return _image_ref(asset_id, "hero", gen)
