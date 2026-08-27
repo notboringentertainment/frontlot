@@ -151,3 +151,52 @@ VERDICT: REVISE
 
 ### Claude's response (revision 3)
 Adopted Codex's simpler shape. Accepted: #2 dual-version config loader tested per consumer; #6/#8/new#2 headshot receipt id in the tuple + verified against the chain tip; #10 override-request transition on exhaustion + --resume; #15/new#5 project-wide run_lease (entity-scoped lease rejected, contradicts D18/director invariant); #15 CostTracker transaction = lock+reload+merge+atomic write; #16 attempts derived from signed QC ledger (attempt_n signed; unsigned qc-attempts.jsonl removed); #17/new#4 claim/submitted/unknown/committed WAL states, lock released during network I/O, reconcile by provider request id, documented lock order; #19 look_spec stays 1.0 (wardrobe pieces deferred, cross-repo); new#1 policy_bundle_sha256 over prompt+schema+scoring+local rules, pinned in signed config; new#3 egress consent for prompts AND generated_sheet_images; new#6 fresh runs always complete mandatory roles; new#7 infer_project_dir + PROJECTS_DIR containment; new#8 raw provider response stored content-addressed and its hash signed with provider request id + returned model version. Nothing rejected this round.
+
+## Round 3 — Codex
+
+Revision 3 closes 13 of the 16 round-2 items. The architecture is now coherent, but retry durability and ambiguous-call recovery still have material contradictions.
+
+### Round-2 disposition
+
+| Item | Status | Result |
+|---|---|---|
+| Partial 1 — config compatibility | Addressed | Dual-version loading, normalization, and consumer tests are specified in [D19 §D19.0](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:23>). |
+| Partial 2 — incomplete signed evidence | Addressed | The receipt binds the full tuple, provider request/model version, prompt hash, and content-addressed raw response. |
+| Partial 3 — incomplete idempotency tuple | Addressed | Active look and headshot asset/receipt identities are now included. |
+| Partial 4 — unreachable override | Addressed | Exhaustion creates an override request and `--resume` consumes it; one local-verdict edge remains below. |
+| Partial 5 — lease/cost concurrency | Addressed | Existing project-wide lease is retained and CostTracker uses locked reload–modify–write transactions. |
+| Partial 6 — transport reconciliation | Partial | The state machine is improved, but it still lacks an identifier guaranteed to exist before an ambiguous network side effect. |
+| Partial 7 — look-spec migration scope | Addressed | Look-spec remains 1.0 and the cross-repository wardrobe-pieces change is deferred. |
+| Open 1 — durable retry bound | Partial | Attempts come from signed state, but the ledger counts unique verdicts rather than every generation/evaluation attempt. |
+| New 1 — incomplete policy hash | Addressed | The bundle covers prompt, schema, scoring, normalization and local checks and is pinned in signed config. |
+| New 2 — stale headshot replay | Addressed | Exact active headshot receipt identity is in both tuple and verifier. |
+| New 3 — missing prompt egress | Addressed | Both `prompts` and `generated_sheet_images` are required. |
+| New 4 — cross-stream atomicity | Partial | Lock order is defined, but the network ambiguity window remains unrecoverable. |
+| New 5 — entity-scoped lease | Addressed | Revision 3 uses the existing project-wide lease. |
+| New 6 — invalid role subsets | Addressed | Fresh revisions require mandatory roles; subsets can only preserve already-passing roles. |
+| New 7 — caller-controlled project root | Addressed | `infer_project_dir`, `PROJECTS_DIR` containment and symlink rejection are explicit. |
+| New 8 — unauditable response hash | Addressed | Exact raw responses are stored content-addressably and their hashes are signed. |
+
+### Remaining material problems
+
+1. **Retry accounting can be bypassed by repeated identical output.** An exact committed tuple returns its old verdict without creating a WAL claim or receipt; if regeneration produces the same bytes repeatedly, the signed attempt count never increases, so resumes can spend indefinitely despite `max_attempts`. **Fix:** append a signed attempt event for every generated candidate, including events that reuse an existing verdict, and enforce the cap against attempt events rather than verdict count. See [lines 57 and 75](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:57>).
+
+2. **A builder fix cannot start a fresh attempt series.** The attempt key includes QC policy but omits `builder_policy_sha256` and generation endpoint/model; after three failures, repairing the builder leaves the run permanently exhausted unless the unrelated judge policy is changed. This contradicts [D19.6](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:79>) and the stated recovery path. **Fix:** bind the attempt series to the generation-policy hash and generation endpoint/model as well as the QC policy.
+
+3. **The retry ceiling is caller-controlled rather than governed.** An agent can invoke `--max-attempts 100` and consume most of the signed project budget through individually cheap calls. **Fix:** make the signed config/policy define the maximum; allow the CLI only to lower it, with a new human-signed config required to raise it. See [D19.5](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:70>).
+
+4. **Ambiguous network calls still cannot always be reconciled.** The plan persists a provider request ID only “when the API returns one”; a timeout or crash after submission but before that ID is persisted leaves `claimed`/`unknown` permanently blocking, while reconciliation itself requires the missing ID. **Fix:** persist a provider-supported client idempotency key or background-job identifier before submission and specify recovery for crashes in every state; otherwise fail the provider probe as unsupported. See [line 57](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:57>).
+
+### New non-blocking corrections
+
+- Local precheck failures use `provider: local`, but the verifier requires the configured external provider; an automatically generated override for such a verdict can never pass. **Fix:** exclude local failures from override candidates and present deterministic remediation instead.
+- Require unique `provider_egress` entries by provider; JSON Schema `uniqueItems` alone permits two conflicting entries for the same provider.
+- Explicitly add `qc` to `gates.CHAIN_STREAMS`; the current whitelist accepts only approval, generation and bootstrap streams at [gates.py line 445](</Users/ben/Projects/OpenMontage/lib/gates.py:445>).
+- [Line 60](</Users/ben/Projects/OpenMontage/docs/plans/2026-08-27-sheet-qc-D19.md:60>) says `policy_version` must equal config, but config contains `policy_bundle_sha256`; align the terminology.
+
+The simpler shape materially improved the plan. The remaining blockers are confined to retry and paid-call recovery rather than the overall gate/receipt design.
+
+VERDICT: REVISE
+
+### Claude's response (revision 4)
+Accepted all four blockers and all four non-blocking corrections: #1 signed attempt events per generated candidate (reuse counts); #2 series key adds builder_policy_sha256 + generation endpoint/model; #3 qc.max_attempts_per_series in signed config, CLI may only lower; #4 client idempotency key persisted before I/O, OpenAI background mode id persisted before polling (probe must confirm or provider rejected), explicit recovery per state incl. voided_unconfirmed write-off after grace (bounded ~$0.03 loss, never a pass). nb: local verdicts excluded from override candidates; one egress entry per provider enforced in loader; qc added to CHAIN_STREAMS; policy_version wording aligned to policy_bundle_sha256.
