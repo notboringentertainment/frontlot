@@ -62,11 +62,56 @@ _ROLE_FRAMING = {
     "full_body": "single character, full body head to toe, neutral standing pose, plain studio background",
     "turnaround": "professional character reference sheet based strictly on the reference image: a technical model turnaround on a clean, neutral plain background, matching the reference's exact visual style (same realism level, rendering approach, texture, color treatment and overall aesthetic). Two horizontal rows. Top row: four complete head-to-toe full-body standing views, every figure fully inside its panel with clear empty space above the head and below the shoes (shoes fully visible, never cropped), side by side in this order: (1) front view facing the camera, (2) left profile with the nose pointing to the LEFT edge of the frame, (3) right profile with the nose pointing to the RIGHT edge of the frame, an exact mirror of panel 2 so the two profiles face away from each other, (4) back view. The two profiles must face opposite directions; never repeat the same profile twice. Bottom row: three highly detailed close-up portraits aligned beneath the full-body row in this order: front portrait, left profile portrait with the nose pointing to the LEFT edge, right profile portrait with the nose pointing to the RIGHT edge (mirror of the previous one, showing the other side of the face). Perfect identity consistency across every panel; relaxed A-pose; consistent scale and alignment between views, accurate anatomy, clear silhouette; even spacing and clean panel separation, uniform framing, consistent head height across the full-body lineup and consistent facial scale across the portraits. Hands empty and relaxed at the sides, no props, no cigarette, nothing held. Lighting identical across all panels (same direction, intensity and softness), natural controlled shadows, no dramatic mood shifts. Crisp, print-ready reference-sheet look, sharp details",
     "expressions": "expression sheet: one character, head-and-shoulders only, a clean 2x3 grid of six cells on a plain white background, identical framing and lighting in every cell, matching the reference's exact photographic realism in every cell (no illustration, no caricature, no exaggeration), each cell a different subtle adult expression (neutral, faint smile, hard stare, weary, listening, quietly shaken), mouth closed or naturally parted with nothing in or at the mouth, no cigarette, no hands, no props, no body below the chest, no vehicle",
-    "wardrobe": "wardrobe study: the character shown twice side by side on a plain white studio background, left in the default outfit, right in the night-cleaner variant (dark coveralls, nitrile gloves, respirator hanging at the neck), full body, neutral standing pose, flat even lighting, no vehicle, no scenery",
+    # ``wardrobe`` is rendered from the look's own wardrobe_variants (D19.6, Codex R1#19):
+    # see _wardrobe_framing. No project-specific words live in this file.
+    "wardrobe": "wardrobe study: the character shown side by side on a plain white studio background, full body head to toe, neutral standing pose, flat even lighting, no vehicle, no scenery",
     "establishing": "wide establishing view, no people",
     "detail": "medium detail view of the place, no people",
     "time_variant": "the same place at a different time of day, no people",
 }
+
+def _wardrobe_framing(look_spec: dict[str, Any]) -> str:
+    """The wardrobe study names each of the look's wardrobe_variants[] by name
+    and occasion; garments are stated only when the look states them."""
+    variants = look_spec.get("wardrobe_variants") or []
+    parts = ["left figure in the default outfit"]
+    for i, v in enumerate(variants[:4]):
+        if not isinstance(v, dict) or not v.get("name"):
+            continue
+        name = _clean(str(v.get("name")), "wardrobe_variants.name")
+        when = v.get("when")
+        desc = f"the '{name}' variant" + (f" (worn {_clean(str(when), 'wardrobe_variants.when')})" if when else "")
+        parts.append(f"next figure in {desc}")
+    if len(parts) == 1:
+        parts.append("right figure in the same default outfit seen from behind")
+    return _ROLE_FRAMING["wardrobe"] + "; " + ", ".join(parts)
+
+
+def _role_framing(role: str, look_spec: dict[str, Any]) -> str:
+    if role == "wardrobe":
+        return _wardrobe_framing(look_spec)
+    return _ROLE_FRAMING[role]
+
+
+def builder_policy_sha256() -> str:
+    """Hash of everything that shapes a rendering (D19.6, Codex R1#19): every
+    role template, the negative defaults and rendering constants, and the
+    builder version. Recorded in every prompt_recipe and in the QC attempt
+    series key, so any template edit opens a fresh attempt series without
+    anyone remembering to bump a string."""
+    from lib.canonical_json import record_sha256
+
+    return record_sha256({
+        "builder_version": BUILDER_VERSION,
+        "role_framing": dict(_ROLE_FRAMING),
+        "wardrobe_rule": "default + each wardrobe_variants[] by name/when; garments only when stated",
+        "negative_defaults": list(NEGATIVE_DEFAULTS),
+        "negative_prefix": NEGATIVE_BLOCK_PREFIX,
+        "negative_separator": NEGATIVE_BLOCK_SEPARATOR,
+        "limits": {"field_chars": MAX_FIELD_CHARS, "list_items": MAX_LIST_ITEMS, "palette": MAX_PALETTE},
+        "props_rendered": False,
+    })
+
 
 # --- refusal patterns (documented, small) ----------------------------------
 
@@ -286,7 +331,7 @@ def build_prompt(
     risks = _clean_list(look_spec.get("continuity_risks"), "continuity_risks", limit=12)
     if risks:
         sections.append(("continuity_risks", "keep consistent: " + "; ".join(risks)))
-    sections.append(("role", _ROLE_FRAMING[role]))
+    sections.append(("role", _role_framing(role, look_spec)))
 
     negative_lines = _clean_list(look_spec.get("negative_lines"), "negative_lines", limit=12)
     negative = render_negative_block(negative_lines)
@@ -301,6 +346,7 @@ def build_prompt(
         "prompt_recipe": {
             "look_hash": record_sha256(look_spec),
             "builder_version": BUILDER_VERSION,
+            "builder_policy_sha256": builder_policy_sha256(),
             "fields_used": fields_used,
             "rendered_sha256": rendered_prompt_sha256(prompt),
         },

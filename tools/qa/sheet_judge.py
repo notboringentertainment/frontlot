@@ -109,6 +109,68 @@ class OpenAIResponsesAdapter(JudgeAdapter):
                     "usage": data.get("usage"), "error": data.get("error"), "raw": data}
 
 
+def commit_result(root: Path, wal: dict[str, Any], result: dict[str, Any], tracker: Any) -> tuple[dict, dict, str]:
+    """Turn a provider result into a signed verdict for the evaluation the WAL
+    row describes (used by SheetJudge and by the reconciler). Stores the raw
+    response content-addressed, scores in code, records the verdict, attaches
+    it to the attempt, settles the reservation, deletes the WAL row."""
+    from lib import gates, qc_receipts
+    from lib.sheet_qc import scoring
+    from tools.cost_tracker import reconcile_paid_call
+
+    evaluation = dict(wal["evaluation"])
+    tuple_sha = wal["tuple_sha256"]
+    role = evaluation["role"]
+    raw_bytes = json.dumps(result.get("raw", result), sort_keys=True).encode("utf-8")
+    raw_sha = hashlib.sha256(raw_bytes).hexdigest()
+    qc_dir = root / QC_OBJECTS_SUBDIR
+    qc_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = qc_dir / f"{raw_sha}.json"
+    if not raw_path.exists():
+        tmp = raw_path.with_suffix(".tmp")
+        tmp.write_bytes(raw_bytes)
+        os.replace(tmp, raw_path)
+    answers: Any = None
+    if result.get("status") == "completed" and result.get("output_text"):
+        try:
+            answers = (json.loads(result["output_text"]) or {}).get("items")
+        except ValueError:
+            answers = None
+    sc = scoring.score(role, answers)
+    reserved = 0.0
+    from tools.cost_tracker import load_reservations
+    res = load_reservations(root).get(wal.get("reservation_id") or "")
+    if res is not None:
+        reserved = float(res.get("reserved_usd") or 0.0)
+    v = dict(evaluation, provider_request_id=wal.get("provider_request_id"), provider_model_version=result.get("model"),
+             raw_response_asset_id=raw_sha, items=sc["items"], verdict=sc["verdict"],
+             failing_items=sc["failing_items"], warnings=sc["warnings"], cost_usd=round(reserved, 6))
+    v["tuple_sha256"] = tuple_sha
+    with gates.receipt_lock(evaluation["project_id"], qc_receipts.STREAM):
+        row = qc_receipts.record_verdict(root, v)
+        qc_receipts.attach_verdict(root, wal["attempt_id"], qc_receipt_id=row["receipt_id"])
+        if res is not None and res.get("state") not in ("completed", "failed"):
+            reconcile_paid_call(root, wal["reservation_id"], reserved, "completed", tracker)
+        gates.qc_wal_delete(tuple_sha)
+    return row, sc, raw_sha
+
+
+def void_claim(root: Path, wal: dict[str, Any], tracker: Any, *, reason: str) -> None:
+    """A claimed/unknown judge call with no provider id and no answer after the
+    grace period (Codex R3#4): settle the reservation as spent (bounded loss
+    of one judge call, never a pass), release the tuple, keep the attempt
+    open for the run to re-judge."""
+    from lib import gates
+    from tools.cost_tracker import load_reservations, reconcile_paid_call
+
+    res = load_reservations(root).get(wal.get("reservation_id") or "")
+    if res is not None and res.get("state") not in ("completed", "failed"):
+        reconcile_paid_call(root, wal["reservation_id"], float(res.get("reserved_usd") or 0.0), "completed", tracker)
+    wal = dict(wal, state="voided_unconfirmed", voided_reason=reason)
+    gates.qc_wal_write(wal["tuple_sha256"], wal)
+    gates.qc_wal_delete(wal["tuple_sha256"])
+
+
 class SheetJudge(BaseTool):
     name = "sheet_judge"
     version = "1.0.0"
@@ -300,31 +362,8 @@ class SheetJudge(BaseTool):
 
         # ---- commit ----
         try:
-            raw_bytes = json.dumps(result.get("raw", result), sort_keys=True).encode("utf-8")
-            raw_sha = hashlib.sha256(raw_bytes).hexdigest()
-            qc_dir = root / QC_OBJECTS_SUBDIR
-            qc_dir.mkdir(parents=True, exist_ok=True)
-            raw_path = qc_dir / f"{raw_sha}.json"
-            if not raw_path.exists():
-                tmp = raw_path.with_suffix(".tmp")
-                tmp.write_bytes(raw_bytes)
-                os.replace(tmp, raw_path)
-            answers: Any = None
-            if result.get("status") == "completed" and result.get("output_text"):
-                try:
-                    answers = (json.loads(result["output_text"]) or {}).get("items")
-                except ValueError:
-                    answers = None
-            sc = scoring.score(role, answers)
-            v = dict(evaluation, provider_request_id=provider_id, provider_model_version=result.get("model"),
-                     raw_response_asset_id=raw_sha, items=sc["items"], verdict=sc["verdict"],
-                     failing_items=sc["failing_items"], warnings=sc["warnings"], cost_usd=round(estimate, 6))
-            v["tuple_sha256"] = tuple_sha
-            with gates.receipt_lock(pid, qc_receipts.STREAM):
-                row = qc_receipts.record_verdict(root, v)
-                qc_receipts.attach_verdict(root, started["attempt_id"], qc_receipt_id=row["receipt_id"])
-                reconcile_paid_call(root, reservation_id, estimate, "completed", tracker)
-                gates.qc_wal_delete(tuple_sha)
+            wal = gates.qc_wal_read(tuple_sha) or {}
+            row, sc, raw_sha = commit_result(root, wal, result, tracker)
         except Exception as exc:  # noqa: BLE001
             wal = gates.qc_wal_read(tuple_sha) or {}
             wal.update({"state": "unknown", "error": f"commit: {exc}"[:400]})

@@ -470,6 +470,45 @@ def _bible_and_palette(root: Path, req: dict) -> tuple[dict, dict]:
     return bible, bible.get("palette") or {}
 
 
+def _full_sheet_check(root: Path, entry: dict, entity_id: str) -> dict:
+    """D19 R1#11: the gate runs the SAME verifier canon enforcement runs at
+    checkpoint write (lineage, look binding, headshot binding, prompt-recipe
+    fidelity, and under authored-film 1.3 the QC verdict chain). Returns
+    ``{role: verdict_row}`` (empty under 1.2)."""
+    from lib.canon_enforcement import _generation_receipt_rows, _is_qc_manifest
+    from lib.checkpoint import CheckpointValidationError
+    from lib.headshots import HeadshotError, active_headshots
+    from lib.look_ingest import LookIngestError, active_look_for
+    from lib.pipeline_pin import PipelinePinError, _read_marker, pinned_pipeline
+    from lib.project_config import ProjectConfigError, load_verified_project_config
+    from lib.sheet_verify import verify_character_sheet
+
+    try:
+        pin = pinned_pipeline(root, str(_read_marker(root).get("pipeline_type") or "authored-film"))
+    except PipelinePinError as exc:
+        raise GateHandlerError(f"cannot resolve the project's pinned pipeline: {exc}") from exc
+    qc_required = _is_qc_manifest(pin)
+    config = None
+    if qc_required:
+        try:
+            config = load_verified_project_config(root)
+        except ProjectConfigError as exc:
+            raise GateHandlerError(f"sheet QC needs a verified 1.1 project config: {exc}") from exc
+    try:
+        look = active_look_for(root, "character", entity_id)
+        heads = active_headshots(root)
+    except (LookIngestError, HeadshotError) as exc:
+        raise GateHandlerError(str(exc)) from exc
+    receipts_by_sha = {r["output_sha256"]: r for r in _generation_receipt_rows(root)}
+    try:
+        return verify_character_sheet(
+            root, entry, active_look=look, active_headshot=heads.get(entity_id) if isinstance(heads, dict) else None,
+            receipts_by_sha=receipts_by_sha, qc_required=qc_required, config=config, qc_must_be_present=qc_required,
+        )
+    except CheckpointValidationError as exc:
+        raise GateHandlerError(str(exc)) from exc
+
+
 def _construct_character(root: Path, req: dict) -> Constructed:
     from lib.canon_enforcement import character_approval_record, sheet_roles
 
@@ -484,7 +523,59 @@ def _construct_character(root: Path, req: dict) -> Constructed:
         if ref:
             _verify_image_ref(root, ref, f"character {entity_id!r} {role}")
             evidence.append(f"{role}: {root / ref['path']} (sha256 {ref['asset_id']})")
-    return Constructed(character_approval_record(entry, palette), None, entity_id, evidence=tuple(evidence))
+    verdicts = _full_sheet_check(root, entry, entity_id)
+    for role, row in sorted(verdicts.items()):
+        warn = ", ".join(row.get("warnings") or []) or "none"
+        state = "pass" if row.get("verdict") == "pass" else f"FAIL {row.get('failing_items')} accepted by qc_override"
+        evidence.append(f"{role}: QC {state} (policy {row.get('policy_version')}, judge {row.get('provider')}/{row.get('model')}, "
+                        f"attempt {row.get('attempt_n')}, receipt {row.get('receipt_id')}, warnings: {warn})")
+
+    def pre_commit() -> None:
+        _full_sheet_check(root, entry, entity_id)
+
+    return Constructed(character_approval_record(entry, palette), None, entity_id, evidence=tuple(evidence),
+                       pre_commit_check=pre_commit)
+
+
+def _construct_qc_override(root: Path, req: dict) -> Constructed:
+    """D19.4: the human accepts specific FAILED items of ONE verdict. The
+    record is rebuilt from the signed verdict: the request only names the
+    receipt, the item ids and the reason; everything else comes from the
+    QC chain and is shown before signing."""
+    from lib import qc_receipts
+
+    entity_id = _require_entity(req)
+    rid = req.get("qc_receipt_id")
+    if not isinstance(rid, str) or not rid:
+        raise GateHandlerError("qc_override request needs qc_receipt_id")
+    row = qc_receipts.find_verdict_by_id(root, rid)
+    if row is None:
+        raise GateHandlerError(f"qc receipt {rid!r} is not a verified verdict of this project")
+    if row.get("entity_id") != entity_id:
+        raise GateHandlerError(f"verdict {rid} is for {row.get('entity_id')!r}, request names {entity_id!r}")
+    if row.get("verdict") != "fail":
+        raise GateHandlerError("only a FAILED verdict can be overridden")
+    if row.get("provider") == "local":
+        raise GateHandlerError("deterministic pre-check failures cannot be overridden; regenerate")
+    items = req.get("item_ids")
+    if not isinstance(items, list) or not items:
+        raise GateHandlerError("qc_override request needs item_ids (the failed items you accept)")
+    failing = set(row.get("failing_items") or [])
+    unknown = sorted(set(items) - failing)
+    if unknown:
+        raise GateHandlerError(f"item_ids {unknown} are not failing items of verdict {rid} (failing: {sorted(failing)})")
+    reason = req.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise GateHandlerError("qc_override request needs a reason")
+    _verify_image_ref(root, {"asset_id": row["asset_id"], "path": f"canon/visual/objects/{row['asset_id']}.png"}, "judged asset")
+    notes = {i["id"]: i.get("note") for i in row.get("items") or [] if isinstance(i, dict)}
+    evidence = [f"asset: {root / 'canon' / 'visual' / 'objects' / (row['asset_id'] + '.png')}",
+                f"role {row.get('role')}, judge {row.get('provider')}/{row.get('model')}, attempt {row.get('attempt_n')}"]
+    for i in sorted(items):
+        evidence.append(f"accepting failed item {i}: judge said {notes.get(i)!r}")
+    record = {"qc_receipt_id": rid, "asset_id": row["asset_id"], "role": row.get("role"),
+              "item_ids": sorted(set(items)), "reason": reason.strip()}
+    return Constructed(record, {"qc_receipt_id": rid}, entity_id, evidence=tuple(evidence))
 
 
 def _construct_location(root: Path, req: dict) -> Constructed:
@@ -734,6 +825,7 @@ CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
     "location": _construct_location,
     "poster": _construct_poster,
     "headshot": _construct_headshot,
+    "qc_override": _construct_qc_override,
 }
 assert set(CONSTRUCTORS) == set(APPROVAL_KINDS), "every approval kind needs a gate-side constructor"
 

@@ -56,6 +56,8 @@ APPROVAL_KINDS = frozenset(
         "hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review",
         # Plan D10 (look locks) and Slice A' (headshots, reference import, manifest pins).
         "look_lock", "headshot", "reference_import", "pipeline_migration",
+        # D19.4: a human accepting specific failed QC items of ONE verdict.
+        "qc_override",
     }
 )
 ARTIFACT_REVIEW_FIELDS = ("artifact_type", "artifact_version", "artifact_digest", "migration_status")
@@ -76,6 +78,7 @@ ENVELOPE_FIELDS: dict[str, dict[str, bool]] = {
     },
     "reference_import": {"origin_class": True, "normalized_pixel_hash": True},
     "pipeline_migration": {"supersedes_receipt_id": False},
+    "qc_override": {"qc_receipt_id": True},
 }
 REFERENCE_ORIGIN_CLASSES = frozenset({"imported_synthetic", "casting_inspiration"})
 ENTITY_KINDS = frozenset({"character", "location"})
@@ -273,6 +276,14 @@ def validate_envelope(
             raise ValueError("look_lock promotion_refs must be a list")
     if kind == "headshot" and record.get("look_hash") != env["look_hash"]:
         raise ValueError("headshot: record.look_hash must equal envelope look_hash")
+    if kind == "qc_override":
+        if record.get("qc_receipt_id") != env["qc_receipt_id"]:
+            raise ValueError("qc_override: record.qc_receipt_id must equal envelope qc_receipt_id")
+        items = record.get("item_ids")
+        if not isinstance(items, list) or not items or not all(isinstance(i, str) and i for i in items):
+            raise ValueError("qc_override: record.item_ids must be a non-empty list of item ids")
+        if not isinstance(record.get("reason"), str) or not record["reason"].strip():
+            raise ValueError("qc_override: record.reason is required")
     if kind == "reference_import":
         if env["origin_class"] not in REFERENCE_ORIGIN_CLASSES:
             raise ValueError(f"origin_class must be one of {sorted(REFERENCE_ORIGIN_CLASSES)}")
@@ -603,6 +614,7 @@ def normalize_look_ref(ref: dict) -> dict:
 
 
 PROMPT_RECIPE_FIELDS = ("look_hash", "builder_version", "fields_used", "rendered_sha256")
+PROMPT_RECIPE_OPTIONAL_FIELDS = ("builder_policy_sha256",)  # D19.6; None on pre-1.3 receipts
 _HEX64 = frozenset("0123456789abcdef")
 
 
@@ -624,6 +636,13 @@ def normalize_prompt_recipe(recipe: dict) -> dict:
     if not isinstance(fields, list) or not all(isinstance(f, str) and f for f in fields):
         raise ValueError(f"prompt_recipe.fields_used must be a list of field names: {recipe!r}")
     out["fields_used"] = list(fields)
+    for k in PROMPT_RECIPE_OPTIONAL_FIELDS:
+        v = recipe.get(k)
+        if v is None:
+            continue  # pre-1.3 recipes stay byte-identical
+        if not _is_sha256(v):
+            raise ValueError(f"prompt_recipe.{k} must be a 64-hex sha256 when present: {recipe!r}")
+        out[k] = v
     return out
 
 

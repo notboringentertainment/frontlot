@@ -150,6 +150,76 @@ def recover_output(project_root: Path, reservation: dict[str, Any], *, api_key: 
     return recovered
 
 
+QC_GRACE_SECONDS = 15 * 60
+
+
+def reconcile_qc(project_root: Path, tracker: Any, summary: dict[str, list[str]], *, out=None) -> set[str]:
+    """Resolve every QC WAL row of this project. Returns the reservation ids
+    it handled (so the FAL loop skips them). Rows WITH a provider id are
+    fetched and committed/voided; rows WITHOUT one are voided after the grace
+    period (bounded loss, never a pass)."""
+    from datetime import datetime, timezone
+
+    from lib import gates
+    from lib.project_config import load_verified_project_config
+    from tools.qa.sheet_judge import OpenAIResponsesAdapter, commit_result, void_claim
+
+    out = out or sys.stdout
+    handled: set[str] = set()
+    root = Path(project_root).resolve()
+    rows = [w for w in gates.qc_wal_entries() if str(w.get("project_root")) == str(root)]
+    if not rows:
+        return handled
+    config = load_verified_project_config(root)
+    qc = config.qc
+    for w in rows:
+        rid = w.get("reservation_id")
+        if rid:
+            handled.add(rid)
+        tuple_sha = w["tuple_sha256"]
+        state = w.get("state")
+        pid_ = w.get("provider_request_id")
+        if state == "voided_unconfirmed":
+            gates.qc_wal_delete(tuple_sha)
+            continue
+        if pid_ and qc is not None and qc.judge_provider == "openai":
+            key = os.environ.get("OPENAI_API_KEY")
+            if not key:
+                summary["manual"].append(f"qc:{tuple_sha[:12]}")
+                print(f"[manual] qc {tuple_sha[:12]}: provider id {pid_} but OPENAI_API_KEY is not set", file=out)
+                continue
+            try:
+                result = OpenAIResponsesAdapter(key).wait(pid_, deadline_s=60, poll_s=3)
+            except TimeoutError:
+                summary["running"].append(f"qc:{tuple_sha[:12]}")
+                print(f"[running] qc {tuple_sha[:12]}: response {pid_} still in progress; re-run later", file=out)
+                continue
+            if result.get("status") == "completed":
+                row, sc, _ = commit_result(root, w, result, tracker)
+                summary["completed"].append(rid or tuple_sha[:12])
+                print(f"[completed] qc {tuple_sha[:12]}: verdict {sc['verdict']} recorded as {row['receipt_id']}", file=out)
+            else:
+                void_claim(root, w, tracker, reason=f"provider status {result.get('status')}")
+                summary["failed"].append(rid or tuple_sha[:12])
+                print(f"[failed] qc {tuple_sha[:12]}: provider status {result.get('status')}; claim voided, attempt stays open", file=out)
+            continue
+        claimed_at = w.get("claimed_at")
+        age = None
+        try:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(claimed_at))).total_seconds()
+        except (TypeError, ValueError):
+            pass
+        if age is not None and age < QC_GRACE_SECONDS:
+            summary["running"].append(f"qc:{tuple_sha[:12]}")
+            print(f"[running] qc {tuple_sha[:12]}: {state} without a provider id for {int(age)}s; grace is {QC_GRACE_SECONDS}s", file=out)
+            continue
+        void_claim(root, w, tracker, reason=f"{state} with no provider id after grace")
+        summary["failed"].append(rid or tuple_sha[:12])
+        print(f"[voided] qc {tuple_sha[:12]}: {state} with no provider id after the grace period; reservation settled "
+              f"as spent (bounded loss of one judge call), tuple released, attempt left open", file=out)
+    return handled
+
+
 def reconcile_project(project_root: Path, *, api_key: str | None, out=None) -> dict[str, list[str]]:
     """Reconcile every nonterminal reservation. Returns ids grouped by outcome."""
     from tools.cost_tracker import nonterminal_reservations, reconcile_paid_call
@@ -177,7 +247,9 @@ def reconcile_project(project_root: Path, *, api_key: str | None, out=None) -> d
         _report_replayed(exc.recovered)
         summary["manual"].append("generation-wal")
         print(f"[manual] generation WAL: {exc}", file=out)
-    pending = nonterminal_reservations(project_root)
+    # D19: judge calls (sheet_judge) reconcile through the QC WAL, never by resubmission.
+    qc_reservations = reconcile_qc(project_root, tracker, summary, out=out)
+    pending = [r for r in nonterminal_reservations(project_root) if r["reservation_id"] not in qc_reservations]
     if not pending:
         print("nothing to reconcile: every reservation is terminal", file=out)
         return summary

@@ -739,6 +739,11 @@ def character_approval_record(entry: dict[str, Any], palette: dict[str, Any]) ->
         record["prompt_recipe"] = entry.get("prompt_recipe")
         record["look_hash"] = (entry.get("look_ref") or {}).get("look_hash")
         record["sheet_revision"] = entry.get("sheet_revision")
+        if entry.get("qc_receipts") is not None:
+            # D19 R1#12: the human-signed digest covers exactly which QC
+            # verdicts were relied on; any change between display and
+            # signing changes the digest and the gate refuses.
+            record["qc_receipts"] = dict(entry["qc_receipts"])
     else:
         record["approved_prompt_block"] = entry.get("approved_prompt_block")
     return record
@@ -1770,10 +1775,19 @@ def _check_visual_bible_entry_v12(
 def _check_visual_bible_v12(
     project_dir: Path, bible: dict[str, Any], proposal: dict[str, Any],
     active_looks: dict[tuple[str, str], Any], active_headshots: dict[str, Any],
+    *, qc_required: bool = False,
 ) -> None:
     if _version(bible) != "1.1":
         _fail("authored-film 1.2 requires a 1.1 visual_bible (look_ref, sheet_revision, prompt_recipe).")
     receipts = {r["output_sha256"]: r for r in _generation_receipt_rows(project_dir)}
+    config = None
+    if qc_required:
+        from lib.project_config import ProjectConfigError, load_verified_project_config
+
+        try:
+            config = load_verified_project_config(project_dir)
+        except ProjectConfigError as exc:
+            _fail(f"visual_bible under authored-film 1.3 needs a verified 1.1 project config for sheet QC: {exc}")
     for kind, key in (("character", "characters"), ("location", "locations")):
         for entry in bible.get(key, []):
             if not isinstance(entry, dict) or entry.get("status") == "superseded":
@@ -1792,28 +1806,14 @@ def _check_visual_bible_v12(
             if isinstance(recipe, dict) and recipe.get("look_hash") != look.look_hash:
                 _fail(f"{kind} {eid!r} prompt_recipe.look_hash is not the active look.")
             if kind == "character":
-                refs = [("hero", entry.get("hero") or {})] + [
-                    (role, (entry.get("sheet") or {}).get(role) or {}) for role in sheet_roles(entry)
-                ]
-                current = active_headshots.get(eid)
-                if current is None:
-                    _fail(f"character {eid!r} has no approved headshot; a face is approved before any sheet.")
-                if (entry.get("hero") or {}).get("asset_id") != current.asset_id:
-                    _fail(f"character {eid!r} hero {entry.get('hero', {}).get('asset_id')} is not the approved headshot {current.asset_id}.")
-                wanted = {"entity_id": eid, "asset_id": current.asset_id, "approval_receipt_id": current.receipt_id}
-                for role, ref in refs:
-                    label = f"character {eid!r} {role}"
-                    _check_lineage(project_dir, label, ref.get("asset_id"), receipts)
-                    receipt = _receipt_for(ref, receipts)
-                    _require_look_refs(label, ref, receipt, (kind, eid), look.look_hash)
-                    if role != "hero" and receipt.get("headshot_ref") != wanted:
-                        _fail(
-                            f"{label}: generation receipt {receipt.get('receipt_id')!r} headshot_ref "
-                            f"{receipt.get('headshot_ref')!r} does not name the approved hero {wanted} — "
-                            f"sheets derive only from the approved headshot."
-                        )
-                    if role != "hero":
-                        _check_sheet_prompt_recipe(label, ref, receipt, look.look_hash)
+                # D19 R1#11: ONE verifier shared with the gate (construct + pre-commit).
+                from lib.sheet_verify import verify_character_sheet
+
+                verify_character_sheet(
+                    project_dir, entry, active_look=look, active_headshot=active_headshots.get(eid),
+                    receipts_by_sha=receipts, qc_required=qc_required, config=config,
+                    qc_must_be_present=qc_required and entry.get("status") == "approved",
+                )
             else:
                 refs = [("establishing", entry.get("establishing") or {})] + [
                     (f"angles[{i}]", a or {}) for i, a in enumerate(entry.get("angles") or [])
@@ -1859,7 +1859,8 @@ def enforce_authored_canon(
         elif stage == "visual_bible":
             active_looks, active_headshots = _check_visual_bible_entry_v12(project_dir, artifacts, proposal, status)
             if isinstance(artifacts.get("visual_bible"), dict):
-                _check_visual_bible_v12(project_dir, artifacts["visual_bible"], proposal, active_looks, active_headshots)
+                _check_visual_bible_v12(project_dir, artifacts["visual_bible"], proposal, active_looks, active_headshots,
+                                        qc_required=_is_qc_manifest(pin))
     if status not in {"completed", "awaiting_human"}:
         return
 
@@ -1912,6 +1913,7 @@ def enforce_authored_canon(
             active_looks, active_headshots = _check_visual_bible_entry_v12(project_dir, artifacts, proposal, status)
             _check_visual_bible_v12(
                 project_dir, artifacts.get("visual_bible", {}), proposal, active_looks, active_headshots,
+                qc_required=_is_qc_manifest(pin),
             )
     elif stage == "look_lock":
         proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}
