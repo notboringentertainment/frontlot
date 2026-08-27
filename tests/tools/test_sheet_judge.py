@@ -185,3 +185,41 @@ def test_fake_adapter_refused_outside_temp_projects_root(world, monkeypatch):
     r = SheetJudge(adapter=FakeAdapter(_all("turnaround"))).execute(
         {"project_dir": str(w["project"]), "attempt_id": a["attempt_id"], "asset_id": w["asset"]})
     assert not r.success and ("temp" in r.error or "not under" in r.error)
+
+
+def test_voided_attempt_is_terminal(world, monkeypatch):
+    """Round 2 #1: nothing can be attached to, judged in, or accepted from a voided attempt."""
+    w = world
+    a = qr.start_attempt(w["project"], w["key"], max_attempts=3)
+    qr.void_attempt(w["project"], a["attempt_id"], reason="generation failed")
+    with pytest.raises(qr.QCReceiptError, match="voided"):
+        qr.attach_generation(w["project"], a["attempt_id"], generation_receipt_id=w["gen"]["receipt_id"], asset_id=w["asset"])
+    with pytest.raises(qr.QCReceiptError, match="voided"):
+        qr.attach_verdict(w["project"], a["attempt_id"], qc_receipt_id="v")
+    r = SheetJudge(adapter=FakeAdapter(_all("turnaround"))).execute(
+        {"project_dir": str(w["project"]), "attempt_id": a["attempt_id"], "asset_id": w["asset"]})
+    assert not r.success and "voided" in r.error
+    assert qr.open_attempts(w["project"], qr.series_sha256(dict(w["key"], project_id=w["project"].name))) == []
+    a2 = qr.start_attempt(w["project"], w["key"], max_attempts=3)
+    assert a2["attempt_n"] == 2  # the void still counted
+
+
+def test_provider_id_survives_wal_write_failure(world, monkeypatch):
+    """Round 2 #2: if the QC WAL write fails after submit, the reservation still carries the id."""
+    from lib import gates
+    w = world; a = _attempt(w)
+    real = gates.qc_wal_write
+    calls = {"n": 0}
+
+    def flaky(tuple_sha, entry):
+        calls["n"] += 1
+        if entry.get("state") == "submitted":
+            raise OSError("disk full")
+        return real(tuple_sha, entry)
+
+    monkeypatch.setattr(gates, "qc_wal_write", flaky)
+    r = SheetJudge(adapter=FakeAdapter(_all("turnaround"), fail_wait=True)).execute(
+        {"project_dir": str(w["project"]), "attempt_id": a["attempt_id"], "asset_id": w["asset"]})
+    assert not r.success
+    res = [v for v in load_reservations(w["project"]).values() if v.get("tool") == "sheet_judge"][-1]
+    assert res["provider_request_id"] == "resp_fake_1"

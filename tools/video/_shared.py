@@ -1139,6 +1139,8 @@ def qc_call_context(
     started = rows["started"]
     if started is None:
         raise QCCallContextError(f"no signed attempt_started row {attempt_id!r} in this project's QC chain")
+    if rows["voided"] is not None:
+        raise QCCallContextError(f"attempt {attempt_id} is voided (terminal); start a new attempt")
     if rows["verdict"] is not None:
         raise QCCallContextError(f"attempt {attempt_id} already has a verdict attached; start a new attempt")
     key = started.get("series_key") or {}

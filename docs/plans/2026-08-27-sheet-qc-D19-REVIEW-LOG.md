@@ -280,3 +280,5 @@ Suite after fixes: 1757 passed.
 
 ## Step-4 probe (2026-08-27, OPENAI_API_KEY provided by Ben)
 gpt-5.5 via Responses API, background mode, strict JSON schema, one image each. Four real Ace turnarounds: cigarette take → fail [portraits_opposite, hands_empty]; cropped-shoes take → fail [panels_7, portraits_opposite, shoes_visible, wardrobe_complete]; same-direction take → fail [profiles_opposite, portraits_opposite]; approved revision 2 → pass. Assumption 1 and 2 of the plan hold. Adapter fix: no `temperature` on gpt-5.x. Fixture: tests/fixtures/providers/openai-responses-vision.json.
+
+Round 2 (reinspection, cap reached): two findings, both accepted and fixed — #1 `attempt_voided` is terminal in attach_generation, attach_verdict, qc_call_context and require_qc_pass (a voided attempt can never carry a verdict or reach the gate; it still counts toward the cap); #2 the provider response id is persisted to the reservation log and the QC WAL independently (either store failing keeps the other) and the reconciler cross-fills a missing WAL id from the reservation. Tests: test_voided_attempt_is_terminal, test_provider_id_survives_wal_write_failure.

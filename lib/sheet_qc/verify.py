@@ -131,6 +131,8 @@ def require_qc_pass(
         # attempt chain (Codex R4#2)
         chain = qc_receipts.attempt_rows(project_dir, str(row.get("attempt_id")))
         started, gen, att = chain["started"], chain["generation"], chain["verdict"]
+        if chain.get("voided") is not None:
+            reasons.append("the verdict's attempt was voided; a voided attempt is terminal")
         if started is None:
             reasons.append("verdict names no signed attempt_started row")
         else:

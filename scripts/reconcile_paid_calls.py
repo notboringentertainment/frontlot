@@ -179,6 +179,13 @@ def reconcile_qc(project_root: Path, tracker: Any, summary: dict[str, list[str]]
         tuple_sha = w["tuple_sha256"]
         state = w.get("state")
         pid_ = w.get("provider_request_id")
+        if not pid_ and rid:
+            # cross-fill from the reservation log (round 2 #2): the id may have landed there only
+            from tools.cost_tracker import load_reservations
+            pid_ = (load_reservations(root).get(rid) or {}).get("provider_request_id")
+            if pid_:
+                w = dict(w, provider_request_id=pid_, state="submitted")
+                gates.qc_wal_write(tuple_sha, w)
         if state == "voided_unconfirmed":
             gates.qc_wal_delete(tuple_sha)
             continue

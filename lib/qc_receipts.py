@@ -182,6 +182,8 @@ def attach_generation(project_root: Path | str, attempt_id: str, *, generation_r
         rows = attempt_rows(root, attempt_id)
         if rows["started"] is None:
             raise QCReceiptError(f"no attempt_started row for {attempt_id}")
+        if rows["voided"] is not None:
+            raise QCReceiptError(f"attempt {attempt_id} is voided; it is terminal")
         if rows["generation"] is not None:
             if rows["generation"].get("generation_receipt_id") == generation_receipt_id:
                 return rows["generation"]
@@ -197,6 +199,8 @@ def attach_verdict(project_root: Path | str, attempt_id: str, *, qc_receipt_id: 
         rows = attempt_rows(root, attempt_id)
         if rows["started"] is None:
             raise QCReceiptError(f"no attempt_started row for {attempt_id}")
+        if rows["voided"] is not None:
+            raise QCReceiptError(f"attempt {attempt_id} is voided; it is terminal")
         if rows["verdict"] is not None:
             if rows["verdict"].get("qc_receipt_id") == qc_receipt_id:
                 return rows["verdict"]

@@ -111,6 +111,32 @@ class OpenAIResponsesAdapter(JudgeAdapter):
                     "usage": data.get("usage"), "error": data.get("error"), "raw": data}
 
 
+def _persist_provider_id(root: Path, tuple_sha: str, reservation_id: str, provider_id: str, *, state: str, error: str | None = None) -> None:
+    """Write the provider id to the reservation log AND the QC WAL, each in its
+    own try, so a failure of one store never loses the id in the other. If
+    both fail the exception propagates (the caller's failure path)."""
+    from lib import gates
+    from tools.cost_tracker import attach_request_id, load_reservations
+
+    errors = []
+    try:
+        res = load_reservations(root).get(reservation_id) or {}
+        if res.get("provider_request_id") != provider_id:
+            attach_request_id(root, reservation_id, provider_id)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(exc)
+    try:
+        wal = gates.qc_wal_read(tuple_sha) or {}
+        wal.update({"state": state, "provider_request_id": provider_id})
+        if error:
+            wal["error"] = error
+        gates.qc_wal_write(tuple_sha, wal)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(exc)
+    if len(errors) == 2:
+        raise RuntimeError(f"could not persist provider id {provider_id} anywhere: {errors[0]}; {errors[1]}")
+
+
 def commit_result(root: Path, wal: dict[str, Any], result: dict[str, Any], tracker: Any) -> tuple[dict, dict, str]:
     """Turn a provider result into a signed verdict for the evaluation the WAL
     row describes (used by SheetJudge and by the reconciler). Stores the raw
@@ -364,26 +390,23 @@ class SheetJudge(BaseTool):
         state, actual = "failed", 0.0
         try:
             provider_id = adapter.submit(model=qc.judge_model, system=system, user=user, images=images, schema=schema)
-            wal = gates.qc_wal_read(tuple_sha) or {}
-            wal.update({"state": "submitted", "provider_request_id": provider_id})
-            gates.qc_wal_write(tuple_sha, wal)
-            attach_request_id(root, reservation_id, provider_id)
+            _persist_provider_id(root, tuple_sha, reservation_id, provider_id, state="submitted")
             state, actual = "pending_billing", estimate
             result = adapter.wait(provider_id, deadline_s=float(inputs.get("deadline_s", 300)), poll_s=float(inputs.get("poll_s", 3)))
         except Exception as exc:  # noqa: BLE001
-            wal = gates.qc_wal_read(tuple_sha) or {}
-            wal.update({"state": "unknown" if provider_id else "claimed", "error": str(exc)[:400]})
             if provider_id:
-                wal["provider_request_id"] = provider_id  # never lose a returned id (inspection #7)
-            gates.qc_wal_write(tuple_sha, wal)
-            if provider_id:
-                try:
-                    attach_request_id(root, reservation_id, provider_id)
-                except Exception:  # noqa: BLE001
-                    pass
+                # never lose a returned id (inspection #7 / round 2 #2): both stores, independently
+                _persist_provider_id(root, tuple_sha, reservation_id, provider_id, state="unknown", error=str(exc)[:400])
                 try:
                     reconcile_paid_call(root, reservation_id, estimate, "pending_billing", tracker)
                 except ValueError:
+                    pass
+            else:
+                try:
+                    wal = gates.qc_wal_read(tuple_sha) or {}
+                    wal.update({"state": "claimed", "error": str(exc)[:400]})
+                    gates.qc_wal_write(tuple_sha, wal)
+                except Exception:  # noqa: BLE001
                     pass
             return ToolResult(success=False, error=f"sheet_judge provider call did not complete ({'submitted' if provider_id else 'not submitted'}): {exc}")
 
