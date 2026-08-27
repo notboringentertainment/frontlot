@@ -60,7 +60,7 @@ def test_deterministic_and_hash_stable():
     b = pb.build_prompt(_character(), role="hero", palette=["granite grey", "rust orange"])
     assert a == b
     assert a["prompt_recipe"]["rendered_sha256"] == hashlib.sha256(a["prompt"].encode()).hexdigest()
-    assert a["prompt_recipe"]["builder_version"] == "1.1" == pb.BUILDER_VERSION
+    assert a["prompt_recipe"]["builder_version"] == "1.2" == pb.BUILDER_VERSION
     # The hash is computed by the builder from the payload (RFC 8785), never caller-supplied.
     assert a["prompt_recipe"]["look_hash"] == record_sha256(_character())
     assert a["prompt_recipe"]["fields_used"][0] == "prompt_safe_description"

@@ -38,7 +38,7 @@ import re
 import unicodedata
 from typing import Any
 
-BUILDER_VERSION = "1.1"
+BUILDER_VERSION = "1.2"
 LOOK_SPEC_VERSION = "1.0"
 
 CHARACTER_ROLES = ("hero", "front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")
@@ -60,8 +60,8 @@ _ROLE_FRAMING = {
     "three_quarter": "single character, three-quarter view, neutral pose, plain studio background",
     "profile": "single character, strict side profile, neutral pose, plain studio background",
     "full_body": "single character, full body head to toe, neutral standing pose, plain studio background",
-    "expressions": "single character, grid of six facial expressions, same framing each cell, plain background",
-    "wardrobe": "single character, full body, wardrobe study, neutral pose, plain studio background",
+    "expressions": "expression sheet: one character, head-and-shoulders only, a clean 2x3 grid of six cells on a plain white background, identical framing and lighting in every cell, each cell a different expression (neutral, warm smile, hard stare, weary, listening, shaken), no body below the chest, no props, no vehicle",
+    "wardrobe": "wardrobe study: the character shown twice side by side on a plain white studio background, left in the default outfit, right in the night-cleaner variant (dark coveralls, nitrile gloves, respirator hanging at the neck), full body, neutral standing pose, flat even lighting, no vehicle, no scenery",
     "establishing": "wide establishing view, no people",
     "detail": "medium detail view of the place, no people",
     "time_variant": "the same place at a different time of day, no people",
