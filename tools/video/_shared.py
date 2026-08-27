@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import os
 import shutil
 import subprocess
@@ -1048,6 +1050,111 @@ def paid_call_context(
         cost_log_path=project_root / "cost_log.json",
     )
     return project_root, tracker, config
+
+
+# ---- D19: pre-submit hook and the QC (judge) call context ----
+
+import contextvars as _contextvars
+
+_PRE_SUBMIT: _contextvars.ContextVar = _contextvars.ContextVar("openmontage_pre_submit", default=None)
+
+
+@contextmanager
+def pre_submit_hook(fn):
+    """Install ``fn(project_root, reservation_id)`` to run inside a paid tool
+    after its reservation is persisted and BEFORE provider submission (D19.5:
+    sheet_run commits the signed ``attempt_started`` row there, so an attempt
+    is recorded for every generated candidate, crash or not)."""
+    token = _PRE_SUBMIT.set(fn)
+    try:
+        yield
+    finally:
+        _PRE_SUBMIT.reset(token)
+
+
+def run_pre_submit(project_root: Path, reservation_id: str) -> None:
+    fn = _PRE_SUBMIT.get()
+    if fn is not None:
+        fn(project_root, reservation_id)
+
+
+class QCCallContextError(RuntimeError):
+    """A judge call is not allowed to start."""
+
+
+def qc_call_context(
+    inputs: dict[str, Any], *, check_resume: bool = True,
+) -> tuple[Path, Any, Any, Any, dict[str, Any]]:
+    """Resolve ``(project_root, tracker, config, qc_config, attempt_started_row)``
+    for a sheet-QC judge call (D19.2, Codex R1#3).
+
+    Same root discipline as ``paid_call_context`` (registered project under
+    PROJECTS_DIR, no symlink), same resume check and CAP-mode tracker, but NO
+    look/prompt-recipe governance (there is no generation prompt). Instead the
+    call must name an OPEN signed attempt (``inputs['attempt_id']``: an
+    attempt_started row for this project with no verdict_attached yet — Codex
+    R4#2) and the project must be pinned to a QC manifest (authored-film 1.3)
+    with a 1.1 config whose ``qc`` block names the judge, and egress consent
+    for BOTH ``prompts`` and ``generated_sheet_images`` to that provider.
+    """
+    from lib.canon_enforcement import _is_qc_manifest
+    from lib.config_model import BudgetMode
+    from lib.events import infer_project_dir
+    from lib.paths import PROJECTS_DIR
+    from lib.pipeline_pin import _read_marker, pinned_pipeline
+    from lib.project_config import load_verified_project_config
+    from lib import qc_receipts
+    from tools.cost_tracker import CostTracker, resume_check
+
+    if not isinstance(inputs, dict) or not inputs.get("project_dir"):
+        raise QCCallContextError("a judge call requires inputs['project_dir'] (a registered project root)")
+    project_root = infer_project_dir(inputs)
+    if project_root is None:
+        raise QCCallContextError(f"judge call requires a registered project under {PROJECTS_DIR}")
+    project_root = Path(project_root).resolve()
+    try:
+        project_root.relative_to(Path(PROJECTS_DIR).resolve())
+    except ValueError as exc:
+        raise QCCallContextError(f"{project_root} is not under {PROJECTS_DIR}") from exc
+    if project_root.is_symlink() or not project_root.is_dir():
+        raise QCCallContextError(f"registered project directory missing or a symlink: {project_root}")
+    if check_resume:
+        resume_check(project_root)
+
+    config = load_verified_project_config(project_root)
+    qc = config.require_qc()
+    pipeline_type = str(_read_marker(project_root).get("pipeline_type") or "authored-film")
+    pin = pinned_pipeline(project_root, pipeline_type)
+    if not _is_qc_manifest(pin):
+        raise QCCallContextError(
+            f"project is pinned to {pin.name}@{pin.version}; sheet QC needs authored-film 1.3 "
+            f"(approve a pipeline_migration first)"
+        )
+    config.require_egress(qc.judge_provider, "prompts", "generated_sheet_images")
+
+    attempt_id = inputs.get("attempt_id")
+    if not isinstance(attempt_id, str) or not attempt_id:
+        raise QCCallContextError("a judge call runs only inside an open signed attempt: inputs['attempt_id'] is required")
+    rows = qc_receipts.attempt_rows(project_root, attempt_id)
+    started = rows["started"]
+    if started is None:
+        raise QCCallContextError(f"no signed attempt_started row {attempt_id!r} in this project's QC chain")
+    if rows["verdict"] is not None:
+        raise QCCallContextError(f"attempt {attempt_id} already has a verdict attached; start a new attempt")
+    key = started.get("series_key") or {}
+    if key.get("judge_provider") != qc.judge_provider or key.get("judge_model") != qc.judge_model \
+            or key.get("policy_bundle_sha256") != qc.policy_bundle_sha256:
+        raise QCCallContextError(
+            "attempt series names a different judge or policy bundle than the signed config; the config changed "
+            "since the attempt started — start a new attempt"
+        )
+
+    tracker = CostTracker(
+        budget_total_usd=float(config.budget_usd_cap), reserve_pct=0.0,
+        single_action_approval_usd=float("inf"), require_approval_for_new_paid_tool=False,
+        mode=BudgetMode.CAP, cost_log_path=project_root / "cost_log.json",
+    )
+    return project_root, tracker, config, qc, started
 
 
 # ---- governed reference packing (shared by seedance_video 2.5 and kling_reference_video) ----

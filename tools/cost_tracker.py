@@ -9,7 +9,10 @@ Implements the budget governance rules from the spec:
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -98,8 +101,40 @@ class CostTracker:
 
     # ---- Core operations ----
 
+    @contextlib.contextmanager
+    def transaction(self):
+        """D19 R2#15: every mutation is lock → reload → modify → atomic write.
+
+        Two processes sharing one cost_log.json (a generation run and a judge
+        call, or two runners) can no longer overwrite each other's entries
+        or both pass the budget check on the same remaining amount. Without a
+        cost_log_path (in-memory tracker) this is a no-op. Re-entrant."""
+        if self.cost_log_path is None or getattr(self, "_in_txn", False):
+            yield
+            return
+        self.cost_log_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.cost_log_path.with_name(self.cost_log_path.name + ".lock")
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            self._in_txn = True
+            try:
+                if self.cost_log_path.exists():
+                    self._load()
+                yield
+                self._save()
+            finally:
+                self._in_txn = False
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
     def estimate(self, tool: str, operation: str, estimated_usd: float) -> str:
         """Record an estimate. Returns entry ID."""
+        with self.transaction():
+            return self._estimate(tool, operation, estimated_usd)
+
+    def _estimate(self, tool: str, operation: str, estimated_usd: float) -> str:
         entry_id = self._new_id()
         self.entries.append({
             "id": entry_id,
@@ -120,6 +155,10 @@ class CostTracker:
         Raises BudgetExceededError in cap mode, or ApprovalRequiredError
         when the action exceeds the single-action approval threshold.
         """
+        with self.transaction():
+            self._reserve(entry_id)
+
+    def _reserve(self, entry_id: str) -> None:
         entry = self._find(entry_id)
         estimated = entry["estimated_usd"]
 
@@ -158,25 +197,28 @@ class CostTracker:
 
     def approve_tool(self, tool: str) -> None:
         """Mark a tool as approved for paid operations."""
-        self._approved_tools.add(tool)
-        self._save()
+        with self.transaction():
+            self._approved_tools.add(tool)
+            self._save()
 
     def reconcile(self, entry_id: str, actual_usd: float, success: bool = True) -> None:
         """Reconcile actual spend after tool execution."""
-        entry = self._find(entry_id)
-        entry["status"] = EntryStatus.COMPLETED.value if success else EntryStatus.FAILED.value
-        entry["actual_usd"] = round(actual_usd, 4)
-        entry["reserved_usd"] = 0.0
-        entry["timestamp"] = self._now()
-        self._save()
+        with self.transaction():
+            entry = self._find(entry_id)
+            entry["status"] = EntryStatus.COMPLETED.value if success else EntryStatus.FAILED.value
+            entry["actual_usd"] = round(actual_usd, 4)
+            entry["reserved_usd"] = 0.0
+            entry["timestamp"] = self._now()
+            self._save()
 
     def refund(self, entry_id: str) -> None:
         """Cancel a reservation without executing."""
-        entry = self._find(entry_id)
-        entry["status"] = EntryStatus.REFUNDED.value
-        entry["reserved_usd"] = 0.0
-        entry["timestamp"] = self._now()
-        self._save()
+        with self.transaction():
+            entry = self._find(entry_id)
+            entry["status"] = EntryStatus.REFUNDED.value
+            entry["reserved_usd"] = 0.0
+            entry["timestamp"] = self._now()
+            self._save()
 
     # ---- Reference-driven estimation ----
 
@@ -496,8 +538,12 @@ class CostTracker:
             "entries": self.entries,
         }
         self.cost_log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.cost_log_path, "w") as f:
+        tmp = self.cost_log_path.with_name(self.cost_log_path.name + ".tmp")
+        with open(tmp, "w") as f:
             json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self.cost_log_path)
 
     def _load(self) -> None:
         with open(self.cost_log_path) as f:  # type: ignore[arg-type]

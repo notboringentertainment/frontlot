@@ -289,6 +289,15 @@ class SeedreamImage(BaseTool):
         asset_ids: list[str] = []
         output_paths: list[str] = []
         execution_id = current_execution_id() or f"seedream-{reservation_id}"
+        # D19.5: the caller (scripts/sheet_run.py) records the signed
+        # attempt_started row here — after the reservation exists, before any
+        # provider submission — so every candidate counts. A refusal (cap hit)
+        # settles the reservation as failed: nothing was submitted.
+        try:
+            _shared.run_pre_submit(project_root, reservation_id)
+        except Exception as exc:
+            reconcile_paid_call(project_root, reservation_id, 0.0, "failed", tracker)
+            return ToolResult(success=False, error=f"Seedream pre-submit hook refused: {exc}")
         try:
             submitted = _shared.fal_queue_submit(model_id, payload, api_key=api_key)
             request_id = str(submitted["request_id"])
