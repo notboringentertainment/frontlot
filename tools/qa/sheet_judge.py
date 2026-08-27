@@ -73,7 +73,9 @@ class OpenAIResponsesAdapter(JudgeAdapter):
         for i, png in enumerate(images):
             content.append({"type": "input_image", "image_url": self._data_url(png), "detail": "high" if i == 0 else "low"})
         body = {
-            "model": model, "background": True, "temperature": 0, "max_output_tokens": 600, "store": True,
+            # gpt-5.x reasoning models reject ``temperature``; determinism comes
+            # from the fixed prompt + strict schema + code-side scoring.
+            "model": model, "background": True, "max_output_tokens": 1200, "store": True,
             "instructions": system,
             "text": {"format": {"type": "json_schema", "name": "sheet_qc", "strict": True, "schema": schema}},
             "input": [{"role": "user", "content": content}],
