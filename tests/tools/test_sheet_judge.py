@@ -2,6 +2,7 @@
 import hashlib
 import io
 import json
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -59,13 +60,15 @@ def world(tmp_path, monkeypatch):
     sha = hashlib.sha256(data).hexdigest()
     (project / "canon/visual/objects" / f"{sha}.png").write_bytes(data)
     from lib import receipts
+    from tools import prompt_builder as pb
+    built = pb.build_prompt(look, role="turnaround", palette=["moss"])
     gen = receipts.record_generation(project, execution_id="exec-turn", tool="seedream_image", normalized_inputs_hash="a" * 64,
                                      output_sha256=sha, cost_usd=0.1, started_at="t", finished_at="t", model_endpoint=H.IMAGE_MODEL,
-                                     prompt="p", look_refs=H.look_refs_for(look),
+                                     prompt=built["prompt"], prompt_recipe=built["prompt_recipe"], look_refs=H.look_refs_for(look),
                                      headshot_ref={"entity_id": H.CHAR, "asset_id": hero["asset_id"], "approval_receipt_id": hs_receipt["receipt_id"]})
     key = {"entity_kind": "character", "entity_id": H.CHAR, "role": "turnaround", "look_hash": _look_hash(look),
            "headshot_receipt_id": hs_receipt["receipt_id"], "policy_bundle_sha256": policy.bundle_sha256(),
-           "builder_policy_sha256": "b" * 64, "generation_endpoint": H.IMAGE_MODEL, "generation_model": H.IMAGE_MODEL,
+           "builder_policy_sha256": pb.builder_policy_sha256(), "generation_endpoint": H.IMAGE_MODEL, "generation_model": H.IMAGE_MODEL,
            "judge_provider": "openai", "judge_model": JUDGE_MODEL}
     return {"project": project, "look": look, "hero": hero, "asset": sha, "gen": gen, "key": key}
 
@@ -109,7 +112,15 @@ def test_local_precheck_fails_without_provider_call(world):
     w = world
     small = _png(640, 400, "small"); sha = hashlib.sha256(small).hexdigest()
     (w["project"] / "canon/visual/objects" / f"{sha}.png").write_bytes(small)
-    a = _attempt(w, asset=sha)
+    from lib import receipts
+    from tools import prompt_builder as pb
+    built = pb.build_prompt(w["look"], role="turnaround", palette=["moss"])
+    gen = receipts.record_generation(w["project"], execution_id="exec-small", tool="seedream_image", normalized_inputs_hash="a" * 64,
+                                     output_sha256=sha, cost_usd=0.1, started_at="t", finished_at="t", model_endpoint=H.IMAGE_MODEL,
+                                     prompt=built["prompt"], prompt_recipe=built["prompt_recipe"], look_refs=H.look_refs_for(w["look"]),
+                                     headshot_ref=w["gen"]["headshot_ref"])
+    a = qr.start_attempt(w["project"], w["key"], max_attempts=3)
+    qr.attach_generation(w["project"], a["attempt_id"], generation_receipt_id=gen["receipt_id"], asset_id=sha)
     fake = FakeAdapter(_all("turnaround"))
     r = SheetJudge(adapter=fake).execute({"project_dir": str(w["project"]), "attempt_id": a["attempt_id"], "asset_id": sha})
     assert r.success and r.data["local"] and r.data["failing_items"] == ["size"] and fake.calls == []
@@ -155,3 +166,22 @@ def test_wrong_asset_for_attempt_refused(world):
     r = SheetJudge(adapter=FakeAdapter(_all("turnaround"))).execute(
         {"project_dir": str(w["project"]), "attempt_id": a["attempt_id"], "asset_id": w["hero"]["asset_id"]})
     assert not r.success and "generation_attached" in r.error
+
+
+def test_series_must_match_sealed_receipt(world):
+    """Rotating a series field (inspection #1) does not buy a fresh attempt series that the judge accepts."""
+    w = world
+    a = qr.start_attempt(w["project"], dict(w["key"], builder_policy_sha256="0" * 64), max_attempts=3)
+    qr.attach_generation(w["project"], a["attempt_id"], generation_receipt_id=w["gen"]["receipt_id"], asset_id=w["asset"])
+    r = SheetJudge(adapter=FakeAdapter(_all("turnaround"))).execute(
+        {"project_dir": str(w["project"]), "attempt_id": a["attempt_id"], "asset_id": w["asset"]})
+    assert not r.success and "sealed generation receipt" in r.error
+
+
+def test_fake_adapter_refused_outside_temp_projects_root(world, monkeypatch):
+    import lib.paths as paths_mod
+    w = world; a = _attempt(w)
+    monkeypatch.setattr(paths_mod, "PROJECTS_DIR", Path("/opt/production/projects"))
+    r = SheetJudge(adapter=FakeAdapter(_all("turnaround"))).execute(
+        {"project_dir": str(w["project"]), "attempt_id": a["attempt_id"], "asset_id": w["asset"]})
+    assert not r.success and ("temp" in r.error or "not under" in r.error)

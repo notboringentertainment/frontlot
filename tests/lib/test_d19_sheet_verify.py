@@ -72,19 +72,20 @@ def _sheet_asset(w, role, seed):
     data = _png(*size, seed); sha = hashlib.sha256(data).hexdigest()
     rel = f"canon/visual/objects/{sha}.png"; (w["project"] / rel).write_bytes(data)
     href = {"entity_id": CHAR, "asset_id": w["hero"]["asset_id"], "approval_receipt_id": w["hs"]["receipt_id"]}
-    rec = prompt_recipe(w["c"])
+    from tools import prompt_builder as pb
+    built = pb.build_prompt(w["c"], role=role, palette=["moss"])
     row = receipts.record_generation(w["project"], execution_id=f"exec-{seed}", tool="seedream_image", normalized_inputs_hash="a" * 64,
                                      output_sha256=sha, cost_usd=0.1, started_at="t", finished_at="t", model_endpoint="fake/edit",
-                                     prompt=w["c"]["prompt_safe_description"], look_refs=look_refs_for(w["c"]), headshot_ref=href,
-                                     prompt_recipe=rec, references_applied=[{"asset_id": w["hero"]["asset_id"], "path": w["hero"]["path"], "role": "hero"}])
+                                     prompt=built["prompt"], look_refs=look_refs_for(w["c"]), headshot_ref=href,
+                                     prompt_recipe=built["prompt_recipe"], references_applied=[{"asset_id": w["hero"]["asset_id"], "path": w["hero"]["path"], "role": "hero"}])
     return {"asset_id": sha, "path": rel, "role": role, "provenance": {"generator_kind": "model", "model_endpoint": "fake/edit",
-            "prompt": w["c"]["prompt_safe_description"], "generation_receipt_id": row["receipt_id"]}}, row
+            "prompt": built["prompt"], "generation_receipt_id": row["receipt_id"]}}, row
 
 
 def _series(w, role):
     return {"entity_kind": "character", "entity_id": CHAR, "role": role, "look_hash": _look_hash(w["c"]),
             "headshot_receipt_id": w["hs"]["receipt_id"], "policy_bundle_sha256": policy.bundle_sha256(),
-            "builder_policy_sha256": "b" * 64, "generation_endpoint": "fake/edit", "generation_model": "fake/edit",
+            "builder_policy_sha256": __import__("tools.prompt_builder", fromlist=["x"]).builder_policy_sha256(), "generation_endpoint": "fake/edit", "generation_model": "fake/edit",
             "judge_provider": "openai", "judge_model": JUDGE_MODEL}
 
 
@@ -145,11 +146,11 @@ def test_full_path_write_and_gate_with_passing_verdicts(world):
 def test_missing_and_mismatched_qc_refused(world):
     w = world
     t, tg = _sheet_asset(w, "turnaround", "t1"); e, eg = _sheet_asset(w, "expressions", "e1")
-    # draft without qc: writable as a draft, refused at the gate
+    # draft without qc: writable while in_progress, refused at awaiting_human (inspection #3)
     entry = _entry(w, {"turnaround": t, "expressions": e})
-    write(w["pipeline"], "visual_bible", {"visual_bible": _bible(entry)}, status="awaiting_human")
-    with pytest.raises(GateHandlerError, match="names no verdict"):
-        approve_request(_request(entry, w["project"]), w["project"])
+    write(w["pipeline"], "visual_bible", {"visual_bible": _bible(entry)}, status="in_progress")
+    with pytest.raises(CheckpointValidationError, match="names no verdict"):
+        write(w["pipeline"], "visual_bible", {"visual_bible": _bible(entry)}, status="awaiting_human")
     # approved without qc: refused at write
     bad = dict(entry, status="approved", approval_receipt_id="x")
     with pytest.raises(CheckpointValidationError, match="names no verdict"):
@@ -178,7 +179,7 @@ def test_failed_verdict_blocks_until_override(world):
         write(w["pipeline"], "visual_bible", {"visual_bible": _bible(entry)}, status="awaiting_human")
     # override request: wrong item refused, right item signed
     oreq = {"request_id": "override-1", "project_id": PROJECT, "stage": "visual_bible", "scope": f"character:{CHAR}",
-            "kind": "qc_override", "entity_id": CHAR, "summary": "s", "qc_receipt_id": qt, "item_ids": ["hands_empty"], "reason": "judge wrong"}
+            "kind": "qc_override", "entity_id": CHAR, "summary": "s", "qc_receipt_id": qt, "item_ids": ["hands_empty"], "reason": "judge wrong: shoes are visible"}
     with pytest.raises(GateHandlerError, match="not failing items"):
         approve_request(_persist(w["project"], oreq), w["project"])
     oreq["item_ids"] = ["shoes_visible"]
@@ -195,14 +196,16 @@ def test_local_failure_cannot_be_overridden_and_stale_policy_refused(world, monk
     rel = f"canon/visual/objects/{sha}.png"; (w["project"] / rel).write_bytes(small)
     from lib import receipts
     href = {"entity_id": CHAR, "asset_id": w["hero"]["asset_id"], "approval_receipt_id": w["hs"]["receipt_id"]}
+    from tools import prompt_builder as pb
+    built = pb.build_prompt(w["c"], role="turnaround", palette=["moss"])
     row = receipts.record_generation(w["project"], execution_id="exec-tiny", tool="seedream_image", normalized_inputs_hash="a" * 64,
                                      output_sha256=sha, cost_usd=0.1, started_at="t", finished_at="t", model_endpoint="fake/edit",
-                                     prompt="p", look_refs=look_refs_for(w["c"]), headshot_ref=href)
-    ref = {"asset_id": sha, "path": rel, "role": "turnaround", "provenance": {"generator_kind": "model", "model_endpoint": "fake/edit", "prompt": "p", "generation_receipt_id": row["receipt_id"]}}
+                                     prompt=built["prompt"], prompt_recipe=built["prompt_recipe"], look_refs=look_refs_for(w["c"]), headshot_ref=href)
+    ref = {"asset_id": sha, "path": rel, "role": "turnaround", "provenance": {"generator_kind": "model", "model_endpoint": "fake/edit", "prompt": built["prompt"], "generation_receipt_id": row["receipt_id"]}}
     q, v = _judge(w, "turnaround", ref, row, _all("turnaround"))
     assert v == "fail"
     oreq = {"request_id": "override-2", "project_id": PROJECT, "stage": "visual_bible", "scope": f"character:{CHAR}",
-            "kind": "qc_override", "entity_id": CHAR, "summary": "s", "qc_receipt_id": q, "item_ids": ["size"], "reason": "x"}
+            "kind": "qc_override", "entity_id": CHAR, "summary": "s", "qc_receipt_id": q, "item_ids": ["size"], "reason": "the size rule is wrong here"}
     with pytest.raises(GateHandlerError, match="cannot be overridden"):
         approve_request(_persist(w["project"], oreq), w["project"])
     # a policy edit after judging invalidates the verdict at verification time

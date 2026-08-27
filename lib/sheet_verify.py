@@ -73,7 +73,8 @@ def verify_character_sheet(
         if config is None:
             _fail(f"character {eid!r}: sheet QC verification needs the verified project config.")
         try:
-            verdicts = require_qc_pass(project_dir, entry, config=config, active_look=active_look, active_headshot=active_headshot)
+            verdicts = require_qc_pass(project_dir, entry, config=config, active_look=active_look, active_headshot=active_headshot,
+                                       receipts_by_sha=receipts_by_sha)
         except QCRequired as exc:
             _fail(f"character {eid!r}: {exc}")
     return verdicts

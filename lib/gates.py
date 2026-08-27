@@ -447,7 +447,7 @@ def qc_binding(row: dict) -> Optional[str]:
     kind = row.get("kind")
     if kind == "verdict":
         return row.get("tuple_sha256")
-    if kind in ("attempt_started", "generation_attached", "verdict_attached"):
+    if kind in ("attempt_started", "generation_attached", "verdict_attached", "attempt_voided"):
         return row.get("attempt_id")
     return None
 

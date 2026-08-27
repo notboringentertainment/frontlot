@@ -28,7 +28,7 @@ from lib.receipts import ReceiptChainError, _rows_for_commit, chained_rows, proj
 from lib.state_io import append_jsonl
 
 STREAM = "qc"
-ROW_KINDS = ("verdict", "attempt_started", "generation_attached", "verdict_attached")
+ROW_KINDS = ("verdict", "attempt_started", "generation_attached", "verdict_attached", "attempt_voided")
 SERIES_FIELDS = (
     "project_id", "entity_kind", "entity_id", "role", "look_hash", "headshot_receipt_id",
     "policy_bundle_sha256", "builder_policy_sha256", "generation_endpoint", "generation_model",
@@ -95,7 +95,7 @@ def find_verdict_by_id(project_root: Path | str, receipt_id: str) -> Optional[di
 
 def attempt_rows(project_root: Path | str, attempt_id: str) -> dict[str, Optional[dict]]:
     """``{started, generation, verdict}`` rows for one attempt (None when absent)."""
-    out: dict[str, Optional[dict]] = {"started": None, "generation": None, "verdict": None}
+    out: dict[str, Optional[dict]] = {"started": None, "generation": None, "verdict": None, "voided": None}
     for row in verified_qc_rows(project_root):
         if row.get("attempt_id") != attempt_id:
             continue
@@ -106,6 +106,8 @@ def attempt_rows(project_root: Path | str, attempt_id: str) -> dict[str, Optiona
             out["generation"] = row
         elif k == "verdict_attached" and out["verdict"] is None:
             out["verdict"] = row
+        elif k == "attempt_voided" and out["voided"] is None:
+            out["voided"] = row
     return out
 
 
@@ -115,8 +117,9 @@ def attempts_started(project_root: Path | str, series_sha: str) -> list[dict]:
 
 def open_attempts(project_root: Path | str, series_sha: str) -> list[dict]:
     """attempt_started rows in the series with no verdict_attached yet."""
-    verdict_for = {r.get("attempt_id") for r in rows_of_kind(project_root, "verdict_attached")}
-    return [r for r in attempts_started(project_root, series_sha) if r.get("attempt_id") not in verdict_for]
+    closed = {r.get("attempt_id") for r in rows_of_kind(project_root, "verdict_attached")}
+    closed |= {r.get("attempt_id") for r in rows_of_kind(project_root, "attempt_voided")}
+    return [r for r in attempts_started(project_root, series_sha) if r.get("attempt_id") not in closed]
 
 
 # ---- writing ----
@@ -200,6 +203,22 @@ def attach_verdict(project_root: Path | str, attempt_id: str, *, qc_receipt_id: 
             raise QCReceiptError(f"attempt {attempt_id} already has a verdict attached")
         return _commit(root, _signed("verdict_attached", pid, {
             "attempt_id": attempt_id, "qc_receipt_id": qc_receipt_id, "reused": bool(reused)}))
+
+
+def void_attempt(project_root: Path | str, attempt_id: str, *, reason: str) -> dict:
+    """Immutable close of an attempt whose generation definitively produced
+    no asset (reservation failed). It still counts toward the cap."""
+    root = Path(project_root)
+    pid = project_id_for(root)
+    with gates.receipt_lock(pid, STREAM):
+        rows = attempt_rows(root, attempt_id)
+        if rows["started"] is None:
+            raise QCReceiptError(f"no attempt_started row for {attempt_id}")
+        if rows["verdict"] is not None or rows["generation"] is not None:
+            raise QCReceiptError(f"attempt {attempt_id} has a generation or verdict attached; it cannot be voided")
+        if rows["voided"] is not None:
+            return rows["voided"]
+        return _commit(root, _signed("attempt_voided", pid, {"attempt_id": attempt_id, "reason": str(reason)[:400]}))
 
 
 def record_verdict(project_root: Path | str, verdict: dict[str, Any]) -> dict:

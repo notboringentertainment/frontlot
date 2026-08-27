@@ -190,8 +190,12 @@ def run_sheet(
                     row = open_[0]
                     gen = qr.attempt_rows(root, row["attempt_id"])["generation"]
                     if gen is None:
-                        raise SheetRunError(f"[{role}] attempt {row['attempt_id']} is open with no generation attached; "
-                                            f"reconcile paid calls first (scripts/reconcile_paid_calls.py)")
+                        # Crash between attempt_started and generation_attached (inspection #6):
+                        # settle from the reservation the attempt names. failed → void (counts);
+                        # completed → attach the receipt the provider id identifies; else reconcile.
+                        gen = _recover_attempt_generation(root, row, qr, out)
+                        if gen is None:
+                            continue
                     _log(out, f"[{role}] resuming open attempt {row['attempt_n']} on asset {gen['asset_id'][:12]}")
                     attempt, asset_id, gen_rid = row, gen["asset_id"], gen["generation_receipt_id"]
                 else:
@@ -270,6 +274,27 @@ def run_sheet(
         return {"entity_id": entity_id, "revision": rev, "request_id": req_id, "roles": results, "paths": paths}
 
 
+def _recover_attempt_generation(root: Path, attempt: dict, qr, out) -> Optional[dict]:
+    from lib.receipts import verified_generation_receipts
+    from tools.cost_tracker import load_reservations
+
+    rid = attempt.get("generation_reservation_id")
+    res = load_reservations(root).get(rid or "")
+    if res is None:
+        raise SheetRunError(f"attempt {attempt['attempt_id']} names reservation {rid!r} which does not exist; reconcile by hand")
+    state = res.get("state")
+    if state == "failed":
+        qr.void_attempt(root, attempt["attempt_id"], reason=f"reservation {rid} failed; no asset")
+        _log(out, f"attempt {attempt['attempt_n']} voided (generation failed); it still counts toward the cap")
+        return None
+    if state == "completed" and res.get("provider_request_id"):
+        for r in verified_generation_receipts(root):
+            if r.get("provider_request_id") == res["provider_request_id"]:
+                return qr.attach_generation(root, attempt["attempt_id"], generation_receipt_id=r["receipt_id"], asset_id=r["output_sha256"])
+    raise SheetRunError(f"attempt {attempt['attempt_id']} is open with reservation {rid} in state {state!r}; "
+                        f"run scripts/reconcile_paid_calls.py first")
+
+
 def _acceptable_verdict(root: Path, series_sha: str, entity_id: str, qr) -> Optional[dict]:
     """A committed verdict in this series that passes, or that failed only on
     items a human has since accepted with a signed qc_override."""
@@ -332,7 +357,7 @@ def _write_override_request(root, project_id, entity_id, role, verdict) -> Path:
     req_id = f"override-{entity_id}-{role}-{n}"
     req = {"request_id": req_id, "project_id": project_id, "stage": "visual_bible", "scope": f"character:{entity_id}",
            "kind": "qc_override", "entity_id": entity_id, "qc_receipt_id": verdict["receipt_id"],
-           "item_ids": list(verdict.get("failing_items") or []), "reason": "REPLACE with why the judge is wrong",
+           "item_ids": list(verdict.get("failing_items") or []), "reason": "",  # typed by the human at the gate
            "summary": f"Accept failed QC items {verdict.get('failing_items')} on {entity_id} {role} (attempt {verdict.get('attempt_n')})",
            "preview_paths": [f"canon/visual/objects/{verdict['asset_id']}.png"]}
     path = d / f"{req_id}.json"

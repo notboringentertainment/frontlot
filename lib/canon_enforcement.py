@@ -1775,7 +1775,7 @@ def _check_visual_bible_entry_v12(
 def _check_visual_bible_v12(
     project_dir: Path, bible: dict[str, Any], proposal: dict[str, Any],
     active_looks: dict[tuple[str, str], Any], active_headshots: dict[str, Any],
-    *, qc_required: bool = False,
+    *, qc_required: bool = False, status: str = "completed",
 ) -> None:
     if _version(bible) != "1.1":
         _fail("authored-film 1.2 requires a 1.1 visual_bible (look_ref, sheet_revision, prompt_recipe).")
@@ -1812,7 +1812,7 @@ def _check_visual_bible_v12(
                 verify_character_sheet(
                     project_dir, entry, active_look=look, active_headshot=active_headshots.get(eid),
                     receipts_by_sha=receipts, qc_required=qc_required, config=config,
-                    qc_must_be_present=qc_required and entry.get("status") == "approved",
+                    qc_must_be_present=qc_required and (status in ("awaiting_human", "completed") or entry.get("status") == "approved"),
                 )
             else:
                 refs = [("establishing", entry.get("establishing") or {})] + [
@@ -1860,7 +1860,7 @@ def enforce_authored_canon(
             active_looks, active_headshots = _check_visual_bible_entry_v12(project_dir, artifacts, proposal, status)
             if isinstance(artifacts.get("visual_bible"), dict):
                 _check_visual_bible_v12(project_dir, artifacts["visual_bible"], proposal, active_looks, active_headshots,
-                                        qc_required=_is_qc_manifest(pin))
+                                        qc_required=_is_qc_manifest(pin), status=status)
     if status not in {"completed", "awaiting_human"}:
         return
 
@@ -1913,7 +1913,7 @@ def enforce_authored_canon(
             active_looks, active_headshots = _check_visual_bible_entry_v12(project_dir, artifacts, proposal, status)
             _check_visual_bible_v12(
                 project_dir, artifacts.get("visual_bible", {}), proposal, active_looks, active_headshots,
-                qc_required=_is_qc_manifest(pin),
+                qc_required=_is_qc_manifest(pin), status=status,
             )
     elif stage == "look_lock":
         proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}

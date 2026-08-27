@@ -27,7 +27,9 @@
     "verdict",
     "warnings",
     "cost_usd",
-    "judged_at"
+    "judged_at",
+    "provider_request_id",
+    "raw_response_asset_id"
   ],
   "properties": {
     "version": {
@@ -224,5 +226,32 @@
       "minLength": 1
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "const": "local"
+          }
+        }
+      },
+      "else": {
+        "required": [
+          "provider_request_id",
+          "raw_response_asset_id"
+        ],
+        "properties": {
+          "provider_request_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "raw_response_asset_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  ]
 }

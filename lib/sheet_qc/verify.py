@@ -23,6 +23,54 @@ class QCRequired(RuntimeError):
         super().__init__(f"sheet role {role!r} has no acceptable QC verdict: " + "; ".join(reasons))
 
 
+NON_OVERRIDABLE = frozenset({"coverage"})
+
+
+class SeriesMismatch(RuntimeError):
+    pass
+
+
+def verify_series_against_receipt(series_key: dict[str, Any], gen_receipt: dict[str, Any] | None, *, asset_id: str | None = None) -> None:
+    """The attempt series a caller names must be what the sealed generation
+    receipt says happened (Codex inspection #1): builder policy from the
+    sealed prompt_recipe, generation endpoint/model from the receipt, look and
+    headshot from the receipt's look_refs / headshot_ref. Otherwise a caller
+    could rotate one series field per candidate and never hit the cap."""
+    if not isinstance(gen_receipt, dict):
+        raise SeriesMismatch("no verified generation receipt for the judged asset")
+    if asset_id is not None and gen_receipt.get("output_sha256") != asset_id:
+        raise SeriesMismatch("generation receipt is for another asset")
+    recipe = gen_receipt.get("prompt_recipe") or {}
+    if recipe.get("builder_policy_sha256") != series_key.get("builder_policy_sha256"):
+        raise SeriesMismatch("series builder_policy_sha256 is not the sealed prompt_recipe's")
+    endpoint = gen_receipt.get("model_endpoint")
+    if series_key.get("generation_endpoint") != endpoint or series_key.get("generation_model") != endpoint:
+        raise SeriesMismatch("series generation endpoint/model is not the receipt's model_endpoint")
+    looks = gen_receipt.get("look_refs") or []
+    if not any(isinstance(l, dict) and l.get("look_hash") == series_key.get("look_hash")
+               and l.get("entity_id") == series_key.get("entity_id") for l in looks):
+        raise SeriesMismatch("series look_hash is not among the receipt's look_refs")
+    href = gen_receipt.get("headshot_ref") or {}
+    if href.get("approval_receipt_id") != series_key.get("headshot_receipt_id") or href.get("entity_id") != series_key.get("entity_id"):
+        raise SeriesMismatch("series headshot_receipt_id is not the receipt's headshot_ref")
+
+
+def raw_response_ok(project_dir: Path | str, row: dict[str, Any]) -> bool:
+    """The signed raw_response_asset_id must still name a file whose bytes hash to it."""
+    import hashlib
+
+    sha = row.get("raw_response_asset_id")
+    if not isinstance(sha, str) or len(sha) != 64:
+        return False
+    path = Path(project_dir) / "canon" / "qc" / "objects" / f"{sha}.json"
+    try:
+        if path.is_symlink() or not path.is_file():
+            return False
+        return hashlib.sha256(path.read_bytes()).hexdigest() == sha
+    except OSError:
+        return False
+
+
 def overrides_for(project_dir: Path | str, qc_receipt_id: str, entity_id: str) -> set[str]:
     """Item ids a human has explicitly accepted for ONE verdict (signed
     qc_override receipts bound to that receipt id)."""
@@ -38,6 +86,7 @@ def overrides_for(project_dir: Path | str, qc_receipt_id: str, entity_id: str) -
 
 def require_qc_pass(
     project_dir: Path | str, entry: dict[str, Any], *, config: Any, active_look: Any, active_headshot: Any,
+    receipts_by_sha: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Return ``{role: verdict_row}`` for every sheet role or raise QCRequired."""
     from lib import qc_receipts
@@ -72,8 +121,13 @@ def require_qc_pass(
             reasons.append("verdict policy bundle is not the one pinned in the signed config")
         if row.get("provider") == "local":
             reasons.append("deterministic pre-check failure; cannot be overridden — regenerate")
-        elif row.get("provider") != qc.judge_provider or row.get("model") != qc.judge_model:
-            reasons.append(f"verdict judge {row.get('provider')}/{row.get('model')} is not the configured judge")
+        else:
+            if row.get("provider") != qc.judge_provider or row.get("model") != qc.judge_model:
+                reasons.append(f"verdict judge {row.get('provider')}/{row.get('model')} is not the configured judge")
+            if not row.get("provider_request_id"):
+                reasons.append("verdict carries no provider request id")
+            if not raw_response_ok(project_dir, row):
+                reasons.append("the signed raw provider response is missing or altered (canon/qc/objects)")
         # attempt chain (Codex R4#2)
         chain = qc_receipts.attempt_rows(project_dir, str(row.get("attempt_id")))
         started, gen, att = chain["started"], chain["generation"], chain["verdict"]
@@ -88,6 +142,11 @@ def require_qc_pass(
                 reasons.append("attempt series does not name the configured judge/policy")
             if key.get("entity_id") != entry.get("id") or key.get("role") != role:
                 reasons.append("attempt series is for another entity or role")
+            try:
+                verify_series_against_receipt(key, receipts_by_sha.get(ref.get("asset_id")) if receipts_by_sha else None,
+                                              asset_id=ref.get("asset_id"))
+            except SeriesMismatch as exc:
+                reasons.append(f"attempt series does not match the sealed generation receipt: {exc}")
         gen_receipt = (ref.get("provenance") or {}).get("generation_receipt_id")
         if gen is None or gen.get("asset_id") != ref.get("asset_id") or gen.get("generation_receipt_id") != gen_receipt:
             reasons.append("attempt's generation_attached row does not name this asset and its generation receipt")
@@ -95,7 +154,9 @@ def require_qc_pass(
             reasons.append("attempt's verdict_attached row does not name this verdict")
         if row.get("verdict") != "pass" and row.get("provider") != "local":
             failing = set(row.get("failing_items") or [])
-            covered = overrides_for(project_dir, row["receipt_id"], str(entry.get("id")))
+            if failing & NON_OVERRIDABLE:
+                reasons.append(f"verdict failed on {sorted(failing & NON_OVERRIDABLE)} (judge protocol failure); not overridable — re-judge")
+            covered = overrides_for(project_dir, row["receipt_id"], str(entry.get("id"))) - NON_OVERRIDABLE
             uncovered = sorted(failing - covered)
             if uncovered:
                 reasons.append(f"verdict failed {sorted(failing)}; no signed qc_override covers {uncovered}")

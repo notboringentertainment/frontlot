@@ -212,15 +212,22 @@ class SheetJudge(BaseTool):
     def _resolve_adapter(self, project_root: Path, provider: str) -> JudgeAdapter:
         if self._adapter is not None:
             # Codex R1#9: a fake judge can never produce a production verdict.
-            from lib.paths import REPO_ROOT
-            in_repo = False
+            import tempfile
+
+            from lib import paths as _paths
+            tmp = Path(tempfile.gettempdir()).resolve()
+            under_tmp = False
             try:
-                project_root.resolve().relative_to((Path(REPO_ROOT) / "projects").resolve())
-                in_repo = True
+                Path(_paths.PROJECTS_DIR).resolve().relative_to(tmp)
+                project_root.resolve().relative_to(tmp)
+                under_tmp = True
             except ValueError:
                 pass
-            if os.environ.get(TEST_MODE_ENV) != "1" or in_repo:
-                raise RuntimeError("an injected judge adapter is allowed only under OPENMONTAGE_TEST_MODE=1 and outside the repo projects dir")
+            if os.environ.get(TEST_MODE_ENV) != "1" or not under_tmp:
+                raise RuntimeError(
+                    "an injected judge adapter is allowed only under OPENMONTAGE_TEST_MODE=1 with PROJECTS_DIR and the "
+                    "project both under the system temp dir (test worlds), never for a production projects root"
+                )
             if self._adapter.provider != provider:
                 raise RuntimeError(f"injected adapter is {self._adapter.provider!r}; signed config names {provider!r}")
             return self._adapter
@@ -267,6 +274,15 @@ class SheetJudge(BaseTool):
             gen_row = qc_receipts.attempt_rows(root, started["attempt_id"])["generation"]
             if gen_row is None or gen_row.get("asset_id") != asset_id:
                 raise RuntimeError("the attempt has no generation_attached row for this asset; attach the generation receipt first")
+            from lib.receipts import find_generation
+            from lib.sheet_qc.verify import SeriesMismatch, verify_series_against_receipt
+            gen_receipt = find_generation(root, asset_id)
+            if gen_receipt is None or gen_receipt.get("receipt_id") != gen_row.get("generation_receipt_id"):
+                raise RuntimeError("generation_attached names a receipt that is not the asset's verified generation receipt")
+            try:
+                verify_series_against_receipt(key, gen_receipt, asset_id=asset_id)
+            except SeriesMismatch as exc:
+                raise RuntimeError(f"attempt series does not match the sealed generation receipt: {exc}") from exc
             adapter = self._resolve_adapter(root, qc.judge_provider)
         except Exception as exc:  # noqa: BLE001
             return ToolResult(success=False, error=f"sheet_judge preflight failed: {exc}")
@@ -355,9 +371,18 @@ class SheetJudge(BaseTool):
         except Exception as exc:  # noqa: BLE001
             wal = gates.qc_wal_read(tuple_sha) or {}
             wal.update({"state": "unknown" if provider_id else "claimed", "error": str(exc)[:400]})
+            if provider_id:
+                wal["provider_request_id"] = provider_id  # never lose a returned id (inspection #7)
             gates.qc_wal_write(tuple_sha, wal)
             if provider_id:
-                reconcile_paid_call(root, reservation_id, actual, "pending_billing", tracker)
+                try:
+                    attach_request_id(root, reservation_id, provider_id)
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    reconcile_paid_call(root, reservation_id, estimate, "pending_billing", tracker)
+                except ValueError:
+                    pass
             return ToolResult(success=False, error=f"sheet_judge provider call did not complete ({'submitted' if provider_id else 'not submitted'}): {exc}")
 
         # ---- commit ----

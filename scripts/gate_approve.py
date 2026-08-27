@@ -470,7 +470,26 @@ def _bible_and_palette(root: Path, req: dict) -> tuple[dict, dict]:
     return bible, bible.get("palette") or {}
 
 
-def _full_sheet_check(root: Path, entry: dict, entity_id: str) -> dict:
+def _checkpoint_pin(root: Path, req: dict):
+    """The pipeline tuple of the pending checkpoint, verified against the
+    project's signed pin (inspection #2: never derived from the mutable
+    project.json alone). Sheet gates exist only for authored-film."""
+    from lib.pipeline_pin import PipelinePinError, pinned_pipeline
+
+    _, checkpoint = _load_pending_checkpoint(root, req)
+    tuple_ = checkpoint.get("pipeline")
+    if not isinstance(tuple_, dict) or tuple_.get("name") != "authored-film" or not tuple_.get("version"):
+        raise GateHandlerError("the pending visual_bible checkpoint carries no authored-film pipeline tuple; sheet gates exist only for authored-film")
+    try:
+        pin = pinned_pipeline(root, f"authored-film@{tuple_['version']}")
+    except PipelinePinError as exc:
+        raise GateHandlerError(f"cannot resolve the project's pinned pipeline: {exc}") from exc
+    if pin.to_dict() != tuple_:
+        raise GateHandlerError(f"pending checkpoint tuple {tuple_} is not the signed pin {pin.to_dict()}")
+    return pin
+
+
+def _full_sheet_check(root: Path, entry: dict, entity_id: str, req: dict) -> dict:
     """D19 R1#11: the gate runs the SAME verifier canon enforcement runs at
     checkpoint write (lineage, look binding, headshot binding, prompt-recipe
     fidelity, and under authored-film 1.3 the QC verdict chain). Returns
@@ -479,14 +498,10 @@ def _full_sheet_check(root: Path, entry: dict, entity_id: str) -> dict:
     from lib.checkpoint import CheckpointValidationError
     from lib.headshots import HeadshotError, active_headshots
     from lib.look_ingest import LookIngestError, active_look_for
-    from lib.pipeline_pin import PipelinePinError, _read_marker, pinned_pipeline
     from lib.project_config import ProjectConfigError, load_verified_project_config
     from lib.sheet_verify import verify_character_sheet
 
-    try:
-        pin = pinned_pipeline(root, str(_read_marker(root).get("pipeline_type") or "authored-film"))
-    except PipelinePinError as exc:
-        raise GateHandlerError(f"cannot resolve the project's pinned pipeline: {exc}") from exc
+    pin = _checkpoint_pin(root, req)
     qc_required = _is_qc_manifest(pin)
     config = None
     if qc_required:
@@ -523,7 +538,7 @@ def _construct_character(root: Path, req: dict) -> Constructed:
         if ref:
             _verify_image_ref(root, ref, f"character {entity_id!r} {role}")
             evidence.append(f"{role}: {root / ref['path']} (sha256 {ref['asset_id']})")
-    verdicts = _full_sheet_check(root, entry, entity_id)
+    verdicts = _full_sheet_check(root, entry, entity_id, req)
     for role, row in sorted(verdicts.items()):
         warn = ", ".join(row.get("warnings") or []) or "none"
         state = "pass" if row.get("verdict") == "pass" else f"FAIL {row.get('failing_items')} accepted by qc_override"
@@ -531,7 +546,7 @@ def _construct_character(root: Path, req: dict) -> Constructed:
                         f"attempt {row.get('attempt_n')}, receipt {row.get('receipt_id')}, warnings: {warn})")
 
     def pre_commit() -> None:
-        _full_sheet_check(root, entry, entity_id)
+        _full_sheet_check(root, entry, entity_id, req)
 
     return Constructed(character_approval_record(entry, palette), None, entity_id, evidence=tuple(evidence),
                        pre_commit_check=pre_commit)
@@ -560,13 +575,22 @@ def _construct_qc_override(root: Path, req: dict) -> Constructed:
     items = req.get("item_ids")
     if not isinstance(items, list) or not items:
         raise GateHandlerError("qc_override request needs item_ids (the failed items you accept)")
+    from lib.sheet_qc.policy import checklist
+    from lib.sheet_qc.verify import NON_OVERRIDABLE
+
     failing = set(row.get("failing_items") or [])
+    if failing & NON_OVERRIDABLE:
+        raise GateHandlerError(f"verdict {rid} failed on {sorted(failing & NON_OVERRIDABLE)} — a judge protocol failure is never overridable; re-judge")
+    authoritative = {i.id for i in checklist(str(row.get("role"))) if i.severity == "fail"}
     unknown = sorted(set(items) - failing)
     if unknown:
         raise GateHandlerError(f"item_ids {unknown} are not failing items of verdict {rid} (failing: {sorted(failing)})")
+    foreign = sorted(set(items) - authoritative)
+    if foreign:
+        raise GateHandlerError(f"item_ids {foreign} are not fail-severity checklist items for role {row.get('role')!r}")
     reason = req.get("reason")
-    if not isinstance(reason, str) or not reason.strip():
-        raise GateHandlerError("qc_override request needs a reason")
+    if not isinstance(reason, str) or len(reason.strip()) < 10 or "REPLACE" in reason:
+        raise GateHandlerError("qc_override needs the human's typed reason (10+ characters); the request's placeholder is not one")
     _verify_image_ref(root, {"asset_id": row["asset_id"], "path": f"canon/visual/objects/{row['asset_id']}.png"}, "judged asset")
     notes = {i["id"]: i.get("note") for i in row.get("items") or [] if isinstance(i, dict)}
     evidence = [f"asset: {root / 'canon' / 'visual' / 'objects' / (row['asset_id'] + '.png')}",
@@ -1052,6 +1076,17 @@ def main(argv: list[str] | None = None) -> int:
                     print("a note is required to reject all — nothing decided, request left pending")
                     return 0
         else:
+            if req["kind"] == "qc_override":
+                # The reason is the human's, typed here — never the request's text.
+                while True:
+                    typed = input("Why is the judge wrong on these items? (10+ characters, or q to quit): ").strip()
+                    if typed.lower() == "q":
+                        print("quit — nothing decided, request left pending")
+                        return 0
+                    if len(typed) >= 10 and "REPLACE" not in typed:
+                        break
+                    print("  a real reason is required (10+ characters)")
+                req["reason"] = typed
             shown = construct(root, req)
             show_constructed(shown)
             while True:
