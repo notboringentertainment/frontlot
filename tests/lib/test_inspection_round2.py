@@ -369,7 +369,7 @@ class TestNoProgrammaticAnswer:
 
     def test_main_declines_on_anything_but_y(self, tmp_path, monkeypatch, capsys):
         root, _ = _config_request(tmp_path)
-        rc = self._run_main(tmp_path, monkeypatch, ["yes please", "not now"])
+        rc = self._run_main(tmp_path, monkeypatch, ["yes please", "n", "not now"])  # "yes please" re-prompts; "n" declines
         assert rc == 0 and "declined" in capsys.readouterr().out
         assert not (root / "approvals.jsonl").exists()
         declined = json.loads((root / ".gate-requests" / "declined" / "req-1.json").read_text())

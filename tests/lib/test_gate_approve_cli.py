@@ -137,3 +137,18 @@ def test_dry_run_constructs_without_tty_and_mints_nothing(tmp_path, monkeypatch,
     assert rc in (0, 2)  # 0 if the hero constructor accepts the fixture, 2 if it refuses — either way nothing is signed
     assert not (root / "approvals.jsonl").exists()
     assert "dry-run" in out or "error" in capsys.readouterr().err or rc == 2
+
+
+def test_typo_never_counts_as_a_decision(tmp_path, monkeypatch, capsys):
+    """A stray keystroke re-prompts; 'q' leaves the request pending with nothing signed or declined."""
+    import io
+    root, req = _project(tmp_path)
+    answers = iter(["[1-1]", "maybe", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    monkeypatch.setattr(gate_approve, "require_tty", lambda stdin=None: None)
+    rc = gate_approve.main(["--project", "demo", "--projects-dir", str(tmp_path / "projects"), "--request", "req-1"])
+    out = capsys.readouterr().out
+    assert rc == 0 and "quit" in out
+    assert (root / ".gate-requests" / "req-1.json").exists()
+    assert not (root / ".gate-requests" / "declined").exists()
+    assert not (root / "approvals.jsonl").exists()

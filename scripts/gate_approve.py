@@ -922,17 +922,55 @@ def main(argv: list[str] | None = None) -> int:
         if req["kind"] in SELECTION_KINDS:
             _, entry, candidates = headshot_candidates(req, root)
             show_candidates(entry, candidates, root)
-            raw = input(f"Choose candidate [1-{len(candidates)}] or 'r' to reject all: ").strip().lower()
-            if raw.isdigit():
-                selection = int(raw)
+            n = len(candidates)
+            reject_all = False
+            while True:
+                raw = input(f"Type a number 1-{n} to choose, r to reject all, or q to quit without deciding: ").strip().lower()
+                if raw == "q":
+                    print("quit — nothing decided, request left pending")
+                    return 0
+                if raw == "r":
+                    if input("Reject ALL candidates and regenerate? type 'reject' to confirm: ").strip().lower() == "reject":
+                        reject_all = True
+                        break
+                    continue
+                if raw.isdigit() and 1 <= int(raw) <= n:
+                    selection = int(raw)
+                    break
+                print(f"  not understood: {raw!r} — enter a number 1-{n}, r, or q")
+            if selection is not None:
                 shown = construct(root, req, selection=selection)
                 show_constructed(shown)
-                approved = input("Sign this record? [y/N] ").strip().lower() == "y"
-            note = input("Note (required for reject-all): ").strip() or None
+                while True:
+                    a = input("Sign this record? y to sign, n to go back, q to quit: ").strip().lower()
+                    if a in ("y", "n", "q"):
+                        break
+                    print("  enter y, n, or q")
+                if a == "q":
+                    print("quit — nothing decided, request left pending")
+                    return 0
+                approved = a == "y"
+                if not approved:
+                    print("not signed — request left pending; run again to choose")
+                    return 0
+                note = input("Note (optional): ").strip() or None
+            else:
+                note = input("Note (required for reject-all): ").strip() or None
+                if not note:
+                    print("a note is required to reject all — nothing decided, request left pending")
+                    return 0
         else:
             shown = construct(root, req)
             show_constructed(shown)
-            approved = input("Approve? [y/N] ").strip().lower() == "y"
+            while True:
+                a = input("Approve? y to sign, n to decline, q to quit without deciding: ").strip().lower()
+                if a in ("y", "n", "q"):
+                    break
+                print("  enter y, n, or q")
+            if a == "q":
+                print("quit — nothing decided, request left pending")
+                return 0
+            approved = a == "y"
             note = input("Note (optional): ").strip() or None
         if approved and shown is not None:
             # The handler marker exists only for this call; minting is refused elsewhere.
