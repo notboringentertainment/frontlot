@@ -38,7 +38,7 @@ import re
 import unicodedata
 from typing import Any
 
-BUILDER_VERSION = "1.3"
+BUILDER_VERSION = "1.4"
 LOOK_SPEC_VERSION = "1.0"
 
 CHARACTER_ROLES = ("hero", "turnaround", "front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")
@@ -328,17 +328,18 @@ def build_prompt(
     palette_names = _palette(palette)
     if palette_names:
         sections.append(("palette", "palette: " + ", ".join(palette_names)))
-    risks = _clean_list(look_spec.get("continuity_risks"), "continuity_risks", limit=12)
-    if risks:
-        sections.append(("continuity_risks", "keep consistent: " + "; ".join(risks)))
     sections.append(("role", _role_framing(role, look_spec)))
 
+    # Builder 1.4: continuity risks are phrased as the BAD outcome ("skin
+    # gaining pores", "eyes darkening"), so they belong in the Avoid block —
+    # under "keep consistent:" a model could read them as instructions.
+    risks = _clean_list(look_spec.get("continuity_risks"), "continuity_risks", limit=12)
     negative_lines = _clean_list(look_spec.get("negative_lines"), "negative_lines", limit=12)
-    negative = render_negative_block(negative_lines)
+    negative = render_negative_block(negative_lines + [f"drift: {r}" for r in risks])
 
     positive = ". ".join(text for _, text in sections) + "."
     prompt = positive + NEGATIVE_BLOCK_SEPARATOR + negative
-    fields_used = [name for name, _ in sections] + ["negative_lines"]
+    fields_used = [name for name, _ in sections] + (["continuity_risks"] if risks else []) + ["negative_lines"]
     return {
         "prompt": prompt,
         "positive": positive,

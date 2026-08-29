@@ -60,14 +60,14 @@ def test_deterministic_and_hash_stable():
     b = pb.build_prompt(_character(), role="hero", palette=["granite grey", "rust orange"])
     assert a == b
     assert a["prompt_recipe"]["rendered_sha256"] == hashlib.sha256(a["prompt"].encode()).hexdigest()
-    assert a["prompt_recipe"]["builder_version"] == "1.3" == pb.BUILDER_VERSION
+    assert a["prompt_recipe"]["builder_version"] == "1.4" == pb.BUILDER_VERSION
     # The hash is computed by the builder from the payload (RFC 8785), never caller-supplied.
     assert a["prompt_recipe"]["look_hash"] == record_sha256(_character())
     assert a["prompt_recipe"]["fields_used"][0] == "prompt_safe_description"
-    assert a["prompt_recipe"]["fields_used"][-2:] == ["role", "negative_lines"]
+    assert a["prompt_recipe"]["fields_used"][-3:] == ["role", "continuity_risks", "negative_lines"]
     assert "default_wardrobe" in a["prompt_recipe"]["fields_used"]
     assert "oilskin coat" in a["prompt"] and "granite grey" in a["prompt"]
-    assert a["negative"] == "Avoid: no modern clothing, text, watermark, logo, extra limbs, deformed"
+    assert a["negative"] == "Avoid: no modern clothing, drift: braid length, text, watermark, logo, extra limbs, deformed"
     # Known-good pin: the rendering for this fixture is stable across runs.
     assert a["prompt_recipe"]["rendered_sha256"] == pb.rendered_prompt_sha256(a["prompt"])
     # Role changes the rendering (and therefore the hash) while the rest is shared.
@@ -150,11 +150,11 @@ def test_look_hash_is_computed_not_supplied():
 def test_build_kind_continuity_and_negative_lines_are_rendered_and_hashed():
     out = pb.build_prompt(_character(build={"kind": "stocky", "note": "broad shoulders"}), role="hero")
     assert "build stocky, broad shoulders" in out["positive"]
-    assert "keep consistent: braid length" in out["positive"]
+    assert "keep consistent" not in out["positive"] and "drift: braid length" in out["negative"]  # builder 1.4
     assert "continuity_risks" in out["prompt_recipe"]["fields_used"]
     # The provider input is positive + the fixed Avoid block; the hash covers both.
     assert out["prompt"] == out["positive"] + "\n" + out["negative"]
-    assert out["prompt"].endswith("Avoid: no modern clothing, text, watermark, logo, extra limbs, deformed")
+    assert out["negative"].startswith("Avoid: no modern clothing, drift: braid length") and out["prompt"].endswith("text, watermark, logo, extra limbs, deformed")
     assert out["prompt_recipe"]["rendered_sha256"] == hashlib.sha256(out["prompt"].encode()).hexdigest()
     assert out["prompt_recipe"]["rendered_sha256"] != pb.rendered_prompt_sha256(out["positive"])
     # Changing only a negative line changes the bound hash.
@@ -165,7 +165,7 @@ def test_build_kind_continuity_and_negative_lines_are_rendered_and_hashed():
     assert "build" not in legacy["prompt_recipe"]["fields_used"]
     # Location looks render continuity risks too.
     loc = pb.build_prompt(_location(), role="establishing")
-    assert "keep consistent: gallery colour" in loc["positive"] and loc["negative"].startswith("Avoid: text")
+    assert "keep consistent" not in loc["positive"] and "drift: gallery colour" in loc["negative"] and loc["negative"].startswith("Avoid: drift: gallery colour")
 
 
 def test_props_never_rendered_into_sheet_prompts():
