@@ -301,6 +301,21 @@ class TestImportedCandidate:
                                       dict(ref, qc_receipt_id=qc_id), active_look=_look(w), config=_config(w), pin=_pin(w))
 
 
+class TestLegacyImport:
+    def test_unbound_legacy_import_accepted_only_for_a_grandfathered_hero(self, world):
+        """A pre-D20 import has no character binding; only the grandfathered legacy path accepts it."""
+        w = world
+        src = w["project"] / ".staging" / "old.png"; src.parent.mkdir(exist_ok=True); src.write_bytes(_png(1024, 1280, "old-import"))
+        prepared = prepare_reference_import(w["project"], PROJECT, src, origin_class=ORIGIN_IMPORTED_SYNTHETIC, origin_tool="t", request_id="import-old-1")
+        receipt = approve_request(json.loads(prepared.request_path.read_text()), w["project"])
+        imported = finalize_reference_import(w["project"], receipt["receipt_id"])
+        ref = imported_image_ref(w["project"], imported)
+        entry = _entry(w, [ref], recipe=None)
+        with pytest.raises(HeadshotVerifyError, match="bound to character"):
+            verify_headshot_candidate(w["project"], entry, ref, active_look=_look(w), config=_config(w), pin=_pin(w))
+        assert verify_headshot_candidate(w["project"], entry, ref, active_look=_look(w), config=_config(w), pin=_pin(w), require_verdict=False) is None
+
+
 # ---- checkpoint + gate ----
 
 def _pending_packet(w, candidates, recipe, entity=CHAR):

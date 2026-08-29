@@ -210,16 +210,20 @@ def verify_headshot_candidate(
         if recipe["look_hash"] != active_look.look_hash:
             raise HeadshotVerifyError(f"{label}: prompt_recipe names look {recipe['look_hash'][:12]}, not the active look")
     if kind == "imported":
-        attestation = synthetic_import_receipt(project_dir, asset_id, entity_id=entity_id if hero_qc else None,
+        # A pre-D20 import carries no character binding; for a GRANDFATHERED
+        # legacy hero (require_verdict=False) the headshot_grandfather receipt
+        # is what binds character to asset, so the unbound import is accepted.
+        need_binding = hero_qc and require_verdict
+        attestation = synthetic_import_receipt(project_dir, asset_id, entity_id=entity_id if need_binding else None,
                                                receipt_id=receipt.get("attestation_receipt_id"))
         if attestation is None or attestation.get("receipt_id") != receipt.get("attestation_receipt_id"):
             raise HeadshotVerifyError(
                 f"{label} has no verified imported_synthetic reference_import receipt "
-                f"{receipt.get('attestation_receipt_id')!r}" + (f" bound to character {entity_id!r}" if hero_qc else "")
+                f"{receipt.get('attestation_receipt_id')!r}" + (f" bound to character {entity_id!r}" if need_binding else "")
             )
         if provenance.get("attestation_receipt_id") != attestation["receipt_id"] or provenance.get("import_receipt_id") != receipt["receipt_id"]:
             raise HeadshotVerifyError(f"{label} provenance does not cite its attestation/import receipts")
-        if hero_qc and recipe is not None:
+        if hero_qc and require_verdict and recipe is not None:
             raise HeadshotVerifyError(f"{label}: an imported candidate carries no prompt_recipe")
     else:
         if kind not in ("model", "local"):
