@@ -330,7 +330,8 @@ def _current_pending_packet(root: Path) -> dict[str, Any]:
     cp = _checkpoint(root)
     packet = (cp.get("artifacts") or {}).get("headshot_packet")
     if isinstance(packet, dict) and packet.get("state") == "approved":
-        return _packet("approved", [dict(e) for e in packet.get("characters") or []])
+        # keep the packet's own version: a 1.0 approved packet (pin 1.3) stays 1.0
+        return json.loads(json.dumps(packet))
     return _packet("approved", _approved_entries(root))
 
 

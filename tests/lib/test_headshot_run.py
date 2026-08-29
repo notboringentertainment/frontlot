@@ -293,6 +293,27 @@ class TestGrandfather:
         with pytest.raises(HeadshotRunError, match="already a 1.1|nothing to grandfather|needs authored-film 1.4"):
             _run(w, grandfather=False)
 
+    def test_grandfather_keeps_a_1_0_packet_at_1_0(self, legacy):
+        """The legacy project's approved 1.0 packet is carried as-is (no upgrade to 1.1)."""
+        w = legacy
+        look = w["c"]
+        from lib.look_ingest import active_look_for
+        al = active_look_for(w["project"], "character", CHAR)
+        approved = {"version": "1.0", "state": "approved", "characters": [{
+            "entity_kind": "character", "entity_id": CHAR,
+            "look_ref": {"entity_kind": "character", "entity_id": CHAR, "look_hash": al.look_hash, "receipt_id": al.receipt_id},
+            "prompt_recipe": pb.build_prompt(look, role="hero", palette=["moss"])["prompt_recipe"],
+            "hero": {"asset_id": w["asset"], "path": f"canon/visual/objects/{w['asset']}.png", "role": "hero",
+                     "provenance": {"generator_kind": "model", "model_endpoint": hr.GENERATION_ENDPOINT,
+                                    "prompt": pb.build_prompt(look, role="hero", palette=["moss"])["prompt"],
+                                    "generation_receipt_id": receipts.find_generation(w["project"], w["asset"])["receipt_id"]}},
+            "origin": "generated", "normalized_pixel_hash": w["asset"], "approval_receipt_id": w["hs"]["receipt_id"],
+            "candidates_checkpoint_digest": "d" * 64, "candidates_rejected": []}]}
+        write(w["pipeline"], "headshots", {"headshot_packet": approved}, status="in_progress")
+        r = _run(w, grandfather=True)
+        assert r["status"] == "pending"
+        assert _cp(w)["artifacts"]["headshot_packet"]["version"] == "1.0"
+
     def test_failed_legacy_hero_is_blocked(self, legacy):
         w = legacy
         with pytest.raises(Blocked):
