@@ -42,7 +42,8 @@
               "playbook_override",
               "visual_accuracy_check",
               "canon_ruling",
-              "approval_policy"
+              "approval_policy",
+              "revision"
             ],
             "description": "What class of decision this is"
           },
