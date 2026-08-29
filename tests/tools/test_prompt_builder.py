@@ -60,7 +60,7 @@ def test_deterministic_and_hash_stable():
     b = pb.build_prompt(_character(), role="hero", palette=["granite grey", "rust orange"])
     assert a == b
     assert a["prompt_recipe"]["rendered_sha256"] == hashlib.sha256(a["prompt"].encode()).hexdigest()
-    assert a["prompt_recipe"]["builder_version"] == "1.4" == pb.BUILDER_VERSION
+    assert a["prompt_recipe"]["builder_version"] == "1.5" == pb.BUILDER_VERSION
     # The hash is computed by the builder from the payload (RFC 8785), never caller-supplied.
     assert a["prompt_recipe"]["look_hash"] == record_sha256(_character())
     assert a["prompt_recipe"]["fields_used"][0] == "prompt_safe_description"
@@ -174,3 +174,10 @@ def test_props_never_rendered_into_sheet_prompts():
         out = pb.build_prompt(spec, role=role)
         assert "beacon" not in out["prompt"]
         assert "props" not in out["prompt_recipe"]["fields_used"]
+
+
+def test_hero_framing_demands_a_plain_backdrop():
+    """Builder 1.5: the hero judge fails scenery (plain_background) and loose crops (bust_front); the prompt must ask for neither."""
+    out = pb.build_prompt(_character(), role="hero")
+    pos = out["positive"]
+    assert "plain seamless backdrop" in pos and "no scenery" in pos and "no furniture" in pos and "cropped at the chest" in pos

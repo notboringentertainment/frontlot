@@ -38,7 +38,7 @@ import re
 import unicodedata
 from typing import Any
 
-BUILDER_VERSION = "1.4"
+BUILDER_VERSION = "1.5"
 LOOK_SPEC_VERSION = "1.0"
 
 CHARACTER_ROLES = ("hero", "turnaround", "front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")
@@ -55,7 +55,8 @@ NEGATIVE_BLOCK_PREFIX = "Avoid: "
 NEGATIVE_BLOCK_SEPARATOR = "\n"
 
 _ROLE_FRAMING = {
-    "hero": "single character, head and shoulders portrait, neutral expression, facing camera",
+    "hero": ("single character, tight head-and-shoulders studio portrait cropped at the chest, neutral expression, facing camera, "
+             "even soft key light, plain seamless backdrop in one flat palette hue, no scenery, no room, no furniture, no props, no text"),
     "front": "single character, full front view, neutral pose, plain studio background",
     "three_quarter": "single character, three-quarter view, neutral pose, plain studio background",
     "profile": "single character, strict side profile, neutral pose, plain studio background",
