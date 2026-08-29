@@ -6,11 +6,13 @@ provider-egress consent and (1.1) the sheet-QC judge. It refuses to return a
 config that is not bound to a human-approved ``config`` receipt for the exact
 file digest, so a caller can never act on an edited-but-unapproved ``project.yaml``.
 
-Two schema versions are accepted and normalised to ONE in-memory shape
+Three schema versions are accepted and normalised to ONE in-memory shape
 (D19 R2#2): 1.0 carries a single FAL ``provider_egress`` object; 1.1 carries a
-list of per-provider entries plus a ``qc`` block. Consumers read only the
-normalised accessors (``egress_for``, ``require_egress``, ``qc``), never the
-raw ``provider_egress`` field.
+list of per-provider entries plus a ``qc`` block; 1.2 (D20) adds the hero QC
+fields ``qc.hero_policy_sha256`` and ``qc.max_hero_attempts``. Consumers read
+only the normalised accessors (``egress_for``, ``require_egress``, ``qc``,
+``require_qc``, ``require_hero_qc``), never the raw fields. Hero runs need
+1.2: there is NO code default for the hero budget or bundle (R1#7, R5#3).
 """
 from __future__ import annotations
 
@@ -23,7 +25,8 @@ PROJECT_CONFIG_FILENAME = "project.yaml"
 EGRESS_CLASS_PROMPTS = "prompts"
 EGRESS_CLASS_REFERENCE_IMAGES = "reference_images"
 EGRESS_CLASS_GENERATED_SHEET_IMAGES = "generated_sheet_images"
-SUPPORTED_VERSIONS = ("1.0", "1.1")
+SUPPORTED_VERSIONS = ("1.0", "1.1", "1.2")
+HERO_QC_VERSION = "1.2"
 
 
 class ProjectConfigError(RuntimeError):
@@ -34,8 +37,14 @@ class ProjectConfigError(RuntimeError):
 class QCConfig:
     judge_provider: str
     judge_model: str
-    policy_bundle_sha256: str
+    policy_bundle_sha256: str        # the SHEET bundle (D19 meaning)
     max_attempts_per_series: int
+    hero_policy_sha256: Optional[str] = None   # 1.2 only: the HERO bundle
+    max_hero_attempts: Optional[int] = None    # 1.2 only: hero budget per entity per look
+
+    @property
+    def has_hero(self) -> bool:
+        return self.hero_policy_sha256 is not None and self.max_hero_attempts is not None
 
 
 @dataclass(frozen=True)
@@ -100,11 +109,15 @@ class VerifiedProjectConfig:
         block = self.data.get("qc")
         if not isinstance(block, dict):
             return None
+        hero_hash = block.get("hero_policy_sha256")
+        hero_cap = block.get("max_hero_attempts")
         return QCConfig(
             judge_provider=str(block["judge_provider"]),
             judge_model=str(block["judge_model"]),
             policy_bundle_sha256=str(block["policy_bundle_sha256"]),
             max_attempts_per_series=int(block["max_attempts_per_series"]),
+            hero_policy_sha256=str(hero_hash) if hero_hash is not None else None,
+            max_hero_attempts=int(hero_cap) if hero_cap is not None else None,
         )
 
     def require_qc(self) -> QCConfig:
@@ -114,6 +127,17 @@ class VerifiedProjectConfig:
                 f"{PROJECT_CONFIG_FILENAME} {self.version} has no qc block; sheet QC needs a "
                 f"1.1 config naming the judge (judge_provider, judge_model, policy_bundle_sha256, "
                 f"max_attempts_per_series) approved through the human gate."
+            )
+        return qc
+
+    def require_hero_qc(self) -> QCConfig:
+        """D20: hero judging needs a 1.2 config naming the hero bundle and the
+        hero budget. A 1.1 config is sheet-only; nothing about it changes."""
+        qc = self.require_qc()
+        if not qc.has_hero or self.version != HERO_QC_VERSION:
+            raise ProjectConfigError(
+                f"{PROJECT_CONFIG_FILENAME} {self.version} carries no hero QC policy; headshot judging needs a "
+                f"{HERO_QC_VERSION} config with qc.hero_policy_sha256 and qc.max_hero_attempts approved through the human gate."
             )
         return qc
 

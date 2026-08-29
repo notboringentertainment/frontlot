@@ -1127,7 +1127,7 @@ def qc_call_context(
     pin = pinned_pipeline(project_root, pipeline_type)
     if not _is_qc_manifest(pin):
         raise QCCallContextError(
-            f"project is pinned to {pin.name}@{pin.version}; sheet QC needs authored-film 1.3 "
+            f"project is pinned to {pin.name}@{pin.version}; QC needs authored-film 1.3 or 1.4 "
             f"(approve a pipeline_migration first)"
         )
     config.require_egress(qc.judge_provider, "prompts", "generated_sheet_images")

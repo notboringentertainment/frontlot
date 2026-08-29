@@ -16,7 +16,7 @@ import stat
 from pathlib import Path
 from typing import Any
 
-from lib.sheet_qc.policy import LOCAL_RULES
+from lib.sheet_qc.policy import LOCAL_RULES, local_rules_for
 
 
 class LocalCheckError(ValueError):
@@ -57,20 +57,23 @@ def read_asset_bytes(objects_dir: Path, asset_id: str) -> bytes:
 
 
 def check_image(role: str, data: bytes) -> dict[str, Any]:
-    """Decode and apply the role's size rules. Returns ``{width, height}``."""
+    """Decode and apply the role's size rules (from the role's own bundle:
+    sheet roles read LOCAL_RULES, ``hero`` reads HERO_LOCAL_RULES). Returns
+    ``{width, height}``."""
     from PIL import Image
 
+    rules = local_rules_for(role)
     try:
         im = Image.open(io.BytesIO(data))
         im.load()
     except Exception as exc:  # noqa: BLE001
         raise LocalCheckError("decode", f"not a decodable image: {exc}") from exc
-    if (im.format or "").lower() != LOCAL_RULES["format"]:
-        raise LocalCheckError("format", f"expected {LOCAL_RULES['format']}, got {im.format}")
-    if not LOCAL_RULES["alpha_allowed"] and (im.mode in ("RGBA", "LA") or "transparency" in im.info):
+    if (im.format or "").lower() != rules["format"]:
+        raise LocalCheckError("format", f"expected {rules['format']}, got {im.format}")
+    if not rules["alpha_allowed"] and (im.mode in ("RGBA", "LA") or "transparency" in im.info):
         raise LocalCheckError("alpha", "alpha channel not allowed on a sheet")
     w, h = im.size
-    rule = LOCAL_RULES["size"].get(role)
+    rule = rules["size"].get(role)
     if rule is None:
         raise LocalCheckError("role", f"no local size rule for role {role!r}")
     if "width" in rule:
@@ -81,6 +84,8 @@ def check_image(role: str, data: bytes) -> dict[str, Any]:
         tol = float(rule["tolerance"])
         if abs((w / h) - rule["aspect"]) > rule["aspect"] * tol:
             raise LocalCheckError("aspect", f"{role} aspect must be {rule['aspect']} ±{tol:.0%}, got {w / h:.3f}")
+    if rule.get("orientation") == "square_or_portrait" and w > h:
+        raise LocalCheckError("orientation", f"{role} must be square or portrait, got {w}x{h} (landscape)")
     if "min_long_edge" in rule and max(w, h) < int(rule["min_long_edge"]):
         raise LocalCheckError("size", f"{role} long edge must be ≥ {rule['min_long_edge']}, got {max(w, h)}")
     return {"width": w, "height": h}

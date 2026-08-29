@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -276,14 +277,51 @@ def assert_origin_unique_for_signing(
 
 
 def synthetic_import_receipt(
-    project_dir: Path | str, pixel_hash: str, *, project_id: Optional[str] = None
+    project_dir: Path | str, pixel_hash: str, *, project_id: Optional[str] = None, entity_id: Optional[str] = None,
 ) -> Optional[dict]:
-    """The verified imported_synthetic reference_import receipt for ``pixel_hash``."""
+    """The verified imported_synthetic reference_import receipt for ``pixel_hash``.
+    With ``entity_id`` (D20 R1#13) the receipt's record must bind exactly that
+    entity: an import bound to another character, or an unbound legacy
+    import when a binding is demanded, is not a match."""
     match = None
     for r in reference_import_receipts(project_dir, project_id=project_id):
         if r.get("normalized_pixel_hash") == pixel_hash and r.get("origin_class") == ORIGIN_IMPORTED_SYNTHETIC:
+            if entity_id is not None and record_entity_id(r.get("record")) != entity_id:
+                continue
             match = r
     return match
+
+
+def entity_claiming_hash(
+    project_dir: Path | str, pixel_hash: str, *, project_id: Optional[str] = None
+) -> tuple[Optional[str], Optional[str]]:
+    """``(entity_id, where)`` for the cast entity that already claims
+    ``pixel_hash`` through a verified import receipt (``where="approved"``)
+    or a pending ``reference_import`` gate request (``where="pending"``);
+    ``(None, None)`` when nobody does."""
+    project_dir = Path(project_dir)
+    for r in reference_import_receipts(project_dir, project_id=project_id):
+        if r.get("normalized_pixel_hash") == pixel_hash:
+            eid = record_entity_id(r.get("record"))
+            if eid is not None:
+                return eid, "approved"
+    req_dir = project_dir / ".gate-requests"
+    if req_dir.is_dir():
+        for path in sorted(req_dir.glob("*.json")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                req = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(req, dict) or req.get("kind") != REFERENCE_IMPORT_KIND:
+                continue
+            if (req.get("envelope") or {}).get("normalized_pixel_hash") != pixel_hash:
+                continue
+            eid = record_entity_id(req.get("approval_record"))
+            if eid is not None:
+                return eid, "pending"
+    return None, None
 
 
 # ---- the import gate ----
@@ -297,13 +335,21 @@ IMPORT_RECORD_FIELDS = {
 }
 
 
-def import_record(origin_class: str, pixel_hash: str, *, origin_tool: Optional[str] = None) -> dict[str, Any]:
+_ENTITY_ID_RE = re.compile(r"^[a-z0-9-]+$")
+
+
+def import_record(
+    origin_class: str, pixel_hash: str, *, origin_tool: Optional[str] = None, entity_id: Optional[str] = None,
+) -> dict[str, Any]:
     """The record hashed into a reference_import receipt: the normalized
     pixel hash, the FIXED attestation string for the class, the normalizer
-    version and (imported_synthetic only) the origin tool. Nothing the caller
-    typed — no filename, source name or note — is ever persisted (Slice A
-    #12): a casting_inspiration receipt must not outlive the pixels with a
-    real person's name attached."""
+    version, (imported_synthetic only) the origin tool and, when the import
+    is for one cast entity, that entity's id (D20 R1#13: the import binds the
+    character, so another character's packet can never cite it). Nothing
+    else the caller typed — no filename, source name or note — is ever
+    persisted (Slice A #12): a casting_inspiration receipt must not outlive
+    the pixels with a real person's name attached. ``entity_id`` is a cast
+    entity slug, never a person's name."""
     if origin_class not in ORIGIN_CLASSES:
         raise ReferenceImportError(f"origin_class must be one of {ORIGIN_CLASSES}")
     if not isinstance(pixel_hash, str) or len(pixel_hash) != 64 or set(pixel_hash) - set("0123456789abcdef"):
@@ -320,7 +366,19 @@ def import_record(origin_class: str, pixel_hash: str, *, origin_tool: Optional[s
         record["origin_tool"] = origin_tool
     elif origin_tool is not None:
         raise ReferenceImportError("casting_inspiration imports carry no origin_tool (no caller metadata at all)")
+    if entity_id is not None:
+        if not isinstance(entity_id, str) or not _ENTITY_ID_RE.match(entity_id):
+            raise ReferenceImportError(f"entity_id {entity_id!r} is not a cast entity slug ([a-z0-9-]+)")
+        record["entity_id"] = entity_id
     return record
+
+
+def record_entity_id(record: Any) -> Optional[str]:
+    """The cast entity a reference_import record binds (None for a legacy, unbound import)."""
+    if not isinstance(record, dict):
+        return None
+    value = record.get("entity_id")
+    return str(value) if isinstance(value, str) and value else None
 
 
 def validate_import_record(record: Any) -> dict[str, Any]:
@@ -331,7 +389,10 @@ def validate_import_record(record: Any) -> dict[str, Any]:
     origin_class = record.get("origin_class")
     if origin_class not in ORIGIN_CLASSES:
         raise ReferenceImportError(f"origin_class must be one of {ORIGIN_CLASSES}")
-    expected = import_record(origin_class, str(record.get("normalized_pixel_hash")), origin_tool=record.get("origin_tool"))
+    expected = import_record(
+        origin_class, str(record.get("normalized_pixel_hash")),
+        origin_tool=record.get("origin_tool"), entity_id=record.get("entity_id"),
+    )
     if record != expected:
         extra = sorted(set(record) - set(expected))
         raise ReferenceImportError(
@@ -363,6 +424,124 @@ def stage_reference_upload(project_dir: Path | str, original: Path | str) -> Pat
     return dest
 
 
+@dataclass(frozen=True)
+class NormalizedImport:
+    """``normalize_reference_import`` output: the normalized PNG is staged,
+    nothing is requested yet (D20 R3#5 / R4#2: persist run state between
+    normalizing and publishing)."""
+    origin_class: str
+    normalized_pixel_hash: str
+    staged_path: Path
+    record: dict[str, Any]
+    width: int
+    height: int
+    source_format: str
+
+
+def normalize_reference_import(
+    project_dir: Path | str,
+    source_path: Path | str,
+    *,
+    origin_class: str,
+    origin_tool: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    **ignored_caller_metadata: Any,
+) -> NormalizedImport:
+    """Normalize a staged source (deleting it), refuse origin conflicts, and
+    stage the normalized PNG under ``.staging/reference-<sha>.png``. Writes NO
+    gate request. Any extra keyword (``source_name`` and the like) is dropped
+    on the floor: caller metadata never reaches the request or the record
+    (#12)."""
+    project_dir = Path(project_dir)
+    if origin_class not in ORIGIN_CLASSES:
+        raise ReferenceImportError(f"origin_class must be one of {ORIGIN_CLASSES}")
+    normalized = normalize_staged_file(source_path)
+    refuse_conflicting_origin(project_dir, normalized.sha256, origin_class)
+    record = import_record(
+        origin_class, normalized.sha256,
+        origin_tool=origin_tool if origin_class == ORIGIN_IMPORTED_SYNTHETIC else None,
+        entity_id=entity_id,
+    )
+
+    from lib.state_io import atomic_write_bytes
+
+    staging = project_dir / STAGING_DIR
+    staging.mkdir(parents=True, exist_ok=True)
+    staged = staging / f"reference-{normalized.sha256}.png"
+    atomic_write_bytes(staged, normalized.png_bytes)
+    return NormalizedImport(origin_class, normalized.sha256, staged, record,
+                            normalized.width, normalized.height, normalized.source_format)
+
+
+def publish_import_request(
+    project_dir: Path | str,
+    project_id: str,
+    normalized: NormalizedImport,
+    *,
+    request_id: Optional[str] = None,
+    source_checkpoint_digest: Optional[str] = None,
+) -> Path:
+    """Write the ``reference_import`` gate request for a staged normalized
+    import. Mints nothing. Refusals (D20 R3#5): an existing pending request
+    with this id is never overwritten, and — under the approval lock — a
+    normalized hash that another cast entity's pending or approved import
+    already claims is refused (one face, one character)."""
+    from lib import gates
+
+    project_dir = Path(project_dir)
+    if not isinstance(normalized, NormalizedImport):
+        raise ReferenceImportError("publish_import_request needs the NormalizedImport from normalize_reference_import")
+    origin_class, pixel_hash, record = normalized.origin_class, normalized.normalized_pixel_hash, normalized.record
+    staged = normalized.staged_path
+    if not staged.is_file() or staged.is_symlink():
+        raise ReferenceImportError(f"staged normalized image {staged} is missing")
+    request_id = request_id or f"reference-import-{pixel_hash[:12]}"
+    req_dir = project_dir / ".gate-requests"
+    req_dir.mkdir(parents=True, exist_ok=True)
+    request_path = req_dir / f"{request_id}.json"
+    entity_id = record_entity_id(record)
+    with gates.receipt_lock(project_id, "approval"):
+        if request_path.exists():
+            raise ReferenceImportError(
+                f"a pending gate request {request_id!r} already exists; finish or decline it before publishing another"
+            )
+        refuse_conflicting_origin(project_dir, pixel_hash, origin_class)
+        if entity_id is not None:
+            other, where = entity_claiming_hash(project_dir, pixel_hash)
+            if other is not None and other != entity_id:
+                raise ReferenceImportError(
+                    f"pixel hash {pixel_hash[:12]}… is already claimed by character {other!r} ({where} import); "
+                    f"one face cannot be imported for two characters"
+                )
+        request = {
+            "request_id": request_id,
+            "project_id": project_id,
+            "stage": "look_lock",
+            "scope": f"reference:{pixel_hash}",
+            "kind": REFERENCE_IMPORT_KIND,
+            "entity_id": entity_id or f"reference-{pixel_hash[:12]}",
+            "artifact": None,
+            "approval_record": record,
+            "envelope": {"origin_class": origin_class, "normalized_pixel_hash": pixel_hash},
+            "source_checkpoint_digest": source_checkpoint_digest,
+            "summary": (
+                f"Import a {origin_class} reference ({normalized.width}x{normalized.height}, from "
+                f"{normalized.source_format}; normalized pixel hash {pixel_hash})"
+                + (f" for character {entity_id!r}" if entity_id else "")
+                + f". Attestation: {ATTESTATIONS[origin_class]!r}."
+                + (" This image will NEVER be sent to a model or director and can never enter lineage."
+                   if origin_class == ORIGIN_CASTING else
+                   f" Origin tool: {record.get('origin_tool')}. Becomes a lineage root on approval.")
+            ),
+            "preview_paths": [str(staged.relative_to(project_dir))],
+        }
+        tmp = request_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(request, indent=2), encoding="utf-8")
+        import os
+        os.replace(tmp, request_path)
+    return request_path
+
+
 def prepare_reference_import(
     project_dir: Path | str,
     project_id: str,
@@ -372,53 +551,22 @@ def prepare_reference_import(
     origin_tool: Optional[str] = None,
     request_id: Optional[str] = None,
     entity_id: Optional[str] = None,
+    source_checkpoint_digest: Optional[str] = None,
     **ignored_caller_metadata: Any,
 ) -> PreparedImport:
-    """Normalize a staged source (deleting it), refuse origin conflicts, stage
-    the normalized PNG, and write the gate request. Mints nothing. Any extra
-    keyword (``source_name`` and the like) is dropped on the floor: caller
-    metadata never reaches the request or the record (#12)."""
-    project_dir = Path(project_dir)
-    if origin_class not in ORIGIN_CLASSES:
-        raise ReferenceImportError(f"origin_class must be one of {ORIGIN_CLASSES}")
-    normalized = normalize_staged_file(source_path)
-    refuse_conflicting_origin(project_dir, normalized.sha256, origin_class)
-    record = import_record(origin_class, normalized.sha256, origin_tool=origin_tool if origin_class == ORIGIN_IMPORTED_SYNTHETIC else None)
-
-    from lib.state_io import atomic_write_bytes
-
-    staging = project_dir / STAGING_DIR
-    staging.mkdir(parents=True, exist_ok=True)
-    staged = staging / f"reference-{normalized.sha256}.png"
-    atomic_write_bytes(staged, normalized.png_bytes)
-
-    request_id = request_id or f"reference-import-{normalized.sha256[:12]}"
-    request = {
-        "request_id": request_id,
-        "project_id": project_id,
-        "stage": "look_lock",
-        "scope": f"reference:{normalized.sha256}",
-        "kind": REFERENCE_IMPORT_KIND,
-        "entity_id": entity_id or f"reference-{normalized.sha256[:12]}",
-        "artifact": None,
-        "approval_record": record,
-        "envelope": {"origin_class": origin_class, "normalized_pixel_hash": normalized.sha256},
-        "source_checkpoint_digest": None,
-        "summary": (
-            f"Import a {origin_class} reference ({normalized.width}x{normalized.height}, from "
-            f"{normalized.source_format}; normalized pixel hash {normalized.sha256}). Attestation: "
-            f"{ATTESTATIONS[origin_class]!r}."
-            + (" This image will NEVER be sent to a model or director and can never enter lineage."
-               if origin_class == ORIGIN_CASTING else
-               f" Origin tool: {origin_tool}. Becomes a lineage root on approval.")
-        ),
-        "preview_paths": [str(staged.relative_to(project_dir))],
-    }
-    req_dir = project_dir / ".gate-requests"
-    req_dir.mkdir(parents=True, exist_ok=True)
-    request_path = req_dir / f"{request_id}.json"
-    request_path.write_text(json.dumps(request, indent=2), encoding="utf-8")
-    return PreparedImport(origin_class, normalized.sha256, staged, request_path, record)
+    """Normalize + publish in one step (``normalize_reference_import`` then
+    ``publish_import_request``). Kept for callers that have no run state to
+    persist in between; the D20 commands call the two halves themselves.
+    ``entity_id`` (when given) is sealed into the record as the cast entity
+    the import is for."""
+    normalized = normalize_reference_import(
+        project_dir, source_path, origin_class=origin_class, origin_tool=origin_tool, entity_id=entity_id,
+    )
+    request_path = publish_import_request(
+        project_dir, project_id, normalized, request_id=request_id, source_checkpoint_digest=source_checkpoint_digest,
+    )
+    return PreparedImport(normalized.origin_class, normalized.normalized_pixel_hash, normalized.staged_path,
+                          request_path, normalized.record)
 
 
 @dataclass(frozen=True)

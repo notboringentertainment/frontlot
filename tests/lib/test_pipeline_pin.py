@@ -30,7 +30,7 @@ def project_dir(tmp_path):
 
 class TestLoader:
     def test_versioned_manifests_resolve(self):
-        assert manifest_versions("authored-film") == ["1.1", "1.2", "1.3"]
+        assert manifest_versions("authored-film") == ["1.1", "1.2", "1.3", "1.4"]
         assert load_pipeline("authored-film@1.2")["version"] == "1.2"
         assert parse_pipeline_ref("authored-film@1.2") == ("authored-film", "1.2")
         assert "authored-film" in list_pipelines() and "authored-film@1.2" not in list_pipelines()

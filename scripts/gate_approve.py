@@ -190,6 +190,16 @@ def _require_entity(req: dict) -> str:
     return entity_id
 
 
+def _read_json_file(path: Path) -> Optional[dict]:
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _sha256_hex(value: Any) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX
 
@@ -344,8 +354,24 @@ def _construct_reference_import(root: Path, req: dict) -> Constructed:
             f"only the deterministic normalized PNG is imported"
         )
     origin_tool = hint.get("origin_tool") if origin_class == ORIGIN_IMPORTED_SYNTHETIC else None
+    # D20 R1#13: an import may bind ONE cast entity (a slug from the proposal
+    # cast, never a name). The binding is verified against the proposal
+    # checkpoint on disk, not taken from the hint on trust.
+    bound_entity = hint.get("entity_id")
+    if bound_entity is not None:
+        if not isinstance(bound_entity, str) or not re.match(r"^[a-z0-9-]+$", bound_entity):
+            raise GateHandlerError(f"reference_import entity_id {bound_entity!r} is not a cast entity slug")
+        proposal = _read_json_file(root / "checkpoint_proposal.json")
+        packet = ((proposal or {}).get("artifacts") or {}).get("proposal_packet") or {}
+        cast = packet.get("cast") or {}
+        known = set(cast.get("character_ids") or []) | set(cast.get("location_ids") or [])
+        if bound_entity not in known:
+            raise GateHandlerError(
+                f"reference_import binds entity {bound_entity!r}, which is not in the proposal cast "
+                f"(checkpoint_proposal.json); an import is for a cast entity or for nobody"
+            )
     try:
-        record = validate_import_record(import_record(origin_class, pixel_hash, origin_tool=origin_tool))
+        record = validate_import_record(import_record(origin_class, pixel_hash, origin_tool=origin_tool, entity_id=bound_entity))
         refuse_conflicting_origin(root, pixel_hash, origin_class, project_id=req["project_id"])
     except ReferenceImportError as exc:
         raise GateHandlerError(str(exc)) from exc

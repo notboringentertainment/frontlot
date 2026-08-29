@@ -29,6 +29,11 @@ HEADSHOT_RECORD_FIELDS = (
     "entity_kind", "entity_id", "look_hash", "asset_id", "normalized_pixel_hash", "origin",
     "import_receipt_id", "prompt_recipe_sha256", "candidates_checkpoint_digest",
 )
+# D20: record 1.1 seals the receipts the gate relied on (generation or import,
+# and the hero verdict) so downstream verification reloads them by id.
+HEADSHOT_RECORD_VERSION_1_1 = "1.1"
+HEADSHOT_RECORD_FIELDS_1_1 = HEADSHOT_RECORD_FIELDS + ("record_version", "generation_receipt_id", "qc_receipt_id")
+HEADSHOT_RECORD_VERSIONS = ("1.0", HEADSHOT_RECORD_VERSION_1_1)
 
 
 class HeadshotError(RuntimeError):
@@ -53,9 +58,19 @@ def headshot_record(
     import_receipt_id: Optional[str],
     prompt_recipe_sha256: Optional[str],
     candidates_checkpoint_digest: str,
+    record_version: str = "1.0",
+    generation_receipt_id: Optional[str] = None,
+    qc_receipt_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """The record hashed into a headshot receipt. ``normalized_pixel_hash``
-    equals ``asset_id`` because canon objects are the normalized PNG bytes."""
+    equals ``asset_id`` because canon objects are the normalized PNG bytes.
+
+    ``record_version`` 1.0 is the pre-D20 record (no extra fields, so legacy
+    receipts still verify). 1.1 (authored-film 1.4) additionally seals
+    ``generation_receipt_id`` (for an imported hero this IS the import receipt)
+    and ``qc_receipt_id`` (the hero verdict the gate relied on)."""
+    if record_version not in HEADSHOT_RECORD_VERSIONS:
+        raise HeadshotError(f"record_version must be one of {HEADSHOT_RECORD_VERSIONS}, got {record_version!r}")
     if origin not in ("generated", "imported_synthetic"):
         raise HeadshotError(f"origin must be generated|imported_synthetic, got {origin!r}")
     if origin == "imported_synthetic" and not import_receipt_id:
@@ -66,7 +81,7 @@ def headshot_record(
         raise HeadshotError("asset_id must be a sha256")
     if not isinstance(candidates_checkpoint_digest, str) or len(candidates_checkpoint_digest) != 64:
         raise HeadshotError("candidates_checkpoint_digest must be a sha256")
-    return {
+    record: dict[str, Any] = {
         "entity_kind": "character",
         "entity_id": entity_id,
         "look_hash": look_hash,
@@ -77,6 +92,28 @@ def headshot_record(
         "prompt_recipe_sha256": prompt_recipe_sha256,
         "candidates_checkpoint_digest": candidates_checkpoint_digest,
     }
+    if record_version == "1.0":
+        if generation_receipt_id is not None or qc_receipt_id is not None:
+            raise HeadshotError("a 1.0 headshot record carries no generation_receipt_id / qc_receipt_id; use record_version 1.1")
+        return record
+    if not isinstance(generation_receipt_id, str) or not generation_receipt_id:
+        raise HeadshotError("a 1.1 headshot record must seal generation_receipt_id (the import receipt for an imported hero)")
+    if origin == "imported_synthetic" and generation_receipt_id != import_receipt_id:
+        raise HeadshotError("an imported hero's generation_receipt_id must equal its import_receipt_id")
+    if not isinstance(qc_receipt_id, str) or not qc_receipt_id:
+        raise HeadshotError("a 1.1 headshot record must seal qc_receipt_id (the hero verdict the gate relied on)")
+    record.update({
+        "record_version": HEADSHOT_RECORD_VERSION_1_1,
+        "generation_receipt_id": generation_receipt_id,
+        "qc_receipt_id": qc_receipt_id,
+    })
+    return record
+
+
+def record_version_of(record: dict[str, Any]) -> str:
+    """``"1.0"`` for a legacy record (no ``record_version`` field), else the field."""
+    v = record.get("record_version")
+    return "1.0" if v is None else str(v)
 
 
 def headshot_receipts(project_dir: Path | str, *, project_id: Optional[str] = None) -> list[dict]:
@@ -96,7 +133,11 @@ def active_headshots(project_dir: Path | str, *, project_id: Optional[str] = Non
         current = active.get(entity_id)
         supersedes = row.get("supersedes_receipt_id")
         if action == "activate":
-            missing = [f for f in HEADSHOT_RECORD_FIELDS if f not in record]
+            rv = record_version_of(record)
+            if rv not in HEADSHOT_RECORD_VERSIONS:
+                raise HeadshotError(f"headshot receipt {row.get('receipt_id')} record_version {rv!r} is unknown")
+            wanted = HEADSHOT_RECORD_FIELDS_1_1 if rv == HEADSHOT_RECORD_VERSION_1_1 else HEADSHOT_RECORD_FIELDS
+            missing = [f for f in wanted if f not in record]
             if missing:
                 raise HeadshotError(f"headshot receipt {row.get('receipt_id')} record lacks {missing}")
             if current is None:

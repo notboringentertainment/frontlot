@@ -53,8 +53,11 @@ def sheet_roles(entry: dict[str, Any]) -> tuple[str, ...]:
 CHARACTER_APPROVAL_KINDS = ("sheet", "hero")
 LOOK_LOCK_MANIFEST = ("authored-film", "1.2")
 # D19: 1.3 keeps the whole 1.2 look-lock contract and adds sheet QC.
-LOOK_LOCK_MANIFESTS = frozenset({("authored-film", "1.2"), ("authored-film", "1.3")})
+# D20: 1.4 keeps all of 1.3 and adds hero QC (judged headshot candidates).
+LOOK_LOCK_MANIFESTS = frozenset({("authored-film", "1.2"), ("authored-film", "1.3"), ("authored-film", "1.4")})
 QC_MANIFEST = ("authored-film", "1.3")
+QC_MANIFESTS = frozenset({("authored-film", "1.3"), ("authored-film", "1.4")})
+HERO_QC_MANIFEST = ("authored-film", "1.4")
 SPOILER_SENSITIVE_FORMATS = {"trailer", "teaser"}
 _CONFIG_DIGEST_RE = re.compile(r"config_sha256:\s*([a-f0-9]{64})")
 
@@ -1473,7 +1476,13 @@ def _is_look_lock_manifest(pin: Any) -> bool:
 
 
 def _is_qc_manifest(pin: Any) -> bool:
-    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) == QC_MANIFEST
+    """Sheet QC applies (1.3 and 1.4)."""
+    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) in QC_MANIFESTS
+
+
+def _is_hero_qc_manifest(pin: Any) -> bool:
+    """Hero QC applies: every headshot candidate carries a hero verdict (1.4)."""
+    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) == HERO_QC_MANIFEST
 
 
 def _cast_keys(proposal: dict[str, Any]) -> list[tuple[str, str]]:

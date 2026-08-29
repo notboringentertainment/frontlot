@@ -56,8 +56,10 @@
       "enum": [
         "turnaround",
         "expressions",
-        "wardrobe"
-      ]
+        "wardrobe",
+        "hero"
+      ],
+      "description": "Sheet roles are judged under the sheet bundle; hero (D20) under the separate hero bundle."
     },
     "asset_id": {
       "type": "string",
