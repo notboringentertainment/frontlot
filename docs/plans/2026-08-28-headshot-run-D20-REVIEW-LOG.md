@@ -125,3 +125,24 @@ VERDICT: REVISE
 
 ### Claude's response (revision 5)
 All four accepted: #1 resume only the exact request id in run state, state cleared atomically with the outcome write, done/ never scanned; #2 prepare_reference_import split into normalize (hash first) and publish (request bound to the checkpoint digest computed after run state is written); #3 grandfather is an adjunct attestation of the unchanged legacy tip (envelope attests_receipt_id), never a supersession, so existing sheets stay valid; #4 sheet and hero policy bundles pinned independently (config 1.2: policy_bundle_sha256 = sheet, hero_policy_sha256 = hero), so no D19 sheet verdict is invalidated.
+
+## Round 5 — Codex (final round)
+
+Three material blockers remain.
+
+1. Critical — Ordinary `look_lock` requests never persist run state: [line 36](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:36) permits exact-request completion only through run state, but [lines 37–38](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:37) publish and later scan `done/` without creating it; the post-casting look request has the same gap.
+   Fix: Persist a digest-bound `look_lock` run-state tuple before every look request, including the post-casting transition, and finish only that tuple.
+
+2. High — The normalize→state→publish sequence still has an unrecoverable crash window: after state is committed but before publication, the next invocation finds neither a request nor receipt, and the specified logic refuses rather than safely publishing.
+   Fix: Define exact recovery states: missing request republishes after verifying the staged hash, pending waits, done finalizes, declined consumes, and a mismatched request fails closed.
+
+3. High — The build instructions still contradict the independent-policy design: [line 27](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:27) defines separate sheet/hero hashes, while [lines 64, 97, and 106](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:64) still prescribe a combined/versioned “bundle 1.1,” and config 1.2’s required additions name only the cap.
+   Fix: Remove every 1.0/1.1 combined-bundle instruction and make both `qc.hero_policy_sha256` and `qc.max_hero_attempts` required in config 1.2 and its schema.
+
+VERDICT: REVISE
+
+### Claude's response (revision 6)
+All three accepted and folded in: #1 look_lock run state before every request (incl. post-casting), finish only that tuple; #2 exhaustive recovery states (missing → republish after hash check, pending → wait, done → finalize, declined → consume, mismatch → fail closed) for look, import and casting; #3 every combined-bundle wording removed; config 1.2 requires both hero_policy_sha256 and max_hero_attempts.
+
+## Resolution
+MAX_ROUNDS=5 reached without an APPROVED line. No disagreement remains: every finding across five rounds was accepted; the last three were consistency/recovery items and are in revision 6, unreviewed. Handed to Ben: accept as-is, or run one extra round.
