@@ -295,7 +295,7 @@ class TestImportRecordBinding:
         assert "source_name" not in n.record and n.record["entity_id"] == "marlow-vex"
         path = publish_import_request(project_dir, "p", n, request_id="import-marlow-vex-1", source_checkpoint_digest="e" * 64)
         req = json.loads(path.read_text())
-        assert req["entity_id"] == "marlow-vex" and req["source_checkpoint_digest"] == "e" * 64
+        assert req["entity_id"].startswith("reference-") and req["source_checkpoint_digest"] == "e" * 64
         assert req["approval_record"] == n.record and "character 'marlow-vex'" in req["summary"]
         with pytest.raises(ReferenceImportError, match="already exists"):
             publish_import_request(project_dir, "p", n, request_id="import-marlow-vex-1")

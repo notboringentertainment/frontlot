@@ -40,6 +40,11 @@ def verify_series_against_receipt(series_key: dict[str, Any], gen_receipt: dict[
         raise SeriesMismatch("no verified generation receipt for the judged asset")
     if asset_id is not None and gen_receipt.get("output_sha256") != asset_id:
         raise SeriesMismatch("generation receipt is for another asset")
+    if series_key.get("role") == "hero":
+        _verify_hero_series(series_key, gen_receipt)
+        return
+    if gen_receipt.get("generator_kind") == "imported":
+        raise SeriesMismatch("an imported receipt can only back a hero series")
     recipe = gen_receipt.get("prompt_recipe") or {}
     if recipe.get("builder_policy_sha256") != series_key.get("builder_policy_sha256"):
         raise SeriesMismatch("series builder_policy_sha256 is not the sealed prompt_recipe's")
@@ -53,6 +58,39 @@ def verify_series_against_receipt(series_key: dict[str, Any], gen_receipt: dict[
     href = gen_receipt.get("headshot_ref") or {}
     if href.get("approval_receipt_id") != series_key.get("headshot_receipt_id") or href.get("entity_id") != series_key.get("entity_id"):
         raise SeriesMismatch("series headshot_receipt_id is not the receipt's headshot_ref")
+
+
+def _verify_hero_series(series_key: dict[str, Any], gen_receipt: dict[str, Any]) -> None:
+    """D20 R1#8: a hero series names NO headshot (the hero is what is being
+    chosen). Generated candidate: the receipt carries look_refs for the entity
+    and no headshot_ref, and the series' builder policy / endpoint come from
+    the sealed receipt. Imported candidate: the receipt is the ``imported``
+    generation receipt and the series carries the ``imported`` sentinels."""
+    from lib.qc_receipts import IMPORTED_SENTINEL
+
+    if series_key.get("headshot_receipt_id") is not None:
+        raise SeriesMismatch("a hero series must have headshot_receipt_id null (no headshot exists yet)")
+    if gen_receipt.get("headshot_ref"):
+        raise SeriesMismatch("a hero candidate's generation receipt must carry no headshot_ref")
+    if gen_receipt.get("generator_kind") == "imported":
+        if series_key.get("builder_policy_sha256") != IMPORTED_SENTINEL or \
+                series_key.get("generation_endpoint") != IMPORTED_SENTINEL or series_key.get("generation_model") != IMPORTED_SENTINEL:
+            raise SeriesMismatch("an imported candidate's series must carry the 'imported' sentinel for builder policy, endpoint and model")
+        if gen_receipt.get("prompt_recipe"):
+            raise SeriesMismatch("an imported receipt carries no prompt_recipe")
+        return
+    if series_key.get("builder_policy_sha256") == IMPORTED_SENTINEL:
+        raise SeriesMismatch("the 'imported' sentinel is only for an imported candidate")
+    recipe = gen_receipt.get("prompt_recipe") or {}
+    if recipe.get("builder_policy_sha256") != series_key.get("builder_policy_sha256"):
+        raise SeriesMismatch("series builder_policy_sha256 is not the sealed prompt_recipe's")
+    endpoint = gen_receipt.get("model_endpoint")
+    if series_key.get("generation_endpoint") != endpoint or series_key.get("generation_model") != endpoint:
+        raise SeriesMismatch("series generation endpoint/model is not the receipt's model_endpoint")
+    looks = gen_receipt.get("look_refs") or []
+    if not any(isinstance(l, dict) and l.get("look_hash") == series_key.get("look_hash")
+               and l.get("entity_id") == series_key.get("entity_id") for l in looks):
+        raise SeriesMismatch("series look_hash is not among the receipt's look_refs")
 
 
 def raw_response_ok(project_dir: Path | str, row: dict[str, Any]) -> bool:

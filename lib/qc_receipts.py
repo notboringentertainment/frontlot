@@ -34,6 +34,11 @@ SERIES_FIELDS = (
     "policy_bundle_sha256", "builder_policy_sha256", "generation_endpoint", "generation_model",
     "judge_provider", "judge_model",
 )
+# D20: present only on hero attempts that judge a LEGACY (1.3) hero for the
+# grandfather attestation; hashed into the series when present.
+SERIES_OPTIONAL_FIELDS = ("grandfather",)
+HERO_ROLE = "hero"
+IMPORTED_SENTINEL = "imported"  # builder policy / endpoint / model of an imported candidate's series
 TUPLE_FIELDS = (
     "project_id", "entity_kind", "entity_id", "role", "asset_id", "look_hash", "look_receipt_id",
     "headshot_asset_id", "headshot_receipt_id", "policy_bundle_sha256", "provider", "model",
@@ -52,11 +57,39 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def series_sha256(series_key: dict[str, Any]) -> str:
+def series_fields(series_key: dict[str, Any]) -> dict[str, Any]:
+    """The hashed subset of a series key: every SERIES_FIELD plus any
+    SERIES_OPTIONAL_FIELD that is present."""
     missing = [f for f in SERIES_FIELDS if f not in series_key]
     if missing:
         raise QCReceiptError(f"series_key is missing {missing}")
-    return record_sha256({f: series_key[f] for f in SERIES_FIELDS})
+    out = {f: series_key[f] for f in SERIES_FIELDS}
+    for f in SERIES_OPTIONAL_FIELDS:
+        if f in series_key:
+            out[f] = series_key[f]
+    return out
+
+
+def series_sha256(series_key: dict[str, Any]) -> str:
+    return record_sha256(series_fields(series_key))
+
+
+def hero_budget_key(project_id: str, entity_id: str, look_hash: str) -> dict[str, str]:
+    """D20 R1#5/#6: the ONE hero allowance is counted per (project, entity,
+    look) across every subordinate series (builder/model/judge rotations
+    open a new series for reuse semantics but never a new allowance)."""
+    return {"project_id": project_id, "entity_id": entity_id, "look_hash": look_hash}
+
+
+def hero_attempts_started(project_root: Path | str, entity_id: str, look_hash: str, *, project_id: Optional[str] = None) -> list[dict]:
+    """Every attempt_started row of role ``hero`` for this entity + look,
+    whatever series it belongs to (voided or not: all count)."""
+    out = []
+    for r in rows_of_kind(project_root, "attempt_started", project_id=project_id):
+        key = r.get("series_key") or {}
+        if key.get("role") == HERO_ROLE and key.get("entity_id") == entity_id and key.get("look_hash") == look_hash:
+            out.append(r)
+    return out
 
 
 def tuple_sha256(evaluation: dict[str, Any]) -> str:
@@ -149,16 +182,33 @@ def _signed(kind: str, project_id: str, fields: dict[str, Any]) -> dict:
 def start_attempt(
     project_root: Path | str, series_key: dict[str, Any], *, max_attempts: int,
     generation_reservation_id: Optional[str] = None,
+    budget_key: Optional[dict[str, str]] = None, budget_cap: Optional[int] = None,
 ) -> dict:
     """Append an immutable ``attempt_started`` row under the QC lock.
     ``attempt_n`` = 1 + the number of attempt_started rows already in the
     series (whatever happened to them). Refuses when the cap is reached.
     Refuses while another attempt in the series is still open (a run must
-    finish or void it first) so two runners cannot interleave."""
+    finish or void it first) so two runners cannot interleave.
+
+    D20: a ``hero`` attempt must also name the hero budget (``budget_key`` =
+    ``hero_budget_key(...)``, ``budget_cap`` = the signed
+    ``qc.max_hero_attempts``); the row records both and is refused when the
+    budget count across every series would exceed the cap."""
     root = Path(project_root)
     pid = project_id_for(root)
     key = dict(series_key, project_id=pid)
     sha = series_sha256(key)
+    is_hero = key.get("role") == HERO_ROLE
+    if is_hero:
+        if budget_key is None or budget_cap is None:
+            raise QCReceiptError("a hero attempt must name budget_key and budget_cap (the signed qc.max_hero_attempts)")
+        if key.get("headshot_receipt_id") is not None:
+            raise QCReceiptError("a hero attempt has no headshot yet: series headshot_receipt_id must be null")
+        expected = hero_budget_key(pid, str(key["entity_id"]), str(key["look_hash"]))
+        if dict(budget_key) != expected:
+            raise QCReceiptError(f"budget_key {budget_key} is not the series' own {expected}")
+    elif budget_key is not None or budget_cap is not None:
+        raise QCReceiptError("only hero attempts carry a budget key")
     with gates.receipt_lock(pid, STREAM):
         if open_attempts(root, sha):
             raise QCReceiptError(f"series {sha[:12]} has an open attempt; resume or void it before starting another")
@@ -168,10 +218,21 @@ def start_attempt(
                 f"series {sha[:12]} already has {n - 1} attempt(s); cap is {max_attempts} — "
                 f"fix the builder (new builder_policy) or approve a qc_override"
             )
-        row = _signed("attempt_started", pid, {
-            "attempt_id": str(uuid.uuid4()), "series_key": {f: key[f] for f in SERIES_FIELDS},
+        fields: dict[str, Any] = {
+            "attempt_id": str(uuid.uuid4()), "series_key": series_fields(key),
             "series_sha256": sha, "attempt_n": n, "generation_reservation_id": generation_reservation_id,
-        })
+        }
+        if is_hero:
+            used = len(hero_attempts_started(root, str(key["entity_id"]), str(key["look_hash"])))
+            if used + 1 > int(budget_cap):
+                raise AttemptCapExceeded(
+                    f"hero budget for {key['entity_id']!r} under look {str(key['look_hash'])[:12]} is spent "
+                    f"({used} of {budget_cap} attempts across every series); the budget is the limit"
+                )
+            fields["budget_key"] = dict(budget_key)
+            fields["budget_cap"] = int(budget_cap)
+            fields["budget_n"] = used + 1
+        row = _signed("attempt_started", pid, fields)
         return _commit(root, row)
 
 

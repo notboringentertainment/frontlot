@@ -276,6 +276,7 @@ def prepare_migration_request(
     project_dir = Path(project_dir)
     if version not in manifest_versions(pipeline_name):
         raise PipelinePinError(f"no manifest pipeline_defs/{pipeline_name}@{version}.yaml")
+    require_migration_coverage(project_dir, pipeline_name, version)
     digest = manifest_digest(f"{pipeline_name}@{version}")
     from lib.receipts import verified_approvals
 
@@ -306,6 +307,23 @@ def prepare_migration_request(
     path = req_dir / f"{request_id}.json"
     path.write_text(json.dumps(request, indent=2), encoding="utf-8")
     return path
+
+
+def require_migration_coverage(project_dir: Path | str, pipeline_name: str, version: str) -> None:
+    """D20.7 (R3#4): a project may be pinned to authored-film 1.4 only when
+    every active hero of a cast character is a 1.1 record or carries a valid
+    headshot_grandfather attestation. Run at request time, at gate
+    construction and again inside the gate's pre-commit check."""
+    if pipeline_name != "authored-film" or version != "1.4":
+        return
+    from lib.headshot_verify import hero_migration_blockers
+
+    blockers = hero_migration_blockers(project_dir)
+    if blockers:
+        raise PipelinePinError(
+            "cannot pin authored-film 1.4: every active hero needs a hero verdict (record 1.1) or a signed "
+            "headshot_grandfather attestation — " + "; ".join(blockers)
+        )
 
 
 def record_sha256_of(record: dict) -> str:

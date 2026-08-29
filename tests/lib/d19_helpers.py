@@ -31,6 +31,15 @@ def config_1_1(*, budget: float = 50.0, max_attempts: int = 3, openai_classes=("
     }
 
 
+def config_1_2(*, budget: float = 50.0, max_attempts: int = 3, max_hero_attempts: int = 4,
+               openai_classes=("prompts", "generated_sheet_images")) -> dict:
+    """D20: a 1.2 config = 1.1 + the hero bundle hash and the hero budget."""
+    cfg = config_1_1(budget=budget, max_attempts=max_attempts, openai_classes=openai_classes)
+    cfg["version"] = "1.2"
+    cfg["qc"].update({"hero_policy_sha256": policy.hero_bundle_sha256(), "max_hero_attempts": max_hero_attempts})
+    return cfg
+
+
 def approve(project: Path, slug: str, stage: str, scope: str, record: dict, kind: str, entity_id: str, envelope=None) -> dict:
     with gates.handler_context():
         token = gates.mint_gate_token(slug, stage, scope, record_sha256(record), user_response="approve")

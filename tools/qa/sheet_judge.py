@@ -283,17 +283,25 @@ class SheetJudge(BaseTool):
             key = started["series_key"]
             entity_kind, entity_id, role = key["entity_kind"], key["entity_id"], key["role"]
             asset_id = str(inputs.get("asset_id") or "")
-            if qc.policy_bundle_sha256 != policy.bundle_sha256():
+            is_hero = policy.is_hero_role(role)
+            # D20: the role picks the bundle; each is pinned separately in the signed config.
+            pinned_bundle = qc.hero_policy_sha256 if is_hero else qc.policy_bundle_sha256
+            local_bundle = policy.bundle_sha256_for_role(role)
+            if pinned_bundle != local_bundle:
                 raise RuntimeError(
-                    f"signed config pins policy bundle {qc.policy_bundle_sha256[:12]} but this checkout's bundle is "
-                    f"{policy.bundle_sha256()[:12]} — re-sign the config for the new policy"
+                    f"signed config pins {'hero' if is_hero else 'sheet'} policy bundle {str(pinned_bundle)[:12]} but this "
+                    f"checkout's bundle is {local_bundle[:12]} — re-sign the config for the new policy"
                 )
             # Signed state, never caller text.
             look = active_look_for(root, entity_kind, entity_id)
             if look is None or look.look_hash != key["look_hash"]:
                 raise RuntimeError(f"attempt series look {key['look_hash']} is not the active look for {entity_id!r}")
             hero_asset = hero_receipt = None
-            if entity_kind == "character":
+            if is_hero:
+                # R1#8: the hero is what is being chosen; the series names no headshot.
+                if key.get("headshot_receipt_id") is not None:
+                    raise RuntimeError("a hero attempt series must name no headshot")
+            elif entity_kind == "character":
                 heads = active_headshots(root)
                 current = heads.get(entity_id) if isinstance(heads, dict) else None
                 if current is None or current.receipt_id != key["headshot_receipt_id"]:
@@ -321,7 +329,7 @@ class SheetJudge(BaseTool):
             "version": "1.0", "project_id": started["project_id"], "entity_kind": entity_kind, "entity_id": entity_id,
             "role": role, "asset_id": asset_id, "look_hash": look.look_hash, "look_receipt_id": look.receipt_id,
             "headshot_asset_id": hero_asset, "headshot_receipt_id": hero_receipt,
-            "policy_version": policy.QC_POLICY_VERSION, "policy_bundle_sha256": qc.policy_bundle_sha256,
+            "policy_version": policy.QC_POLICY_VERSION, "policy_bundle_sha256": pinned_bundle,
             "attempt_id": started["attempt_id"], "attempt_n": int(started["attempt_n"]), "judged_at": judged_at,
         }
 
@@ -330,7 +338,7 @@ class SheetJudge(BaseTool):
             data = local_checks.read_asset_bytes(objects_dir, asset_id)
             dims = local_checks.check_image(role, data)
         except local_checks.LocalCheckError as exc:
-            v = dict(base, provider="local", model="local_checks", prompt_sha256=record_sha256(policy.LOCAL_RULES),
+            v = dict(base, provider="local", model="local_checks", prompt_sha256=record_sha256(policy.local_rules_for(role)),
                      provider_request_id=None, provider_model_version=None, raw_response_asset_id=None,
                      items=[{"id": exc.item, "answer": "no", "note": str(exc)[:400], "severity": "fail"}],
                      verdict="fail", failing_items=[exc.item], warnings=[], cost_usd=0.0)
@@ -347,7 +355,8 @@ class SheetJudge(BaseTool):
         if needs_hero:
             images.append(local_checks.read_asset_bytes(objects_dir, hero_asset))
         pieces = list(((look.payload.get("default_wardrobe") or {}).get("pieces")) or []) if any(i.evidence == "wardrobe_pieces" for i in items) else None
-        user = policy.judge_prompt(role, wardrobe_pieces=pieces, has_hero=needs_hero)
+        look_fields = policy.look_evidence(role, look.payload) if is_hero else None
+        user = policy.judge_prompt(role, wardrobe_pieces=pieces, has_hero=needs_hero, look_fields=look_fields)
         system = policy.SYSTEM_PROMPT
         schema = policy.response_schema(role)
         prompt_sha = hashlib.sha256((system + "\n\n" + user).encode("utf-8")).hexdigest()

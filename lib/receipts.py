@@ -58,8 +58,12 @@ APPROVAL_KINDS = frozenset(
         "look_lock", "headshot", "reference_import", "pipeline_migration",
         # D19.4: a human accepting specific failed QC items of ONE verdict.
         "qc_override",
+        # D20.7: a human attesting that a LEGACY (pre-QC) hero passed the hero
+        # judge; adjunct to the headshot chain, never part of it.
+        "headshot_grandfather",
     }
 )
+HEADSHOT_GRANDFATHER_FIELDS = ("entity_kind", "entity_id", "legacy_headshot_receipt_id", "asset_id", "look_hash", "qc_receipt_id")
 ARTIFACT_REVIEW_FIELDS = ("artifact_type", "artifact_version", "artifact_digest", "migration_status")
 GENERATOR_KINDS = frozenset({"model", "local", "imported"})
 
@@ -79,6 +83,7 @@ ENVELOPE_FIELDS: dict[str, dict[str, bool]] = {
     "reference_import": {"origin_class": True, "normalized_pixel_hash": True},
     "pipeline_migration": {"supersedes_receipt_id": False},
     "qc_override": {"qc_receipt_id": True},
+    "headshot_grandfather": {"attests_receipt_id": True, "entity_kind": True, "look_hash": True},
 }
 REFERENCE_ORIGIN_CLASSES = frozenset({"imported_synthetic", "casting_inspiration"})
 ENTITY_KINDS = frozenset({"character", "location"})
@@ -284,6 +289,16 @@ def validate_envelope(
             raise ValueError("qc_override: record.item_ids must be a non-empty list of item ids")
         if not isinstance(record.get("reason"), str) or not record["reason"].strip():
             raise ValueError("qc_override: record.reason is required")
+    if kind == "headshot_grandfather":
+        missing_fields = [f for f in HEADSHOT_GRANDFATHER_FIELDS if not record.get(f)]
+        if missing_fields or set(record) != set(HEADSHOT_GRANDFATHER_FIELDS):
+            raise ValueError(f"headshot_grandfather: record must be exactly {HEADSHOT_GRANDFATHER_FIELDS}")
+        if record.get("entity_id") != entity_id or record.get("entity_kind") != env["entity_kind"]:
+            raise ValueError("headshot_grandfather: record key does not match the receipt key")
+        if record.get("legacy_headshot_receipt_id") != env["attests_receipt_id"]:
+            raise ValueError("headshot_grandfather: record.legacy_headshot_receipt_id must equal envelope attests_receipt_id")
+        if record.get("look_hash") != env["look_hash"]:
+            raise ValueError("headshot_grandfather: record.look_hash must equal envelope look_hash")
     if kind == "reference_import":
         if env["origin_class"] not in REFERENCE_ORIGIN_CLASSES:
             raise ValueError(f"origin_class must be one of {sorted(REFERENCE_ORIGIN_CLASSES)}")

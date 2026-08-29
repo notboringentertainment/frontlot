@@ -519,7 +519,9 @@ def publish_import_request(
             "stage": "look_lock",
             "scope": f"reference:{pixel_hash}",
             "kind": REFERENCE_IMPORT_KIND,
-            "entity_id": entity_id or f"reference-{pixel_hash[:12]}",
+            # #12: the receipt KEY is derived from the hash; the character binding
+            # (when any) lives in the signed record, never in the key.
+            "entity_id": f"reference-{pixel_hash[:12]}",
             "artifact": None,
             "approval_record": record,
             "envelope": {"origin_class": origin_class, "normalized_pixel_hash": pixel_hash},

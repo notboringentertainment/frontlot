@@ -193,7 +193,30 @@ def verify_headshot_ref(
             f"headshot for {ref['entity_id']!r} was approved against look {current.look_hash}, which is "
             f"no longer the active look ({look.look_hash if look else None}); re-approve the headshot"
         )
+    _verify_downstream(project_dir, current, look)
     return ref
+
+
+def _verify_downstream(project_dir: Path | str, current: ActiveHeadshot, look: Any) -> None:
+    """D20: under authored-film 1.4 the active headshot must rest on a
+    verifiable hero verdict (record 1.1) or a grandfather attestation."""
+    from lib.canon_enforcement import _is_hero_qc_manifest
+    from lib.headshot_verify import HeadshotVerifyError, verify_active_headshot
+    from lib.pipeline_pin import PipelinePinError, _read_marker, pinned_pipeline
+    from lib.project_config import ProjectConfigError, load_verified_project_config
+
+    root = Path(project_dir)
+    try:
+        pin = pinned_pipeline(root, str(_read_marker(root).get("pipeline_type") or "authored-film"))
+    except PipelinePinError as exc:
+        raise HeadshotError(f"cannot resolve the project's pinned pipeline: {exc}") from exc
+    if not _is_hero_qc_manifest(pin):
+        return
+    try:
+        config = load_verified_project_config(root)
+        verify_active_headshot(root, current, active_look=look, config=config, pin=pin)
+    except (ProjectConfigError, HeadshotVerifyError) as exc:
+        raise HeadshotError(str(exc)) from exc
 
 
 def headshot_request(

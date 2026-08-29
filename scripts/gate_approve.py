@@ -400,6 +400,7 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
         _chain_tip,
         checkpoint_digests_on_disk,
         migration_record,
+        require_migration_coverage,
     )
     from lib.receipts import verified_approvals
 
@@ -415,6 +416,7 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
     digest = manifest_digest(f"{pipeline_name}@{version}")
     bound = checkpoint_digests_on_disk(root)
     try:
+        require_migration_coverage(root, pipeline_name, version)  # D20.7: legacy heroes must be grandfathered
         record = migration_record(pipeline_name, version, digest, bound)
         tip = _chain_tip(
             verified_approvals(root, MIGRATION_KIND, entity_id=pipeline_name, project_id=req["project_id"]),
@@ -428,7 +430,17 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
         f"binds {len(bound)} checkpoint file(s) on disk: " + ", ".join(f"{b['stage']}={b['checkpoint_digest'][:12]}…" for b in bound),
         f"supersedes migration receipt {tip['receipt_id']}" if tip else "first pin for this project",
     )
-    return Constructed(record, envelope, pipeline_name, evidence=evidence, extra={"pipeline_name": pipeline_name})
+
+    def pre_commit() -> None:  # re-derived under the consumed token (R3#4)
+        try:
+            require_migration_coverage(root, pipeline_name, version)
+        except PipelinePinError as exc:
+            raise GateHandlerError(str(exc)) from exc
+        if checkpoint_digests_on_disk(root) != bound:
+            raise GateHandlerError("checkpoint files changed between request and signing; re-run the migration request")
+
+    return Constructed(record, envelope, pipeline_name, evidence=evidence, extra={"pipeline_name": pipeline_name},
+                       pre_commit_check=pre_commit)
 
 
 def _construct_config(root: Path, req: dict) -> Constructed:
@@ -827,8 +839,28 @@ def build_headshot_record(root: Path, req: dict, selection: int) -> tuple[dict, 
     return built.record, dict(built.envelope or {})
 
 
+def _hero_qc_context(root: Path, req: dict) -> tuple[bool, Any, Any]:
+    """``(hero_qc, pin, config)`` for a headshot-stage gate: whether the
+    pending checkpoint's signed pin is authored-film 1.4 and, if so, the
+    verified 1.2 config (D20)."""
+    from lib.canon_enforcement import _is_hero_qc_manifest
+    from lib.project_config import ProjectConfigError, load_verified_project_config
+
+    pin = _checkpoint_pin(root, req)
+    if not _is_hero_qc_manifest(pin):
+        return False, pin, None
+    try:
+        config = load_verified_project_config(root)
+        config.require_hero_qc()
+    except ProjectConfigError as exc:
+        raise GateHandlerError(f"hero QC needs a verified 1.2 project config: {exc}") from exc
+    return True, pin, config
+
+
 def _construct_headshot(root: Path, req: dict, selection: Optional[int] = None) -> Constructed:
+    from lib.headshot_verify import HeadshotVerifyError, verify_headshot_candidate
     from lib.headshots import HeadshotError, active_headshots, headshot_record, prompt_recipe_sha256
+    from lib.look_ingest import active_look_for
 
     digest, entry, candidates = headshot_candidates(req, root)
     if selection is None:
@@ -837,6 +869,36 @@ def _construct_headshot(root: Path, req: dict, selection: Optional[int] = None) 
         raise GateHandlerError(f"selection {selection} is not in 1..{len(candidates)}")
     chosen = candidates[selection - 1]
     origin, import_receipt_id, look_hash = _enforce_candidate(root, req, entry, chosen)
+    hero_qc, pin, config = _hero_qc_context(root, req)
+    evidence = [
+        f"candidate [{selection}] {root / chosen['path']} (sha256 {chosen['asset_id']}, origin {origin})",
+        f"candidates checkpoint digest {digest}",
+    ]
+    pre_commit = None
+    generation_receipt_id = qc_receipt_id = None
+    if hero_qc:
+        # D20: the packet must be 1.1 and the chosen candidate must carry a
+        # verifiable hero verdict; the record seals what the gate relied on.
+        _, checkpoint = _load_pending_checkpoint(root, req, "headshots")
+        packet_version = str(((checkpoint.get("artifacts") or {}).get("headshot_packet") or {}).get("version") or "1.0")
+        if packet_version != "1.1":
+            raise GateHandlerError(f"authored-film 1.4 selects from a headshot_packet 1.1; the pending packet is {packet_version}")
+
+        def _full() -> dict:
+            look = active_look_for(root, "character", entry["entity_id"])
+            try:
+                return verify_headshot_candidate(root, entry, chosen, active_look=look, config=config, pin=pin)
+            except HeadshotVerifyError as exc:
+                raise GateHandlerError(str(exc)) from exc
+
+        verdict = _full()
+        generation_receipt_id = str((chosen.get("provenance") or {}).get("generation_receipt_id"))
+        qc_receipt_id = str(verdict["receipt_id"])
+        warn = ", ".join(verdict.get("warnings") or []) or "none"
+        state = "pass" if verdict.get("verdict") == "pass" else f"FAIL {verdict.get('failing_items')} accepted by qc_override"
+        evidence.append(f"hero QC {state} (judge {verdict.get('provider')}/{verdict.get('model')}, attempt {verdict.get('attempt_n')}, "
+                        f"receipt {qc_receipt_id}, warnings: {warn})")
+        pre_commit = _full
     try:
         record = headshot_record(
             entity_id=entry["entity_id"],
@@ -846,6 +908,9 @@ def _construct_headshot(root: Path, req: dict, selection: Optional[int] = None) 
             import_receipt_id=import_receipt_id,
             prompt_recipe_sha256=prompt_recipe_sha256(entry.get("prompt_recipe")),
             candidates_checkpoint_digest=digest,
+            record_version="1.1" if hero_qc else "1.0",
+            generation_receipt_id=generation_receipt_id,
+            qc_receipt_id=qc_receipt_id,
         )
         current = active_headshots(root, project_id=req["project_id"]).get(entry["entity_id"])
     except HeadshotError as exc:
@@ -856,11 +921,64 @@ def _construct_headshot(root: Path, req: dict, selection: Optional[int] = None) 
         "look_hash": look_hash,
         "supersedes_receipt_id": current.receipt_id if current else None,
     }
+    return Constructed(record, envelope, entry["entity_id"], evidence=tuple(evidence), pre_commit_check=pre_commit)
+
+
+def _construct_headshot_grandfather(root: Path, req: dict) -> Constructed:
+    """D20.7: attest that the ACTIVE legacy (1.0-record) hero of a character
+    passed the hero judge. Adjunct to the headshot chain: the legacy receipt
+    stays the tip; this receipt binds {entity, legacy receipt, asset, look,
+    verdict} and is what verify_active_headshot accepts under 1.4."""
+    from lib.headshot_verify import HeadshotVerifyError, grandfather_record, require_hero_verdict
+    from lib.headshots import HeadshotError, active_headshots, record_version_of
+    from lib.look_ingest import LookIngestError, active_look_for
+    from lib.project_config import ProjectConfigError, load_verified_project_config
+    from lib.receipts import find_generation
+
+    entity_id = _require_entity(req)
+    qc_receipt_id = req.get("qc_receipt_id")  # a request field (like pipeline_version), never the record hint
+    if not isinstance(qc_receipt_id, str) or not qc_receipt_id:
+        raise GateHandlerError("headshot_grandfather needs the hero verdict's qc_receipt_id in the request")
+    try:
+        current = active_headshots(root, project_id=req["project_id"]).get(entity_id)
+        look = active_look_for(root, "character", entity_id)
+    except (HeadshotError, LookIngestError) as exc:
+        raise GateHandlerError(str(exc)) from exc
+    if current is None:
+        raise GateHandlerError(f"character {entity_id!r} has no active headshot to grandfather")
+    if record_version_of(current.record) != "1.0":
+        raise GateHandlerError(f"the active headshot of {entity_id!r} is a {record_version_of(current.record)} record; only legacy 1.0 records are grandfathered")
+    if look is None or look.look_hash != current.look_hash:
+        raise GateHandlerError(f"the active headshot of {entity_id!r} was approved against a look that is not the active look; re-approve instead")
+    try:
+        config = load_verified_project_config(root)
+        config.require_hero_qc()
+    except ProjectConfigError as exc:
+        raise GateHandlerError(f"grandfathering needs a verified 1.2 project config: {exc}") from exc
+
+    def _verify() -> dict:
+        try:
+            return require_hero_verdict(root, qc_receipt_id=qc_receipt_id, asset_id=current.asset_id, entity_id=entity_id,
+                                        active_look=look, config=config, gen_receipt=find_generation(root, current.asset_id),
+                                        grandfather=True)
+        except HeadshotVerifyError as exc:
+            raise GateHandlerError(str(exc)) from exc
+
+    verdict = _verify()
+    try:
+        record = grandfather_record(entity_id=entity_id, legacy_headshot_receipt_id=current.receipt_id, asset_id=current.asset_id,
+                                    look_hash=current.look_hash, qc_receipt_id=qc_receipt_id)
+    except HeadshotVerifyError as exc:
+        raise GateHandlerError(str(exc)) from exc
+    envelope = {"attests_receipt_id": current.receipt_id, "entity_kind": "character", "look_hash": current.look_hash}
+    warn = ", ".join(verdict.get("warnings") or []) or "none"
+    state = "pass" if verdict.get("verdict") == "pass" else f"FAIL {verdict.get('failing_items')} accepted by qc_override"
     evidence = (
-        f"candidate [{selection}] {root / chosen['path']} (sha256 {chosen['asset_id']}, origin {origin})",
-        f"candidates checkpoint digest {digest}",
+        f"legacy headshot receipt {current.receipt_id} (asset {current.asset_id}, {root / 'canon/visual/objects' / (current.asset_id + '.png')})",
+        f"hero QC {state} (judge {verdict.get('provider')}/{verdict.get('model')}, receipt {qc_receipt_id}, warnings: {warn})",
+        "adjunct attestation: the legacy receipt stays the chain tip; existing sheets stay valid",
     )
-    return Constructed(record, envelope, entry["entity_id"], evidence=evidence)
+    return Constructed(record, envelope, entity_id, evidence=evidence, pre_commit_check=_verify)
 
 
 CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
@@ -876,6 +994,7 @@ CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
     "poster": _construct_poster,
     "headshot": _construct_headshot,
     "qc_override": _construct_qc_override,
+    "headshot_grandfather": _construct_headshot_grandfather,
 }
 assert set(CONSTRUCTORS) == set(APPROVAL_KINDS), "every approval kind needs a gate-side constructor"
 

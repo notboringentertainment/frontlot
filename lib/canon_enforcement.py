@@ -1633,9 +1633,27 @@ def _check_sheet_prompt_recipe(label: str, ref: dict[str, Any], receipt: dict[st
         _fail(f"{label}: receipt prompt_recipe.look_hash {recipe.get('look_hash')!r} is not the active look {look_hash}.")
 
 
-def _check_headshots(project_dir: Path, packet: dict[str, Any], proposal: dict[str, Any], status: str) -> None:
-    from lib.headshots import prompt_recipe_sha256
+def _check_headshots(
+    project_dir: Path, packet: dict[str, Any], proposal: dict[str, Any], status: str, *, pin: Any = None,
+) -> None:
+    """headshot_packet contract. Under authored-film 1.4 (D20) the packet must
+    be 1.1 and every candidate / hero goes through ``lib.headshot_verify``
+    (lineage, look binding, sealed recipe, import binding, hero verdict)."""
+    from lib.headshots import prompt_recipe_sha256, record_version_of
 
+    hero_qc = _is_hero_qc_manifest(pin)
+    config = None
+    if hero_qc:
+        from lib.headshot_verify import HeadshotVerifyError, verify_active_headshot, verify_headshot_candidate
+        from lib.project_config import ProjectConfigError, load_verified_project_config
+
+        try:
+            config = load_verified_project_config(project_dir)
+            config.require_hero_qc()
+        except ProjectConfigError as exc:
+            _fail(f"headshots under authored-film 1.4 need a verified 1.2 project config: {exc}")
+        if _version(packet) != "1.1":
+            _fail(f"headshot_packet version {_version(packet)!r}; authored-film 1.4 writes headshot_packet 1.1.")
     char_ids = list((proposal.get("cast") or {}).get("character_ids") or [])
     entries = {e.get("entity_id"): e for e in packet.get("characters", []) if isinstance(e, dict)}
     state = packet.get("state")
@@ -1654,6 +1672,17 @@ def _check_headshots(project_dir: Path, packet: dict[str, Any], proposal: dict[s
         required=[("character", c) for c in wanted],
     )
     receipts = {r["output_sha256"]: r for r in _generation_receipt_rows(project_dir)}
+
+    def _candidate(entry: dict[str, Any], cand: dict[str, Any], label: str, look: Any) -> None:
+        if hero_qc:
+            try:
+                verify_headshot_candidate(project_dir, entry, cand, active_look=look, config=config, pin=pin, receipts_by_sha=receipts)
+            except HeadshotVerifyError as exc:
+                _fail(f"{label}: {exc}")
+        _check_image_ref(project_dir, label, cand, list(receipts.values()))
+        _check_lineage(project_dir, label, cand.get("asset_id"), receipts)
+        _require_look_refs(label, cand, _receipt_for(cand, receipts), ("character", entry.get("entity_id")), look.look_hash)
+
     for cid in char_ids:
         entry = entries.get(cid)
         if entry is None:
@@ -1669,16 +1698,11 @@ def _check_headshots(project_dir: Path, packet: dict[str, Any], proposal: dict[s
             _fail(f"headshot entry {cid!r} prompt_recipe.look_hash is not the active look.")
         if state == "pending":
             for i, cand in enumerate(entry.get("candidates") or []):
-                label = f"headshot candidate {cid!r}[{i}]"
-                _check_image_ref(project_dir, label, cand, list(receipts.values()))
-                _check_lineage(project_dir, label, cand.get("asset_id"), receipts)
-                _require_look_refs(label, cand, _receipt_for(cand, receipts), ("character", cid), look.look_hash)
+                _candidate(entry, cand, f"headshot candidate {cid!r}[{i}]", look)
             continue
         hero = entry.get("hero") or {}
         label = f"headshot hero {cid!r}"
-        _check_image_ref(project_dir, label, hero, list(receipts.values()))
-        _check_lineage(project_dir, label, hero.get("asset_id"), receipts)
-        _require_look_refs(label, hero, _receipt_for(hero, receipts), ("character", cid), look.look_hash)
+        _candidate(entry, hero, label, look)
         current = _active_headshots(project_dir).get(cid)
         if current is None:
             _fail(f"{label} has no active headshot receipt — faces are approved only through the selection gate.")
@@ -1704,6 +1728,16 @@ def _check_headshots(project_dir: Path, packet: dict[str, Any], proposal: dict[s
                 _fail(f"{label} is imported_synthetic but its provenance/import_receipt_id do not cite the imported generation receipt.")
         elif provenance.get("generator_kind") == "imported":
             _fail(f"{label} has imported provenance but origin {entry.get('origin')!r}.")
+        if hero_qc:
+            if record_version_of(rec) != "1.1":
+                _fail(f"{label}: authored-film 1.4 approves heroes with a 1.1 headshot record (sealed generation + hero verdict); "
+                      f"this record is {record_version_of(rec)} — grandfather it or re-approve with --replace.")
+            if rec.get("qc_receipt_id") != entry.get("qc_receipt_id") or rec.get("generation_receipt_id") != provenance.get("generation_receipt_id"):
+                _fail(f"{label} qc_receipt_id / generation receipt differ from the signed headshot record.")
+            try:
+                verify_active_headshot(project_dir, current, active_look=look, config=config, pin=pin)
+            except HeadshotVerifyError as exc:
+                _fail(f"{label}: {exc}")
 
 
 def _load_headshot_packet(
@@ -1864,7 +1898,7 @@ def enforce_authored_canon(
         if stage == "look_lock" and isinstance(artifacts.get("look_packet"), dict):
             _check_look_lock(project_dir, artifacts["look_packet"], proposal, status)
         elif stage == "headshots" and isinstance(artifacts.get("headshot_packet"), dict):
-            _check_headshots(project_dir, artifacts["headshot_packet"], proposal, status)
+            _check_headshots(project_dir, artifacts["headshot_packet"], proposal, status, pin=pin)
         elif stage == "visual_bible":
             active_looks, active_headshots = _check_visual_bible_entry_v12(project_dir, artifacts, proposal, status)
             if isinstance(artifacts.get("visual_bible"), dict):
@@ -1929,7 +1963,7 @@ def enforce_authored_canon(
         _check_look_lock(project_dir, artifacts.get("look_packet", {}), proposal, status)
     elif stage == "headshots":
         proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}
-        _check_headshots(project_dir, artifacts.get("headshot_packet", {}), proposal, status)
+        _check_headshots(project_dir, artifacts.get("headshot_packet", {}), proposal, status, pin=pin)
     elif stage == "script":
         _check_script(artifacts.get("script", {}), canon, ids, status)
     elif stage == "scene_plan":

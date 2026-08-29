@@ -1144,8 +1144,26 @@ def qc_call_context(
     if rows["verdict"] is not None:
         raise QCCallContextError(f"attempt {attempt_id} already has a verdict attached; start a new attempt")
     key = started.get("series_key") or {}
+    if key.get("role") == "hero":
+        # D20: hero judging needs the 1.2 config (hero bundle + budget) and pin
+        # 1.4 — or pin 1.3 for the one legacy-hero grandfather attempt (D20.7).
+        from lib.canon_enforcement import _is_hero_qc_manifest
+        from lib.project_config import ProjectConfigError
+
+        try:
+            qc = config.require_hero_qc()
+        except ProjectConfigError as exc:
+            raise QCCallContextError(str(exc)) from exc
+        if not _is_hero_qc_manifest(pin) and not (key.get("grandfather") is True and pin.version == "1.3"):
+            raise QCCallContextError(
+                f"project is pinned to {pin.name}@{pin.version}; hero QC needs authored-film 1.4 "
+                f"(pin 1.3 is accepted only for a grandfather attempt)"
+            )
+        pinned_bundle = qc.hero_policy_sha256
+    else:
+        pinned_bundle = qc.policy_bundle_sha256
     if key.get("judge_provider") != qc.judge_provider or key.get("judge_model") != qc.judge_model \
-            or key.get("policy_bundle_sha256") != qc.policy_bundle_sha256:
+            or key.get("policy_bundle_sha256") != pinned_bundle:
         raise QCCallContextError(
             "attempt series names a different judge or policy bundle than the signed config; the config changed "
             "since the attempt started — start a new attempt"
