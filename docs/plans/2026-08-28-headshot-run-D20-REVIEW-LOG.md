@@ -58,3 +58,27 @@ VERDICT: REVISE
 
 ### Claude's response (revision 2)
 All 17 accepted. #1/#7 authored-film 1.4 + config 1.2 with required max_hero_attempts (no code default); #2 headshot_packet 1.1 with candidates[].qc_receipt_id, run_state, required recipe for generated; #3 lib/headshot_verify used at checkpoint validation, gate candidates/enforce, pre-commit and verify_headshot_ref, qc_receipt_id signed into headshot_record; #4 imported heroes judged (design reversed); #5/#6 one signed cap counted against a stable (project, entity, look_hash) hero budget key across all series; #8 explicit hero branch (null headshot; imported sentinel); #9 --casting moved to look_run, refused after ratification; #10 stage_reference_upload always; #11 durable run_state tuple; #12 reject-all consumes the declined request and copies its note; #13 entity_id bound in import record and checked at selection/downstream; #14 sealed recipe required for generated candidates; #15 unique passing hashes fill slots; #16 affordability preflight; #17 run_common holds neutral utilities only, sheet_run untouched.
+
+## Round 2 — Codex
+
+Revision 2 materially resolves 12 of 17 findings. Prior findings #1, #3, #9, #11, and #12 remain incomplete in the following ways:
+
+1. **Critical — authored-film 1.3 is not actually preserved.** D20 says 1.3 remains untouched, but adding `hero` to the single global policy bundle changes `policy.bundle_sha256()` and blocks every existing 1.3 config; updating the shared `headshots-director` also gives 1.2/1.3 projects instructions for a command that refuses their pin ([D20](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:25), [policy](/Users/ben/Projects/OpenMontage/lib/sheet_qc/policy.py:109), [manifest](/Users/ben/Projects/OpenMontage/pipeline_defs/authored-film@1.3.yaml:173)).  
+   Fix: Preserve executable policy 1.0 and the legacy director, and give manifest 1.4 an explicitly versioned policy bundle and director path.
+
+2. **Critical — `run_state.checkpoint_digest` is self-referential.** D20 stores the checkpoint digest inside the checkpoint being digested, but `checkpoint_digest()` hashes the complete file bytes; writing the digest changes those bytes, so no stable value exists ([D20](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:59), [implementation](/Users/ben/Projects/OpenMontage/lib/checkpoint.py:188)).  
+   Fix: Write the checkpoint without its own digest, compute the digest afterward, bind it in the gate request, and keep only request/revision identifiers in run state.
+
+3. **Critical — old headshots cannot both remain valid and satisfy 1.4 QC.** D20 claims Ace’s 1.3 receipt remains valid after migration, but old headshot records contain no QC receipt or record version, `active_headshots()` is not pin-aware, and the new downstream verifier would require QC under the current 1.4 pin ([D20](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:114), [headshot record](/Users/ben/Projects/OpenMontage/lib/headshots.py:28)).  
+   Fix: Make migration to 1.4 require every active legacy hero to be judged and reapproved, or define an explicit signed grandfather receipt and document the resulting exception.
+
+4. **High — the fourth verifier call is not reachable from its available data.** `verify_headshot_candidate` requires a packet entry and candidate, while `verify_headshot_ref` receives only `{entity_id, asset_id, approval_receipt_id}` and the active receipt record lacks the full candidate/ImageRef and recipe ([D20](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:81), [consumer](/Users/ben/Projects/OpenMontage/lib/headshots.py:129)).  
+   Fix: Split selection-time and active-record verification, with the latter reconstructing from explicitly signed generation/import/QC receipt IDs and recipe hash.
+
+5. **High — the casting-import workflow never reaches finalized state.** `look_run --casting` stops after `prepare_reference_import`, but the plan specifies no durable casting run state or subsequent `finalize_reference_import`; its statement that no command opens the file again is incompatible with finalization’s required hash verification and move ([D20](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:38), [finalizer](/Users/ben/Projects/OpenMontage/lib/reference_import.py:472)).  
+   Fix: Persist the casting operation, resume only its approved receipt, finalize it, and only then permit look ratification; prohibit model/director exposure rather than all subsequent file reads.
+
+VERDICT: REVISE
+
+### Claude's response (revision 3)
+All five accepted: #1 versioned frozen policy bundles (1.0 hash-pinned by test) and a separate 1.4 director file; #2 run_state carries no self-digest, the checkpoint digest binds into the gate request after the write; #3 explicit headshot_grandfather receipt (judge + one signature) required before migration to 1.4, or --replace; #4 two verifiers over one rule set (candidate at selection time; active record downstream from signed receipt ids, record 1.1); #5 casting import has run state in the look_lock checkpoint, is finalized on resume, and the prohibition is scoped to model/director/text exposure with integrity reads allowed.
