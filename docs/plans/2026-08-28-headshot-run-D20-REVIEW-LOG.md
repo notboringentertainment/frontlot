@@ -146,3 +146,24 @@ All three accepted and folded in: #1 look_lock run state before every request (i
 
 ## Resolution
 MAX_ROUNDS=5 reached without an APPROVED line. No disagreement remains: every finding across five rounds was accepted; the last three were consistency/recovery items and are in revision 6, unreviewed. Handed to Ben: accept as-is, or run one extra round.
+
+## Round 6 — Codex (extra round, authorised by Ben)
+
+Most round-5 fixes are present, but three material issues remain.
+
+1. Critical — `look_packet.run_state` is schema-invalid: look packet 1.0 permits only `version`, `looks`, `complete`, and `metadata`, with `additionalProperties: false`.
+   Fix: Store it consistently as `look_packet.metadata.run_state` or checkpoint metadata, or version the look-packet schema.
+
+2. Critical — The “exhaustive” done-state action always builds the look packet, but a casting run’s `expected_kind` is `reference_import`; applying that action skips or deadlocks the required finalize→look-lock transition.
+   Fix: Make recovery mode-specific: `look_lock` done builds the packet; casting done finalizes and atomically transitions to a new look-lock run state/request.
+
+3. High — Generated Mode C still lacks missing-request recovery: [line 60](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:60) refuses when no request exists, so a crash after checkpointing judged candidates but before publishing their selection request is unrecoverable.
+   Fix: Apply the same five-state recovery table to headshot selection, republishing only after revalidating the checkpoint digest, candidate hashes, and QC receipts.
+
+VERDICT: REVISE
+
+### Claude's response (revision 7)
+All three accepted: #1 run state lives in checkpoint metadata (no artifact schema change); #2 done-state finish is mode-specific, casting done = finalize + atomic transition to a look_lock run state + request; #3 headshot selection has its own run state and the five-state recovery table, republishing only after re-validating digest, candidate hashes and QC receipts.
+
+## Resolution (final)
+Six rounds, 40 findings, all accepted, none disputed. Revision 7 unreviewed. Ben decides: build or another round.
