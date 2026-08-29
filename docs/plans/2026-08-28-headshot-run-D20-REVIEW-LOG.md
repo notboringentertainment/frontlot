@@ -167,3 +167,23 @@ All three accepted: #1 run state lives in checkpoint metadata (no artifact schem
 
 ## Resolution (final)
 Six rounds, 40 findings, all accepted, none disputed. Revision 7 unreviewed. Ben decides: build or another round.
+
+## Build record — steps 1–3 (2026-08-29)
+
+Built from revision 7 by Claude; Ben asked for steps 1–3 first, then a checkpoint before the two commands.
+
+- Step 1 `5643fef`: manifest 1.4 (+ `headshots-director-1.4.md`, 1.3 and its director byte-frozen by golden test), separate HERO policy bundle (sheet bundle hash unchanged: `f3709bd4…`), project_config 1.2, headshot_packet 1.1, headshot record 1.1, `normalize_reference_import` / `publish_import_request` split with character binding in the record.
+- Step 2 `950e1af`: `lib/run_common.py` (neutral utilities only) + `revision` decision category.
+- Step 3 `97d0540`: hero budget in the QC stream, hero series branch, `lib/headshot_verify.py` (both verifiers + `require_hero_verdict` + `hero_migration_blockers`), judge hero branch, `qc_call_context` hero acceptance, enforcement and gate wiring (record 1.1, `headshot_grandfather` constructor, migration coverage at request / construct / pre-commit), downstream verification in `verify_headshot_ref`.
+- Tests: `tests/lib/test_d20_versions.py`, `test_run_common.py`, `test_d20_hero_qc.py` (35 new). Full suite 1796 passed, 11 skipped.
+
+Departures from the plan text (all within its intent; flagged for the post-build inspection):
+1. D20.0 still mentions `run_state` inside headshot_packet 1.1; revision 7 moved it to checkpoint metadata (R6#1), so the packet schema carries no run_state.
+2. The reference_import gate REQUEST keeps its hash-derived `entity_id` key (Slice A #12); the character binding lives only in the signed record (`entity_id`). The gate verifies the binding against the proposal cast.
+3. The `headshot_grandfather` request carries `qc_receipt_id` as a request field (like `pipeline_version`), never as a record hint; the gate constructs the whole record.
+4. Hero local rules live in `HERO_LOCAL_RULES`, outside `LOCAL_RULES`, so the sheet bundle bytes are untouched.
+5. A hero series that does not match the sealed receipt (e.g. a generated-style series over an imported receipt) is refused at judge preflight; the attempt row still counts against the budget (same rule as sheets).
+6. Egress: hero judging reuses the `generated_sheet_images` consent class for the judge provider (an imported_synthetic candidate is machine-generated elsewhere). No new consent class was added; if Ben wants imports under their own class, that is a config 1.2 schema change.
+7. `hero_migration_blockers` needs a verified 1.2 config only when a cast character already has an active hero; a project with no heroes may pin 1.4 with any config (the command validators demand 1.2 before any hero run).
+
+Not built yet (steps 4–6): `look_run.py`, `headshot_run.py`, the look-lock director pointer, Bloodless signatures, Sebastian.
