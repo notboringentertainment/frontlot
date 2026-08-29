@@ -589,6 +589,7 @@ def look_lock_request(
     promotion_refs: Optional[list[dict]] = None,
     summary: Optional[str] = None,
     ticket_path: Optional[Path | str] = None,
+    source_checkpoint_digest: Optional[str] = None,
 ) -> Path:
     """Write the gate request for a look_lock activate receipt (mints nothing).
     Supersedes the active look for the key when one exists. ``ticket_path``
@@ -618,7 +619,7 @@ def look_lock_request(
             "promotion_refs": list(promotion_refs or []),
             "source_ticket_ref": look.source_ticket_ref,
         },
-        "source_checkpoint_digest": None,
+        "source_checkpoint_digest": source_checkpoint_digest,
         "source_ticket_path": str(ticket_path) if ticket_path is not None else look.source_ticket_ref.get("path"),
         "summary": summary or (
             f"Ratify the look for {look.entity_kind} {look.entity_id!r} (look_hash {look.look_hash}). "
