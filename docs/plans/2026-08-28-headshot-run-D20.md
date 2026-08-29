@@ -5,8 +5,8 @@ _Drafted by Claude for Codex review, 2026-08-28. Follows the claudex-loop Phase 
 After D19 the sheet step is one governed command (`scripts/sheet_run.py`): generate, judge, retry within a signed cap, stop at the gate. The two steps before it are still hand-driven: the look ticket is ingested and its `look_lock` request written by an operator in chat, and headshot candidates (or a reference import) are produced by ad-hoc scripts, exactly the shape that produced the 2026-08-26 defects. Ben's ruling (2026-08-28): the deliverable is the workflow, project-agnostic, not Bloodless assets. D20 makes the whole per-character path three commands, each stopping at exactly one human gate, with nothing project-specific in code:
 
 ```
-look_run.py     --project <slug> --entity <id>            → look_lock gate (ticket → validated look → request)
-headshot_run.py --project <slug> --entity <id> [--import <file> --origin-tool <name> | --casting <file>]
+look_run.py     --project <slug> --entity <id> [--casting <file>]   → (casting import gate) → look_lock gate
+headshot_run.py --project <slug> --entity <id> [--import <file> --origin-tool <name>]
                                                           → reference_import gate (if importing) → headshot selection gate
 sheet_run.py    --project <slug> --entity <id>            → sheet gate (D19)
 ```
@@ -40,9 +40,9 @@ Out of scope: locations (same pattern later), the writer's authorship of the loo
 Nothing here decides appearance; the writer did that in the ticket. The command only moves a resolved ticket to the gate and records the ratification in the checkpoint.
 
 ### D20.2 `scripts/headshot_run.py` — one approved face per character
-`headshot_run.py --project <slug> --entity <id> [--import <file> --origin-tool <name>] [--casting <file>] [--candidates N≤4] [--note "<reject-all note>"] [--open]`
+`headshot_run.py --project <slug> --entity <id> [--import <file> --origin-tool <name>] [--candidates N≤4] [--replace] [--finish] [--open]`
 
-Preconditions (shared with `sheet_run`; extracted to `lib/run_common.py`): registered project, verified 1.1 config with `qc`, pin = 1.3, run lease, `resume_check`, active look for the entity (else "run look_run first"), no active headshot for the entity unless `--replace` (which makes the eventual receipt carry `supersedes_receipt_id`, existing mechanism, and prints the downstream-invalidation cost before anything runs).
+Preconditions (this command's own validator; neutral helpers from `lib/run_common.py`): registered project, verified 1.2 config with `qc.max_hero_attempts`, pin = 1.4, run lease, `resume_check`, active look for the entity (else "run look_run first"), no active headshot for the entity unless `--replace` (which makes the eventual receipt carry `supersedes_receipt_id`, existing mechanism, and prints the downstream-invalidation cost before anything runs).
 
 **Mode A — import (`--import`)**. The file (JPEG/HEIC/PNG) is the writer's own generated image of the character:
 1. `stage_reference_upload` (copy; the original is never consumed) → `prepare_reference_import(origin_class=imported_synthetic, origin_tool=…, entity_id=<entity>)`. **The import record binds the character** (R1#13): `import_record` gains `entity_id`; `synthetic_import_receipt` lookups and `_enforce_candidate` require the receipt's `entity_id` to equal the pending character, so one imported face can never be assigned to another entity. → `reference_import` gate request; **run state persisted** (step 6) before stopping; print the command; stop.

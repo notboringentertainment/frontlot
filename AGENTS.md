@@ -12,34 +12,15 @@ There are no instructions in this file. All instructions are in AGENT_GUIDE.md.
 <claude-mem-context>
 # Memory Context
 
-# [OpenMontage] recent context, 2026-08-26 9:23pm PDT
+# [OpenMontage] recent context, 2026-08-28 5:06pm PDT
 
 Legend: 🎯session 🔴bugfix 🟣feature 🔄refactor ✅change 🔵discovery ⚖️decision 🚨security_alert 🔐security_note
 Format: ID TIME TYPE TITLE
 Fetch details: get_observations([IDs]) | Search: mem-search skill
 
-Stats: 50 obs (33,158t read) | 1,103,056t work | 97% savings
+Stats: 50 obs (34,375t read) | 1,325,733t work | 97% savings
 
-### Aug 25, 2026
-12577 2:21p 🔵 Final infrastructure verification — reconcile_paid_calls, resume_check, generation receipt ledger, schema constants, and storyboard receipt enforcement confirmed implemented
 ### Aug 26, 2026
-12683 8:17a 🔵 WriterOS promotion is store-validated, not externally signed; visual-bible uses approved_prompt_block hash-binding
-12684 8:18a 🔵 Visual-bible supersession requires all three: canon_ruling decision, new objects, fresh receipt; stale assets must regenerate
-12685 " 🔵 D10 plan: looks as wayfinder tickets, ratified by external promotion (OpenMontage receipt OR WriterOS export), three-slice rollout
-12686 8:19a 🔵 WriterOS promotion events already discriminated; approval records computed for hashing, not stored
-12689 8:21a 🔵 AGENT_GUIDE.md establishes Reviewer Protocol exception: auditing source is fair when verifying governance contracts or catching silent-availability bugs
-12690 " 🔵 D10 plan has completed Round 1 Codex review; 18+ concrete flaws identified with specific fixes; plan document shows R2 revisions
-12691 8:22a 🔵 gsd-plan-review-convergence skill exists; orchestrates external-AI replan loops until HIGH concerns resolved
-12692 " 🔵 D10 plan revised through Round 2; 10 material findings including critical self-referential-hash blocker and schema gaps; all findings accepted
-12693 8:23a 🔵 Pipeline manifest is authoritative for stage order; authored-film v1.1 lacks look_lock stage; version guards check exact equality
-12694 " 🔵 Tool layer already threads visual_bible_entity_id through paid_call_context, reference_manifest, and local generators (title_card, poster_composite)
-12695 8:24a 🔵 poster_composite enforces "local derivation launders nothing"—both inputs must have verified receipts before composition; plan can follow exact pattern for look_lock
-12696 " 🔵 Gate/receipt architecture is designed for extensibility; look_lock approval kind and look_packet artifact schema are integration points
-12697 " 🔵 Visual Bible schema is currently v1.0 only; plan proposes v1.1 with look_ref + sheet_revision, versioning infrastructure already in place
-12714 8:33a ⚖️ D10 Plan Round 5 Final Review Initiated: Four Rounds of Adversarial Feedback Accepted; Only Critical Issues Flagged
-12724 9:27a 🔵 Slice A′ design integrated after round 6: headshots stage with reference-image import and casting-inspiration protection
-12725 9:28a 🔵 Checkpoint manifest contract enforces all declared artifacts at awaiting_human; Slice A′ design splits headshots across two statuses
-12726 " 🔵 Approval gate system defined; new gate kinds (reference_import, headshot, look_lock) lack approval_record schema
 12727 9:29a 🔵 Plan specifies three new gate kinds (look_lock, reference_import, headshot) in narrative form; approval_record structures embedded in stage descriptions
 12810 10:36a 🟣 D10 Look Lock governance system implemented (Slice A + A′): ratified visual identity with receipted lineage
 12811 10:42a 🔵 Headshot packet schema uses state-driven validation
@@ -72,6 +53,24 @@ Stats: 50 obs (33,158t read) | 1,103,056t work | 97% savings
 13058 " 🔵 Partial predecessor logic and invalidation tracking implemented for per-entity flow
 13064 8:27p 🔵 D19 Revision 3 Sheet QC Plan: Complete infrastructure blueprint reviewed
 13072 8:37p ⚖️ D19 Sheet QC Plan Revision 5 Approved for Implementation
+13109 9:23p ⚖️ Code review scope and governance framework initialization
+13110 9:24p 🔵 QC-D19 post-build review preparation: plan, review history, and implementation diff gathered
+13113 9:25p ✅ D19 code structure mapped: 18 modules indexed, symbols and line ranges extracted
+13121 9:28p 🟣 D19: Config 1.3 gates legacy sheet roles and requires signed QC verdicts
+13122 9:29p 🔵 D19: Config 1.1 multi-provider egress binding + QC block; manifest 1.3 dual-read with sheet_judge tool
+13123 9:30p 🟣 Cost tracker atomic transactions + origin-binding immutability in reference_import and headshots
+13124 " 🔵 Project directory routing: canonical PROJECTS_DIR root governs event attribution and checkpoint writes
+13125 9:31p 🔵 _is_qc_manifest() gates QC requirement across sheet verification, gate approval, and sheet_run
+13126 " 🟣 D19 implementation: shared verifier, pre-submit hook, qc_call_context, qc_override gate
+13127 9:32p 🔵 D19.6: builder_policy_sha256 seals prompt_recipe to boundary builder's policy hash
+13132 9:38p 🔴 Nine QC verification and provider idempotency findings addressed
+13133 9:39p 🔵 D19 post-build inspection round 1 — commit 27a8807 implementation verified across nine findings
+13134 " 🔵 D19 post-build inspection round 1 — all nine findings verified in production code
+13135 " 🔵 D19 ledger and verifier implementation — findings #3, #6 confirmed at function level
+13137 9:40p 🔵 D19 gate and judge implementation — all remaining findings verified in production code
+13138 " 🔵 D19 cost tracking and attempt ledger — findings #6, #7 confirmed in reservation and event tracking
+13139 " 🔵 Sheet run attempt recovery and verdict reuse — finding #6 complete implementation path
+13145 9:41p 🔵 D19 Sheet QC implementation verified: all nine findings correctly deployed
 
-Access 1103k tokens of past work via get_observations([IDs]) or mem-search skill.
+Access 1326k tokens of past work via get_observations([IDs]) or mem-search skill.
 </claude-mem-context>
