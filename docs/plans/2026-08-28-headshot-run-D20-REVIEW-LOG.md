@@ -227,3 +227,18 @@ Test note: pytest could not create a temporary directory in the enforced read-on
 6. Accepted. `synthetic_import_receipt(receipt_id=…)`: every consumer (lineage, imported generation, gate enforcement, both hero verifiers) resolves the exact attestation the generation receipt names, never the latest for the hash. Test: a permitted re-import for the same character leaves the first-bound hero valid.
 
 Full suite after fixes: 1799 passed, 11 skipped. Round 2 (re-inspection) pending Ben's call.
+
+## Build record — steps 4–6 (2026-08-29)
+
+- Step 4 `cfd5dd3`: `scripts/look_run.py` — resolved ticket located by its `## Look spec` entity; run state in `checkpoint_look_lock.json` `metadata.run_state[entity]` written BEFORE every request; five-state recovery (missing → republish after hash check; pending; done → mode-specific finish; declined → decision log + clear; mismatch → fail closed); `--supersede`; `--casting` with the casting→look transition as one checkpoint write. `look_lock_request` gained `source_checkpoint_digest`. 9 tests.
+- Step 5 `a9c43b5`: `scripts/headshot_run.py` — Mode C (build once, generate under the pre-submit hook with the hero budget, judge every candidate, unique passing assets fill the slots, fewer at the cap still presented, zero → Blocked + override request), Mode A (import → attested → finalized → judged like any other → presented alone), `--grandfather` (legacy hero judged under a `grandfather: true` series, attestation request), run state modes import/select/grandfather with the five recovery states (select republishes only after re-validating digest, candidate hashes and every verdict), reject-all consumed from the declined request (note logged verbatim; rejected candidates excluded from reuse; a note with appearance words refused as a look change), `--replace` prints the downstream cost, finish rewrites the approved packet 1.1 and rebuilds the canon view. 15 tests.
+- Step 6 `20ef019`: look-lock director points at `look_run.py` for ingest and casting; `headshots-director-1.4.md` shipped in step 1.
+- Full suite after steps 4–6: 1823 passed, 11 skipped.
+
+Departures / judgement calls (for the inspection):
+1. Reject-all "look change" detection is a conservative word list (`LOOK_CHANGE_WORDS`), not semantics; the director doc tells the writer where appearance changes go.
+2. Approved entries of earlier characters survive the next character's pending phase in `checkpoint_headshots.json` `metadata.approved_entries` (a packet is either pending or approved); the approved packet is rebuilt at finish.
+3. Hero candidates are generated at 1024×1280 (portrait) with a plain background hue from `--palette` (default "neutral grey"); the sheet-era palette is not required for a hero.
+4. `headshot_run --grandfather` is allowed under pin 1.3 and 1.4 (the judge call context accepts 1.3 only for a grandfather series).
+
+Not done: Bloodless signatures (config 1.2, Ace grandfather, migration 1.4) and Sebastian — those are Ben's gates, after the inspection.
