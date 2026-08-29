@@ -880,7 +880,7 @@ def _finish_select(ctx, state, bound: str) -> dict[str, Any]:
         entry["prompt_recipe"] = prev["prompt_recipe"]
     if prev.get("rejection_notes"):
         entry["rejection_notes"] = prev["rejection_notes"]
-    approved = [e for e in _approved_entries(root) if e.get("entity_id") != entity_id] + [entry]
+    approved = [_upgrade_legacy_entry(root, e) for e in _approved_entries(root) if e.get("entity_id") != entity_id] + [entry]
     _write(root, _packet("approved", approved), status="in_progress", run_state={entity_id: None}, approved_entries=approved,
            rejected=entry["candidates_rejected"])  # inspection #7: rejected candidates are history
     try:
@@ -891,6 +891,26 @@ def _finish_select(ctx, state, bound: str) -> dict[str, Any]:
     _log(out, f"hero approved for {entity_id!r} (receipt {current.receipt_id}, asset {current.asset_id[:12]}…)\n"
               f"Next: cd {REPO} && .venv/bin/python scripts/sheet_run.py --project {ctx['project_id']} --entity {entity_id} --open")
     return {"entity_id": entity_id, "status": "approved", "receipt_id": current.receipt_id, "asset_id": current.asset_id}
+
+
+def _upgrade_legacy_entry(root: Path, entry: dict[str, Any]) -> dict[str, Any]:
+    """A 1.0-era approved entry carried into a 1.1 packet needs the verdict its
+    headshot_grandfather attestation names (canon enforcement checks exactly
+    that); a 1.1 entry is returned unchanged."""
+    from lib.headshot_verify import grandfather_receipt_for
+    from lib.headshots import active_headshots
+
+    if entry.get("qc_receipt_id"):
+        return entry
+    current = active_headshots(root).get(str(entry.get("entity_id")))
+    if current is None:
+        return entry
+    gf = grandfather_receipt_for(root, current)
+    if gf is None:
+        return entry
+    out = dict(entry)
+    out["qc_receipt_id"] = (gf.get("record") or {}).get("qc_receipt_id")
+    return out
 
 
 def _finish_grandfather(ctx, state, bound: str) -> dict[str, Any]:

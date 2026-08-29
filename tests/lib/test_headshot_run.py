@@ -314,6 +314,46 @@ class TestGrandfather:
         assert r["status"] == "pending"
         assert _cp(w)["artifacts"]["headshot_packet"]["version"] == "1.0"
 
+    def test_second_character_after_a_grandfathered_first(self, project, monkeypatch):
+        """Bloodless sequence: legacy hero grandfathered, migrate to 1.4, then a second character's finish carries the legacy entry."""
+        from lib.pipeline_pin import prepare_migration_request, refresh_cache
+        w = _world(project, monkeypatch, version="1.3", cast=(CHAR, CHAR2))
+        data = _png(1024, 1024, "legacy"); sha = hashlib.sha256(data).hexdigest()
+        (w["project"] / "canon/visual/objects" / f"{sha}.png").write_bytes(data)
+        built = pb.build_prompt(w["c"], role="hero", palette=["moss"])
+        gen = receipts.record_generation(w["project"], execution_id="exec-legacy", tool="seedream_image", normalized_inputs_hash="a" * 64,
+                                         output_sha256=sha, cost_usd=0.07, started_at="t", finished_at="t", model_endpoint=hr.GENERATION_ENDPOINT,
+                                         prompt=built["prompt"], look_refs=look_refs_for(w["c"]), prompt_recipe=built["prompt_recipe"])
+        _, hs = approve_headshot(w["project"], w["c"], sha, "d" * 64, recipe=built["prompt_recipe"])
+        from lib.look_ingest import active_look_for
+        al = active_look_for(w["project"], "character", CHAR)
+        approved = {"version": "1.0", "state": "approved", "characters": [{
+            "entity_kind": "character", "entity_id": CHAR,
+            "look_ref": {"entity_kind": "character", "entity_id": CHAR, "look_hash": al.look_hash, "receipt_id": al.receipt_id},
+            "prompt_recipe": built["prompt_recipe"],
+            "hero": {"asset_id": sha, "path": f"canon/visual/objects/{sha}.png", "role": "hero",
+                     "provenance": {"generator_kind": "model", "model_endpoint": hr.GENERATION_ENDPOINT, "prompt": built["prompt"],
+                                    "generation_receipt_id": gen["receipt_id"]}},
+            "origin": "generated", "normalized_pixel_hash": sha, "approval_receipt_id": hs["receipt_id"],
+            "candidates_checkpoint_digest": "d" * 64, "candidates_rejected": []}]}
+        write(w["pipeline"], "headshots", {"headshot_packet": approved}, status="in_progress")
+        r = _run(w, grandfather=True)
+        approve_request(_req(w, r["request_id"]), w["project"])
+        _run(w, grandfather=True)
+        prepare_migration_request(w["project"], PROJECT, "authored-film", "1.4", request_id="migrate-1-4")
+        approve_request(json.loads((w["project"] / ".gate-requests" / "migrate-1-4.json").read_text()), w["project"])
+        refresh_cache(w["project"], "authored-film")
+        activate_look(w["project"], dict(w["c"], entity_id=CHAR2))
+        from lib.look_ingest import active_looks
+        write(w["pipeline"], "look_lock", {"look_packet": look_packet_for(w["project"], w["c"], dict(w["c"], entity_id=CHAR2), w["l"])}, status="in_progress")
+        r2 = run_headshot(w["project"], CHAR2, out=w["out"], candidates=1, generate=FakeGen(), judge_adapter=PlanJudge([]))
+        approve_request(_req(w, r2["request_id"]), w["project"], selection=1)
+        r3 = run_headshot(w["project"], CHAR2, out=w["out"], generate=FakeGen(), judge_adapter=PlanJudge([]))
+        assert r3["status"] == "approved"
+        packet = _cp(w)["artifacts"]["headshot_packet"]
+        assert packet["version"] == "1.1" and [e["entity_id"] for e in packet["characters"]] == [CHAR, CHAR2]
+        assert packet["characters"][0]["qc_receipt_id"]  # the grandfathered verdict, filled in at finish
+
     def test_failed_legacy_hero_is_blocked(self, legacy):
         w = legacy
         with pytest.raises(Blocked):
