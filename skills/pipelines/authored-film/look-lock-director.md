@@ -107,6 +107,15 @@ or a supersession after (§7) — never an edit by you.
 
 ### 4. Reference import gate (only when the writer has an image)
 
+> **D20 (2026-08-29): this step is a command.** For a casting-inspiration
+> image run `python scripts/look_run.py --project <slug> --entity <id>
+> --casting <file>`; it stages, normalizes, writes the `reference_import`
+> request and stops. After the writer signs, the same command (no flags)
+> finalizes the import and writes the look request in one step. Never stage,
+> normalize or write the request by hand. An `imported_synthetic` hero image
+> is imported by `scripts/headshot_run.py --import <file> --origin-tool
+> <name>` in the headshots stage (manifest 1.4), not here.
+
 Import happens in this stage, before ratification, through the gate kind
 `reference_import`. Accepted formats: JPEG, HEIC, PNG. The import routine
 normalizes deterministically (EXIF orientation applied, sRGB 8-bit, alpha
@@ -172,6 +181,16 @@ suggest an Answer. Do not proceed to another entity's ratification "to save
 time" — one entity at a time, in cast order.
 
 ### 6. Ingest and request ratification
+
+> **D20 (2026-08-29): this step is a command.** Run `python
+> scripts/look_run.py --project <slug> --entity <id>`; it locates the
+> resolved ticket by its `## Look spec` entity (never by filename), validates
+> it, writes the `look_lock` request bound to the checkpoint's run state, and
+> prints the approval command. Run it again after the writer signs: it
+> refreshes the `look_lock` checkpoint with the ratified look. A ticket that
+> changed after ratification needs `--supersede` (§7). Do not call
+> `lib/look_ingest` or write the request by hand; the paragraphs below
+> describe what the command does.
 
 For a resolved ticket, call `lib/look_ingest` with the ticket path. It verifies
 authority (`type: grill`, `mode: hitl`, resolved), validates the block,
