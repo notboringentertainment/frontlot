@@ -24,6 +24,7 @@ def verify_character_sheet(
     qc_required: bool,
     config: Any = None,
     qc_must_be_present: bool = True,
+    pin: Any = None,
 ) -> dict[str, Any]:
     """Lineage, look binding, headshot binding and prompt-recipe fidelity for
     every ImageRef of a character entry; under a QC manifest (1.3) also the
@@ -50,6 +51,19 @@ def verify_character_sheet(
         _fail(f"character {eid!r} has no active look; sheets are built only from ratified looks.")
     if active_headshot is None:
         _fail(f"character {eid!r} has no approved headshot; a face is approved before any sheet.")
+    # D20 (inspection #2): under 1.4 the hero itself must still verify under the
+    # current hero policy and budget before any sheet built on it is accepted.
+    from lib.canon_enforcement import _is_hero_qc_manifest
+
+    if _is_hero_qc_manifest(pin):
+        from lib.headshot_verify import HeadshotVerifyError, verify_active_headshot
+
+        if config is None:
+            _fail(f"character {eid!r}: hero verification needs the verified project config.")
+        try:
+            verify_active_headshot(project_dir, active_headshot, active_look=active_look, config=config, pin=pin)
+        except HeadshotVerifyError as exc:
+            _fail(f"character {eid!r}: {exc}")
     hero = entry.get("hero") or {}
     if hero.get("asset_id") != active_headshot.asset_id:
         _fail(f"character {eid!r} hero {hero.get('asset_id')} is not the approved headshot {active_headshot.asset_id}.")

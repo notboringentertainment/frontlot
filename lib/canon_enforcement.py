@@ -1673,10 +1673,11 @@ def _check_headshots(
     )
     receipts = {r["output_sha256"]: r for r in _generation_receipt_rows(project_dir)}
 
-    def _candidate(entry: dict[str, Any], cand: dict[str, Any], label: str, look: Any) -> None:
+    def _candidate(entry: dict[str, Any], cand: dict[str, Any], label: str, look: Any, *, require_verdict: bool = True) -> None:
         if hero_qc:
             try:
-                verify_headshot_candidate(project_dir, entry, cand, active_look=look, config=config, pin=pin, receipts_by_sha=receipts)
+                verify_headshot_candidate(project_dir, entry, cand, active_look=look, config=config, pin=pin, receipts_by_sha=receipts,
+                                          require_verdict=require_verdict)
             except HeadshotVerifyError as exc:
                 _fail(f"{label}: {exc}")
         _check_image_ref(project_dir, label, cand, list(receipts.values()))
@@ -1702,10 +1703,14 @@ def _check_headshots(
             continue
         hero = entry.get("hero") or {}
         label = f"headshot hero {cid!r}"
-        _candidate(entry, hero, label, look)
         current = _active_headshots(project_dir).get(cid)
         if current is None:
             _fail(f"{label} has no active headshot receipt — faces are approved only through the selection gate.")
+        # inspection #1: a grandfathered legacy (1.0) hero carries its verdict
+        # through the attestation, not on the candidate; verify_active_headshot
+        # below is what binds it.
+        legacy_grandfathered = hero_qc and record_version_of(current.record) == "1.0"
+        _candidate(entry, hero, label, look, require_verdict=not legacy_grandfathered)
         if current.receipt_id != entry.get("approval_receipt_id") or current.asset_id != hero.get("asset_id"):
             _fail(
                 f"{label} names receipt {entry.get('approval_receipt_id')!r} / asset {hero.get('asset_id')} but the "
@@ -1729,15 +1734,21 @@ def _check_headshots(
         elif provenance.get("generator_kind") == "imported":
             _fail(f"{label} has imported provenance but origin {entry.get('origin')!r}.")
         if hero_qc:
-            if record_version_of(rec) != "1.1":
-                _fail(f"{label}: authored-film 1.4 approves heroes with a 1.1 headshot record (sealed generation + hero verdict); "
-                      f"this record is {record_version_of(rec)} — grandfather it or re-approve with --replace.")
-            if rec.get("qc_receipt_id") != entry.get("qc_receipt_id") or rec.get("generation_receipt_id") != provenance.get("generation_receipt_id"):
-                _fail(f"{label} qc_receipt_id / generation receipt differ from the signed headshot record.")
             try:
-                verify_active_headshot(project_dir, current, active_look=look, config=config, pin=pin)
+                verdict = verify_active_headshot(project_dir, current, active_look=look, config=config, pin=pin)
             except HeadshotVerifyError as exc:
                 _fail(f"{label}: {exc}")
+            if legacy_grandfathered:
+                # the entry's qc_receipt_id must be the attested verdict
+                if verdict is None or entry.get("qc_receipt_id") != verdict.get("receipt_id") \
+                        or (hero.get("qc_receipt_id") not in (None, verdict.get("receipt_id"))):
+                    _fail(f"{label} qc_receipt_id is not the verdict its headshot_grandfather attestation names.")
+            else:
+                if record_version_of(rec) != "1.1":
+                    _fail(f"{label}: authored-film 1.4 approves heroes with a 1.1 headshot record (sealed generation + hero verdict); "
+                          f"this record is {record_version_of(rec)} — grandfather it or re-approve with --replace.")
+                if rec.get("qc_receipt_id") != entry.get("qc_receipt_id") or rec.get("generation_receipt_id") != provenance.get("generation_receipt_id"):
+                    _fail(f"{label} qc_receipt_id / generation receipt differ from the signed headshot record.")
 
 
 def _load_headshot_packet(
@@ -1818,7 +1829,7 @@ def _check_visual_bible_entry_v12(
 def _check_visual_bible_v12(
     project_dir: Path, bible: dict[str, Any], proposal: dict[str, Any],
     active_looks: dict[tuple[str, str], Any], active_headshots: dict[str, Any],
-    *, qc_required: bool = False, status: str = "completed",
+    *, qc_required: bool = False, status: str = "completed", pin: Any = None,
 ) -> None:
     if _version(bible) != "1.1":
         _fail("authored-film 1.2 requires a 1.1 visual_bible (look_ref, sheet_revision, prompt_recipe).")
@@ -1856,6 +1867,7 @@ def _check_visual_bible_v12(
                     project_dir, entry, active_look=look, active_headshot=active_headshots.get(eid),
                     receipts_by_sha=receipts, qc_required=qc_required, config=config,
                     qc_must_be_present=qc_required and (status in ("awaiting_human", "completed") or entry.get("status") == "approved"),
+                    pin=pin,
                 )
             else:
                 refs = [("establishing", entry.get("establishing") or {})] + [
@@ -1903,7 +1915,7 @@ def enforce_authored_canon(
             active_looks, active_headshots = _check_visual_bible_entry_v12(project_dir, artifacts, proposal, status)
             if isinstance(artifacts.get("visual_bible"), dict):
                 _check_visual_bible_v12(project_dir, artifacts["visual_bible"], proposal, active_looks, active_headshots,
-                                        qc_required=_is_qc_manifest(pin), status=status)
+                                        qc_required=_is_qc_manifest(pin), status=status, pin=pin)
     if status not in {"completed", "awaiting_human"}:
         return
 
@@ -1956,7 +1968,7 @@ def enforce_authored_canon(
             active_looks, active_headshots = _check_visual_bible_entry_v12(project_dir, artifacts, proposal, status)
             _check_visual_bible_v12(
                 project_dir, artifacts.get("visual_bible", {}), proposal, active_looks, active_headshots,
-                qc_required=_is_qc_manifest(pin), status=status,
+                qc_required=_is_qc_manifest(pin), status=status, pin=pin,
             )
     elif stage == "look_lock":
         proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}

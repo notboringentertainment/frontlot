@@ -532,7 +532,7 @@ def _full_sheet_check(root: Path, entry: dict, entity_id: str, req: dict) -> dic
     checkpoint write (lineage, look binding, headshot binding, prompt-recipe
     fidelity, and under authored-film 1.3 the QC verdict chain). Returns
     ``{role: verdict_row}`` (empty under 1.2)."""
-    from lib.canon_enforcement import _generation_receipt_rows, _is_qc_manifest
+    from lib.canon_enforcement import _generation_receipt_rows, _is_hero_qc_manifest, _is_qc_manifest
     from lib.checkpoint import CheckpointValidationError
     from lib.headshots import HeadshotError, active_headshots
     from lib.look_ingest import LookIngestError, active_look_for
@@ -545,8 +545,10 @@ def _full_sheet_check(root: Path, entry: dict, entity_id: str, req: dict) -> dic
     if qc_required:
         try:
             config = load_verified_project_config(root)
+            if _is_hero_qc_manifest(pin):
+                config.require_hero_qc()
         except ProjectConfigError as exc:
-            raise GateHandlerError(f"sheet QC needs a verified 1.1 project config: {exc}") from exc
+            raise GateHandlerError(f"sheet QC needs a verified 1.1 project config (1.2 under 1.4): {exc}") from exc
     try:
         look = active_look_for(root, "character", entity_id)
         heads = active_headshots(root)
@@ -557,6 +559,7 @@ def _full_sheet_check(root: Path, entry: dict, entity_id: str, req: dict) -> dic
         return verify_character_sheet(
             root, entry, active_look=look, active_headshot=heads.get(entity_id) if isinstance(heads, dict) else None,
             receipts_by_sha=receipts_by_sha, qc_required=qc_required, config=config, qc_must_be_present=qc_required,
+            pin=pin,
         )
     except CheckpointValidationError as exc:
         raise GateHandlerError(str(exc)) from exc
@@ -734,6 +737,22 @@ def headshot_candidates(req: dict, root: Path) -> tuple[str, dict, list[dict]]:
             raise GateHandlerError(f"candidate {i + 1} has a missing or duplicate asset_id")
         seen.add(asset_id)
         _verify_image_ref(root, cand, f"candidate {i + 1} preview")
+    # D20 (inspection #3): under 1.4 nothing is SHOWN that has not been judged —
+    # every candidate is verified before the list is displayed, not only the
+    # one the human picks.
+    hero_qc, pin, config = _hero_qc_context(root, req)
+    if hero_qc:
+        from lib.headshot_verify import HeadshotVerifyError, verify_headshot_candidate
+        from lib.look_ingest import active_look_for
+
+        if str(packet.get("version") or "1.0") != "1.1":
+            raise GateHandlerError(f"authored-film 1.4 selects from a headshot_packet 1.1; the pending packet is {packet.get('version')!r}")
+        look = active_look_for(root, "character", entity_id)
+        for i, cand in enumerate(candidates):
+            try:
+                verify_headshot_candidate(root, entry, cand, active_look=look, config=config, pin=pin)
+            except HeadshotVerifyError as exc:
+                raise GateHandlerError(f"candidate {i + 1} is not presentable: {exc}") from exc
     return checkpoint_digest(path), entry, candidates
 
 
@@ -792,7 +811,7 @@ def _enforce_candidate(root: Path, req: dict, entry: dict, chosen: dict) -> tupl
             f"candidate claims generator_kind {kind!r} but its receipt says {receipt.get('generator_kind')!r}"
         )
     if kind == "imported":
-        attestation = synthetic_import_receipt(root, asset_id, project_id=project_id)
+        attestation = synthetic_import_receipt(root, asset_id, project_id=project_id, receipt_id=receipt.get("attestation_receipt_id"))
         if attestation is None or attestation.get("receipt_id") != receipt.get("attestation_receipt_id"):
             raise GateHandlerError(
                 f"imported candidate {asset_id} has no verified imported_synthetic reference_import receipt "
@@ -877,13 +896,9 @@ def _construct_headshot(root: Path, req: dict, selection: Optional[int] = None) 
     pre_commit = None
     generation_receipt_id = qc_receipt_id = None
     if hero_qc:
-        # D20: the packet must be 1.1 and the chosen candidate must carry a
-        # verifiable hero verdict; the record seals what the gate relied on.
-        _, checkpoint = _load_pending_checkpoint(root, req, "headshots")
-        packet_version = str(((checkpoint.get("artifacts") or {}).get("headshot_packet") or {}).get("version") or "1.0")
-        if packet_version != "1.1":
-            raise GateHandlerError(f"authored-film 1.4 selects from a headshot_packet 1.1; the pending packet is {packet_version}")
-
+        # D20: the chosen candidate must carry a verifiable hero verdict; the
+        # record seals what the gate relied on. (Packet version and every
+        # candidate were already verified for display in headshot_candidates.)
         def _full() -> dict:
             look = active_look_for(root, "character", entry["entity_id"])
             try:
@@ -898,7 +913,6 @@ def _construct_headshot(root: Path, req: dict, selection: Optional[int] = None) 
         state = "pass" if verdict.get("verdict") == "pass" else f"FAIL {verdict.get('failing_items')} accepted by qc_override"
         evidence.append(f"hero QC {state} (judge {verdict.get('provider')}/{verdict.get('model')}, attempt {verdict.get('attempt_n')}, "
                         f"receipt {qc_receipt_id}, warnings: {warn})")
-        pre_commit = _full
     try:
         record = headshot_record(
             entity_id=entry["entity_id"],
@@ -921,6 +935,27 @@ def _construct_headshot(root: Path, req: dict, selection: Optional[int] = None) 
         "look_hash": look_hash,
         "supersedes_receipt_id": current.receipt_id if current else None,
     }
+
+    def pre_commit() -> None:
+        """Inspection #4: under the consumed token and the approval lock,
+        re-derive the whole decision — the supersession tip, the pending
+        checkpoint (digest + candidates), and under 1.4 the hero verdict —
+        so a concurrent approval cannot commit a stale-tip receipt."""
+        try:
+            now = active_headshots(root, project_id=req["project_id"]).get(entry["entity_id"])
+        except HeadshotError as exc:
+            raise GateHandlerError(str(exc)) from exc
+        if (now.receipt_id if now else None) != envelope["supersedes_receipt_id"]:
+            raise GateHandlerError(
+                f"the active headshot for {entry['entity_id']!r} changed while approving (now {now.receipt_id if now else None}); "
+                f"re-run the request"
+            )
+        digest_now, entry_now, candidates_now = headshot_candidates(req, root)
+        if digest_now != digest or entry_now != entry or candidates_now != candidates:
+            raise GateHandlerError("the pending headshot checkpoint changed while approving; re-run the request")
+        if hero_qc:
+            _full()
+
     return Constructed(record, envelope, entry["entity_id"], evidence=tuple(evidence), pre_commit_check=pre_commit)
 
 

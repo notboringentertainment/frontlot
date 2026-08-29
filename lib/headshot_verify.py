@@ -162,10 +162,13 @@ def _receipt_for_asset(project_dir: Path, asset_id: str, receipts_by_sha: Option
 
 def verify_headshot_candidate(
     project_dir: Path | str, entry: dict[str, Any], candidate: dict[str, Any], *, active_look: Any, config: Any, pin: Any,
-    receipts_by_sha: Optional[dict[str, dict[str, Any]]] = None,
+    receipts_by_sha: Optional[dict[str, dict[str, Any]]] = None, require_verdict: bool = True,
 ) -> Optional[dict[str, Any]]:
     """Verify one candidate ImageRef of a pending (or the hero of an approved)
-    headshot entry. Returns the hero verdict row under 1.4, else None."""
+    headshot entry. Returns the hero verdict row under 1.4, else None.
+    ``require_verdict=False`` runs every check except the candidate's own
+    verdict — for the approved hero of a GRANDFATHERED legacy record, whose
+    verdict is bound through the attestation (``verify_active_headshot``)."""
     from lib.receipts import normalize_prompt_recipe
     from lib.reference_import import ReferenceImportError, synthetic_import_receipt, verify_lineage
 
@@ -201,7 +204,8 @@ def verify_headshot_candidate(
         if recipe["look_hash"] != active_look.look_hash:
             raise HeadshotVerifyError(f"{label}: prompt_recipe names look {recipe['look_hash'][:12]}, not the active look")
     if kind == "imported":
-        attestation = synthetic_import_receipt(project_dir, asset_id, entity_id=entity_id if hero_qc else None)
+        attestation = synthetic_import_receipt(project_dir, asset_id, entity_id=entity_id if hero_qc else None,
+                                               receipt_id=receipt.get("attestation_receipt_id"))
         if attestation is None or attestation.get("receipt_id") != receipt.get("attestation_receipt_id"):
             raise HeadshotVerifyError(
                 f"{label} has no verified imported_synthetic reference_import receipt "
@@ -228,7 +232,7 @@ def verify_headshot_candidate(
             prompt = receipt.get("prompt")
             if not isinstance(prompt, str) or hashlib.sha256(prompt.encode("utf-8")).hexdigest() != recipe["rendered_sha256"]:
                 raise HeadshotVerifyError(f"{label}: the receipted prompt does not hash to prompt_recipe.rendered_sha256")
-    if not hero_qc:
+    if not hero_qc or not require_verdict:
         return None
     return require_hero_verdict(
         project_dir, qc_receipt_id=candidate.get("qc_receipt_id"), asset_id=asset_id, entity_id=entity_id,
@@ -290,7 +294,7 @@ def verify_active_headshot(project_dir: Path | str, current: Any, *, active_look
     if record.get("origin") == "imported_synthetic":
         if gen.get("generator_kind") != "imported" or record.get("import_receipt_id") != gen_id:
             raise HeadshotVerifyError(f"headshot record for {entity_id!r} is imported_synthetic but its sealed receipt is not the import receipt")
-        att = synthetic_import_receipt(project_dir, current.asset_id, entity_id=entity_id)
+        att = synthetic_import_receipt(project_dir, current.asset_id, entity_id=entity_id, receipt_id=gen.get("attestation_receipt_id"))
         if att is None or att.get("receipt_id") != gen.get("attestation_receipt_id"):
             raise HeadshotVerifyError(f"imported headshot for {entity_id!r} has no attestation bound to that character")
     else:
@@ -341,8 +345,7 @@ def hero_migration_blockers(project_dir: Path | str) -> list[str]:
 
     out: list[str] = []
     for cid, current in heroes.items():
-        if record_version_of(current.record) == "1.1":
-            continue
+        # inspection #5: a 1.1 record is verified too (policy/cap/raw-response drift), not trusted by version.
         try:
             verify_active_headshot(project_dir, current, active_look=active_look_for(project_dir, "character", cid), config=config, pin=_Pin)
         except HeadshotVerifyError as exc:

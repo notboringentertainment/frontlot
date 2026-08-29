@@ -278,15 +278,20 @@ def assert_origin_unique_for_signing(
 
 def synthetic_import_receipt(
     project_dir: Path | str, pixel_hash: str, *, project_id: Optional[str] = None, entity_id: Optional[str] = None,
+    receipt_id: Optional[str] = None,
 ) -> Optional[dict]:
     """The verified imported_synthetic reference_import receipt for ``pixel_hash``.
     With ``entity_id`` (D20 R1#13) the receipt's record must bind exactly that
     entity: an import bound to another character, or an unbound legacy
-    import when a binding is demanded, is not a match."""
+    import when a binding is demanded, is not a match. With ``receipt_id``
+    (inspection #6) the match must be THAT receipt — the one a generation
+    receipt names as its attestation — never the latest for the hash."""
     match = None
     for r in reference_import_receipts(project_dir, project_id=project_id):
         if r.get("normalized_pixel_hash") == pixel_hash and r.get("origin_class") == ORIGIN_IMPORTED_SYNTHETIC:
             if entity_id is not None and record_entity_id(r.get("record")) != entity_id:
+                continue
+            if receipt_id is not None and r.get("receipt_id") != receipt_id:
                 continue
             match = r
     return match
@@ -597,7 +602,7 @@ def record_imported_generation(
     from lib.receipts import record_generation
 
     assert_untainted(project_dir, [output_sha256], project_id=project_id, label="imported reference")
-    receipt = synthetic_import_receipt(project_dir, output_sha256, project_id=project_id)
+    receipt = synthetic_import_receipt(project_dir, output_sha256, project_id=project_id, receipt_id=attestation_receipt_id)
     if receipt is None or receipt.get("receipt_id") != attestation_receipt_id:
         raise ReferenceImportError(
             f"no verified imported_synthetic reference_import receipt {attestation_receipt_id!r} "
@@ -783,7 +788,8 @@ def verify_lineage(
         kind = receipt.get("generator_kind")
         parents = parents_of(receipt, sha)
         if kind == "imported":
-            attestation = synthetic_import_receipt(project_dir, sha, project_id=project_id)
+            attestation = synthetic_import_receipt(project_dir, sha, project_id=project_id,
+                                                   receipt_id=receipt.get("attestation_receipt_id"))
             if attestation is None or attestation.get("receipt_id") != receipt.get("attestation_receipt_id"):
                 raise ReferenceImportError(
                     f"{label}: imported node {sha} has no verified imported_synthetic reference_import "

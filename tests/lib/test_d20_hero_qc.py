@@ -288,6 +288,13 @@ class TestImportedCandidate:
         entry2 = _entry(w, [dict(ref, qc_receipt_id=qc_id)], recipe=None, entity=CHAR2)
         with pytest.raises(HeadshotVerifyError, match="bound to character"):
             verify_headshot_candidate(w["project"], entry2, entry2["candidates"][0], active_look=_look(w, CHAR2), config=_config(w), pin=_pin(w))
+        # inspection #6: a permitted re-import of the same pixels for the same character (a later
+        # attestation receipt) must not invalidate the candidate bound to the first one
+        src = w["project"] / ".staging" / "again.png"; src.write_bytes(_png(1024, 1280, "face-import"))
+        again = prepare_reference_import(w["project"], PROJECT, src, origin_class=ORIGIN_IMPORTED_SYNTHETIC,
+                                         origin_tool="elsewhere-gen", entity_id=CHAR, request_id=f"import-{CHAR}-2")
+        approve_request(json.loads(again.request_path.read_text()), w["project"])
+        assert verify_headshot_candidate(w["project"], entry, entry["candidates"][0], active_look=_look(w), config=_config(w), pin=_pin(w))
         with pytest.raises(HeadshotVerifyError, match="carries no prompt_recipe"):
             verify_headshot_candidate(w["project"], _entry(w, [dict(ref, qc_receipt_id=qc_id)], recipe={"look_hash": _look(w).look_hash,
                                       "builder_version": "1.3", "fields_used": ["hair"], "rendered_sha256": "f" * 64}),
@@ -342,9 +349,44 @@ class TestGate14:
         cp = json.loads(path.read_text()); cp["artifacts"]["headshot_packet"]["characters"][0]["candidates"][0]["qc_receipt_id"] = "nope"
         path.write_text(json.dumps(cp))
         req = json.loads(headshot_request(w["project"], PROJECT, CHAR, request_id=f"headshot-{CHAR}-2").read_text())
+        # inspection #3: refused at DISPLAY time, before any selection
+        from scripts.gate_approve import headshot_candidates
+        with pytest.raises(GateHandlerError, match="not presentable.*not a verified verdict"):
+            headshot_candidates(req, w["project"])
         with pytest.raises(GateHandlerError, match="not a verified verdict"):
             approve_request(req, w["project"], selection=1)
         assert CHAR not in active_headshots(w["project"])
+
+    def test_pre_commit_rechecks_the_supersession_tip(self, world):
+        """Inspection #4: a record constructed while no hero was active must not
+        commit after another approval made one."""
+        from scripts.gate_approve import construct
+        w = world
+        ref, gen, recipe = _hero_asset(w, "hero-i")
+        qc_id, _, _ = _judge(w, ref, gen, _all("hero"))
+        write(w["pipeline"], "headshots", {"headshot_packet": _pending_packet(w, [dict(ref, qc_receipt_id=qc_id)], recipe)}, status="awaiting_human")
+        req_a = json.loads(headshot_request(w["project"], PROJECT, CHAR, request_id=f"headshot-{CHAR}-a").read_text())
+        req_b = json.loads(headshot_request(w["project"], PROJECT, CHAR, request_id=f"headshot-{CHAR}-b").read_text())
+        built_a = construct(w["project"], req_a, selection=1)
+        assert built_a.envelope["supersedes_receipt_id"] is None
+        receipt_b = approve_request(req_b, w["project"], selection=1)
+        with pytest.raises(GateHandlerError, match="changed while approving"):
+            built_a.pre_commit_check()
+        assert active_headshots(w["project"])[CHAR].receipt_id == receipt_b["receipt_id"]
+
+    def test_migration_coverage_verifies_1_1_records_too(self, world):
+        """Inspection #5: a 1.1 record whose raw judge response vanished is a blocker, not trusted by version."""
+        w = world
+        ref, gen, recipe = _hero_asset(w, "hero-j")
+        qc_id, _, _ = _judge(w, ref, gen, _all("hero"))
+        write(w["pipeline"], "headshots", {"headshot_packet": _pending_packet(w, [dict(ref, qc_receipt_id=qc_id)], recipe)}, status="awaiting_human")
+        req = json.loads(headshot_request(w["project"], PROJECT, CHAR, request_id=f"headshot-{CHAR}-j").read_text())
+        approve_request(req, w["project"], selection=1)
+        assert hero_migration_blockers(w["project"]) == []
+        row = qr.find_verdict_by_id(w["project"], qc_id)
+        (w["project"] / "canon/qc/objects" / f"{row['raw_response_asset_id']}.json").unlink()
+        blockers = hero_migration_blockers(w["project"])
+        assert blockers and "raw provider response" in blockers[0]
 
 
 # ---- legacy heroes: grandfather + migration coverage ----
@@ -413,6 +455,36 @@ class TestGrandfather:
         current = active_headshots(w["project"])[CHAR]
         assert verify_active_headshot(w["project"], current, active_look=_look(w), config=_config(w), pin=_pin(w))["receipt_id"] == qc_id
         assert verify_headshot_ref(w["project"], {"entity_id": CHAR, "asset_id": w["ref"]["asset_id"], "approval_receipt_id": w["hs"]["receipt_id"]})
+        # inspection #1: the grandfathered hero can be carried in an approved 1.1 packet (cast extension)
+        look = _look(w)
+        approved = {"version": "1.1", "state": "approved", "characters": [{
+            "entity_kind": "character", "entity_id": CHAR,
+            "look_ref": {"entity_kind": "character", "entity_id": CHAR, "look_hash": look.look_hash, "receipt_id": look.receipt_id},
+            "prompt_recipe": w["recipe"], "hero": w["ref"], "origin": "generated", "normalized_pixel_hash": w["ref"]["asset_id"],
+            "approval_receipt_id": w["hs"]["receipt_id"], "candidates_checkpoint_digest": "d" * 64, "candidates_rejected": [],
+            "qc_receipt_id": qc_id}]}
+        write(w["pipeline"], "headshots", {"headshot_packet": approved}, status="in_progress")
+        bad = copy.deepcopy(approved); bad["characters"][0]["qc_receipt_id"] = "other"
+        with pytest.raises(CheckpointValidationError, match="not the verdict its headshot_grandfather attestation names"):
+            write(w["pipeline"], "headshots", {"headshot_packet": bad}, status="in_progress")
+
+    def test_sheet_verifier_refuses_an_unattested_legacy_hero_under_1_4(self, legacy):
+        """Inspection #2: no sheet is accepted on a hero that does not verify under the current hero policy."""
+        from lib.checkpoint import CheckpointValidationError as CVE
+        from lib.sheet_verify import verify_character_sheet
+        w = legacy
+
+        class Pin14:
+            name, version = "authored-film", "1.4"
+        current = active_headshots(w["project"])[CHAR]
+        receipts_by_sha = {r["output_sha256"]: r for r in receipts.verified_generation_receipts(w["project"])}
+        entry = {"id": CHAR, "hero": w["ref"], "sheet": {}, "status": "draft"}
+        with pytest.raises(CVE, match="no headshot_grandfather attestation"):
+            verify_character_sheet(w["project"], entry, active_look=_look(w), active_headshot=current, receipts_by_sha=receipts_by_sha,
+                                   qc_required=True, config=_config(w), qc_must_be_present=False, pin=Pin14)
+        # under 1.3 the same entry is fine (nothing a 1.3 project loses)
+        verify_character_sheet(w["project"], entry, active_look=_look(w), active_headshot=current, receipts_by_sha=receipts_by_sha,
+                               qc_required=True, config=_config(w), qc_must_be_present=False, pin=_pin(w))
 
     def test_grandfather_verdict_must_be_flagged_and_for_the_tip(self, legacy):
         w = legacy

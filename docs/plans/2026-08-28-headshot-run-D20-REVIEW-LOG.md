@@ -187,3 +187,43 @@ Departures from the plan text (all within its intent; flagged for the post-build
 7. `hero_migration_blockers` needs a verified 1.2 config only when a cast character already has an active hero; a project with no heroes may pin 1.4 with any config (the command validators demand 1.2 before any hero run).
 
 Not built yet (steps 4–6): `look_run.py`, `headshot_run.py`, the look-lock director pointer, Bloodless signatures, Sebastian.
+
+## Post-build inspection — steps 1–3, round 1 (2026-08-29, fresh read-only Codex session 01a04e76…)
+
+### Codex findings (verbatim)
+
+1. **Critical — Grandfathered heroes cannot complete a 1.4 headshot packet.** [lib/canon_enforcement.py:1731](/Users/ben/Projects/OpenMontage/lib/canon_enforcement.py:1731)  
+   Scenario: Ace receives the intended `headshot_grandfather` receipt, Bloodless migrates to 1.4, then Sebastian is approved. Completing the packet requires an Ace entry, but enforcement first treats Ace’s grandfather verdict as a normal attempt and then unconditionally rejects his 1.0 record. The advertised grandfather path is therefore unusable when extending the cast.  
+   Fix: For an approved 1.0 entry, bypass candidate-time verification and accept it through `verify_active_headshot`, matching the packet QC ID to the grandfather verdict.
+
+2. **High — Sheets can be approved against a hero that is invalid under the current hero policy or budget.** [scripts/gate_approve.py:557](/Users/ben/Projects/OpenMontage/scripts/gate_approve.py:557)  
+   Scenario: a hero passes under policy H1 with cap 8; the project then signs config H2 or lowers the cap below that attempt. `verify_active_headshot` would reject it, but both the sheet gate and checkpoint path ([lib/canon_enforcement.py:1855](/Users/ben/Projects/OpenMontage/lib/canon_enforcement.py:1855)) only compare the active asset/tip and sheet verdict, so an existing sheet can still be signed under 1.4.  
+   Fix: Make the shared sheet verifier call `verify_active_headshot` under authored-film 1.4 before accepting any character sheet.
+
+3. **High — Unjudged or foreign candidates are shown at the selection gate.** [scripts/gate_approve.py:731](/Users/ben/Projects/OpenMontage/scripts/gate_approve.py:731)  
+   Scenario: after checkpoint creation, replace a candidate with valid local bytes and any nonempty `qc_receipt_id`, or replace the packet with version 1.0. `headshot_candidates()` checks only schema, uniqueness, and bytes before displaying all candidates; semantic hero verification happens only after the human chooses one. Signing eventually fails, but the explicit “every candidate presented is judged” contract is already violated.  
+   Fix: Resolve the pin/config/look and run `verify_headshot_candidate` on every candidate inside `headshot_candidates()` before returning it for display.
+
+4. **High — The transactional headshot recheck retains a stale supersession tip.** [scripts/gate_approve.py:901](/Users/ben/Projects/OpenMontage/scripts/gate_approve.py:901)  
+   Scenario: two approvals for the same character construct while receipt R0 is active. The approval lock serializes commits, but the second pre-commit callback rechecks only candidate QC; after the first commits R1, the second can still commit R2 claiming to supersede R0, corrupting the unique-tip chain and blocking all later headshot/sheet reads.  
+   Fix: Inside the approval lock, reconstruct and compare the complete record and envelope, including current tip, checkpoint digest, candidate bytes, pin, and config.
+
+5. **High — Migration coverage trusts every 1.1 record without verifying it.** [lib/headshot_verify.py:343](/Users/ben/Projects/OpenMontage/lib/headshot_verify.py:343)  
+   Scenario: a formerly 1.4 project downgrades to 1.3, changes its hero policy/cap, loses a raw judge response, or otherwise invalidates its active 1.1 hero. Re-pinning to 1.4 succeeds because migration coverage skips that record entirely, despite `verify_active_headshot` rejecting it.  
+   Fix: Run `verify_active_headshot` for every active hero; let that verifier distinguish valid 1.1 records from grandfathered 1.0 records.
+
+6. **Medium — A permitted duplicate import can invalidate an existing imported hero.** [lib/reference_import.py:286](/Users/ben/Projects/OpenMontage/lib/reference_import.py:286)  
+   Scenario: pixels are imported for character A as receipt R1 and become a generation receipt bound to R1. Re-publishing for the same character is explicitly allowed; once R2 is approved, `synthetic_import_receipt()` returns latest-wins R2, so candidate and active-headshot verification compare R2 against immutable generation provenance R1 and reject the previously valid hero.  
+   Fix: Resolve and validate the exact attestation receipt named by the generation receipt instead of selecting the latest receipt for the hash/entity.
+
+Test note: pytest could not create a temporary directory in the enforced read-only environment. No files were modified; the sheet bundle hash remains `f3709bd44037…`.
+### Claude's dispositions — all six accepted, fixed in one commit
+
+1. Accepted. `_check_headshots` now verifies a grandfathered (1.0) hero through `verify_active_headshot` and requires the entry's `qc_receipt_id` to be the attested verdict; `verify_headshot_candidate(require_verdict=False)` runs every other check. Test: approved 1.1 packet carrying the grandfathered hero accepted; a foreign verdict id refused.
+2. Accepted. `verify_character_sheet` takes `pin` and, under 1.4, calls `verify_active_headshot` before accepting any character sheet (checkpoint write and gate; the gate also demands the 1.2 config under 1.4). Test: unattested legacy hero refused under 1.4, accepted under 1.3.
+3. Accepted. `headshot_candidates` (the display path) verifies the packet version and every candidate under 1.4 before returning the list. Test: tampered candidate refused at display, before selection.
+4. Accepted. `_construct_headshot`'s pre-commit (all pins) re-derives the supersession tip, the checkpoint digest, entry and candidates, and under 1.4 the hero verdict. Test: a record constructed with no active hero refuses to commit after another approval made one.
+5. Accepted. `hero_migration_blockers` verifies every active hero (1.1 included). Test: a 1.1 hero whose raw judge response vanished blocks the 1.4 pin.
+6. Accepted. `synthetic_import_receipt(receipt_id=…)`: every consumer (lineage, imported generation, gate enforcement, both hero verifiers) resolves the exact attestation the generation receipt names, never the latest for the hash. Test: a permitted re-import for the same character leaves the first-bound hero valid.
+
+Full suite after fixes: 1799 passed, 11 skipped. Round 2 (re-inspection) pending Ben's call.
