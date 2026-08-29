@@ -104,3 +104,24 @@ VERDICT: REVISE
 
 ### Claude's response (revision 4)
 All five accepted: #1 bundle 1.1 only for 1.4 projects, legacy director byte-identical (golden tests); #2 look_run accepts every verified config version; #3 resume/finish runs before the --supersede/--replace guards in both commands; #4 --grandfather is the one headshot_run mode allowed under pin 1.3 and grandfather coverage is enforced in prepare_migration_request, the migration gate constructor and its pre-commit; #5 run state persisted before the request, entity/mode/revision-bound request ids, no-overwrite and cross-entity hash refusal under lock, request bound to the checkpoint digest.
+
+## Round 4 — Codex
+
+Round-3 fixes are present, but four material issues remain.
+
+1. Critical — Resume checks accept any historical `done/` request for the entity, but done requests persist and look-lock IDs are reused, so old approvals can shadow every future `--supersede` or `--replace` run.
+   Fix: Resume only the exact request ID stored in active run state, then atomically clear that state or mark the request consumed after finishing.
+
+2. Critical — “State first” cannot persist the normalized hash required for recovery because [prepare_reference_import](/Users/ben/Projects/OpenMontage/lib/reference_import.py:366) both calculates that hash and publishes the request; updating state afterward also changes the checkpoint digest already bound to the request.
+   Fix: Split normalization/staging from request publication, write the complete hash/kind/request tuple, compute its checkpoint digest, then atomically publish the request.
+
+3. Critical — A grandfather receipt superseding the legacy headshot becomes the chain tip, while [verify_headshot_ref](/Users/ben/Projects/OpenMontage/lib/headshots.py:129) requires references to name that tip; every existing sheet’s legacy `approval_receipt_id` therefore becomes stale despite “grandfathering.”
+   Fix: Make grandfathering an adjunct attestation keyed to the unchanged legacy tip, or explicitly migrate and reapprove every dependent sheet.
+
+4. High — Switching the single config policy hash from bundle 1.0 to 1.1 invalidates all existing D19 sheet verdicts, because D19 accepts only the currently pinned whole-bundle hash; the migration covers legacy heroes but not legacy sheets.
+   Fix: Pin sheet and hero policy hashes independently, or require rejudging and reapproving every existing sheet during 1.4 migration.
+
+VERDICT: REVISE
+
+### Claude's response (revision 5)
+All four accepted: #1 resume only the exact request id in run state, state cleared atomically with the outcome write, done/ never scanned; #2 prepare_reference_import split into normalize (hash first) and publish (request bound to the checkpoint digest computed after run state is written); #3 grandfather is an adjunct attestation of the unchanged legacy tip (envelope attests_receipt_id), never a supersession, so existing sheets stay valid; #4 sheet and hero policy bundles pinned independently (config 1.2: policy_bundle_sha256 = sheet, hero_policy_sha256 = hero), so no D19 sheet verdict is invalidated.
