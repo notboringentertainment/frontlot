@@ -82,3 +82,25 @@ VERDICT: REVISE
 
 ### Claude's response (revision 3)
 All five accepted: #1 versioned frozen policy bundles (1.0 hash-pinned by test) and a separate 1.4 director file; #2 run_state carries no self-digest, the checkpoint digest binds into the gate request after the write; #3 explicit headshot_grandfather receipt (judge + one signature) required before migration to 1.4, or --replace; #4 two verifiers over one rule set (candidate at selection time; active record downstream from signed receipt ids, record 1.1); #5 casting import has run state in the look_lock checkpoint, is finalized on resume, and the prohibition is scoped to model/director/text exposure with integrity reads allowed.
+
+## Round 3 — Codex
+
+1. Critical — Revision 3 still contradicts backward compatibility: [line 80](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:80) says every 1.3 project must re-sign, while [line 103](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:103) modifies the shared legacy director despite promising a separate 1.4 file.
+   Fix: Require bundle 1.1 only for migrating/1.4 projects and update only `headshots-director-1.4.md`, with golden tests preserving bundle 1.0 and the legacy director.
+
+2. High — `look_run` excludes config 1.2 at [line 33](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:33), so the required 1.4/config-1.2 workflow cannot start.
+   Fix: Make `look_run` accept every verified config version ≥1.0, including 1.2.
+
+3. Critical — Both finish paths are ordered behind fresh-run guards: approving a look creates the active look rejected by [line 36](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:36), and selecting a headshot creates the active headshot rejected by [line 46](/Users/ben/Projects/OpenMontage/docs/plans/2026-08-28-headshot-run-D20.md:46).
+   Fix: Resume or finish a persisted request before applying `--supersede`/`--replace` checks, which should govern only new runs.
+
+4. Critical — Grandfather migration deadlocks: `headshot_run` requires pin 1.4, but migration to 1.4 requires grandfathering first; moreover, the plan adds the coverage check only to request preparation, while the gate reconstructs migration approvals independently.
+   Fix: Permit only `--grandfather` under pin 1.3 and enforce complete, currently valid grandfather coverage in both the migration gate constructor and its transactional pre-commit check.
+
+5. High — Casting/import recovery remains race-prone: the plan publishes the import request before durable casting state, while [reference_import.py](/Users/ben/Projects/OpenMontage/lib/reference_import.py:395) derives request IDs solely from a truncated asset hash, allowing another entity using identical pixels to overwrite the pending request.
+   Fix: Persist state first, use an entity/mode/revision-bound request ID, atomically refuse existing requests and cross-entity hash reuse, then publish a checkpoint-digest-bound request.
+
+VERDICT: REVISE
+
+### Claude's response (revision 4)
+All five accepted: #1 bundle 1.1 only for 1.4 projects, legacy director byte-identical (golden tests); #2 look_run accepts every verified config version; #3 resume/finish runs before the --supersede/--replace guards in both commands; #4 --grandfather is the one headshot_run mode allowed under pin 1.3 and grandfather coverage is enforced in prepare_migration_request, the migration gate constructor and its pre-commit; #5 run state persisted before the request, entity/mode/revision-bound request ids, no-overwrite and cross-entity hash refusal under lock, request bound to the checkpoint digest.
