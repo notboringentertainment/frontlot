@@ -69,6 +69,20 @@ def gate_command(root: Path, request_id: str) -> str:
     return f"cd {REPO} && .venv/bin/python scripts/gate_approve.py --project {root.name} --request {request_id}"
 
 
+def request_id_for(prefix: str, entity_id: str, revision: int) -> str:
+    """``<prefix>-<entity>-<rev>``, never truncated into a collision (inspection
+    #3): a long entity id is shortened to a readable head plus a hash of the
+    full id, and the revision is always intact."""
+    import hashlib
+
+    plain = f"{prefix}-{entity_id}-{revision}"
+    if len(plain) <= 64:
+        return plain
+    digest = hashlib.sha256(entity_id.encode("utf-8")).hexdigest()[:12]
+    head = entity_id[: max(1, 64 - len(f"{prefix}--{digest}-{revision}"))]
+    return f"{prefix}-{head}-{digest}-{revision}"
+
+
 def validate_request_id(request_id: str) -> str:
     if not isinstance(request_id, str) or not REQUEST_ID_RE.match(request_id):
         raise RunError(f"invalid request_id {request_id!r}")

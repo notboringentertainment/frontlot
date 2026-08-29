@@ -7,6 +7,8 @@ Usage:
         [--candidates N]                          Mode C (default): generate, judge, present up to N (≤4) unique passing faces
         [--replace] [--finish] [--open]
         [--grandfather]                           D20.7: judge the ACTIVE legacy (1.3-era) hero and request its attestation
+        [--retire]                                D20.7: retire the active hero with no replacement (a legacy hero the writer
+                                                  will neither override nor keep; unblocks the 1.4 migration)
 
 Governed end to end: authored-film 1.4 (``--grandfather`` also under 1.3),
 a signed 1.2 config naming the judge, the HERO policy bundle and the hero
@@ -32,7 +34,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from lib.run_common import (  # noqa: E402
-    RunError, gate_command, hold_lease, read_request, require_entity_id, resolve_project_root, write_decision,
+    RunError, gate_command, hold_lease, read_request, request_id_for, require_entity_id, resolve_project_root, write_decision,
 )
 
 STAGE = "headshots"
@@ -128,11 +130,18 @@ def _approved_entries(root: Path) -> list[dict[str, Any]]:
 
 
 def _write(root: Path, packet: dict[str, Any], *, status: str, run_state: dict[str, Optional[dict]],
-           approved_entries: Optional[list[dict]] = None, rejected: Optional[list[str]] = None) -> str:
+           approved_entries: Optional[list[dict]] = None, rejected: Optional[list[str]] = None,
+           palette: Optional[list[str]] = None) -> str:
     """ONE checkpoint write carrying the packet and the run-state change."""
     from lib.checkpoint import checkpoint_digest, write_checkpoint
 
     meta = _meta(root)
+    if palette is not None:
+        pal = dict(meta.get("hero_palette") or {})
+        for entity, state in run_state.items():
+            if state is not None:
+                pal[entity] = {"palette": list(palette), "look_hash": _look_hash_of(root, entity)}
+        meta["hero_palette"] = pal
     if rejected:
         hist = dict(meta.get("rejected_candidates") or {})
         for entity in run_state:
@@ -155,6 +164,13 @@ def _write(root: Path, packet: dict[str, Any], *, status: str, run_state: dict[s
     path = write_checkpoint(root.parent, root.name, STAGE, status, {"headshot_packet": packet},
                             pipeline_type="authored-film", human_approval_required=(status == "awaiting_human"), metadata=meta)
     return checkpoint_digest(path)
+
+
+def _look_hash_of(root: Path, entity_id: str) -> Optional[str]:
+    from lib.look_ingest import active_look_for
+
+    look = active_look_for(root, "character", entity_id)
+    return look.look_hash if look else None
 
 
 def _next_revision(root: Path, entity_id: str) -> int:
@@ -191,7 +207,7 @@ def _look_ref(look) -> dict:
 def run_headshot(
     project_root: Path | str, entity_id: str, *, import_file: Optional[Path | str] = None, origin_tool: Optional[str] = None,
     candidates: int = MAX_CANDIDATES, replace: bool = False, finish: bool = False, open_images: bool = False,
-    grandfather: bool = False, palette: Optional[list[str]] = None,
+    grandfather: bool = False, retire: bool = False, palette: Optional[list[str]] = None,
     generate: Optional[Callable[[Path, dict[str, Any]], tuple[str, str]]] = None, judge_adapter: Any = None, out=None,
 ) -> dict[str, Any]:
     from lib.canon_enforcement import _is_hero_qc_manifest, _is_qc_manifest
@@ -213,9 +229,9 @@ def run_headshot(
         pin = pinned_pipeline(root, str(_read_marker(root).get("pipeline_type") or "authored-film"))
     except (ProjectConfigError, PipelinePinError) as exc:
         raise HeadshotRunError(str(exc)) from exc
-    if grandfather:
+    if grandfather or retire:
         if not _is_qc_manifest(pin):
-            raise HeadshotRunError(f"--grandfather runs under authored-film 1.3 or 1.4; project is pinned to {pin.name}@{pin.version}")
+            raise HeadshotRunError(f"--grandfather / --retire run under authored-film 1.3 or 1.4; project is pinned to {pin.name}@{pin.version}")
     elif not _is_hero_qc_manifest(pin):
         raise HeadshotRunError(f"project is pinned to {pin.name}@{pin.version}; headshot_run needs authored-film 1.4 "
                                f"(grandfather every legacy hero, then approve the 1.4 pipeline_migration)")
@@ -232,6 +248,11 @@ def run_headshot(
             raise HeadshotRunError(str(exc)) from exc
         if look is None:
             raise HeadshotRunError(f"{entity_id!r} has no active look; run look_run.py first")
+        # Inspection #5: the palette is part of the prompt; once a run has used
+        # one for this entity + look it is reused until the look changes.
+        stored = ((_meta(root).get("hero_palette") or {}).get(entity_id) or {})
+        if palette is None and stored.get("look_hash") == look.look_hash:
+            palette = list(stored.get("palette") or [])
         ctx = {"root": root, "project_id": project_id, "entity_id": entity_id, "look": look, "config": config, "qc": qc,
                "pin": pin, "candidates": int(candidates), "open": open_images, "palette": palette or ["neutral grey"],
                "generate": generate or default_generate, "judge_adapter": judge_adapter, "out": out}
@@ -240,10 +261,19 @@ def run_headshot(
             return _resume(ctx, state)
         if finish:
             raise HeadshotRunError(f"nothing to finish: no run state for {entity_id!r}")
+        # Inspection #2 / D18: one character at a time — another entity's
+        # outstanding run owns the pending packet and the gate.
+        others = {e: st for e, st in (_meta(root).get("run_state") or {}).items() if e != entity_id and isinstance(st, dict)}
+        if others:
+            e, st = next(iter(others.items()))
+            raise HeadshotRunError(f"character {e!r} has an outstanding {st.get('mode')} request ({st.get('request_id')}); "
+                                   f"finish or decline it before starting {entity_id!r}")
         try:
             current = active_headshots(root).get(entity_id)
         except HeadshotError as exc:
             raise HeadshotRunError(str(exc)) from exc
+        if retire:
+            return _start_retire(ctx, current)
         if grandfather:
             return _start_grandfather(ctx, current)
         if current is not None:
@@ -277,7 +307,7 @@ def _start_import(ctx, image: Path, origin_tool: str) -> dict[str, Any]:
     if not image.is_file():
         raise HeadshotRunError(f"--import {image} is not a file")
     rev = _next_revision(root, entity_id)
-    request_id = f"import-{entity_id}-{rev}"[:64]
+    request_id = request_id_for("import", entity_id, rev)
     try:
         staged = stage_reference_upload(root, image)  # a copy; the writer's original is never consumed
         normalized = normalize_reference_import(root, staged, origin_class=ORIGIN_IMPORTED_SYNTHETIC, origin_tool=origin_tool, entity_id=entity_id)
@@ -304,17 +334,21 @@ def _current_pending_packet(root: Path) -> dict[str, Any]:
     return _packet("approved", _approved_entries(root))
 
 
-def _finish_import(ctx, state) -> dict[str, Any]:
+def _finish_import(ctx, state, bound: str) -> dict[str, Any]:
     """The import was attested: finalize, judge it like any other candidate, present it alone."""
     from lib.qc_receipts import IMPORTED_SENTINEL
     from lib.receipts import find_generation
-    from lib.reference_import import ORIGIN_IMPORTED_SYNTHETIC, ReferenceImportError, finalize_reference_import, synthetic_import_receipt
+    from lib.reference_import import ORIGIN_IMPORTED_SYNTHETIC, ReferenceImportError, finalize_reference_import, reference_import_receipts, record_entity_id
 
     root, entity_id = ctx["root"], ctx["entity_id"]
     pixel_hash = str(state.get("normalized_pixel_hash") or "")
-    att = synthetic_import_receipt(root, pixel_hash, entity_id=entity_id)
+    att = None
+    for r in reference_import_receipts(root):  # inspection #1: the receipt signed for THIS request (checkpoint digest)
+        if r.get("normalized_pixel_hash") == pixel_hash and r.get("origin_class") == ORIGIN_IMPORTED_SYNTHETIC \
+                and record_entity_id(r.get("record")) == entity_id and r.get("source_checkpoint_digest") == bound:
+            att = r
     if att is None:
-        raise HeadshotRunError(f"request {state['request_id']} is done but no verified imported_synthetic receipt binds {pixel_hash[:12]}… to {entity_id!r}")
+        raise HeadshotRunError(f"request {state['request_id']} is done but no verified imported_synthetic receipt signed for it binds {pixel_hash[:12]}… to {entity_id!r}")
     try:
         imported = finalize_reference_import(root, att["receipt_id"])
     except ReferenceImportError as exc:
@@ -326,11 +360,30 @@ def _finish_import(ctx, state) -> dict[str, Any]:
     verdict = _judge_existing(ctx, series, pixel_hash, gen["receipt_id"])
     if verdict.get("verdict") != "pass" and not _overridden(root, verdict, entity_id):
         req = _write_override_request(root, ctx["project_id"], entity_id, verdict)
-        _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: None})
+        # Inspection #10: keep a continuation so an accepted override presents THIS import on the next run
+        blocked = {"mode": "import_blocked", "revision": int(state.get("revision") or 0), "request_id": req.stem,
+                   "asset_id": pixel_hash, "qc_receipt_id": verdict["receipt_id"], "expected_kind": "qc_override"}
+        _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: blocked})
         _log(ctx["out"], f"the imported image FAILED hero QC {verdict.get('failing_items')}. Accept the failed items at the gate "
-                         f"(then rerun) or import another image:\n  {gate_command(root, req.stem)}")
+                         f"(then rerun), or decline it and import another image:\n  {gate_command(root, req.stem)}")
         raise Blocked("import failed hero QC")
     return _present(ctx, [(pixel_hash, gen, verdict["receipt_id"])], recipe=None, replacing_state=state)
+
+
+def _finish_import_blocked(ctx, state) -> dict[str, Any]:
+    from lib import qc_receipts as qr
+    from lib.receipts import find_generation
+
+    root, entity_id, out = ctx["root"], ctx["entity_id"], ctx["out"]
+    verdict = qr.find_verdict_by_id(root, str(state.get("qc_receipt_id")))
+    if verdict is None or verdict.get("asset_id") != state.get("asset_id"):
+        raise HeadshotRunError("import_blocked state names a verdict that is not in the QC chain; refusing")
+    if not _overridden(root, verdict, entity_id):
+        return _pending(root, entity_id, str(state["request_id"]), out, "the import's override is signed but does not cover every failed item; decline it and import another image")
+    gen = find_generation(root, str(state["asset_id"]))
+    if gen is None:
+        raise HeadshotRunError("imported generation receipt not found")
+    return _present(ctx, [(str(state["asset_id"]), gen, verdict["receipt_id"])], recipe=None, replacing_state=state)
 
 
 # ---- Mode C: generate ----
@@ -451,9 +504,12 @@ def _generate_and_present(ctx) -> dict[str, Any]:
                 passing[v["asset_id"]] = (gen, v["receipt_id"])
     if passing:
         _log(out, f"[hero] reusing {len(passing)} passing candidate(s) from earlier attempts")
+    if len(passing) > want:  # inspection #7: never present more than asked
+        passing = dict(list(passing.items())[:want])
     tracker = _tracker(ctx)
     remaining = cap - used
-    need = max(0, min(remaining, want - len(passing))) * (GENERATION_PRICE_USD + DEFAULT_RESERVE_USD)
+    # Inspection #8 / D20.2 step 2: every remaining attempt must fit before the run starts.
+    need = (remaining if len(passing) < want else 0) * (GENERATION_PRICE_USD + DEFAULT_RESERVE_USD)
     if need > tracker.budget_remaining_usd:
         raise HeadshotRunError(f"up to {remaining} attempt(s) could cost ${need:.2f}; only ${tracker.budget_remaining_usd:.2f} remains under the cap")
     judge = SheetJudge(adapter=ctx["judge_adapter"])
@@ -491,8 +547,13 @@ def _generate_and_present(ctx) -> dict[str, Any]:
             raise HeadshotRunError(f"judge did not complete: {r.error}")
         verdict = qr.find_verdict_by_id(root, r.data["qc_receipt_id"])
         if r.data["verdict"] == "pass":
-            if asset_id in passing or asset_id in rejected:
+            if asset_id in passing:
+                # Inspection #6: identical pixels got a newer receipt and a REUSED verdict (bound to
+                # the first attempt); the candidate keeps citing the first receipt, and every
+                # verifier resolves the receipt by the cited id, never latest-for-hash.
                 _log(out, f"[hero] PASS but duplicate pixels {asset_id[:12]} (attempt consumed, no new slot)")
+            elif asset_id in rejected:
+                _log(out, f"[hero] PASS but pixels {asset_id[:12]} were rejected earlier (attempt consumed, no new slot)")
             else:
                 passing[asset_id] = (find_generation(root, asset_id), r.data["qc_receipt_id"])
                 _log(out, f"[hero] PASS {asset_id[:12]} ({len(passing)}/{want}; warnings: {', '.join(r.data.get('warnings') or []) or 'none'})")
@@ -538,7 +599,7 @@ def _present(ctx, cands: list[tuple[str, dict, str]], *, recipe: Optional[dict],
 
     root, entity_id, look, out = ctx["root"], ctx["entity_id"], ctx["look"], ctx["out"]
     rev = int((replacing_state or {}).get("revision") or 0) + 1 if replacing_state else _next_revision(root, entity_id)
-    request_id = f"headshot-{entity_id}-{rev}"[:64]
+    request_id = request_id_for("headshot", entity_id, rev)
     entry = {"entity_kind": "character", "entity_id": entity_id, "look_ref": _look_ref(look),
              "candidates": [_image_ref(root, a, g, q) for a, g, q in cands]}
     if recipe is not None:
@@ -549,10 +610,9 @@ def _present(ctx, cands: list[tuple[str, dict, str]], *, recipe: Optional[dict],
     state = {"mode": "select", "revision": rev, "request_id": request_id, "candidate_hashes": [a for a, _, _ in cands],
              "expected_kind": "headshot"}
     approved = _approved_entries(root)
-    digest = _write(root, _packet("pending", [entry]), status="awaiting_human", run_state={entity_id: state}, approved_entries=approved)
-    path = headshot_request(root, ctx["project_id"], entity_id, request_id=request_id)
-    req = json.loads(path.read_text()); req["source_checkpoint_digest"] = digest
-    path.write_text(json.dumps(req, indent=2), encoding="utf-8")
+    digest = _write(root, _packet("pending", [entry]), status="awaiting_human", run_state={entity_id: state}, approved_entries=approved,
+                    palette=ctx["palette"] if recipe is not None else None)
+    headshot_request(root, ctx["project_id"], entity_id, request_id=request_id, source_checkpoint_digest=digest)
     paths = [str(root / "canon/visual/objects" / f"{a}.png") for a, _, _ in cands]
     if ctx["open"] and sys.platform == "darwin":
         subprocess.run(["open", "-a", "Preview", *paths], check=False)
@@ -622,7 +682,7 @@ def _start_grandfather(ctx, current) -> dict[str, Any]:
                   f"or re-approve a new hero with --replace after migrating:\n  {gate_command(root, req.stem)}")
         raise Blocked("legacy hero failed hero QC")
     rev = _next_revision(root, entity_id)
-    request_id = f"grandfather-{entity_id}-{rev}"[:64]
+    request_id = request_id_for("grandfather", entity_id, rev)
     state = {"mode": "grandfather", "revision": rev, "request_id": request_id, "asset_id": current.asset_id,
              "legacy_receipt_id": current.receipt_id, "qc_receipt_id": verdict["receipt_id"], "expected_kind": "headshot_grandfather"}
     digest = _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: state})
@@ -648,7 +708,7 @@ def _write_grandfather_request(root, project_id, entity_id, request_id, qc_recei
 def _resume(ctx, state: dict) -> dict[str, Any]:
     root, entity_id, out = ctx["root"], ctx["entity_id"], ctx["out"]
     request_id, mode = str(state.get("request_id") or ""), state.get("mode")
-    if mode not in ("import", "select", "grandfather") or not request_id:
+    if mode not in ("import", "select", "grandfather", "retire", "import_blocked") or not request_id:
         raise HeadshotRunError(f"run state for {entity_id!r} is malformed: {state}")
     where, req = read_request(root, request_id)
     if where == "pending":
@@ -659,11 +719,18 @@ def _resume(ctx, state: dict) -> dict[str, Any]:
         return _republish(ctx, state)
     if req is None or req.get("kind") != state.get("expected_kind"):
         raise HeadshotRunError(f"run state names request {request_id} ({state.get('expected_kind')}); the done request has another kind — refusing to guess")
+    if mode == "import_blocked":
+        return _finish_import_blocked(ctx, state)
+    bound = req.get("source_checkpoint_digest")
+    if not isinstance(bound, str) or len(bound) != 64:
+        raise HeadshotRunError(f"done request {request_id} carries no source_checkpoint_digest; it was not published by headshot_run — refusing")
     if mode == "import":
-        return _finish_import(ctx, state)
+        return _finish_import(ctx, state, bound)
     if mode == "grandfather":
-        return _finish_grandfather(ctx, state)
-    return _finish_select(ctx, state)
+        return _finish_grandfather(ctx, state, bound)
+    if mode == "retire":
+        return _finish_retire(ctx, state)
+    return _finish_select(ctx, state, bound)
 
 
 def _declined(ctx, state, req) -> dict[str, Any]:
@@ -687,6 +754,38 @@ def _declined(ctx, state, req) -> dict[str, Any]:
     _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: None})
     _log(out, f"declined: {note}")
     raise Declined(note)
+
+
+# ---- retire (D20.7, inspection #4) ----
+
+def _start_retire(ctx, current) -> dict[str, Any]:
+    root, entity_id, out = ctx["root"], ctx["entity_id"], ctx["out"]
+    if current is None:
+        raise HeadshotRunError(f"{entity_id!r} has no active headshot to retire")
+    rev = _next_revision(root, entity_id)
+    request_id = request_id_for("retire", entity_id, rev)
+    state = {"mode": "retire", "revision": rev, "request_id": request_id, "legacy_receipt_id": current.receipt_id, "expected_kind": "headshot"}
+    digest = _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: state})
+    d = root / ".gate-requests"; d.mkdir(exist_ok=True)
+    req = {"request_id": request_id, "project_id": ctx["project_id"], "stage": STAGE, "scope": f"character:{entity_id}",
+           "kind": "headshot", "entity_id": entity_id, "artifact": None, "approval_record": None,
+           "envelope": {"action": "retire", "entity_kind": "character", "look_hash": current.look_hash, "supersedes_receipt_id": current.receipt_id},
+           "source_checkpoint_digest": digest,
+           "summary": f"Retire {entity_id}'s active hero (receipt {current.receipt_id}) with no replacement. {_downstream_cost(root, entity_id)}.",
+           "preview_paths": [f"canon/visual/objects/{current.asset_id}.png"]}
+    (d / f"{request_id}.json").write_text(json.dumps(req, indent=2))
+    return _pending(root, entity_id, request_id, out, f"retire request written for {entity_id!r}; {_downstream_cost(root, entity_id)}")
+
+
+def _finish_retire(ctx, state) -> dict[str, Any]:
+    from lib.headshots import active_headshots
+
+    root, entity_id, out = ctx["root"], ctx["entity_id"], ctx["out"]
+    if entity_id in active_headshots(root):
+        raise HeadshotRunError(f"request {state['request_id']} is done but {entity_id!r} still has an active hero; refusing")
+    _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: None})
+    _log(out, f"hero of {entity_id!r} retired; generate a new one after the 1.4 migration with headshot_run.py")
+    return {"entity_id": entity_id, "status": "retired"}
 
 
 def _republish(ctx, state) -> dict[str, Any]:
@@ -744,8 +843,8 @@ def _republish(ctx, state) -> dict[str, Any]:
     return _pending(root, entity_id, request_id, out, f"republished {request_id}")
 
 
-def _finish_select(ctx, state) -> dict[str, Any]:
-    from lib.headshots import HeadshotError, active_headshots
+def _finish_select(ctx, state, bound: str) -> dict[str, Any]:
+    from lib.headshots import HeadshotError, active_headshots, headshot_receipts
     from lib.receipts import find_generation
 
     root, entity_id, look, out = ctx["root"], ctx["entity_id"], ctx["look"], ctx["out"]
@@ -756,8 +855,14 @@ def _finish_select(ctx, state) -> dict[str, Any]:
     hashes = list(state.get("candidate_hashes") or [])
     if current is None or current.asset_id not in hashes or current.look_hash != look.look_hash:
         raise HeadshotRunError(f"request {state['request_id']} is done but the active hero for {entity_id!r} is not one of its candidates")
+    row = next((r for r in headshot_receipts(root) if r.get("receipt_id") == current.receipt_id), None)
+    if row is None or row.get("source_checkpoint_digest") != bound or (current.record or {}).get("candidates_checkpoint_digest") != bound:
+        raise HeadshotRunError(f"the active hero receipt {current.receipt_id} was not signed for request {state['request_id']} "
+                               f"(checkpoint digest mismatch); refusing to finish another request's selection")
     rec = current.record
-    gen = find_generation(root, current.asset_id)
+    from lib.receipts import find_generation_by_id
+    gen = find_generation_by_id(root, str(rec.get("generation_receipt_id")), output_sha256=current.asset_id) if rec.get("generation_receipt_id") else None
+    gen = gen or find_generation(root, current.asset_id)
     if gen is None:
         raise HeadshotRunError("no generation receipt for the approved hero")
     cp = _checkpoint(root)
@@ -775,7 +880,8 @@ def _finish_select(ctx, state) -> dict[str, Any]:
     if prev.get("rejection_notes"):
         entry["rejection_notes"] = prev["rejection_notes"]
     approved = [e for e in _approved_entries(root) if e.get("entity_id") != entity_id] + [entry]
-    _write(root, _packet("approved", approved), status="in_progress", run_state={entity_id: None}, approved_entries=approved)
+    _write(root, _packet("approved", approved), status="in_progress", run_state={entity_id: None}, approved_entries=approved,
+           rejected=entry["candidates_rejected"])  # inspection #7: rejected candidates are history
     try:
         from lib.canon_view import build_view
         build_view(root)
@@ -786,7 +892,7 @@ def _finish_select(ctx, state) -> dict[str, Any]:
     return {"entity_id": entity_id, "status": "approved", "receipt_id": current.receipt_id, "asset_id": current.asset_id}
 
 
-def _finish_grandfather(ctx, state) -> dict[str, Any]:
+def _finish_grandfather(ctx, state, bound: str) -> dict[str, Any]:
     from lib.headshot_verify import grandfather_receipt_for
     from lib.headshots import active_headshots
 
@@ -795,7 +901,7 @@ def _finish_grandfather(ctx, state) -> dict[str, Any]:
     if current is None or current.receipt_id != state.get("legacy_receipt_id"):
         raise HeadshotRunError("the active hero changed since the grandfather request; refusing")
     gf = grandfather_receipt_for(root, current)
-    if gf is None or (gf.get("record") or {}).get("qc_receipt_id") != state.get("qc_receipt_id"):
+    if gf is None or (gf.get("record") or {}).get("qc_receipt_id") != state.get("qc_receipt_id") or gf.get("source_checkpoint_digest") != bound:
         raise HeadshotRunError(f"request {state['request_id']} is done but no grandfather receipt attests {current.receipt_id} with verdict {state.get('qc_receipt_id')}")
     _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: None})
     _log(out, f"legacy hero of {entity_id!r} attested (receipt {gf['receipt_id']}). When every cast hero is attested, "
@@ -817,12 +923,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--finish", action="store_true")
     ap.add_argument("--open", action="store_true")
     ap.add_argument("--grandfather", action="store_true")
+    ap.add_argument("--retire", action="store_true", help="retire the active hero with no replacement (see D20.7)")
     a = ap.parse_args(argv)
     load_env()
     try:
         root = resolve_project_root(a.project)
         run_headshot(root, a.entity, import_file=a.import_file, origin_tool=a.origin_tool, candidates=a.candidates,
-                     replace=a.replace, finish=a.finish, open_images=a.open, grandfather=a.grandfather,
+                     replace=a.replace, finish=a.finish, open_images=a.open, grandfather=a.grandfather, retire=a.retire,
                      palette=a.palette.split(",") if a.palette else None)
     except Blocked:
         return EXIT_BLOCKED

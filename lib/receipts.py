@@ -777,6 +777,19 @@ def find_generation(
     return match
 
 
+def find_generation_by_id(
+    project_root: Path | str, receipt_id: str, *, output_sha256: Optional[str] = None, project_id: Optional[str] = None
+) -> Optional[dict]:
+    """The verified generation receipt with ``receipt_id`` (and, when given,
+    for ``output_sha256``). Identical pixels may carry more than one receipt
+    (inspection D20 #6); a candidate that CITES a receipt is resolved by that
+    id, never by latest-for-hash."""
+    for row in verified_generation_receipts(project_root, project_id=project_id):
+        if row.get("receipt_id") == receipt_id and (output_sha256 is None or row.get("output_sha256") == output_sha256):
+            return row
+    return None
+
+
 def _signed_generation_row(
     project_root: Path | str, execution_id: str, output_sha256: str
 ) -> Optional[dict]:

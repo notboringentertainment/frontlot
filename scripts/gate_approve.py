@@ -760,7 +760,7 @@ def _enforce_candidate(root: Path, req: dict, entry: dict, chosen: dict) -> tupl
     """Re-run look, recipe, receipt + lineage and origin enforcement for the
     chosen candidate. Returns ``(origin, import_receipt_id, look_hash)``."""
     from lib.look_ingest import LookIngestError, active_look_for, verify_look_refs
-    from lib.receipts import find_generation, normalize_prompt_recipe
+    from lib.receipts import find_generation, find_generation_by_id, normalize_prompt_recipe
     from lib.reference_import import ReferenceImportError, synthetic_import_receipt, verify_lineage
 
     project_id = req["project_id"]
@@ -792,7 +792,10 @@ def _enforce_candidate(root: Path, req: dict, entry: dict, chosen: dict) -> tupl
     # (3) generation receipt + lineage
     asset_id = chosen["asset_id"]
     provenance = chosen.get("provenance") or {}
-    receipt = find_generation(root, asset_id, project_id=project_id)
+    cited = provenance.get("generation_receipt_id")
+    receipt = find_generation_by_id(root, str(cited), output_sha256=asset_id, project_id=project_id) if cited else None
+    if receipt is None:
+        receipt = find_generation(root, asset_id, project_id=project_id)
     if receipt is None:
         raise GateHandlerError(f"candidate {asset_id} has no verified generation receipt")
     if receipt.get("receipt_id") != provenance.get("generation_receipt_id"):
@@ -876,11 +879,45 @@ def _hero_qc_context(root: Path, req: dict) -> tuple[bool, Any, Any]:
     return True, pin, config
 
 
+def is_retire_request(req: dict) -> bool:
+    return req.get("kind") == "headshot" and (req.get("envelope") or {}).get("action") == "retire"
+
+
+def _construct_headshot_retire(root: Path, req: dict) -> Constructed:
+    """D20.7 (inspection #4): retire the ACTIVE hero of a character without a
+    replacement — the governed way out of a legacy hero that fails the hero
+    judge and that the writer will not override. Nothing downstream survives
+    it (sheets built on the hero are invalidated by the chain)."""
+    from lib.headshots import HeadshotError, active_headshots
+
+    entity_id = _require_entity(req)
+    try:
+        current = active_headshots(root, project_id=req["project_id"]).get(entity_id)
+    except HeadshotError as exc:
+        raise GateHandlerError(str(exc)) from exc
+    if current is None:
+        raise GateHandlerError(f"character {entity_id!r} has no active headshot to retire")
+    record = {"entity_kind": "character", "entity_id": entity_id, "look_hash": current.look_hash}
+    envelope = {"action": "retire", "entity_kind": "character", "look_hash": current.look_hash,
+                "supersedes_receipt_id": current.receipt_id}
+
+    def pre_commit() -> None:
+        now = active_headshots(root, project_id=req["project_id"]).get(entity_id)
+        if now is None or now.receipt_id != current.receipt_id:
+            raise GateHandlerError("the active headshot changed while approving; re-run the request")
+
+    evidence = (f"retires active headshot receipt {current.receipt_id} (asset {current.asset_id}); every sheet, storyboard and take "
+                f"built on it is invalidated",)
+    return Constructed(record, envelope, entity_id, evidence=evidence, pre_commit_check=pre_commit)
+
+
 def _construct_headshot(root: Path, req: dict, selection: Optional[int] = None) -> Constructed:
     from lib.headshot_verify import HeadshotVerifyError, verify_headshot_candidate
     from lib.headshots import HeadshotError, active_headshots, headshot_record, prompt_recipe_sha256
     from lib.look_ingest import active_look_for
 
+    if is_retire_request(req):
+        return _construct_headshot_retire(root, req)
     digest, entry, candidates = headshot_candidates(req, root)
     if selection is None:
         raise GateHandlerError("a headshot approval needs a candidate selection")
@@ -1048,7 +1085,7 @@ def construct(root: Path, req: dict, *, selection: Optional[int] = None) -> Cons
             f"the authoritative inputs (sha256 {built.digest}) — refused; the agent's record is only a hint"
         )
     hint_env = req.get("envelope")
-    if hint_env is not None and kind not in SELECTION_KINDS and hint_env != built.envelope:
+    if hint_env is not None and (kind not in SELECTION_KINDS or is_retire_request(req)) and hint_env != built.envelope:
         raise GateHandlerError(
             f"request envelope {json.dumps(hint_env, sort_keys=True)} does not equal the constructed envelope "
             f"{json.dumps(built.envelope, sort_keys=True)} — refused"
@@ -1204,7 +1241,7 @@ def main(argv: list[str] | None = None) -> int:
         req = load_request(match[0])
         show_request(req, root)
         if args.dry_run:
-            if req["kind"] in SELECTION_KINDS:
+            if req["kind"] in SELECTION_KINDS and not is_retire_request(req):
                 _, entry, candidates = headshot_candidates(req, root)
                 show_candidates(entry, candidates, root)
                 print("dry-run: selection kinds stop here (no candidate chosen).")
@@ -1215,7 +1252,7 @@ def main(argv: list[str] | None = None) -> int:
         selection: int | None = None
         shown: Optional[Constructed] = None
         approved = False
-        if req["kind"] in SELECTION_KINDS:
+        if req["kind"] in SELECTION_KINDS and not is_retire_request(req):
             _, entry, candidates = headshot_candidates(req, root)
             show_candidates(entry, candidates, root)
             n = len(candidates)

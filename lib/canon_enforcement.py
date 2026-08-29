@@ -1671,7 +1671,8 @@ def _check_headshots(
         project_dir, _look_packet_on_disk(project_dir), proposal, "headshots",
         required=[("character", c) for c in wanted],
     )
-    receipts = {r["output_sha256"]: r for r in _generation_receipt_rows(project_dir)}
+    all_rows = _generation_receipt_rows(project_dir)  # every verified row: identical pixels may carry several (D20 #6)
+    receipts = {r["output_sha256"]: r for r in all_rows}
 
     def _candidate(entry: dict[str, Any], cand: dict[str, Any], label: str, look: Any, *, require_verdict: bool = True) -> None:
         if hero_qc:
@@ -1680,7 +1681,7 @@ def _check_headshots(
                                           require_verdict=require_verdict)
             except HeadshotVerifyError as exc:
                 _fail(f"{label}: {exc}")
-        _check_image_ref(project_dir, label, cand, list(receipts.values()))
+        _check_image_ref(project_dir, label, cand, all_rows)
         _check_lineage(project_dir, label, cand.get("asset_id"), receipts)
         _require_look_refs(label, cand, _receipt_for(cand, receipts), ("character", entry.get("entity_id")), look.look_hash)
 

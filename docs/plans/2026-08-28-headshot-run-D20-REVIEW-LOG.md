@@ -226,7 +226,7 @@ Test note: pytest could not create a temporary directory in the enforced read-on
 5. Accepted. `hero_migration_blockers` verifies every active hero (1.1 included). Test: a 1.1 hero whose raw judge response vanished blocks the 1.4 pin.
 6. Accepted. `synthetic_import_receipt(receipt_id=…)`: every consumer (lineage, imported generation, gate enforcement, both hero verifiers) resolves the exact attestation the generation receipt names, never the latest for the hash. Test: a permitted re-import for the same character leaves the first-bound hero valid.
 
-Full suite after fixes: 1799 passed, 11 skipped. Round 2 (re-inspection) pending Ben's call.
+Full suite after fixes: 1799 passed, 11 skipped.
 
 ## Build record — steps 4–6 (2026-08-29)
 
@@ -242,3 +242,71 @@ Departures / judgement calls (for the inspection):
 4. `headshot_run --grandfather` is allowed under pin 1.3 and 1.4 (the judge call context accepts 1.3 only for a grandfather series).
 
 Not done: Bloodless signatures (config 1.2, Ace grandfather, migration 1.4) and Sebastian — those are Ben's gates, after the inspection.
+
+## Post-build inspection — steps 4–6, round 1 (2026-08-29, fresh read-only Codex session 01a04eb8…)
+
+### Codex findings (verbatim)
+
+## Findings
+
+1. **Critical — done-state recovery is not bound to the exact signed request.** [scripts/headshot_run.py:660](/Users/ben/Projects/OpenMontage/scripts/headshot_run.py:660), [scripts/look_run.py:354](/Users/ben/Projects/OpenMontage/scripts/look_run.py:354)  
+   Scenario: move an unapproved replacement request into `done/`. A prior same-entity import receipt satisfies `_finish_import`/`_finish_casting`; likewise, if the active hero appears among replacement candidates, `_finish_select` accepts the old receipt and clears the new state without a selection. The code checks request kind and matching asset/hash, not a signed receipt belonging to that request. Selection requests are also briefly published with `source_checkpoint_digest=None` before a second write at [headshot_run.py:553](/Users/ben/Projects/OpenMontage/scripts/headshot_run.py:553).  
+   Fix: sign a request ID/nonce into every approval receipt, require it during finish, and publish the checkpoint digest atomically in the initial request write.
+
+2. **Critical — another entity’s run overwrites an outstanding headshot packet.** [scripts/headshot_run.py:552](/Users/ben/Projects/OpenMontage/scripts/headshot_run.py:552)  
+   Scenario: character A is awaiting selection; the lease is released. Starting B sees no B-specific run state and replaces the artifact with `pending: [B]` while preserving A’s state/request. A’s gate can no longer find its candidates, and resuming A merely reports that its now-unusable request is pending. Finishing either entity can similarly destroy the other’s packet.  
+   Fix: refuse a new headshot operation while any entity has an outstanding run state, or persist immutable per-request packets rather than one shared pending artifact.
+
+3. **High — valid long entity IDs collapse request revisions and entities onto the same filename.** [scripts/look_run.py:211](/Users/ben/Projects/OpenMontage/scripts/look_run.py:211), [scripts/headshot_run.py:280](/Users/ben/Projects/OpenMontage/scripts/headshot_run.py:280)  
+   Scenario: look specs permit 96-character IDs, but slicing `f"...-{entity}-{revision}"[:64]` can remove the revision and distinguishing suffix. Revision 2 then collides with revision 1’s persistent `done/` file, or two entities sharing a long prefix overwrite each other’s pending request.  
+   Fix: generate IDs with a bounded readable prefix plus a hash of the full entity ID and an untruncated revision.
+
+4. **High — D20.7’s re-approve alternative is unreachable under 1.3.** [scripts/headshot_run.py:219](/Users/ben/Projects/OpenMontage/scripts/headshot_run.py:219)  
+   Scenario: a legacy hero fails grandfather QC and the writer wants to replace it rather than override it. Normal `--replace` is refused under 1.3, while migration to 1.4 is blocked until that hero is grandfathered or already has a 1.1 record. The writer must incorrectly override the failed hero merely to migrate.  
+   Fix: provide a governed pre-migration replacement mode that judges under hero policy and mints a 1.1 replacement while pinned to 1.3.
+
+5. **High — reject-all does not preserve the original prompt and misses many look changes.** [scripts/headshot_run.py:683](/Users/ben/Projects/OpenMontage/scripts/headshot_run.py:683)  
+   Scenario: start with `--palette moss`, reject all, then follow the normal rerun command without `--palette`; regeneration rebuilds the prompt using “neutral grey” despite logging “same prompt.” Separately, notes such as “make the face more angular” evade the fixed keyword list and spend budget on an unchanged prompt instead of being routed to look supersession.  
+   Fix: persist and reuse the exact rendered prompt/recipe/palette, and replace keyword guessing with a structured human choice between variation feedback and a look change.
+
+6. **High — an actual duplicate output can invalidate the retained passing candidate.** [scripts/headshot_run.py:495](/Users/ben/Projects/OpenMontage/scripts/headshot_run.py:495)  
+   Scenario: attempt 1 passes asset A with generation receipt G1; attempt 2 produces identical pixels and records G2. The duplicate branch retains A/G1, but verification resolves the latest receipt G2, so checkpoint publication rejects the supposedly passing candidate after the duplicate consumed budget. The duplicate test never produces the same pixels twice within its three attempts.  
+   Fix: resolve generation provenance by the exact cited receipt ID, or update the retained candidate to a compatible latest passing receipt when duplicate pixels occur.
+
+7. **High — previously rejected candidates are presented again, and `--candidates` is ignored during reuse.** [scripts/headshot_run.py:444](/Users/ben/Projects/OpenMontage/scripts/headshot_run.py:444)  
+   Scenario: four candidates are shown and one selected; the other three are recorded as `candidates_rejected`. A later `--replace --candidates 1` reloads all four passing verdicts because only reject-all metadata is excluded, then presents all four because the reused dictionary is never capped to `want`.  
+   Fix: durably exclude every prior `candidates_rejected` hash and slice validated reusable candidates to the requested count.
+
+8. **High — affordability preflight covers only desired slots, not the remaining worst case.** [scripts/headshot_run.py:456](/Users/ben/Projects/OpenMontage/scripts/headshot_run.py:456)  
+   Scenario: with eight attempts remaining and one candidate requested, a budget sufficient for one generation plus judgment passes preflight; if that attempt fails, later attempts spend until the cost tracker aborts before reaching a gate. D20.2 requires all remaining attempts to fit before starting.  
+   Fix: when more generation is needed, preflight `remaining_attempts × (generation + judge estimate)`.
+
+9. **High — a ticket edit after approval permanently traps the completed look request.** [scripts/look_run.py:327](/Users/ben/Projects/OpenMontage/scripts/look_run.py:327)  
+   Scenario: H1 is approved, then the writer resolves H2 before `look_run` finishes. The done path refuses because the ticket changed, but retains H1’s run state; `--supersede` can never run because resume always executes first and repeats the refusal.  
+   Fix: finish H1 from the exact signed receipt payload and clear its state atomically, then permit a fresh H2 supersession.
+
+10. **Medium — an imported candidate’s accepted QC override has no continuation path.** [scripts/headshot_run.py:329](/Users/ben/Projects/OpenMontage/scripts/headshot_run.py:329)  
+    Scenario: an import fails an overridable item; the command writes the override request and clears import state. After approval, a normal rerun starts generated Mode C rather than presenting that import. Reusing it requires another import and redundant attestation.  
+    Fix: retain a blocked-import continuation state binding the asset and verdict until override approval or explicit abandonment.
+
+11. **Medium — `--casting` accepts location mode but recovery hardcodes character mode.** [scripts/look_run.py:362](/Users/ben/Projects/OpenMontage/scripts/look_run.py:362)  
+    Scenario: `--kind location --casting ...` is accepted and can receive a signed import receipt, but finish always looks for a character ticket, leaving the approved casting state unable to transition.  
+    Fix: reject casting for non-character entities before staging, or persist and honor `entity_kind` through recovery.
+
+The two scoped test modules pass (`24 passed`), but none covers these scenarios. No files were modified.
+### Claude's dispositions — ten accepted and fixed; one accepted in part
+
+1. Accepted. Every finish now requires the receipt the gate signed for THIS request: the done request's `source_checkpoint_digest` (published atomically with the request — `headshot_request` and `look_lock_request` take it as a parameter) must equal the receipt's signed `source_checkpoint_digest` (look_lock, reference_import, headshot, headshot_grandfather). A moved-in replacement request cannot finish another request's run.
+2. Accepted. A new headshot run is refused while another entity has an outstanding run state (D18: one character at a time; the pending packet belongs to that entity).
+3. Accepted. `lib.run_common.request_id_for`: long entity ids become head + hash of the full id, revision always intact.
+4. Accepted, implemented as `headshot_run --retire`: a `headshot` request with envelope `action: retire` (the receipt model already had the action; the gate gained `_construct_headshot_retire` with a tip re-check under the lock). A legacy hero the writer will neither override nor keep is retired; migration coverage is then clear; a new hero is generated under 1.4. Preferred over a "pre-migration replacement mode" because it adds no new judging path under 1.3.
+5. Accepted in part. The palette is persisted per entity + look in checkpoint metadata and reused on regeneration, so the rerun rebuilds the identical prompt. The word-list look-change detection stays: a structured choice at the gate is a gate UX change outside D20's scope (flagged for Ben; the director doc tells the writer where appearance changes go).
+6. Accepted, differently from the suggested fix: identical pixels reuse the FIRST verdict (bound to the first receipt), so retaining the newer receipt would break the chain. Instead every verifier — `verify_headshot_candidate`, the gate's `_enforce_candidate`, enforcement's image-ref check, and the finish step — resolves a candidate's generation receipt by the id it cites (`lib.receipts.find_generation_by_id`), never latest-for-hash.
+7. Accepted. `candidates_rejected` of a selection join the durable rejected history; reuse is capped to `--candidates`.
+8. Accepted. Preflight is `remaining_attempts × (generation + judge)` whenever more generation is needed (D20.2 step 2).
+9. Accepted. `look_run` finishes from the SIGNED receipt (payload + ticket ref from the receipt), clears state, and reports a changed ticket as a later `--supersede`.
+10. Accepted. A failed import keeps an `import_blocked` run state bound to the asset and verdict; an accepted override presents that import on the next run; a declined override clears it.
+11. Accepted. `--casting` is refused for non-character entities.
+
+Tests: one per finding in `tests/lib/test_look_run.py` (`TestInspectionRound2`) and `tests/lib/test_headshot_run.py` (`TestInspectionRound2`).
+Full suite after the round: 1835 passed, 11 skipped.

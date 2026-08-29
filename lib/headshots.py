@@ -226,10 +226,12 @@ def headshot_request(
     *,
     request_id: Optional[str] = None,
     summary: Optional[str] = None,
+    source_checkpoint_digest: Optional[str] = None,
 ) -> Path:
     """Write the selection-gate request for one character (mints nothing;
     carries NO approval_record — the handler builds it from the pending
-    packet in checkpoint_headshots.json)."""
+    packet in checkpoint_headshots.json). ``source_checkpoint_digest`` is
+    signed into the receipt by the gate and is what a run binds its finish to."""
     project_dir = Path(project_dir)
     request_id = request_id or f"headshot-{entity_id}"[:64]
     request = {
@@ -241,7 +243,7 @@ def headshot_request(
         "entity_id": entity_id,
         "artifact": None,
         "approval_record": None,
-        "source_checkpoint_digest": None,
+        "source_checkpoint_digest": source_checkpoint_digest,
         "summary": summary or (
             f"Choose the face for character {entity_id!r} from the pending headshot candidates "
             f"(or reject all with a note to regenerate)."

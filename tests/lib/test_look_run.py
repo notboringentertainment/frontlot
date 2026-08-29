@@ -200,3 +200,42 @@ class TestCasting:
         with pytest.raises(Declined):
             run_look(w["project"], CHAR, out=w["out"])
         assert _state(w) is None
+
+
+class TestInspectionRound2:
+    def test_finish_requires_the_receipt_signed_for_this_request(self, world):
+        """Inspection #1: a done request whose receipt was signed for another checkpoint cannot finish this run."""
+        w = world
+        r = run_look(w["project"], CHAR, out=w["out"])
+        approve_request(_req(w, r["request_id"]), w["project"])
+        done = w["project"] / ".gate-requests" / "done" / f"{r['request_id']}.json"
+        req = json.loads(done.read_text()); req["source_checkpoint_digest"] = "0" * 64
+        done.write_text(json.dumps(req))
+        with pytest.raises(LookRunError, match="not the one that produced it"):
+            run_look(w["project"], CHAR, out=w["out"])
+        assert _state(w) is not None
+
+    def test_long_entity_ids_do_not_collide(self):
+        from lib.run_common import request_id_for
+        a = "a" * 80 + "-one"; b = "a" * 80 + "-two"
+        ra, rb = request_id_for("look", a, 1), request_id_for("look", b, 1)
+        assert ra != rb and len(ra) <= 64 and ra.endswith("-1") and request_id_for("look", a, 2).endswith("-2")
+        assert request_id_for("look", CHAR, 3) == f"look-{CHAR}-3"
+
+    def test_ticket_edit_after_approval_does_not_trap_the_run(self, world):
+        """Inspection #9: finish from the signed receipt; the edited ticket is then a --supersede."""
+        w = world
+        r = run_look(w["project"], CHAR, out=w["out"])
+        approve_request(_req(w, r["request_id"]), w["project"])
+        write_ticket(w["wf"], dict(w["c"], hair="shaved close"))
+        r2 = run_look(w["project"], CHAR, out=w["out"])
+        assert r2["status"] == "ratified" and _state(w) is None
+        assert "ticket changed after ratification" in w["out"].getvalue()
+        looks = json.loads((w["project"] / "checkpoint_look_lock.json").read_text())["artifacts"]["look_packet"]["looks"]
+        assert looks[0]["look_spec"]["hair"] == w["c"]["hair"]  # the SIGNED payload, not the edited ticket
+        r3 = run_look(w["project"], CHAR, supersede=True, out=w["out"])
+        assert r3["status"] == "pending" and _req(w, r3["request_id"])["envelope"]["supersedes_look_hash"] == _look_hash(w["c"])
+
+    def test_casting_is_character_only(self, world, tmp_path):
+        with pytest.raises(LookRunError, match="characters only"):
+            run_look(world["project"], LOC, entity_kind="location", casting=_jpeg(tmp_path / "x.jpg"), out=world["out"])

@@ -38,7 +38,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from lib.run_common import (  # noqa: E402
-    RunError, gate_command, hold_lease, read_request, require_entity_id, resolve_project_root, write_decision,
+    RunError, gate_command, hold_lease, read_request, request_id_for, require_entity_id, resolve_project_root, write_decision,
 )
 
 STAGE = "look_lock"
@@ -188,6 +188,8 @@ def run_look(
         except LookIngestError as exc:
             raise LookRunError(str(exc)) from exc
         if casting is not None:
+            if entity_kind != "character":
+                raise LookRunError("casting inspiration is for characters only")
             if current is not None:
                 raise LookRunError(f"the look for {entity_id!r} is ratified; casting inspiration is imported before ratification only")
             return _start_casting(root, project_id, entity_id, Path(casting), dry_run, out)
@@ -208,7 +210,7 @@ def _start_look(root, project_id, entity_kind, entity_id, wf_root, current, supe
                 f"{look.look_hash[:12]}…; re-run with --supersede to replace it (downstream headshot and sheets are invalidated)"
             )
     rev = _next_revision(root, entity_id)
-    request_id = f"look-{entity_id}-{rev}"[:64]
+    request_id = request_id_for("look", entity_id, rev)
     if dry_run:
         _log(out, f"[dry-run] would request {request_id}: ratify look {look.look_hash} for ({entity_kind}, {entity_id}) "
                   f"from ticket {ticket_rel}" + (f", superseding {current.look_hash[:12]}…" if current else ""))
@@ -226,7 +228,7 @@ def _start_casting(root, project_id, entity_id, image: Path, dry_run, out) -> di
     if not image.is_file():
         raise LookRunError(f"--casting {image} is not a file")
     rev = _next_revision(root, entity_id)
-    request_id = f"casting-{entity_id}-{rev}"[:64]
+    request_id = request_id_for("casting", entity_id, rev)
     if dry_run:
         _log(out, f"[dry-run] would stage {image.name} as casting inspiration for {entity_id!r} and request {request_id}")
         return {"entity_id": entity_id, "status": "dry_run", "request_id": request_id}
@@ -276,9 +278,27 @@ def _resume(root, project_id, entity_id, state, wf_root, out) -> dict[str, Any]:
     # done: verify the receipt is the one this state expects, then finish
     if req is None or req.get("kind") != state.get("expected_kind") or req.get("entity_id") not in (entity_id, f"reference-{str(state.get('normalized_pixel_hash', ''))[:12]}"):
         raise LookRunError(f"run state names request {request_id} ({state.get('expected_kind')}); the done request has another shape — refusing to guess")
+    bound = req.get("source_checkpoint_digest")
+    if not isinstance(bound, str) or len(bound) != 64:
+        raise LookRunError(f"done request {request_id} carries no source_checkpoint_digest; it was not published by look_run — refusing")
     if mode == "look_lock":
-        return _finish_look(root, project_id, entity_id, state, wf_root, out)
-    return _finish_casting(root, project_id, entity_id, state, wf_root, out)
+        return _finish_look(root, project_id, entity_id, state, wf_root, out, bound)
+    return _finish_casting(root, project_id, entity_id, state, wf_root, out, bound)
+
+
+def _receipt_bound_to(rows: list, receipt_id: str, bound: str) -> dict:
+    """Inspection #1: the receipt that finishes a run must be the one the gate
+    signed for THIS request — it carries the checkpoint digest the request
+    was bound to (signed into the receipt by the gate)."""
+    row = next((r for r in rows if r.get("receipt_id") == receipt_id), None)
+    if row is None:
+        raise LookRunError(f"receipt {receipt_id} is not in the verified chain")
+    if row.get("source_checkpoint_digest") != bound:
+        raise LookRunError(
+            f"receipt {receipt_id} was signed for checkpoint digest {str(row.get('source_checkpoint_digest'))[:12]}…, not this "
+            f"request's {bound[:12]}…; the done request is not the one that produced it — refusing"
+        )
+    return row
 
 
 def _republish(root, project_id, entity_id, state, wf_root, out) -> dict[str, Any]:
@@ -312,8 +332,8 @@ def _republish(root, project_id, entity_id, state, wf_root, out) -> dict[str, An
     return _pending(root, entity_id, request_id, out, f"republished {request_id} (the request file was missing)")
 
 
-def _finish_look(root, project_id, entity_id, state, wf_root, out) -> dict[str, Any]:
-    from lib.look_ingest import LookIngestError, active_look_for, build_look_packet
+def _finish_look(root, project_id, entity_id, state, wf_root, out, bound: str) -> dict[str, Any]:
+    from lib.look_ingest import LookIngestError, active_look_for, look_lock_receipts
 
     kind = str(state.get("entity_kind") or "character")
     try:
@@ -323,15 +343,15 @@ def _finish_look(root, project_id, entity_id, state, wf_root, out) -> dict[str, 
     if current is None or current.look_hash != state.get("look_hash"):
         raise LookRunError(f"request {state['request_id']} is done but the active look for {entity_id!r} is not the one it named "
                            f"({current.look_hash[:12] if current else None}… vs {str(state.get('look_hash'))[:12]}…)")
-    ticket_rel, look = locate_ticket(wf_root, kind, entity_id)
-    if look.look_hash != current.look_hash:
-        raise LookRunError("the ticket changed after ratification; re-run look_run --supersede once the writer resolves it")
-    try:
-        entry = build_look_packet(root, {look.key: look})["looks"][0]
-    except LookIngestError as exc:
-        raise LookRunError(str(exc)) from exc
+    row = _receipt_bound_to(look_lock_receipts(root), current.receipt_id, bound)
+    # Inspection #9: the packet entry comes from the SIGNED receipt (payload +
+    # ticket ref), never from re-reading the ticket, so a ticket edited after
+    # ratification cannot trap this run; the next run sees the change and
+    # asks for --supersede.
+    entry = {"entity_kind": kind, "entity_id": entity_id, "look_spec": current.payload, "look_hash": current.look_hash,
+             "receipt_id": current.receipt_id, "source_ticket_ref": row.get("source_ticket_ref") or {"id": "unknown"}}
     packet = _packet_on_disk(root)
-    packet["looks"] = [e for e in packet.get("looks") or [] if (e.get("entity_kind"), e.get("entity_id")) != look.key] + [entry]
+    packet["looks"] = [e for e in packet.get("looks") or [] if (e.get("entity_kind"), e.get("entity_id")) != (kind, entity_id)] + [entry]
     proposal = _proposal(root)
     cast = proposal.get("cast") or {}
     wanted = {("character", c) for c in cast.get("character_ids") or []} | {("location", l) for l in cast.get("location_ids") or []}
@@ -340,20 +360,27 @@ def _finish_look(root, project_id, entity_id, state, wf_root, out) -> dict[str, 
     _log(out, f"look for {entity_id!r} ratified (receipt {current.receipt_id}, look_hash {current.look_hash[:12]}…); "
               f"look_packet now carries {len(packet['looks'])} look(s), complete={packet['complete']}\n"
               f"Next: cd {REPO} && .venv/bin/python scripts/headshot_run.py --project {project_id} --entity {entity_id}")
+    try:
+        _, look = locate_ticket(wf_root, kind, entity_id)
+        if look.look_hash != current.look_hash:
+            _log(out, "note: the ticket changed after ratification; run look_run --supersede when the writer wants the new answer")
+    except LookRunError:
+        pass
     return {"entity_id": entity_id, "status": "ratified", "look_hash": current.look_hash, "receipt_id": current.receipt_id}
 
 
-def _finish_casting(root, project_id, entity_id, state, wf_root, out) -> dict[str, Any]:
+def _finish_casting(root, project_id, entity_id, state, wf_root, out, bound: str) -> dict[str, Any]:
     from lib.look_ingest import active_look_for, look_lock_request
     from lib.reference_import import ORIGIN_CASTING, ReferenceImportError, finalize_reference_import, record_entity_id, reference_import_receipts
 
     pixel_hash = str(state.get("normalized_pixel_hash") or "")
     receipt = None
     for r in reference_import_receipts(root):
-        if r.get("normalized_pixel_hash") == pixel_hash and r.get("origin_class") == ORIGIN_CASTING and record_entity_id(r.get("record")) == entity_id:
+        if r.get("normalized_pixel_hash") == pixel_hash and r.get("origin_class") == ORIGIN_CASTING \
+                and record_entity_id(r.get("record")) == entity_id and r.get("source_checkpoint_digest") == bound:
             receipt = r
     if receipt is None:
-        raise LookRunError(f"request {state['request_id']} is done but no verified casting_inspiration receipt binds {pixel_hash[:12]}… to {entity_id!r}")
+        raise LookRunError(f"request {state['request_id']} is done but no verified casting_inspiration receipt signed for it binds {pixel_hash[:12]}… to {entity_id!r}")
     try:
         finalize_reference_import(root, receipt["receipt_id"])  # the one sanctioned read: hash check + move (R2#5)
     except ReferenceImportError as exc:
@@ -367,7 +394,7 @@ def _finish_casting(root, project_id, entity_id, state, wf_root, out) -> dict[st
         _log(out, f"casting inspiration imported for {entity_id!r}; the look is already ratified")
         return {"entity_id": entity_id, "status": "active", "look_hash": look.look_hash}
     rev = int(state.get("revision") or 0) + 1
-    request_id = f"look-{entity_id}-{rev}"[:64]
+    request_id = request_id_for("look", entity_id, rev)
     new_state = {"mode": "look_lock", "revision": rev, "request_id": request_id, "look_hash": look.look_hash,
                  "entity_kind": kind, "ticket_path": str(ticket_rel), "expected_kind": "look_lock"}
     digest = _write(root, _packet_on_disk(root), run_state={entity_id: new_state})

@@ -43,7 +43,7 @@ def _png(w, h, seed):
     buf = io.BytesIO(); Image.new("RGB", (w, h), (d[0], d[1], d[2])).save(buf, "PNG"); return buf.getvalue()
 
 
-def _world(project, monkeypatch, *, version: str, cap: int = 3, cast=(CHAR, CHAR2)):
+def _world(project, monkeypatch, *, version: str, cap: int = 3, cast=(CHAR, CHAR2), budget: float = 50.0):
     pipeline_dir, project_dir = project
     import sys
 
@@ -57,7 +57,7 @@ def _world(project, monkeypatch, *, version: str, cap: int = 3, cast=(CHAR, CHAR
     monkeypatch.setattr(events_mod, "PROJECTS_DIR", pipeline_dir)
     monkeypatch.setattr(paths_mod, "PROJECTS_DIR", pipeline_dir)
     monkeypatch.setenv("OPENMONTAGE_TEST_MODE", "1")
-    digest = write_project_config(project_dir, config_1_2(max_hero_attempts=cap))
+    digest = write_project_config(project_dir, config_1_2(max_hero_attempts=cap, budget=budget))
     pin_project(project_dir, version)
     from lib.pipeline_pin import refresh_cache
     refresh_cache(project_dir, "authored-film")
@@ -93,13 +93,13 @@ def legacy(project, monkeypatch):
 class FakeGen:
     """Runs the pre-submit hook like the governed tool, writes a real hero PNG, records a governed receipt."""
 
-    def __init__(self, *, dup_every: int = 0):
-        self.n = 0; self.dup_every = dup_every
+    def __init__(self, *, dup_every: int = 0, fixed: str | None = None):
+        self.n = 0; self.dup_every = dup_every; self.fixed = fixed
 
     def __call__(self, root, ctx):
         self.n += 1
         _shared.run_pre_submit(root, f"res-fake-{self.n}")
-        seed = "dup" if self.dup_every and self.n % self.dup_every == 0 else f"hero-{self.n}"
+        seed = self.fixed or ("dup" if self.dup_every and self.n % self.dup_every == 0 else f"hero-{self.n}")
         data = _png(1024, 1024, seed); sha = hashlib.sha256(data).hexdigest()
         (root / "canon/visual/objects" / f"{sha}.png").write_bytes(data)
         built = ctx["built"]
@@ -333,3 +333,108 @@ class TestRecovery:
             run_headshot(w["project"], CHAR2, out=w["out"], generate=FakeGen(), judge_adapter=PlanJudge([]))
         with pytest.raises(HeadshotRunError, match="--candidates"):
             _run(w, candidates=5)
+
+
+class TestInspectionRound2:
+    def test_finish_requires_the_receipt_signed_for_this_request(self, world):
+        """Inspection #1: a selection receipt signed for another checkpoint cannot finish this request."""
+        w = world
+        r = _run(w, candidates=1)
+        req = _req(w, r["request_id"])
+        approve_request(req, w["project"], selection=1)
+        done = w["project"] / ".gate-requests" / "done" / f"{r['request_id']}.json"
+        d = json.loads(done.read_text()); d["source_checkpoint_digest"] = "0" * 64
+        done.write_text(json.dumps(d))
+        with pytest.raises(HeadshotRunError, match="not signed for request"):
+            _run(w)
+
+    def test_one_character_at_a_time(self, world):
+        """Inspection #2: another entity's outstanding selection owns the pending packet."""
+        w = world
+        _run(w, candidates=1)
+        activate_look(w["project"], dict(w["c"], entity_id=CHAR2))
+        with pytest.raises(HeadshotRunError, match="outstanding select request"):
+            run_headshot(w["project"], CHAR2, out=w["out"], generate=FakeGen(), judge_adapter=PlanJudge([]))
+        assert _cp(w)["artifacts"]["headshot_packet"]["characters"][0]["entity_id"] == CHAR
+
+    def test_retire_unblocks_migration_without_an_override(self, legacy):
+        """Inspection #4: a legacy hero that fails the judge can be retired, not only overridden."""
+        from lib.pipeline_pin import prepare_migration_request
+        w = legacy
+        with pytest.raises(Blocked):
+            _run(w, grandfather=True, judge_adapter=PlanJudge([{"single_subject": "no"}]))
+        r = _run(w, retire=True)
+        assert r["status"] == "pending" and r["request_id"] == f"retire-{CHAR}-1"
+        req = _req(w, r["request_id"])
+        assert req["kind"] == "headshot" and req["envelope"]["action"] == "retire"
+        receipt = approve_request(req, w["project"])
+        assert receipt["action"] == "retire" and CHAR not in active_headshots(w["project"])
+        assert _run(w, retire=True)["status"] == "retired"
+        assert hero_migration_blockers(w["project"]) == []
+        prepare_migration_request(w["project"], PROJECT, "authored-film", "1.4", request_id="migrate-1-4")
+
+    def test_reject_all_regenerates_with_the_same_palette(self, world):
+        """Inspection #5: the prompt (palette included) is reused; the rerun needs no --palette."""
+        w = world
+        r = _run(w, candidates=1, palette=["moss"])
+        first = _cp(w)["artifacts"]["headshot_packet"]["characters"][0]["prompt_recipe"]
+        assert first == pb.build_prompt(w["c"], role="hero", palette=["moss"])["prompt_recipe"]
+        decline_request(_req(w, r["request_id"]), w["project"], note="too stern")
+        _run(w, candidates=1)
+        second = _cp(w)["artifacts"]["headshot_packet"]["characters"][0]["prompt_recipe"]
+        assert second == first
+
+    def test_duplicate_pixels_keep_a_verifiable_candidate(self, world):
+        """Inspection #6: identical pixels get a newer receipt; the candidate cites the one verifiers resolve."""
+        w = world
+        r = _run(w, candidates=2, generate=FakeGen(fixed="same"))
+        assert r["status"] == "pending"
+        entry = _cp(w)["artifacts"]["headshot_packet"]["characters"][0]
+        assert len(entry["candidates"]) == 1
+        cited = entry["candidates"][0]["provenance"]["generation_receipt_id"]
+        latest = receipts.find_generation(w["project"], entry["candidates"][0]["asset_id"])
+        assert cited != latest["receipt_id"]  # three receipts for one hash; the candidate cites the judged one
+        receipt = approve_request(_req(w, r["request_id"]), w["project"], selection=1)
+        assert receipt["record"]["generation_receipt_id"] == cited
+        assert _run(w)["status"] == "approved"
+        assert _cp(w)["artifacts"]["headshot_packet"]["characters"][0]["hero"]["provenance"]["generation_receipt_id"] == cited
+
+    def test_rejected_candidates_are_history_and_reuse_is_capped(self, world):
+        """Inspection #7."""
+        w = world
+        r = _run(w, candidates=2)
+        cands = [c["asset_id"] for c in _cp(w)["artifacts"]["headshot_packet"]["characters"][0]["candidates"]]
+        approve_request(_req(w, r["request_id"]), w["project"], selection=1)
+        _run(w)
+        assert _cp(w)["metadata"]["rejected_candidates"][CHAR] == [cands[1]]
+        gen = FakeGen()
+        r2 = _run(w, replace=True, candidates=1, generate=gen)
+        shown = [c["asset_id"] for c in _cp(w)["artifacts"]["headshot_packet"]["characters"][0]["candidates"]]
+        assert shown == [cands[0]] and gen.n == 0  # the earlier pick is reusable; the rejected one is not; capped to 1
+
+    def test_preflight_covers_every_remaining_attempt(self, project, monkeypatch):
+        """Inspection #8: budget for one attempt is not enough when three remain."""
+        w = _world(project, monkeypatch, version="1.4", budget=0.2)
+        gen = FakeGen()
+        with pytest.raises(HeadshotRunError, match="could cost"):
+            run_headshot(w["project"], CHAR, out=w["out"], candidates=1, generate=gen, judge_adapter=PlanJudge([]))
+        assert gen.n == 0
+
+    def test_failed_import_continues_after_override(self, world, tmp_path):
+        """Inspection #10: an accepted override presents THIS import on the next run."""
+        w = world
+        src = tmp_path / "mine.png"; src.write_bytes(_png(1024, 1280, "writer-made-3"))
+        r = _run(w, import_file=src, origin_tool="elsewhere-gen")
+        approve_request(_req(w, r["request_id"]), w["project"])
+        with pytest.raises(Blocked):
+            _run(w, judge_adapter=PlanJudge([{"plain_background": "no"}]))
+        st = _cp(w)["metadata"]["run_state"][CHAR]
+        assert st["mode"] == "import_blocked" and st["request_id"].startswith(f"override-{CHAR}-hero-")
+        assert _run(w)["status"] == "pending"  # override still pending
+        ov = _req(w, st["request_id"]); ov["reason"] = "the backdrop is a plain studio wall; the judge is wrong"
+        approve_request(ov, w["project"])
+        gen = FakeGen()
+        r2 = _run(w, generate=gen)
+        assert gen.n == 0 and r2["status"] == "pending"
+        entry = _cp(w)["artifacts"]["headshot_packet"]["characters"][0]
+        assert entry["candidates"][0]["asset_id"] == st["asset_id"] and entry["candidates"][0]["qc_receipt_id"] == st["qc_receipt_id"]

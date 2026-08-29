@@ -152,11 +152,17 @@ def require_hero_verdict(
 
 # ---- candidate-time verifier ----
 
-def _receipt_for_asset(project_dir: Path, asset_id: str, receipts_by_sha: Optional[dict[str, dict[str, Any]]]) -> Optional[dict[str, Any]]:
+def _receipt_for_asset(project_dir: Path, asset_id: str, receipts_by_sha: Optional[dict[str, dict[str, Any]]],
+                       cited_id: Any = None) -> Optional[dict[str, Any]]:
+    """The generation receipt a candidate rests on: the one it CITES when it
+    cites one (identical pixels may carry several receipts — inspection #6),
+    else the latest for the hash."""
+    from lib.receipts import find_generation, find_generation_by_id
+
+    if isinstance(cited_id, str) and cited_id:
+        return find_generation_by_id(project_dir, cited_id, output_sha256=asset_id)
     if receipts_by_sha is not None:
         return receipts_by_sha.get(asset_id)
-    from lib.receipts import find_generation
-
     return find_generation(project_dir, asset_id)
 
 
@@ -183,7 +189,7 @@ def verify_headshot_candidate(
     asset_id = str(candidate.get("asset_id") or "")
     label = f"candidate {asset_id[:12]} of {entity_id!r}"
     provenance = candidate.get("provenance") or {}
-    receipt = _receipt_for_asset(project_dir, asset_id, receipts_by_sha)
+    receipt = _receipt_for_asset(project_dir, asset_id, receipts_by_sha, provenance.get("generation_receipt_id"))
     if receipt is None:
         raise HeadshotVerifyError(f"{label} has no verified generation receipt")
     if receipt.get("receipt_id") != provenance.get("generation_receipt_id"):
