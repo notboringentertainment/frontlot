@@ -1078,28 +1078,36 @@ def _require_entry_receipt(
     project_dir: Path, kinds: tuple[str, ...], entity_id: str, record: dict[str, Any],
     entry: dict[str, Any], label: str,
 ) -> None:
+    """The entry's ``approval_receipt_id`` must name a verified receipt of one
+    of ``kinds`` for this entity whose signed record digest is the current
+    record digest — an explicit-id lookup (``receipts.exact_approval``), so
+    an older or newer approval of the same record never stands in for the
+    one the entry names. The receipt's source_checkpoint_digest is not
+    compared here (legacy entries carry ``None``)."""
     from lib.canonical_json import record_sha256
-    from lib.receipts import find_approval
+    from lib.receipts import ReceiptError, exact_approval
 
     digest = record_sha256(record)
-    receipt = None
+    receipt_id = entry.get("approval_receipt_id")
+    if not isinstance(receipt_id, str) or not receipt_id:
+        _fail(
+            f"{label} is marked approved but carries no approval_receipt_id; no verified approval receipt "
+            f"(kind in {list(kinds)}, entity_id {entity_id!r}) can back it — approve it at a gate."
+        )
+    errors: list[str] = []
     for kind in kinds:
-        receipt = find_approval(project_dir, kind, entity_id=entity_id, record_sha256=digest)
-        if receipt is not None:
-            break
-    if receipt is None:
-        _fail(
-            f"{label} is marked approved but no verified approval receipt "
-            f"(kind in {list(kinds)}, entity_id {entity_id!r}) matches the "
-            f"current record digest {digest}. Either the human never approved "
-            f"it at a gate, or the record (assets, prompt block, wardrobe "
-            f"negative, palette) changed after approval — re-approve."
-        )
-    if receipt.get("receipt_id") != entry.get("approval_receipt_id"):
-        _fail(
-            f"{label} approval_receipt_id {entry.get('approval_receipt_id')!r} "
-            f"does not name the verified receipt {receipt.get('receipt_id')!r}."
-        )
+        try:
+            exact_approval(project_dir, receipt_id=receipt_id, kind=kind, entity_id=entity_id, record_sha256=digest)
+            return
+        except ReceiptError as exc:
+            errors.append(str(exc))
+    _fail(
+        f"{label} is marked approved but no verified approval receipt "
+        f"(kind in {list(kinds)}, entity_id {entity_id!r}) with id {receipt_id!r} matches the "
+        f"current record digest {digest}. Either the human never approved "
+        f"it at a gate, the entry does not name the verified receipt, or the record (assets, prompt block, "
+        f"wardrobe negative, palette) changed after approval — re-approve. ({'; '.join(errors)})"
+    )
 
 
 def _canon_entity_ids(canon: dict[str, Any], key: str) -> set[str]:
@@ -1883,6 +1891,33 @@ def _check_visual_bible_v12(
         ref = poster.get(role) or {}
         if ref.get("asset_id"):
             _check_lineage(project_dir, f"poster {role}", ref["asset_id"], receipts)
+    if status != "completed":
+        _check_partial_bible_receipts(project_dir, bible)
+
+
+def _check_partial_bible_receipts(project_dir: Path, bible: dict[str, Any]) -> None:
+    """D4 backstop: ``_check_visual_bible`` receipt-checks approved entries
+    only at completion, so an ``in_progress`` / ``awaiting_human`` bible
+    could carry ``status: approved`` data no human ever signed. Run the
+    same exact-receipt checks here for every approved character, every
+    approved location and an approved poster."""
+    palette = bible.get("palette") or {}
+    for cid, entry in _approved_entries(bible, "characters").items():
+        _require_entry_receipt(
+            project_dir, CHARACTER_APPROVAL_KINDS, cid,
+            character_approval_record(entry, palette), entry, f"character {cid!r}",
+        )
+    for lid, entry in _approved_entries(bible, "locations").items():
+        _require_entry_receipt(
+            project_dir, ("location",), lid,
+            location_approval_record(entry, palette), entry, f"location {lid!r}",
+        )
+    poster = bible.get("poster")
+    if isinstance(poster, dict) and poster.get("status") == "approved":
+        _require_entry_receipt(
+            project_dir, ("poster",), POSTER_ENTITY_ID,
+            poster_approval_record(poster, palette), poster, "poster",
+        )
 
 
 def enforce_authored_canon(

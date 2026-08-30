@@ -371,3 +371,72 @@ def test_require_storyboard_receipt_rejects_tampered_record(project):
     (project / "approvals.jsonl").write_text(json.dumps(tampered) + "\n")
     with pytest.raises(receipts.ReceiptError):
         receipts.require_storyboard_receipt(project, "shot-1", "dd" * 32)
+
+
+# ---- exact_approval (sheet_run finish plan, D3 shared verifier) ----
+
+def _approve(project, record, kind="sheet", entity_id="ch-001", digest=None, scope=SCOPE):
+    token = _mint(record, scope=scope)
+    return receipts.record_human_approval(
+        project, PROJECT_ID, STAGE, scope, record, token, kind, entity_id=entity_id, source_checkpoint_digest=digest,
+    )
+
+
+def test_exact_approval_returns_the_named_verified_row(project):
+    r = _approve(project, RECORD, digest="cp" * 32)
+    row = receipts.exact_approval(project, receipt_id=r["receipt_id"], kind="sheet", entity_id="ch-001",
+                                  record_sha256=record_sha256(RECORD))
+    assert row["receipt_id"] == r["receipt_id"]
+    # explicit digest must equal the receipt's field
+    assert receipts.exact_approval(project, receipt_id=r["receipt_id"], kind="sheet", entity_id="ch-001",
+                                   record_sha256=record_sha256(RECORD), source_checkpoint_digest="cp" * 32)["receipt_id"] == r["receipt_id"]
+
+
+def test_exact_approval_is_explicit_id_not_latest_wins(project):
+    first = _approve(project, RECORD)
+    second = _approve(project, RECORD)
+    assert first["receipt_id"] != second["receipt_id"]
+    assert receipts.exact_approval(project, receipt_id=first["receipt_id"], kind="sheet", entity_id="ch-001",
+                                   record_sha256=record_sha256(RECORD))["receipt_id"] == first["receipt_id"]
+
+
+@pytest.mark.parametrize("field, value", [
+    ("receipt_id", "no-such-receipt"),
+    ("kind", "hero"),
+    ("entity_id", "ch-002"),
+    ("record_sha256", "0" * 64),
+])
+def test_exact_approval_refuses_any_mismatched_field(project, field, value):
+    r = _approve(project, RECORD, digest="cp" * 32)
+    kw = dict(receipt_id=r["receipt_id"], kind="sheet", entity_id="ch-001", record_sha256=record_sha256(RECORD))
+    kw[field] = value
+    with pytest.raises(receipts.ReceiptError):
+        receipts.exact_approval(project, **kw)
+
+
+def test_exact_approval_digest_sentinel_semantics(project):
+    r = _approve(project, RECORD, digest=None)
+    kw = dict(receipt_id=r["receipt_id"], kind="sheet", entity_id="ch-001", record_sha256=record_sha256(RECORD))
+    # omitted → not compared (legacy None-digest receipts pass)
+    assert receipts.exact_approval(project, **kw)["receipt_id"] == r["receipt_id"]
+    # explicit None → compared as None (matches)
+    assert receipts.exact_approval(project, **kw, source_checkpoint_digest=None)["receipt_id"] == r["receipt_id"]
+    # explicit value against a None receipt → refused
+    with pytest.raises(receipts.ReceiptError, match="source_checkpoint_digest"):
+        receipts.exact_approval(project, **kw, source_checkpoint_digest="cp" * 32)
+    r2 = _approve(project, RECORD, digest="cp" * 32)
+    kw2 = dict(kw, receipt_id=r2["receipt_id"])
+    with pytest.raises(receipts.ReceiptError, match="source_checkpoint_digest"):
+        receipts.exact_approval(project, **kw2, source_checkpoint_digest=None)
+    with pytest.raises(receipts.ReceiptError, match="source_checkpoint_digest"):
+        receipts.exact_approval(project, **kw2, source_checkpoint_digest="dd" * 32)
+
+
+def test_exact_approval_ignores_forged_rows(project):
+    r = _approve(project, RECORD)
+    forged = dict(r, receipt_id="forged-row")
+    from lib.state_io import append_jsonl
+    append_jsonl(project / "approvals.jsonl", forged)
+    with pytest.raises((receipts.ReceiptError, receipts.ReceiptChainError)):
+        receipts.exact_approval(project, receipt_id="forged-row", kind="sheet", entity_id="ch-001",
+                                record_sha256=record_sha256(RECORD))

@@ -451,6 +451,49 @@ def verified_approvals(
     return out
 
 
+_UNSET: Any = object()
+
+
+def exact_approval(
+    project_root: Path | str,
+    *,
+    receipt_id: str,
+    kind: str,
+    entity_id: Optional[str],
+    record_sha256: str,
+    source_checkpoint_digest: Any = _UNSET,
+    project_id: Optional[str] = None,
+) -> dict:
+    """The verified receipt with exactly ``receipt_id`` — an explicit-id
+    lookup, never latest-wins. Raises ReceiptError when the id is absent
+    (unverified, forged, foreign, other kind) or when any supplied field
+    differs from the row. ``source_checkpoint_digest`` is a sentinel: omitted
+    → not compared (canon enforcement, legacy ``None``-digest receipts);
+    passed explicitly (``None`` included) → must equal the receipt's field
+    (the gate's enriched-marker check, ``_finish_sheet``)."""
+    if not isinstance(receipt_id, str) or not receipt_id:
+        raise ReceiptError(f"exact_approval needs a receipt_id (got {receipt_id!r})")
+    rows = [r for r in verified_approvals(project_root, kind, entity_id=entity_id, project_id=project_id)
+            if r.get("receipt_id") == receipt_id]
+    if not rows:
+        raise ReceiptError(f"no verified {kind} receipt {receipt_id!r} for entity {entity_id!r}")
+    if len(rows) > 1:
+        raise ReceiptError(f"receipt id {receipt_id!r} names {len(rows)} verified {kind} rows; refusing to guess")
+    row = rows[0]
+    if row.get("entity_id") != entity_id:
+        raise ReceiptError(f"receipt {receipt_id} is for entity {row.get('entity_id')!r}, not {entity_id!r}")
+    if row.get("record_sha256") != record_sha256:
+        raise ReceiptError(
+            f"receipt {receipt_id} signed record_sha256 {row.get('record_sha256')}, not {record_sha256}"
+        )
+    if source_checkpoint_digest is not _UNSET and row.get("source_checkpoint_digest") != source_checkpoint_digest:
+        raise ReceiptError(
+            f"receipt {receipt_id} was signed for source_checkpoint_digest {row.get('source_checkpoint_digest')!r}, "
+            f"not {source_checkpoint_digest!r}"
+        )
+    return row
+
+
 def require_storyboard_receipt(
     project_root: Path | str,
     shot_id: str,

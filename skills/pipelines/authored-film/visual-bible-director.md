@@ -89,12 +89,18 @@ was approved in `headshots`.)
    approval_record, gate_token, kind=...)`. That appends a signed receipt to
    `projects/<slug>/approvals.jsonl`. The token lives only in the handler; its
    HMAC lives under `~/.openmontage/gates/`, outside any directory you write.
-5. You resume on the next turn: read the receipt id back, set the entity's
-   `status: approved` and `approval_receipt_id` in the artifact, and continue.
+5. You resume on the next turn by running
+   `scripts/sheet_run.py --project <slug> --entity <id> --finish`. It reads the
+   done request, verifies the signed receipt was minted for that request (checkpoint
+   digest + record digest), sets the entity's `status: approved` and
+   `approval_receipt_id`, and rebuilds the canon view. Never edit the artifact by
+   hand. If it reports the checkpoint changed after signing, run it with
+   `--abandon` and start a new revision.
 
 There is no `approver` argument and no code path by which this skill sets an
 approval. If you find yourself writing `status: approved` without a receipt id
-that resolves in `approvals.jsonl`, stop — enforcement will reject it anyway.
+that resolves in `approvals.jsonl`, stop — enforcement rejects it, including in
+`in_progress` bibles.
 Sub-gate receipts do **not** complete the stage; stage completion is still
 `write_checkpoint(status="completed", human_approved=True)` after the final
 gate, and enforcement additionally requires a receipt for every approved

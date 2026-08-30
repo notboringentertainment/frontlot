@@ -336,6 +336,7 @@ class TestGate14:
         digest = checkpoint_digest(w["pipeline"] / PROJECT / "checkpoint_headshots.json")
         req_path = headshot_request(w["project"], PROJECT, CHAR, request_id=f"headshot-{CHAR}-1")
         req = json.loads(req_path.read_text()); req["source_checkpoint_digest"] = digest
+        req_path.write_text(json.dumps(req))  # the gate reloads the pending file under its lock
         receipt = approve_request(req, w["project"], selection=1)
         rec = receipt["record"]
         assert rec["record_version"] == "1.1" and rec["qc_receipt_id"] == qc_id and rec["generation_receipt_id"] == gen["receipt_id"]

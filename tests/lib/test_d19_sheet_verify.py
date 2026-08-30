@@ -126,7 +126,12 @@ def _request(entry, root=None):
     _REQ_N[0] += 1
     req = {"request_id": f"sheet-x-{_REQ_N[0]}", "project_id": PROJECT, "stage": "visual_bible", "scope": f"character:{CHAR}", "kind": "sheet",
            "entity_id": CHAR, "summary": "s", "approval_record": character_approval_record(entry, PALETTE)}
-    return _persist(root, req) if root is not None else req
+    if root is not None:
+        # a sheet request is bound to the awaiting_human checkpoint it was published against
+        from lib.checkpoint import checkpoint_digest
+        req["source_checkpoint_digest"] = checkpoint_digest(root / "checkpoint_visual_bible.json")
+        return _persist(root, req)
+    return req
 
 
 def test_full_path_write_and_gate_with_passing_verdicts(world):

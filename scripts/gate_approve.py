@@ -77,8 +77,8 @@ sys.path.insert(0, str(REPO_ROOT))
 from lib.canonical_json import record_sha256  # noqa: E402
 from lib import gates  # noqa: E402
 from lib.paths import PROJECTS_DIR  # noqa: E402
-from lib.receipts import APPROVAL_KINDS, record_human_approval  # noqa: E402
-from lib.state_io import atomic_move  # noqa: E402
+from lib.receipts import APPROVAL_KINDS, ReceiptError, exact_approval, record_human_approval, verified_approvals  # noqa: E402
+from lib.state_io import atomic_move, atomic_write_json  # noqa: E402
 
 REQUEST_DIRNAME = ".gate-requests"
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -149,7 +149,54 @@ def load_request(path: Path) -> dict:
         raise GateHandlerError(f"{path.name}: approval_record hint must be an object")
     if validate_request_id(data["request_id"]) != path.stem:
         raise GateHandlerError(f"{path.name}: request_id {data['request_id']!r} does not equal the file stem")
+    if "declined_note" in data and path.parent.name == REQUEST_DIRNAME:
+        _complete_committed_decline(path, data)
     return data
+
+
+def _complete_committed_decline(path: Path, data: dict) -> None:
+    """A pending file carrying ``declined_note`` is a decline whose move to
+    declined/ was interrupted (crash between the rewrite and the rename).
+    Complete the move under the approval lock, then refuse: it can never be
+    displayed or approved afterwards."""
+    root = path.parent.parent
+    with gates.receipt_lock(str(data["project_id"]), "approval"):
+        if path.is_file() and not path.is_symlink():
+            declined = root / REQUEST_DIRNAME / "declined"
+            declined.mkdir(parents=True, exist_ok=True)
+            atomic_move(_confined(path, root), _confined(declined / path.name, root))
+    raise GateHandlerError(
+        f"request {data['request_id']!r} was declined (note {data.get('declined_note')!r}); "
+        f"its move to declined/ is complete — nothing to decide"
+    )
+
+
+# Fields the CLI supplies at decision time (trusted in-memory, never read
+# from disk at decision), the agent's non-authoritative hints, and the
+# transition markers the gate itself writes. Every other field of a pending
+# request is immutable between display and decision.
+DECISION_FIELDS = frozenset({"reason", "note", "selection"})
+HINT_FIELDS = frozenset({"approval_record", "envelope"})
+MARKER_FIELDS = frozenset({"approval_receipt_id", "declined_note"})
+
+
+def _reload_pending(req: dict, root: Path) -> tuple[Path, dict]:
+    """Under the approval lock: reload the pending file ``req`` names, refuse
+    if any immutable field differs from the in-memory request, and return
+    the on-disk request with the trusted decision-time fields overlaid."""
+    req_path = _pending_request_path(req, root)
+    disk = load_request(req_path)
+    skip = DECISION_FIELDS | HINT_FIELDS | MARKER_FIELDS
+    changed = sorted(k for k in (set(disk) | set(req)) - skip if disk.get(k) != req.get(k))
+    if changed:
+        raise GateHandlerError(
+            f"request {req['request_id']!r} changed on disk since it was displayed (fields {changed}); re-run the request"
+        )
+    current = dict(disk)
+    for k in DECISION_FIELDS | HINT_FIELDS:
+        if k in req:
+            current[k] = req[k]
+    return req_path, current
 
 
 # ---- gate-side record constructors (Slice A #3) ----
@@ -202,6 +249,31 @@ def _read_json_file(path: Path) -> Optional[dict]:
 
 def _sha256_hex(value: Any) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX
+
+
+def _bind_request_digest(req: dict, path: Path, *, required: bool) -> Optional[str]:
+    """The request's ``source_checkpoint_digest`` must equal the digest of
+    the pending checkpoint file it was published against (D3 item 2/3).
+    ``required``: a missing/None digest is refused (sheet); otherwise a
+    request without a digest is not compared (legacy kinds)."""
+    from lib.checkpoint import checkpoint_digest
+
+    bound = req.get("source_checkpoint_digest")
+    if bound is None and not required:
+        return None
+    if not _sha256_hex(bound):
+        raise GateHandlerError(
+            f"{req.get('kind')} request {req.get('request_id')!r} needs a 64-hex source_checkpoint_digest bound to "
+            f"{path.name} (got {bound!r}) — republish the request"
+        )
+    actual = checkpoint_digest(path)
+    if actual != bound:
+        raise GateHandlerError(
+            f"{req.get('kind')} request {req.get('request_id')!r} source_checkpoint_digest {bound[:12]}… is not the "
+            f"current {path.name} digest {actual[:12]}… — the checkpoint changed since the request was published; "
+            f"republish the request"
+        )
+    return bound
 
 
 def _load_pending_checkpoint(root: Path, req: dict, stage: Optional[str] = None) -> tuple[Path, dict]:
@@ -501,11 +573,15 @@ def _file_sha(root: Path, asset: dict) -> str:
 
 
 def _bible_and_palette(root: Path, req: dict) -> tuple[dict, dict]:
-    _, checkpoint = _load_pending_checkpoint(root, req)
+    return _bible_palette_path(root, req)[:2]
+
+
+def _bible_palette_path(root: Path, req: dict) -> tuple[dict, dict, Path]:
+    path, checkpoint = _load_pending_checkpoint(root, req)
     bible = (checkpoint.get("artifacts") or {}).get("visual_bible")
     if not isinstance(bible, dict):
         raise GateHandlerError("pending checkpoint carries no visual_bible")
-    return bible, bible.get("palette") or {}
+    return bible, bible.get("palette") or {}, path
 
 
 def _checkpoint_pin(root: Path, req: dict):
@@ -569,10 +645,18 @@ def _construct_character(root: Path, req: dict) -> Constructed:
     from lib.canon_enforcement import character_approval_record, sheet_roles
 
     entity_id = _require_entity(req)
-    bible, palette = _bible_and_palette(root, req)
-    entry = next((e for e in bible.get("characters") or [] if isinstance(e, dict) and e.get("id") == entity_id), None)
-    if entry is None:
-        raise GateHandlerError(f"character {entity_id!r} is not in the pending visual_bible")
+
+    def _load() -> tuple[dict, dict, Optional[str]]:
+        bible, palette, path = _bible_palette_path(root, req)
+        # D3 item 2: a sheet request is bound to the checkpoint it was
+        # published against; None is refused. Hero requests compare when bound.
+        bound = _bind_request_digest(req, path, required=req.get("kind") == "sheet")
+        entry = next((e for e in bible.get("characters") or [] if isinstance(e, dict) and e.get("id") == entity_id), None)
+        if entry is None:
+            raise GateHandlerError(f"character {entity_id!r} is not in the pending visual_bible")
+        return entry, palette, bound
+
+    entry, palette, bound = _load()
     evidence = []
     refs = [("hero", entry.get("hero"))] + [(role, (entry.get("sheet") or {}).get(role)) for role in sheet_roles(entry)]
     for role, ref in refs:
@@ -587,7 +671,13 @@ def _construct_character(root: Path, req: dict) -> Constructed:
                         f"attempt {row.get('attempt_n')}, receipt {row.get('receipt_id')}, warnings: {warn})")
 
     def pre_commit() -> None:
-        _full_sheet_check(root, entry, entity_id, req)
+        """Under the consumed token and the approval lock: reload the
+        checkpoint from disk, recompute the digest and the entry, and refuse
+        on any difference from what was shown (mirrors the headshot closure)."""
+        entry_now, palette_now, bound_now = _load()
+        if entry_now != entry or palette_now != palette or bound_now != bound:
+            raise GateHandlerError("the pending visual_bible checkpoint changed while approving; re-run the request")
+        _full_sheet_check(root, entry_now, entity_id, req)
 
     return Constructed(character_approval_record(entry, palette), None, entity_id, evidence=tuple(evidence),
                        pre_commit_check=pre_commit)
@@ -919,6 +1009,10 @@ def _construct_headshot(root: Path, req: dict, selection: Optional[int] = None) 
     if is_retire_request(req):
         return _construct_headshot_retire(root, req)
     digest, entry, candidates = headshot_candidates(req, root)
+    # D3 item 3: when the request carries a digest it must be the digest of
+    # the pending headshots checkpoint the candidates were read from.
+    if req.get("source_checkpoint_digest") is not None:
+        _bind_request_digest(req, root / HEADSHOT_CHECKPOINT, required=True)
     if selection is None:
         raise GateHandlerError("a headshot approval needs a candidate selection")
     if not 1 <= selection <= len(candidates):
@@ -990,6 +1084,8 @@ def _construct_headshot(root: Path, req: dict, selection: Optional[int] = None) 
         digest_now, entry_now, candidates_now = headshot_candidates(req, root)
         if digest_now != digest or entry_now != entry or candidates_now != candidates:
             raise GateHandlerError("the pending headshot checkpoint changed while approving; re-run the request")
+        if req.get("source_checkpoint_digest") is not None:
+            _bind_request_digest(req, root / HEADSHOT_CHECKPOINT, required=True)
         if hero_qc:
             _full()
 
@@ -1131,14 +1227,6 @@ def show_constructed(built: Constructed, out=None) -> None:
 # ---- decisions ----
 
 
-def _decline(req: dict, req_path: Path, root: Path, note: str | None) -> None:
-    declined = root / REQUEST_DIRNAME / "declined"
-    declined.mkdir(parents=True, exist_ok=True)
-    req["declined_note"] = note
-    _confined(declined / req_path.name, root).write_text(json.dumps(req, indent=2), encoding="utf-8")
-    _confined(req_path, root).unlink()
-
-
 def _pending_request_path(req: dict, root: Path) -> Path:
     """The on-disk pending request ``req`` names, or GateHandlerError."""
     request_id = validate_request_id(req.get("request_id"))
@@ -1151,12 +1239,44 @@ def _pending_request_path(req: dict, root: Path) -> Path:
 
 
 def _decline_request(req: dict, root: Path, note: str | None) -> None:
-    """Record a human decline (no receipt). Reject-all on a selection kind needs a note."""
+    """Record a human decline (no receipt). Reject-all on a selection kind
+    needs a note. Runs under the approval lock: reload + confirm still
+    pending, rewrite the pending file in place with ``declined_note`` (the
+    commit), then ``atomic_move`` it to declined/ — never two files, and a
+    crash after the rewrite is completed by ``load_request``."""
     require_tty()
-    req_path = _pending_request_path(req, root)
+    if req.get("kind") not in APPROVAL_KINDS:
+        raise GateHandlerError(f"unknown kind {req.get('kind')!r}")
     if req["kind"] in SELECTION_KINDS and not note:
         raise GateHandlerError("reject-all needs a note (it is logged for the regeneration round)")
-    _decline(req, req_path, root, note)
+    _pending_request_path(req, root)  # grammar + existence before any lock file is touched
+    with gates.receipt_lock(str(req["project_id"]), "approval"):
+        req_path, current = _reload_pending(req, root)
+        current["declined_note"] = note
+        atomic_write_json(req_path, current)
+        declined = root / REQUEST_DIRNAME / "declined"
+        declined.mkdir(parents=True, exist_ok=True)
+        atomic_move(req_path, _confined(declined / req_path.name, root))
+
+
+def _matching_receipts(root: Path, kind: str, entity_id: Optional[str], digest: str, bound: Optional[str]) -> list[dict]:
+    """Verified receipts of ``kind`` whose (entity_id, record_sha256,
+    source_checkpoint_digest) equal the reconstructed tuple."""
+    return [
+        r for r in verified_approvals(root, kind, entity_id=entity_id)
+        if r.get("entity_id") == entity_id and r.get("record_sha256") == digest
+        and r.get("source_checkpoint_digest") == bound
+    ]
+
+
+def _complete_done(req_path: Path, root: Path, current: dict, receipt_id: str) -> None:
+    """The approve transition: rewrite the pending file in place with the
+    receipt id (an unsigned marker), then move it to done/ — never two files."""
+    current = dict(current, approval_receipt_id=receipt_id)
+    atomic_write_json(req_path, current)
+    done = root / REQUEST_DIRNAME / "done"
+    done.mkdir(parents=True, exist_ok=True)
+    atomic_move(req_path, _confined(done / req_path.name, root))
 
 
 def _decide(
@@ -1178,39 +1298,91 @@ def _decide(
     this module and calling ``_decide`` from a non-interactive process is
     refused; ``mint_gate_token`` additionally refuses outside
     ``gates.handler_context()``.
+
+    The whole decision runs under ``gates.receipt_lock(project, "approval")``
+    — the stream ``record_human_approval`` commits on — so logical-request
+    uniqueness holds across processes: reload → marker/recovery lookup →
+    mint → commit → enrich the pending file → move to done/.
     """
     require_tty()
-    req_path = _pending_request_path(req, root)
     kind = req["kind"]
     if not isinstance(shown, Constructed):
         raise GateHandlerError("_decide needs the Constructed record that was displayed to the human")
+    if kind not in APPROVAL_KINDS:
+        raise GateHandlerError(f"unknown kind {kind!r}")
+    _pending_request_path(req, root)  # grammar + existence before any lock file is touched
 
-    built = construct(root, req, selection=selection)
-    if shown.digest != built.digest or shown.record != built.record or shown.envelope != built.envelope:
-        raise GateHandlerError(
-            "the authoritative inputs changed between display and approval — the record shown is not the "
-            "record that would be signed; re-run the request"
-        )
+    with gates.receipt_lock(str(req["project_id"]), "approval"):
+        req_path, current = _reload_pending(req, root)
+        built = construct(root, current, selection=selection)
+        if shown.digest != built.digest or shown.record != built.record or shown.envelope != built.envelope:
+            raise GateHandlerError(
+                "the authoritative inputs changed between display and approval — the record shown is not the "
+                "record that would be signed; re-run the request"
+            )
+        bound = current.get("source_checkpoint_digest")
 
-    token = gates.mint_gate_token(
-        req["project_id"], req["stage"], req["scope"], built.digest,
-        user_response={"answer": "approved", "note": note, "selection": selection},
-    )
-    receipt = record_human_approval(
-        root, req["project_id"], req["stage"], req["scope"], built.record, token, kind,
-        entity_id=built.entity_id, artifact=built.artifact,
-        source_checkpoint_digest=req.get("source_checkpoint_digest"),
-        envelope=built.envelope,
-        pre_commit_check=built.pre_commit_check,
-    )
-    if kind == "pipeline_migration":
-        from lib.pipeline_pin import refresh_cache
+        marker = current.get("approval_receipt_id")
+        if marker is not None:
+            # Crash after the rewrite, before the move: the pending file names
+            # a receipt id. It is an unsigned marker — verify it against the
+            # reconstructed tuple (explicit digest; None compared as None).
+            try:
+                receipt = exact_approval(
+                    root, receipt_id=str(marker), kind=kind, entity_id=built.entity_id,
+                    record_sha256=built.digest, source_checkpoint_digest=bound,
+                )
+            except ReceiptError as exc:
+                raise GateHandlerError(
+                    f"pending request {current['request_id']!r} names approval_receipt_id {marker!r}, which is not "
+                    f"the verified receipt for this record — refused: {exc}"
+                ) from exc
+            _complete_done(req_path, root, current, receipt["receipt_id"])
+            return receipt
 
-        refresh_cache(root, built.extra["pipeline_name"])
-    done = root / REQUEST_DIRNAME / "done"
-    done.mkdir(parents=True, exist_ok=True)
-    atomic_move(req_path, _confined(done / req_path.name, root))
-    return receipt
+        matches = _matching_receipts(root, kind, built.entity_id, built.digest, bound)
+        receipt: Optional[dict] = None
+        if kind == "sheet":
+            # Tuple recovery (crash after commit, before the rewrite) exists
+            # only for sheets, and only while the bound digest still
+            # revalidates against the current checkpoint (construct did that).
+            if len(matches) == 1:
+                receipt = matches[0]
+            elif len(matches) > 1:
+                raise GateHandlerError(
+                    f"{len(matches)} verified sheet receipts already match this request's tuple "
+                    f"({[r.get('receipt_id') for r in matches]}); refusing to guess — a human must reconcile"
+                )
+        elif matches and bound is not None:
+            # A request bound to a checkpoint digest whose exact tuple is
+            # already signed is a duplicate of a decided request: refuse and
+            # name it (never silent reuse). Unbound requests (None digest:
+            # config, pipeline re-pin, a permitted re-import of the same
+            # pixels) are new approvals of a repeatable record.
+            raise GateHandlerError(
+                f"a verified {kind} receipt already matches this request's record and checkpoint digest "
+                f"({[r.get('receipt_id') for r in matches]}); refused — receipts do not bind a request id, "
+                f"so the gate never silently attaches an old approval to a new request"
+            )
+
+        if receipt is None:
+            token = gates.mint_gate_token(
+                current["project_id"], current["stage"], current["scope"], built.digest,
+                user_response={"answer": "approved", "note": note, "selection": selection},
+            )
+            receipt = record_human_approval(
+                root, current["project_id"], current["stage"], current["scope"], built.record, token, kind,
+                entity_id=built.entity_id, artifact=built.artifact,
+                source_checkpoint_digest=bound,
+                envelope=built.envelope,
+                pre_commit_check=built.pre_commit_check,
+            )
+            if kind == "pipeline_migration":
+                from lib.pipeline_pin import refresh_cache
+
+                refresh_cache(root, built.extra["pipeline_name"])
+        _complete_done(req_path, root, current, receipt["receipt_id"])
+        return receipt
 
 
 def main(argv: list[str] | None = None) -> int:
