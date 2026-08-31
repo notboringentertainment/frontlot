@@ -7,16 +7,23 @@ draws them as a picture. You watch; the board never changes anything.
 
 ## Opening the board
 
-From the OpenMontage folder, run:
+The easiest way: **ask Claude.** Say "open the board" (or "open the board
+for bloodless") in any Claude session in this project, and it will start
+the board and open your browser to the right page. Claude also opens the
+board automatically at the start of every production run.
+
+If you ever want to do it yourself, open the Terminal app and run:
 
 ```bash
-python -m backlot open              # opens the library (all projects)
-python -m backlot open bloodless    # opens one project's board
+cd ~/Projects/OpenMontage
+.venv/bin/python -m backlot open              # the library (all projects)
+.venv/bin/python -m backlot open bloodless    # one project's board
 ```
 
-That one command starts the board server if it isn't already running and
-opens your browser to the right page. If the browser doesn't open, the
-command prints the address — copy it into your browser yourself.
+The first line moves into the OpenMontage folder; the second starts the
+board server if it isn't already running and opens your browser. If the
+browser doesn't open, the command prints the address — copy it into your
+browser yourself.
 
 The board runs only on your own machine. Nothing is on the internet.
 
@@ -84,8 +91,8 @@ open a signing session and answer its questions.
 
 ## If something looks wrong
 
-- **Page won't load** — the server probably isn't running. Run
-  `python -m backlot open <project>` again from the OpenMontage folder.
+- **Page won't load** — the server probably isn't running. Ask Claude to
+  open the board again (or re-run the Terminal command above).
 - **A gate shows "packet_error" or "hash mismatch"** — a file the request
   refers to is missing or has changed since the request was made. Don't
   approve it; ask your Claude session to investigate.
