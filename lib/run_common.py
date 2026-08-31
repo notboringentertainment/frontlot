@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -65,8 +66,29 @@ def hold_lease(root: Path, config: Any) -> Iterator[Any]:
 
 
 def gate_command(root: Path, request_id: str) -> str:
-    """The exact Terminal command that signs ``request_id`` (gate_approve is TTY-only)."""
-    return f"cd {REPO} && .venv/bin/python scripts/gate_approve.py --project {root.name} --request {request_id}"
+    """The exact Terminal command that signs ``request_id``."""
+    invocation = gate_invocation(root, request_id)
+    return f"cd {shlex.quote(str(invocation['cwd']))} && {shlex.join(invocation['argv'])}"
+
+
+def gate_invocation(root: Path, request_id: str) -> dict[str, Any]:
+    """Return the one shared, argv-safe invocation for a gate signer.
+
+    ``gate_sign.py`` is intentionally the public wrapper: it owns the lease
+    around the interactive signer.  Callers must not substitute a run command
+    or invoke ``gate_approve.py`` directly.
+    """
+    rid = validate_request_id(request_id)
+    slug = root.name
+    # Validate the slug as well as the request id before exposing it in a
+    # shell-renderable command.  This mirrors resolve_project_root's grammar
+    # without requiring a filesystem lookup from this neutral helper.
+    if not ENTITY_ID_RE.match(slug):
+        raise RunError(f"project slug {slug!r} must match [a-z0-9-]+")
+    return {
+        "cwd": REPO,
+        "argv": [str(REPO / ".venv" / "bin" / "python"), "scripts/gate_sign.py", "--project", slug, "--request", rid],
+    }
 
 
 def request_id_for(prefix: str, entity_id: str, revision: int) -> str:

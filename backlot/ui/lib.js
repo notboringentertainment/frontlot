@@ -1,7 +1,30 @@
 // Shared helpers for the Backlot UI.
 
-export async function getJSON(url) {
-  const res = await fetch(url);
+// The server opens Backlot with a short-lived capability in the URL fragment.
+// Capture it once per tab and scrub the fragment before any navigation can
+// retain it.  The value is intentionally never returned by this helper.
+export const CAPABILITY_TOKEN_KEY = "backlot.capability-token";
+
+export function captureCapabilityToken() {
+  const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+  const token = params.get("k");
+  if (token) {
+    try {
+      sessionStorage.setItem(CAPABILITY_TOKEN_KEY, token);
+    } catch {
+      // A privacy-restricted browser may reject sessionStorage. The terminal
+      // will surface an authentication setup message if signing is requested.
+    }
+  }
+  if (params.has("k")) {
+    history.replaceState(history.state, "", `${location.pathname}${location.search}`);
+  }
+}
+
+captureCapabilityToken();
+
+export async function getJSON(url, options = {}) {
+  const res = await fetch(url, options);
   if (!res.ok) throw new Error(`${res.status} ${url}`);
   return res.json();
 }

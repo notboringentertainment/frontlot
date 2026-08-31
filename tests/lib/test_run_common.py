@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
 import pytest
 
 from lib import run_common
 from lib.run_common import RunError
+from tests.lib.look_lock_helpers import CHAR, PROJECT
 
 
 @pytest.fixture
@@ -17,7 +19,7 @@ def projects(tmp_path, monkeypatch):
     base = tmp_path / "projects"
     base.mkdir()
     monkeypatch.setattr(paths_mod, "PROJECTS_DIR", base)
-    root = base / "proj-lantern"
+    root = base / PROJECT
     root.mkdir()
     (root / "project.yaml").write_text("version: '1.1'\n")
     return base, root
@@ -26,7 +28,7 @@ def projects(tmp_path, monkeypatch):
 class TestResolve:
     def test_registered_root(self, projects):
         base, root = projects
-        assert run_common.resolve_project_root("proj-lantern") == root.resolve()
+        assert run_common.resolve_project_root(PROJECT) == root.resolve()
         with pytest.raises(RunError, match="no registered project"):
             run_common.resolve_project_root("proj-missing")
         with pytest.raises(RunError, match="must match"):
@@ -40,27 +42,28 @@ class TestResolve:
             run_common.resolve_project_root("proj-bare")
 
     def test_entity_id(self):
-        assert run_common.require_entity_id("marlow-vex") == "marlow-vex"
+        assert run_common.require_entity_id(CHAR) == CHAR
         with pytest.raises(RunError):
-            run_common.require_entity_id("Marlow Vex")
+            run_common.require_entity_id("CHAR INVALID")
 
 
 class TestRequests:
     def test_state_and_read(self, projects):
         _, root = projects
-        assert run_common.request_state(root, "look-marlow-vex-1") == "missing"
+        request_id = f"look-{CHAR}-1"
+        assert run_common.request_state(root, request_id) == "missing"
         req_dir = root / ".gate-requests"
         (req_dir / "done").mkdir(parents=True)
         (req_dir / "declined").mkdir(parents=True)
-        (req_dir / "look-marlow-vex-1.json").write_text(json.dumps({"request_id": "look-marlow-vex-1", "kind": "look_lock"}))
-        assert run_common.request_state(root, "look-marlow-vex-1") == "pending"
-        state, req = run_common.read_request(root, "look-marlow-vex-1")
+        (req_dir / f"{request_id}.json").write_text(json.dumps({"request_id": request_id, "kind": "look_lock"}))
+        assert run_common.request_state(root, request_id) == "pending"
+        state, req = run_common.read_request(root, request_id)
         assert state == "pending" and req["kind"] == "look_lock"
-        (req_dir / "done" / "look-marlow-vex-1.json").write_text(json.dumps({"request_id": "look-marlow-vex-1"}))
+        (req_dir / "done" / f"{request_id}.json").write_text(json.dumps({"request_id": request_id}))
         with pytest.raises(RunError, match="more than one state"):
-            run_common.request_state(root, "look-marlow-vex-1")
-        (req_dir / "look-marlow-vex-1.json").unlink()
-        assert run_common.request_state(root, "look-marlow-vex-1") == "done"
+            run_common.request_state(root, request_id)
+        (req_dir / f"{request_id}.json").unlink()
+        assert run_common.request_state(root, request_id) == "done"
         (req_dir / "declined" / "x.json").write_text(json.dumps({"request_id": "y", "declined_note": "no"}))
         with pytest.raises(RunError, match="does not carry"):
             run_common.read_request(root, "x")
@@ -70,17 +73,34 @@ class TestRequests:
 
     def test_gate_command(self, projects):
         _, root = projects
-        cmd = run_common.gate_command(root, "look-marlow-vex-1")
-        assert cmd.endswith("scripts/gate_approve.py --project proj-lantern --request look-marlow-vex-1")
+        request_id = f"look-{CHAR}-1"
+        invocation = run_common.gate_invocation(root, request_id)
+        assert invocation == {
+            "cwd": run_common.REPO,
+            "argv": [str(run_common.REPO / ".venv/bin/python"), "scripts/gate_sign.py", "--project", PROJECT,
+                     "--request", request_id],
+        }
+        assert run_common.gate_command(root, request_id) == (
+            f"cd {shlex.quote(str(invocation['cwd']))} && {shlex.join(invocation['argv'])}"
+        )
+
+    def test_gate_command_quotes_repository_path(self, projects, monkeypatch, tmp_path):
+        _, root = projects
+        repository = tmp_path / "repository with spaces"
+        monkeypatch.setattr(run_common, "REPO", repository)
+        invocation = run_common.gate_invocation(root, "request.with-dots")
+        assert run_common.gate_command(root, "request.with-dots") == (
+            f"cd {shlex.quote(str(repository))} && {shlex.join(invocation['argv'])}"
+        )
 
 
 class TestDecisions:
     def test_write_decision_appends_validated_log(self, projects):
         _, root = projects
         d = run_common.write_decision(root, stage="headshots", category="revision",
-                                      subject="reject-all for marlow-vex", reason="too stern; try again")
+                                      subject=f"reject-all for {CHAR}", reason="too stern; try again")
         log = json.loads((root / "decision_log.json").read_text())
-        assert log["project_id"] == "proj-lantern" and log["decisions"][0]["decision_id"] == d["decision_id"]
+        assert log["project_id"] == PROJECT and log["decisions"][0]["decision_id"] == d["decision_id"]
         assert log["decisions"][0]["reason"] == "too stern; try again" and log["decisions"][0]["category"] == "revision"
         run_common.write_decision(root, stage="headshots", category="revision", subject="again", reason="second")
         assert len(json.loads((root / "decision_log.json").read_text())["decisions"]) == 2

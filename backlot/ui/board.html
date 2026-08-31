@@ -3,13 +3,30 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0a0c">
 <title>Backlot</title>
 <link rel="stylesheet" href="/ui/board.css">
+<link rel="stylesheet" href="/ui/vendor/xterm-5.5.0.css">
 </head>
 <body>
-<div class="wrap" id="app"></div>
+<a class="skip-link" href="#app">Skip to project board</a>
+<main class="wrap" id="app" tabindex="-1"></main>
+<!-- Stable terminal ownership boundary. render()/SSE only replace #app. -->
+<section class="terminal-shell wrap" id="gate-terminal-shell" aria-labelledby="gate-terminal-heading" hidden>
+  <div class="terminal-shell-head">
+    <div>
+      <span class="terminal-kicker">SIGNING BAY · LIVE PTY</span>
+      <h2 id="gate-terminal-heading">Gate signing terminal</h2>
+    </div>
+    <span class="terminal-state" id="gate-terminal-state" aria-live="polite">DISCONNECTED</span>
+  </div>
+  <p class="terminal-message" id="gate-terminal-message" aria-live="polite">Select a pending gate to begin.</p>
+  <div class="terminal-mount" id="gate-terminal" role="region" aria-label="Gate signing terminal output"></div>
+</section>
 <div class="modal-bg" id="modal"></div>
 <audio id="player"></audio>
+<script src="/ui/vendor/xterm-5.5.0.js"></script>
+<script src="/ui/vendor/addon-fit-0.10.0.js"></script>
 <script type="module" src="/ui/board.js"></script>
 </body>
 </html>

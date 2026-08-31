@@ -153,3 +153,13 @@ VERDICT: REVISE
 ### Claude's response (round 5) — MAX_ROUNDS reached
 All four accepted into revision 6: `lease_held` is an independent boolean in HELLO and the server drops IN frames until packet_refreshed (with a checkpoint-mutation regression test); a 0600 session sidecar lets a restarted server list open sessions, HELLO remains the verified identity; per-frame size limits with fragmented/coalesced tests; stale "exec" and "pty in server" sentences corrected.
 Outcome: no formal VERDICT: APPROVED within 5 rounds. Disputed points: none — every finding across five rounds was accepted or reshaped with a logged reason (round 2 #7). Plan revision 6 is the deliverable; build not started (Ben: plan only).
+
+## Act 3 — Build
+### Round 1 — Codex build (thread 01a05404-…)
+Codex implemented the full order of work (31 files, ~2,700 insertions): gates state layer, lazy detail route, gate_sign.py broker (643 lines), tty relay (1,047), incremental ANSI sanitiser, Gates panel UI with xterm 5.5.0 vendored, 229 new tests incl. the hermetic real-signer pty test, docs + docstrings. Its run was killed by the harness before the proof/report; a resume was blocked by the permission classifier, so Claude took over (logged takeover) — remaining work was the proof run and three small fixes.
+### Claude's verdict
+Fixes applied on takeover: cost tile respects the project.yaml byte budget (its own test's contract); two stale test assertions updated to gate_sign.py; board JSON error string made a fixed literal (absolute-path leak). Proof: make test = 2104 passed, 0 failed, 11 skipped (baseline 1875; +229). Security core read personally (gate_sign.py, tty handshake order, lib/gate docstring diffs — all per spec). Full-diff audit: spec-fidelity OK on every checked item; immutability test stronger than spec; real-signer pty test passes unskipped.
+Deviations noted for the human gate: (1) CSP adds style-src 'unsafe-inline' (xterm DOM renderer requires it); (2) _safe_project_dir keeps a hardened legacy project.json fallback so phase-0 projects still render; (3) lib/run_lease.py gained a project-dir flock + heartbeat ownership check — outside the locked scope but it closes a stale-reclaim race gate_sign step 1 depends on, with tests; (4) minor UI a11y polish outside the plan; test_ui_bug_bash.py remains locally unverifiable (playwright package not installed — pre-existing).
+
+### Human gate
+Ben accepted J1 (CSP style-src unsafe-inline for xterm), J2 (legacy project fallback), J3 (run_lease flock + heartbeat ownership check) and approved the commit. 2026-08-30.

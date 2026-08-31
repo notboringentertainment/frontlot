@@ -3,6 +3,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -80,6 +81,55 @@ def test_foreign_host_lease_is_never_reclaimed(tmp_path, monkeypatch):
     _write_lease(tmp_path, hostname="another-machine.local", pid=1)
     with pytest.raises(LeaseHeldError):
         run_lease.acquire(tmp_path, 30)
+
+
+def test_competing_stale_reclaimers_cannot_replace_the_new_live_lease(tmp_path, monkeypatch):
+    """A late stale observer must not unlink the lease a winner just created."""
+    _write_lease(tmp_path, pid=999_999_999)
+    original_unlink = run_lease.Path.unlink
+    original_try_create = run_lease._try_create
+    late_at_unlink = threading.Event()
+    early_created = threading.Event()
+
+    def controlled_unlink(path, *args, **kwargs):
+        if path == tmp_path / ".run-lease" and threading.current_thread().name == "late-reclaimer":
+            late_at_unlink.set()
+            early_created.wait(timeout=0.35)
+        return original_unlink(path, *args, **kwargs)
+
+    def observed_try_create(path, record):
+        created = original_try_create(path, record)
+        if created and threading.current_thread().name == "early-reclaimer":
+            early_created.set()
+        return created
+
+    monkeypatch.setattr(run_lease.Path, "unlink", controlled_unlink)
+    monkeypatch.setattr(run_lease, "_try_create", observed_try_create)
+    leases = []
+    errors = []
+
+    def claim():
+        try:
+            leases.append(run_lease.acquire(tmp_path, 30))
+        except LeaseHeldError as exc:
+            errors.append(exc)
+
+    late = threading.Thread(target=claim, name="late-reclaimer")
+    early = threading.Thread(target=claim, name="early-reclaimer")
+    late.start()
+    assert late_at_unlink.wait(timeout=1)
+    early.start()
+    late.join(timeout=2)
+    early.join(timeout=2)
+    assert not late.is_alive() and not early.is_alive()
+    try:
+        current = json.loads((tmp_path / ".run-lease").read_text(encoding="utf-8"))
+        assert len(leases) == 1
+        assert len(errors) == 1
+        assert current["lease_id"] == leases[0].record["lease_id"]
+    finally:
+        for lease in leases:
+            lease.release()
 
 
 def test_process_start_time_psutil_branch(monkeypatch):

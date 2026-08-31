@@ -32,6 +32,10 @@ sign, and ledger approvals itself. What this layer guarantees is that
 *pipeline code following its contract* — directors, tools, checkpoint
 writers — has no API path to self-approve, and that any approval which did
 not pass through the human gate is detectable as unsigned/unledgered.
+Backlot's embedded terminal is a pty owned by ``scripts/gate_sign.py``, a user
+process the board attaches to over a 0600 unix socket, guarded by a per-server
+secret against browser cross-origin access; it is the same process-discipline
+trust as the user's Terminal, not a fourth handler.
 
 ``mint_gate_token`` additionally refuses unless the calling process is inside
 ``handler_context()`` — a per-process nonce that scripts/gate_approve.py

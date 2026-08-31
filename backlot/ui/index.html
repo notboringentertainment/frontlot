@@ -3,11 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0a0a0c">
 <title>Backlot — Library</title>
 <link rel="stylesheet" href="/ui/board.css">
 </head>
 <body>
-<div class="wrap">
+<a class="skip-link" href="#library-content">Skip to project library</a>
+<main class="wrap" id="library-content" tabindex="-1">
   <header class="slate">
     <div class="clapper"></div>
     <div>
@@ -16,11 +18,11 @@
     </div>
     <span class="chip" id="count"></span>
     <div class="spacer"></div>
-    <span class="live idle" id="liveBadge"><span class="dot"></span><span id="liveText">IDLE</span></span>
+    <span class="live idle" id="liveBadge" role="status" aria-live="polite"><span class="dot"></span><span id="liveText">IDLE</span></span>
   </header>
   <div class="lib-grid" id="grid"></div>
-  <p class="hint" id="empty" style="display:none">No projects yet — run a production and it will appear here.</p>
-</div>
+  <p class="hint" id="empty" role="status" aria-live="polite" hidden>No projects yet — run a production and it will appear here.</p>
+</main>
 <script type="module" src="/ui/library.js"></script>
 </body>
 </html>

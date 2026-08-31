@@ -19,8 +19,12 @@ canonical record has been printed, and ``_decide`` is internal — it takes the
 right before minting has the same digest. ``main`` enters
 ``lib.gates.handler_context()`` only around that call; ``mint_gate_token``
 refuses outside it. All of this is process discipline, not an OS privilege
-boundary — see the trust-boundary note in ``lib/gates.py``. On approval it mints a
-one-use token, consumes it through ``record_human_approval`` (signed receipt +
+boundary — see the trust-boundary note in ``lib/gates.py``. Backlot's embedded
+terminal is a pty owned by ``scripts/gate_sign.py``, a user process the board
+attaches to over a 0600 unix socket, guarded by a per-server secret against
+browser cross-origin access; it is the same process-discipline trust as the
+user's Terminal, not a fourth handler. On approval it mints a one-use token,
+consumes it through ``record_human_approval`` (signed receipt +
 consumed-token ledger + per-project receipt chain), and moves the request to
 ``.gate-requests/done/``. A decline moves the request to
 ``.gate-requests/declined/`` with the note; no receipt is written.

@@ -10,6 +10,8 @@ a stale heartbeat or an exceeded wall-time budget is never reclaimed.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import socket
@@ -93,19 +95,27 @@ class Lease:
     def heartbeat(self) -> None:
         if self._released:
             raise RuntimeError("lease already released")
-        self.record["heartbeat_at"] = _now().isoformat()
-        atomic_write_json(self.path, self.record)
+        with _lease_guard(self.path.parent):
+            try:
+                current = json.loads(self.path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError) as exc:
+                raise RuntimeError("lease ownership was lost") from exc
+            if current.get("lease_id") != self.record["lease_id"]:
+                raise RuntimeError("lease ownership was lost")
+            self.record["heartbeat_at"] = _now().isoformat()
+            atomic_write_json(self.path, self.record)
 
     def release(self) -> None:
         if self._released:
             return
         self._released = True
-        try:
-            current = json.loads(self.path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            return
-        if current.get("lease_id") == self.record["lease_id"]:
-            self.path.unlink()
+        with _lease_guard(self.path.parent):
+            try:
+                current = json.loads(self.path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, json.JSONDecodeError):
+                return
+            if current.get("lease_id") == self.record["lease_id"]:
+                self.path.unlink()
 
     def __enter__(self) -> "Lease":
         return self
@@ -116,6 +126,21 @@ class Lease:
 
 def lease_path(project_root: Path | str) -> Path:
     return Path(project_root) / LEASE_FILENAME
+
+
+@contextlib.contextmanager
+def _lease_guard(project_root: Path):
+    """Serialize lease CAS operations without creating another project file."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    fd = os.open(str(project_root), flags)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def _try_create(path: Path, record: dict) -> bool:
@@ -135,6 +160,7 @@ def _try_create(path: Path, record: dict) -> bool:
 
 
 def acquire(project_root: Path | str, wall_time_minutes: float) -> Lease:
+    project_root = Path(project_root)
     path = lease_path(project_root)
     now = _now()
     record = {
@@ -147,28 +173,29 @@ def acquire(project_root: Path | str, wall_time_minutes: float) -> Lease:
         "wall_time_minutes": wall_time_minutes,
         "expires_at": (now + timedelta(minutes=wall_time_minutes)).isoformat(),
     }
-    if _try_create(path, record):
-        return Lease(path, record)
+    with _lease_guard(project_root):
+        if _try_create(path, record):
+            return Lease(path, record)
 
-    try:
-        existing = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        existing = None
-    except json.JSONDecodeError:
-        existing = {}
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            existing = None
+        except json.JSONDecodeError:
+            existing = {}
 
-    if existing is not None and not owner_is_dead(existing):
-        raise LeaseHeldError(
-            f"run lease {path} is held by a live owner "
-            f"(pid {existing.get('pid')} on {existing.get('hostname')}, "
-            f"heartbeat {existing.get('heartbeat_at')}); not reclaiming"
-        )
+        if existing is not None and not owner_is_dead(existing):
+            raise LeaseHeldError(
+                f"run lease {path} is held by a live owner "
+                f"(pid {existing.get('pid')} on {existing.get('hostname')}, "
+                f"heartbeat {existing.get('heartbeat_at')}); not reclaiming"
+            )
 
-    # Owner demonstrably dead (or lease vanished): reclaim once.
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-    if _try_create(path, record):
-        return Lease(path, record)
-    raise LeaseHeldError(f"run lease {path} was re-acquired by another process during reclaim")
+        # Read, stale decision, unlink and replacement are one serialized CAS.
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        if _try_create(path, record):
+            return Lease(path, record)
+        raise LeaseHeldError(f"run lease {path} was re-acquired by another process during reclaim")

@@ -7,8 +7,13 @@ artifact, or a half-written checkpoint must degrade the board, never crash it
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
+import os
 import re
+import stat
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
@@ -258,7 +263,10 @@ def _collect_artifacts(project_dir: Path, checkpoints: dict[str, dict]) -> dict[
             artifacts["decision_log"] = data
     # Backfill from checkpoint-embedded artifacts.
     for cp in checkpoints.values():
-        for name, value in (cp.get("artifacts") or {}).items():
+        embedded = cp.get("artifacts")
+        if not isinstance(embedded, dict):
+            continue
+        for name, value in embedded.items():
             if name not in artifacts:
                 resolved = _resolve_artifact(project_dir, value)
                 if resolved is not None:
@@ -582,6 +590,848 @@ def _last_activity(project_dir: Path) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Governed gate state (read-only; deliberately does not use receipt readers)
+# ---------------------------------------------------------------------------
+
+_GATE_STATES = ("pending", "done", "declined", "abandoned")
+_GATE_DIRS = {"pending": Path("."), "done": Path("done"), "declined": Path("declined"), "abandoned": Path("abandoned")}
+_MAX_GATE_ROWS = 200
+_MAX_LEDGER_LINE_BYTES = 128 * 1024
+_MAX_LEDGER_LOOKUP_BYTES = 8 * 1024 * 1024
+_MAX_LEDGER_LOOKUP_ROWS = 20_000
+_MAX_COST_LEDGER_BYTES = 4 * 1024 * 1024
+_MAX_GATE_TREE_ENTRIES = 4_096
+_MAX_GATE_TREE_DEPTH = 12
+_MAX_GATE_TREE_WORK = 8_192
+_MAX_GATE_REQUEST_BYTES = 128 * 1024
+_MAX_GATE_REQUEST_TOTAL_BYTES = 4 * 1024 * 1024
+_MAX_GATE_PUBLIC_STRING_CHARS = 4_096
+_MAX_GATE_PUBLIC_LIST_ITEMS = 100
+_MAX_GATE_DETAIL_JSON_BYTES = 2 * 1024 * 1024
+_MAX_GATE_IMAGE_BYTES = 32 * 1024 * 1024
+_MAX_GATE_PROJECT_YAML_BYTES = 256 * 1024
+
+
+def _lstat(path: Path) -> Optional[os.stat_result]:
+    try:
+        return path.lstat()
+    except OSError:
+        return None
+
+
+def _gate_tree_error(root: Path) -> Optional[str]:
+    """Return a fail-closed error for an unsafe or over-budget gate tree.
+
+    We intentionally use lstat rather than resolve: gate request data is
+    untrusted board input and following a symlink could turn a read-only board
+    refresh into an arbitrary-file disclosure.
+    """
+    base = root / ".gate-requests"
+    info = _lstat(base)
+    if info is None:
+        return None
+    if stat.S_ISLNK(info.st_mode):
+        return "symlink in gate directory"
+    if not stat.S_ISDIR(info.st_mode):
+        return None
+    # An output bound must never hide a corrupt request tree.  Conversely a
+    # board refresh must not recursively consume unbounded attacker-controlled
+    # input: exhaustion is itself a fail-closed gate error, never truncation.
+    pending = [(base, 0)]
+    entries_seen = work = 0
+    while pending:
+        directory, depth = pending.pop()
+        work += 1
+        if work > _MAX_GATE_TREE_WORK:
+            return "gate directory scan budget exceeded"
+        try:
+            entries = os.scandir(directory)
+        except OSError:
+            continue
+        with entries:
+            for entry in entries:
+                entries_seen += 1
+                work += 1
+                if entries_seen > _MAX_GATE_TREE_ENTRIES or work > _MAX_GATE_TREE_WORK:
+                    return "gate directory scan budget exceeded"
+                try:
+                    entry_info = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISLNK(entry_info.st_mode):
+                    return "symlink in gate directory"
+                if stat.S_ISDIR(entry_info.st_mode):
+                    if depth >= _MAX_GATE_TREE_DEPTH:
+                        return "gate directory scan budget exceeded"
+                    pending.append((Path(entry.path), depth + 1))
+    return None
+
+
+def _regular_json_files(directory: Path) -> list[Path]:
+    """A small deterministic listing of regular JSON files, never following links."""
+    info = _lstat(directory)
+    if info is None or not stat.S_ISDIR(info.st_mode):
+        return []
+    try:
+        entries = sorted(directory.iterdir(), key=lambda p: p.name)
+    except OSError:
+        return []
+    out: list[Path] = []
+    for entry in entries:
+        info = _lstat(entry)
+        if info is not None and stat.S_ISREG(info.st_mode) and entry.suffix == ".json":
+            out.append(entry)
+    return out
+
+
+def _read_gate_request(path: Path, parsed_bytes: list[int]) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Read one bounded request object; over-budget input invalidates gates."""
+    info = _lstat(path)
+    if info is None or not stat.S_ISREG(info.st_mode):
+        return None, None
+    if info.st_size > _MAX_GATE_REQUEST_BYTES:
+        return None, "gate request exceeds byte budget"
+    try:
+        with path.open("rb") as fh:
+            raw = fh.read(_MAX_GATE_REQUEST_BYTES + 1)
+        if len(raw) > _MAX_GATE_REQUEST_BYTES:
+            return None, "gate request exceeds byte budget"
+        if parsed_bytes[0] + len(raw) > _MAX_GATE_REQUEST_TOTAL_BYTES:
+            return None, "gate request aggregate byte budget exceeded"
+        parsed_bytes[0] += len(raw)
+        data = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None, None
+    return (data if isinstance(data, dict) else None), None
+
+
+def _gate_public_field_error(request: dict[str, Any]) -> Optional[str]:
+    """Reject oversized values before they can become board JSON output."""
+    for name in (
+        "request_id", "kind", "stage", "scope", "entity_id", "summary",
+        "approval_receipt_id", "declined_note",
+    ):
+        value = request.get(name)
+        if isinstance(value, str) and len(value) > _MAX_GATE_PUBLIC_STRING_CHARS:
+            return "gate request public string exceeds budget"
+        if isinstance(value, list):
+            if len(value) > _MAX_GATE_PUBLIC_LIST_ITEMS:
+                return "gate request public list exceeds budget"
+            if any(not isinstance(item, str) or len(item) > _MAX_GATE_PUBLIC_STRING_CHARS for item in value):
+                return "gate request public list is invalid"
+        elif value is not None and not isinstance(value, str):
+            return "gate request public field is invalid"
+    return None
+
+
+def _gate_rows(root: Path, slug: str, *, limit: Optional[int] = _MAX_GATE_ROWS) -> dict[str, Any]:
+    """Read bounded request summaries; malformed files are simply not rows."""
+    tree_error = _gate_tree_error(root)
+    if tree_error:
+        return {"error": tree_error, "requests": []}
+    from lib.run_common import RunError, gate_command, validate_request_id
+
+    base = root / ".gate-requests"
+    found: dict[str, list[tuple[str, Path, dict[str, Any]]]] = {}
+    parsed_bytes = [0]
+    for state_name, relative in _GATE_DIRS.items():
+        for path in _regular_json_files(base / relative):
+            request, request_error = _read_gate_request(path, parsed_bytes)
+            if request_error:
+                return {"error": request_error, "requests": []}
+            try:
+                request_id = validate_request_id(path.stem)
+            except RunError:
+                continue
+            if request is None or request.get("request_id") != request_id or request.get("project_id") != slug:
+                continue
+            public_error = _gate_public_field_error(request)
+            if public_error:
+                return {"error": public_error, "requests": []}
+            found.setdefault(request_id, []).append((state_name, path, request))
+
+    rows: list[dict[str, Any]] = []
+    for request_id, copies in sorted(found.items()):
+        state_name, path, request = copies[0]
+        row: dict[str, Any] = {
+            "request_id": request_id,
+            "kind": request.get("kind"),
+            "stage": request.get("stage"),
+            "scope": request.get("scope"),
+            "entity_id": request.get("entity_id"),
+            "summary": request.get("summary"),
+            "state": "conflict" if len(copies) > 1 else state_name,
+            "mtime": _lstat(path).st_mtime if _lstat(path) else None,
+        }
+        if request.get("approval_receipt_id") is not None:
+            row["approval_receipt_id"] = request.get("approval_receipt_id")
+        if request.get("declined_note") is not None:
+            row["declined_note"] = request.get("declined_note")
+        if row["state"] == "pending":
+            # gate_command is itself rendered solely from gate_invocation.
+            row["next_command"] = gate_command(root, request_id)
+        rows.append(row)
+    priority = {"pending": 0, "conflict": 1, "done": 2, "declined": 3, "abandoned": 4}
+    rows.sort(key=lambda row: (priority.get(str(row.get("state")), 99), str(row.get("request_id"))))
+    visible = rows if limit is None else rows[:limit]
+    return {
+        "requests": visible,
+        "truncated": limit is not None and len(rows) > limit,
+        "total_requests": len(rows),
+    }
+
+
+def _canon_summary(root: Path) -> list[dict[str, str]]:
+    """Approved hero and character-sheet objects from canon_view's pure plan."""
+    try:
+        from lib.canon_view import CHARACTER_ROLES, plan_view
+        plan = plan_view(root)
+    except Exception:
+        return []
+    allowed = {"hero", *CHARACTER_ROLES}
+    rows: list[dict[str, str]] = []
+    for link_rel, object_rel in plan:
+        parts = Path(link_rel).parts
+        if len(parts) < 2:
+            continue
+        entity, role = parts[-2], Path(parts[-1]).stem
+        if role in allowed:
+            rows.append({"entity": entity, "role": role, "object_rel": object_rel})
+    return rows
+
+
+def _looks_summary(root: Path) -> list[dict[str, Any]]:
+    """Look packet text only: no ticket or look images are served by state."""
+    checkpoint = _read_json(root / "checkpoint_look_lock.json") or {}
+    packet = ((checkpoint.get("artifacts") or {}).get("look_packet") or {})
+    looks = packet.get("looks") if isinstance(packet, dict) else []
+    out = []
+    for entry in looks or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("entity_id") and entry.get("look_hash"):
+            out.append({
+                "entity": entry.get("entity_id"),
+                "entity_kind": entry.get("entity_kind"),
+                "look_hash": entry.get("look_hash"),
+                "source_ticket_ref": entry.get("source_ticket_ref"),
+            })
+    return out
+
+
+def _cost_summary(root: Path, checkpoint_cost: Any) -> Any:
+    """Authored-film reads its persisted cost ledger; old projects keep snapshots."""
+    project_yaml = root / "project.yaml"
+    yaml_info = _lstat(project_yaml)
+    if yaml_info is not None and stat.S_ISREG(yaml_info.st_mode) and yaml_info.st_size > _MAX_GATE_PROJECT_YAML_BYTES:
+        return {"error": "project.yaml exceeds byte budget"}
+    text = ""
+    try:
+        with project_yaml.open("rb") as fh:
+            raw = fh.read(_MAX_GATE_PROJECT_YAML_BYTES + 1)
+        if len(raw) > _MAX_GATE_PROJECT_YAML_BYTES:
+            return {"error": "project.yaml exceeds byte budget"}
+        text = raw.decode("utf-8", errors="replace")
+    except OSError:
+        pass
+    authored = "authored-film" in text
+    if not authored:
+        for checkpoint in root.glob("checkpoint_*.json"):
+            data = _read_json(checkpoint) or {}
+            authored = data.get("pipeline_type") == "authored-film" or (data.get("pipeline") or {}).get("name") == "authored-film"
+            if authored:
+                break
+    if not authored:
+        if not isinstance(checkpoint_cost, dict):
+            return checkpoint_cost
+        return dict(checkpoint_cost, label="snapshot", source="snapshot")
+    ledger_path = root / "cost_log.json"
+    ledger_info = _lstat(ledger_path)
+    if ledger_info is not None and ledger_info.st_size > _MAX_COST_LEDGER_BYTES:
+        return {"label": "ledger", "source": "ledger", "error": "cost ledger too large"}
+    ledger = _read_json(ledger_path)
+    if ledger is None:
+        return {"label": "ledger", "source": "ledger", "total_spent_usd": 0.0, "total_reserved_usd": 0.0}
+    entries = ledger.get("entries") or []
+    if not isinstance(entries, list):
+        entries = []
+
+    def amount(value: Any) -> float:
+        try:
+            parsed = float(value or 0)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        return parsed if math.isfinite(parsed) else 0.0
+
+    spent = sum(amount(e.get("actual_usd")) for e in entries if isinstance(e, dict) and e.get("status") in ("completed", "failed"))
+    reserved = sum(amount(e.get("reserved_usd")) for e in entries if isinstance(e, dict) and e.get("status") == "reserved")
+    return {"label": "ledger", "source": "ledger", "total_spent_usd": round(spent, 4), "total_reserved_usd": round(reserved, 4)}
+
+
+def _lease_summary(root: Path) -> dict[str, Any]:
+    """Read a lease without acquiring, touching, or reclaiming it."""
+    from lib import run_lease
+
+    path = run_lease.lease_path(root)
+    info = _lstat(path)
+    if info is None or not stat.S_ISREG(info.st_mode):
+        return {"held": False, "pid": None, "started": None}
+    record = _read_json(path) or {}
+    held = bool(record) and not run_lease.owner_is_dead(record)
+    return {"held": held, "pid": record.get("pid"), "started": record.get("acquired_at")}
+
+
+def _gates_state(project_dir: Path, checkpoint_cost: Any) -> Any:
+    """The optional governed-project extension to BoardState."""
+    if not (project_dir / "project.yaml").is_file():
+        return None
+    try:
+        from lib.run_common import resolve_project_root
+        root = resolve_project_root(project_dir.name, projects_dir=project_dir.parent)
+    except Exception:
+        # Fixed literal: RunError text can carry absolute filesystem paths,
+        # which must not reach board JSON.
+        return {"error": "invalid governed project", "requests": []}
+    gates = _gate_rows(root, root.name)
+    if gates.get("error"):
+        return gates
+    gates.update({
+        "canon": _canon_summary(root),
+        "looks": _looks_summary(root),
+        "cost": _cost_summary(root, checkpoint_cost),
+        "run_lease": _lease_summary(root),
+    })
+    return gates
+
+
+def _raw_jsonl_targets(path: Path, receipt_ids: set[str]) -> tuple[dict[str, dict[str, Any]], Optional[str]]:
+    """Stream target receipt rows without ledger replay or materialization.
+
+    The scan is complete (a requested id may be anywhere in a mature ledger),
+    memory is O(the requested id set), and malformed or overlong physical rows
+    are discarded one-at-a-time before scanning continues at the next newline.
+    """
+    wanted = {receipt_id for receipt_id in receipt_ids if isinstance(receipt_id, str) and receipt_id}
+    if not wanted:
+        return {}, None
+    info = _lstat(path)
+    if info is None or not stat.S_ISREG(info.st_mode):
+        return {}, None
+    if info.st_size > _MAX_LEDGER_LOOKUP_BYTES:
+        return {}, "ledger lookup exceeds byte budget"
+    found: dict[str, dict[str, Any]] = {}
+    try:
+        with path.open("rb") as fh:
+            rows_seen = bytes_read = 0
+            while wanted - found.keys():
+                line = fh.readline(_MAX_LEDGER_LINE_BYTES + 1)
+                if not line:
+                    break
+                rows_seen += 1
+                bytes_read += len(line)
+                if rows_seen > _MAX_LEDGER_LOOKUP_ROWS or bytes_read > _MAX_LEDGER_LOOKUP_BYTES:
+                    return {}, "ledger lookup exceeds row or byte budget"
+                if len(line) > _MAX_LEDGER_LINE_BYTES:
+                    # A physical row above the cap is untrustworthy for any
+                    # requested receipt.  Drain bounded chunks only to close
+                    # the descriptor; do not silently skip potential evidence.
+                    while line and not line.endswith(b"\n"):
+                        line = fh.readline(_MAX_LEDGER_LINE_BYTES + 1)
+                    return {}, "ledger row exceeds byte budget"
+                try:
+                    row = json.loads(line.decode("utf-8"))
+                except (UnicodeDecodeError, TypeError, ValueError):
+                    continue
+                if isinstance(row, dict) and row.get("receipt_id") in wanted:
+                    found[row["receipt_id"]] = row
+    except OSError:
+        return {}, "ledger lookup unreadable"
+    return found, None
+
+
+def _read_gate_json(path: Path) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """Read one lazy evidence JSON object within the detail byte budget."""
+    info = _lstat(path)
+    if info is None or not stat.S_ISREG(info.st_mode):
+        return None, "evidence JSON unavailable"
+    if info.st_size > _MAX_GATE_DETAIL_JSON_BYTES:
+        return None, "evidence JSON exceeds byte budget"
+    try:
+        with path.open("rb") as fh:
+            raw = fh.read(_MAX_GATE_DETAIL_JSON_BYTES + 1)
+        if len(raw) > _MAX_GATE_DETAIL_JSON_BYTES:
+            return None, "evidence JSON exceeds byte budget"
+        data = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None, "evidence JSON unreadable or malformed"
+    if not isinstance(data, dict):
+        return None, "evidence JSON root is malformed"
+    return data, None
+
+
+def _safe_project_file(root: Path, path: Path) -> Optional[Path]:
+    """Return a project-confined regular path with no symlink component."""
+    try:
+        root_real = root.resolve()
+        candidate = path if path.is_absolute() else root_real / path
+        # Check lexical components before resolve: resolving first erases an
+        # in-project symlink and would diverge from pathsafe.resolve_input(),
+        # which the signer uses for candidate ImageRefs.
+        relative = candidate.relative_to(root_real)
+    except ValueError:
+        return None
+    current = root_real
+    for component in relative.parts:
+        if component in ("", ".", ".."):
+            return None
+        current /= component
+        info = _lstat(current)
+        if info is None or stat.S_ISLNK(info.st_mode):
+            return None
+    try:
+        candidate.resolve().relative_to(root_real)
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
+def _file_packet(root: Path, asset_id: Any, *, path: Optional[Path] = None, label: Optional[str] = None) -> dict[str, Any]:
+    """One visual descriptor; vault IDs are only accepted when bytes match."""
+    expected = asset_id if isinstance(asset_id, str) else None
+    requested = path or (root / "canon" / "visual" / "objects" / f"{expected}.png")
+    file = _safe_project_file(root, requested)
+    result: dict[str, Any] = {"asset_id": expected, "path": _rel(root, file or requested), "label": label}
+    if file is None:
+        result["error"] = "hash mismatch"
+        return result
+    info = _lstat(file)
+    if info is None or not stat.S_ISREG(info.st_mode):
+        result["error"] = "hash mismatch"
+        return result
+    if info.st_size > _MAX_GATE_IMAGE_BYTES:
+        result["error"] = "image exceeds byte budget"
+        return result
+    try:
+        digest = hashlib.sha256()
+        total = 0
+        with file.open("rb") as fh:
+            while True:
+                chunk = fh.read(min(1024 * 1024, _MAX_GATE_IMAGE_BYTES + 1 - total))
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MAX_GATE_IMAGE_BYTES:
+                    result["error"] = "image exceeds byte budget"
+                    return result
+                digest.update(chunk)
+        actual = digest.hexdigest()
+    except OSError:
+        result["error"] = "hash mismatch"
+        return result
+    result["sha256"] = actual
+    if expected is None or actual != expected:
+        result["error"] = "hash mismatch"
+    return result
+
+
+def _request_for_detail(root: Path, request_id: str) -> tuple[str, Optional[dict[str, Any]], Optional[Path]]:
+    """A validated request state for lazy detail, retaining archival data."""
+    gate = _gate_rows(root, root.name, limit=None)
+    if gate.get("error"):
+        return "error", None, None
+    for row in gate["requests"]:
+        if row["request_id"] != request_id:
+            continue
+        state_name = row["state"]
+        if state_name == "conflict":
+            return state_name, None, None
+        path = root / ".gate-requests" / _GATE_DIRS[state_name] / f"{request_id}.json"
+        request, request_error = _read_gate_request(path, [0])
+        return ("error", None, path) if request_error or request is None else (state_name, request, path)
+    existing = []
+    for state_name, relative in _GATE_DIRS.items():
+        path = root / ".gate-requests" / relative / f"{request_id}.json"
+        info = _lstat(path)
+        if info is not None and stat.S_ISREG(info.st_mode):
+            existing.append(path)
+    if existing:
+        return "error", None, existing[0]
+    return "missing", None, None
+
+
+def _visuals_from_refs(root: Path, refs: list[tuple[str, Any]]) -> dict[str, Any]:
+    visuals = []
+    error = False
+    for role, ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        visual = _file_packet(root, ref.get("asset_id"), label=role)
+        visuals.append(visual)
+        error |= bool(visual.get("error"))
+    return {"visuals": visuals, "packet_error": error}
+
+
+def _bible(root: Path) -> dict[str, Any]:
+    checkpoint, _error = _read_gate_json(root / "checkpoint_visual_bible.json")
+    checkpoint = checkpoint or {}
+    data = (checkpoint.get("artifacts") or {}).get("visual_bible") or {}
+    return data if isinstance(data, dict) else {}
+
+
+def _render_headshot(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative source: checkpoint_headshots.json headshot_packet.characters[].candidates."""
+    envelope = req.get("envelope") if isinstance(req.get("envelope"), dict) else {}
+    if envelope.get("action") == "retire":
+        receipt_id = envelope.get("supersedes_receipt_id")
+        rows, lookup_error = _raw_jsonl_targets(
+            root / "approvals.jsonl", {receipt_id},
+        ) if isinstance(receipt_id, str) else ({}, None)
+        row = rows.get(receipt_id) if isinstance(receipt_id, str) else None
+        record = row.get("record") if isinstance(row, dict) and isinstance(row.get("record"), dict) else {}
+        valid = bool(
+            isinstance(row, dict)
+            and row.get("kind") == "headshot"
+            and row.get("action") == "activate"
+            and row.get("project_id") == root.name
+            and row.get("entity_id") == req.get("entity_id")
+            and record.get("entity_id") == req.get("entity_id")
+            and record.get("look_hash") == envelope.get("look_hash")
+        )
+        visual = _file_packet(root, record.get("asset_id"), label="current approved hero")
+        error = lookup_error or (None if valid else "active headshot receipt unavailable or malformed")
+        packet_error = bool(error) or bool(visual.get("error"))
+        result = {
+            "action": "retire",
+            "supersedes_receipt_id": receipt_id,
+            "look_hash": envelope.get("look_hash"),
+            "visual": visual,
+            "packet_error": packet_error,
+        }
+        if error:
+            result["error"] = error
+        return result
+    checkpoint, checkpoint_error = _read_gate_json(root / "checkpoint_headshots.json")
+    if checkpoint is None:
+        return {"packet_error": True, "error": checkpoint_error or "headshot checkpoint unreadable", "candidates": []}
+    artifacts = checkpoint.get("artifacts")
+    if not isinstance(artifacts, dict):
+        return {"packet_error": True, "error": "headshot checkpoint malformed", "candidates": []}
+    packet = artifacts.get("headshot_packet")
+    if not isinstance(packet, dict):
+        return {"packet_error": True, "error": "headshot packet incomplete", "candidates": []}
+    entry = next((x for x in packet.get("characters") or [] if isinstance(x, dict) and x.get("entity_id") == req.get("entity_id")), None)
+    if not isinstance(entry, dict) or not isinstance(entry.get("candidates"), list):
+        return {"packet_error": True, "error": "headshot packet incomplete", "candidates": []}
+    candidates = []
+    bad = False
+    for number, candidate in enumerate(entry["candidates"], 1):
+        if not isinstance(candidate, dict):
+            bad = True
+            continue
+        asset_id = candidate.get("asset_id") or candidate.get("normalized_pixel_hash")
+        stored_path = candidate.get("path")
+        path = Path(stored_path) if isinstance(stored_path, str) and stored_path else None
+        visual = _file_packet(root, asset_id, path=path, label=f"candidate {number}")
+        bad |= bool(visual.get("error"))
+        candidates.append({"number": number, "generator_kind": (candidate.get("provenance") or {}).get("generator_kind"),
+                           "sha_prefix": str(asset_id or "")[:12], "visual": visual})
+    rejected = next(
+        (entry.get(name) for name in ("rejection_notes", "candidates_rejected", "rejected_candidates")
+         if isinstance(entry.get(name), list)),
+        [],
+    )
+    return {"candidates": candidates, "rejected_count": len(rejected), "packet_error": bad}
+
+
+def _render_sheet(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative source: draft visual_bible character sheet + raw QC JSONL."""
+    revision = req.get("revision") or (req.get("approval_record") or {}).get("sheet_revision")
+    entry = next((x for x in _bible(root).get("characters") or [] if isinstance(x, dict) and x.get("id") == req.get("entity_id") and x.get("sheet_revision") == revision), None)
+    if not isinstance(entry, dict):
+        return {"packet_error": True, "error": "matching sheet revision unavailable", "visuals": []}
+    sheet = entry.get("sheet")
+    qc_refs = entry.get("qc_receipts")
+    if not isinstance(sheet, dict) or not isinstance(qc_refs, dict):
+        return {"packet_error": True, "error": "sheet or cited QC evidence is malformed", "visuals": []}
+    refs = [(role, ref) for role, ref in sheet.items()]
+    result = _visuals_from_refs(root, refs)
+    wanted_qc = {str(receipt_id) for receipt_id in qc_refs.values() if isinstance(receipt_id, str)}
+    rows, lookup_error = _raw_jsonl_targets(root / "qc-receipts.jsonl", wanted_qc)
+    qc_rows = []
+    cited_error = False
+    for role, receipt_id in qc_refs.items():
+        row = rows.get(str(receipt_id)) if isinstance(receipt_id, str) else None
+        ref = sheet.get(role)
+        expected_asset_id = ref.get("asset_id") if isinstance(ref, dict) else None
+        valid = bool(
+            isinstance(row, dict)
+            and row.get("receipt_id") == receipt_id
+            and row.get("project_id") == root.name
+            and row.get("entity_id") == req.get("entity_id")
+            and row.get("role") == role
+            and row.get("asset_id") == expected_asset_id
+            and row.get("verdict") in {"pass", "fail"}
+        )
+        cited_error |= not valid
+        qc_rows.append({"role": role, "label": "unverified QC row", "row": row})
+    result["qc_rows"] = qc_rows
+    if lookup_error or cited_error:
+        result.update({
+            "packet_error": True,
+            "error": lookup_error or "cited QC receipt unavailable or malformed",
+        })
+    return result
+
+
+def _render_qc_override(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative source: raw qc-receipts.jsonl verdict selected by request qc_receipt_id."""
+    rid = req.get("qc_receipt_id")
+    rows, lookup_error = _raw_jsonl_targets(root / "qc-receipts.jsonl", {rid}) if isinstance(rid, str) else ({}, None)
+    row = rows.get(rid) if isinstance(rid, str) else None
+    visual = _file_packet(root, (row or {}).get("asset_id"), label="judged asset")
+    return {"qc_row": row, "visual": visual, "item_ids": req.get("item_ids") or [],
+            "reason_reminder": "A typed reason of at least 10 characters is required in the terminal.",
+            "packet_error": row is None or bool(visual.get("error")) or bool(lookup_error), "error": lookup_error}
+
+
+def _render_reference_import(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative source: signer envelope/record fields and STAGING_DIR PNG."""
+    from lib.reference_import import STAGING_DIR
+
+    hint = req.get("envelope") if isinstance(req.get("envelope"), dict) else {}
+    record = req.get("approval_record") if isinstance(req.get("approval_record"), dict) else {}
+    asset_id = hint.get("normalized_pixel_hash", record.get("normalized_pixel_hash"))
+    staged = root / STAGING_DIR / f"reference-{asset_id}.png"
+    visual = _file_packet(root, asset_id, path=staged, label="normalized import")
+    return {"origin_class": hint.get("origin_class", record.get("origin_class")),
+            "visual": visual, "packet_error": bool(visual.get("error"))}
+
+
+def _render_look_lock(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative source: confined, parsed wayfinder ticket (text only)."""
+    action = (req.get("envelope") or {}).get("action", "activate")
+    scope_kind, _, scope_entity = str(req.get("scope") or "").partition(":")
+    entity_kind = scope_kind or str(req.get("entity_kind") or "")
+    entity_id = str(req.get("entity_id") or scope_entity)
+    current = next(
+        (entry for entry in _looks_summary(root)
+         if entry.get("entity") == entity_id and entry.get("entity_kind") == entity_kind),
+        None,
+    )
+    # A retire approval has no ticket: the signer constructs it from the
+    # active current look.  Render that same current packet state, not a hint.
+    if action == "retire":
+        if current is None:
+            return {"packet_error": True, "error": "active look unavailable"}
+        return {"action": "retire", "source_ticket_ref": current.get("source_ticket_ref"),
+                "look_hash": current.get("look_hash"), "supersedes": current.get("look_hash")}
+    ticket = req.get("source_ticket_path")
+    if not isinstance(ticket, str) or not ticket:
+        return {"packet_error": True, "error": "look ticket unavailable"}
+    try:
+        from lib.look_ingest import LookIngestError, confine_ticket_path, parse_look_ticket, wayfinder_root_for
+
+        wayfinder_root = wayfinder_root_for(root)
+        raw_ticket = Path(ticket)
+        candidate = wayfinder_root / raw_ticket
+        # Both lexical and resolved (including symlink) escapes have the
+        # required exact presentation.  Other ticket defects remain distinct
+        # packet errors rather than being mislabeled as an escape.
+        if ".." in raw_ticket.parts:
+            return {"packet_error": True, "source_ticket_ref": "ticket outside wayfinder root"}
+        try:
+            candidate.resolve().relative_to(wayfinder_root.resolve())
+        except (OSError, ValueError):
+            return {"packet_error": True, "source_ticket_ref": "ticket outside wayfinder root"}
+        confined = confine_ticket_path(candidate, wayfinder_root)
+        look = parse_look_ticket(confined, wayfinder_root=wayfinder_root)
+    except LookIngestError:
+        return {"packet_error": True, "error": "look ticket unavailable"}
+    except Exception:
+        return {"packet_error": True, "error": "look ticket unavailable"}
+    if (look.entity_kind, look.entity_id) != (entity_kind, entity_id):
+        return {"packet_error": True, "error": "look ticket names another entity"}
+    old = current
+    return {"source_ticket_ref": look.source_ticket_ref, "look_hash": look.look_hash,
+            "supersedes": (old or {}).get("look_hash")}
+
+
+def _render_config(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative source: project.yaml text, shown with the request summary."""
+    path = root / "project.yaml"
+    info = _lstat(path)
+    if info is None or not stat.S_ISREG(info.st_mode):
+        return {"packet_error": True, "error": "project.yaml unavailable", "summary": req.get("summary")}
+    if info.st_size > _MAX_GATE_PROJECT_YAML_BYTES:
+        return {"packet_error": True, "error": "project.yaml exceeds byte budget", "summary": req.get("summary")}
+    try:
+        with path.open("rb") as fh:
+            raw = fh.read(_MAX_GATE_PROJECT_YAML_BYTES + 1)
+        if len(raw) > _MAX_GATE_PROJECT_YAML_BYTES:
+            return {"packet_error": True, "error": "project.yaml exceeds byte budget", "summary": req.get("summary")}
+        text = raw.decode("utf-8", errors="replace")
+    except OSError:
+        return {"packet_error": True, "error": "project.yaml unreadable", "summary": req.get("summary")}
+    return {"project_yaml": text, "summary": req.get("summary")}
+
+
+def _render_pipeline_migration(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative source: request migration fields (no visual evidence)."""
+    hint = req.get("approval_record") or {}
+    prior_id = (req.get("envelope") or {}).get("supersedes_receipt_id")
+    rows, lookup_error = _raw_jsonl_targets(root / "approvals.jsonl", {prior_id}) if isinstance(prior_id, str) else ({}, None)
+    prior = rows.get(prior_id, {}) if isinstance(prior_id, str) else {}
+    prior_record = prior.get("record") if isinstance(prior, dict) else {}
+    result = {"from_version": req.get("from_version") or (req.get("envelope") or {}).get("from_version")
+            or (prior_record or {}).get("version") or (prior_record or {}).get("pipeline_version"),
+            "to_version": req.get("pipeline_version") or req.get("to_version") or hint.get("version")}
+    if lookup_error:
+        result.update({"packet_error": True, "error": lookup_error})
+    return result
+
+
+def _render_character(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative source: visual_bible character entry hero + sheet refs, as gate constructor uses."""
+    entry = next((x for x in _bible(root).get("characters") or [] if isinstance(x, dict) and x.get("id") == req.get("entity_id")), None)
+    refs = [] if not isinstance(entry, dict) else [("hero", entry.get("hero"))] + list((entry.get("sheet") or {}).items())
+    result = _visuals_from_refs(root, refs)
+    result["packet_error"] |= not isinstance(entry, dict)
+    return result
+
+
+def _render_location(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative source: visual_bible locations[].establishing and angles refs."""
+    entry = next((x for x in _bible(root).get("locations") or [] if isinstance(x, dict) and x.get("id") == req.get("entity_id")), None)
+    refs = [] if not isinstance(entry, dict) else [("establishing", entry.get("establishing"))] + [(f"angle_{i}", x) for i, x in enumerate(entry.get("angles") or [])]
+    result = _visuals_from_refs(root, refs)
+    result["packet_error"] |= not isinstance(entry, dict)
+    return result
+
+
+def _render_poster(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative source: visual_bible.poster key_art/title_card/poster_final refs."""
+    poster = _bible(root).get("poster") or {}
+    result = _visuals_from_refs(root, [(role, poster.get(role)) for role in ("key_art", "title_card", "poster_final")])
+    if not isinstance(poster, dict) or not result["visuals"]:
+        result.update({"packet_error": True, "error": "poster evidence unavailable"})
+    return result
+
+
+def _render_storyboard(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative source: pending checkpoint asset_manifest storyboard_frame assets."""
+    checkpoint, checkpoint_error = _read_gate_json(root / f"checkpoint_{req.get('stage')}.json")
+    if checkpoint is None:
+        return {
+            "visuals": [],
+            "packet_error": True,
+            "error": checkpoint_error or "storyboard checkpoint unreadable",
+        }
+    manifest = (checkpoint.get("artifacts") or {}).get("asset_manifest") or {}
+    if not isinstance(manifest, dict):
+        return {"visuals": [], "packet_error": True, "error": "storyboard manifest unavailable"}
+    refs = [(str(x.get("shot_id") or x.get("id")), {"asset_id": x.get("asset_id") or x.get("sha256")})
+            for x in manifest.get("assets") or [] if isinstance(x, dict) and x.get("asset_class") == "storyboard_frame"]
+    result = _visuals_from_refs(root, refs)
+    if not refs:
+        result.update({"packet_error": True, "error": "storyboard frames unavailable"})
+    return result
+
+
+def _render_text_only(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Text-only kinds: no constructor source cites a required visual asset id."""
+    excluded = {"approval_record", "envelope"}
+    request = {k: v for k, v in req.items() if k not in excluded and k != "preview_paths"}
+    return {"summary": req.get("summary"), "request": request,
+            "preview_filenames": [Path(str(p)).name for p in req.get("preview_paths") or []]}
+
+
+from lib.receipts import APPROVAL_KINDS
+
+
+class _GateRendererMap(dict[str, Any]):
+    """Frozen raw-authority dispatch contract, inspected from gate_approve.
+
+    ``headshot``: ``checkpoint_headshots.json`` →
+    ``artifacts.headshot_packet.characters[].candidates[].path``.
+    ``sheet``/``hero``: ``checkpoint_visual_bible.json`` →
+    ``artifacts.visual_bible.characters[]`` (sheet refs / hero ref).
+    ``location``: the same visual-bible ``locations[].establishing|angles``.
+    ``poster``: the same visual-bible ``poster.key_art|title_card|poster_final``.
+    ``storyboard_batch``: ``checkpoint_<request.stage>.json`` →
+    ``artifacts.asset_manifest.assets[asset_class=storyboard_frame]``.
+    ``qc_override``: project ``qc-receipts.jsonl`` → verdict asset ID.
+    ``reference_import``: ``reference_import.STAGING_DIR/reference-<pixel-hash>.png``.
+    ``look_lock``: confined ``wayfinder/resolved`` ticket named by request.
+    ``config``: ``project.yaml``; ``pipeline_migration``: request plus raw
+    ``approvals.jsonl`` superseded row; grandfather/artifact review: text-only.
+    """
+
+
+# Keep this map exhaustive: adding a gate kind without a board packet is an
+# intentional test failure.
+GATE_RENDERERS = _GateRendererMap({
+    "headshot": _render_headshot,
+    "sheet": _render_sheet,
+    "qc_override": _render_qc_override,
+    "reference_import": _render_reference_import,
+    "look_lock": _render_look_lock,
+    "config": _render_config,
+    "pipeline_migration": _render_pipeline_migration,
+    "hero": _render_character,
+    "location": _render_location,
+    "poster": _render_poster,
+    "storyboard_batch": _render_storyboard,
+    "headshot_grandfather": _render_text_only,
+    "artifact_review": _render_text_only,
+})
+assert set(GATE_RENDERERS) == set(APPROVAL_KINDS)
+
+
+def build_gate_detail(project_dir: Path, request_id: str) -> dict[str, Any]:
+    """Build one lazy, unverified gate packet without reconstructing records.
+
+    Every response deliberately has ``record_sha256: None``: the signer is
+    the only process that constructs an approval record.  Archived requests
+    show source data and a raw approvals ledger row, never current state.
+    """
+    project_dir = Path(project_dir)
+    try:
+        from lib.run_common import RunError, resolve_project_root, validate_request_id
+        validate_request_id(request_id)
+        root = resolve_project_root(project_dir.name, projects_dir=project_dir.parent)
+    except Exception:
+        return {"snapshot_at": time.time(), "record_sha256": None, "error": "invalid governed project or request"}
+    state_name, request, _ = _request_for_detail(root, request_id)
+    result: dict[str, Any] = {"snapshot_at": time.time(), "record_sha256": None, "request_id": request_id, "state": state_name}
+    if request is None:
+        result["error"] = "request unavailable" if state_name != "missing" else "request not found"
+        if state_name == "error":
+            result["packet_error"] = True
+        return result
+    if state_name != "pending":
+        receipt_id = request.get("approval_receipt_id")
+        rows, lookup_error = _raw_jsonl_targets(root / "approvals.jsonl", {receipt_id}) if isinstance(receipt_id, str) else ({}, None)
+        ledger = rows.get(receipt_id) if isinstance(receipt_id, str) else None
+        result.update({"request": request, "approval_receipt_id": receipt_id, "declined_note": request.get("declined_note"),
+                       "unverified_ledger_row": ledger, "ledger_label": "unverified ledger row"})
+        if lookup_error:
+            result.update({"packet_error": True, "error": lookup_error})
+        return result
+    renderer = GATE_RENDERERS.get(str(request.get("kind")))
+    try:
+        packet = renderer(root, request) if renderer else {"packet_error": True, "error": "unknown gate kind"}
+    except Exception:
+        packet = {"packet_error": True, "error": "gate evidence is malformed"}
+    result.update({"request": request, "packet": packet})
+    return result
+
+
+def load_gate_detail(project_dir: Path, request_id: str) -> dict[str, Any]:
+    """Compatibility-friendly public name for the lazy gate detail builder."""
+    return build_gate_detail(project_dir, request_id)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -654,6 +1504,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         "last_activity": last_activity,
         "live": bool(last_activity and (now - last_activity) < LIVE_WINDOW_SECONDS),
     }
+    state["gates"] = _gates_state(project_dir, cost)
     state["poster"] = _find_poster(project_dir, state)
     return state
 

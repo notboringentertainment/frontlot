@@ -130,7 +130,7 @@ def test_finish_pending_prints_gate_command_and_requires_state(world):
     res, req, _, _ = _publish(w)
     out = io.StringIO()
     res2 = sheet_run.run_sheet(w["project"], CHAR, palette=PALETTE, generate=FakeGen(), judge_adapter=FakeAdapter(_all("turnaround")), out=out, finish=True)
-    assert res2["status"] == "pending" and res2["request_id"] == res["request_id"] and "gate_approve.py" in out.getvalue()
+    assert res2["status"] == "pending" and res2["request_id"] == res["request_id"] and "gate_sign.py" in out.getvalue()
     assert req["source_checkpoint_digest"] == checkpoint_digest(w["project"] / "checkpoint_visual_bible.json")
 
 

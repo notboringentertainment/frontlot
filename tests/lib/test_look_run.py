@@ -72,7 +72,7 @@ class TestHappyPath:
         assert r["status"] == "pending" and r["request_id"] == f"look-{CHAR}-1"
         req = _req(w, r["request_id"])
         assert req["kind"] == "look_lock" and req["envelope"]["look_hash"] == _look_hash(w["c"])
-        assert req["source_checkpoint_digest"] and "gate_approve.py" in r["command"]
+        assert req["source_checkpoint_digest"] and "gate_sign.py" in r["command"]
         st = _state(w)
         assert st["mode"] == "look_lock" and st["request_id"] == r["request_id"] and st["look_hash"] == _look_hash(w["c"])
         # idempotent while pending
