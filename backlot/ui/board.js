@@ -1242,10 +1242,23 @@ function renderPacketEvidence(s, packet) {
   }
 
   const visualKeys = new Set(["candidates", "visuals", "visual", "qc_rows", "packet_error", "error"]);
+  // Short scalar fields (counts, hashes, flags) read as one quiet chip strip;
+  // anything long or structured keeps its own labelled block.
+  const chips = [];
+  const blocks = [];
   for (const [key, value] of Object.entries(packet)) {
     if (visualKeys.has(key)) continue;
-    output.append(textEvidence(key, value));
+    const scalar = ["string", "number", "boolean"].includes(typeof value);
+    const text = scalar ? String(value) : null;
+    if (scalar && text.length <= 64 && !text.includes("\n")) {
+      chips.push(el("div", { class: "gate-meta-chip" },
+        el("dt", {}, humanize(key)), el("dd", {}, text === "" ? "—" : text)));
+    } else {
+      blocks.push(textEvidence(key, value));
+    }
   }
+  if (chips.length) output.append(el("dl", { class: "gate-meta-strip" }, chips));
+  for (const block of blocks) output.append(block);
   if (!output.childNodes.length) output.append(el("div", { class: "gate-empty" }, "The evidence packet is empty."));
   return output;
 }
@@ -1539,8 +1552,6 @@ function renderGateDetail(s) {
         el("h3", { id: "gate-detail-heading", tabindex: "-1" },
           headerSummary.summary || humanize(headerSummary.kind || "Gate request"))),
       gateStateChip(summary ? summary.state : gateDetail.state)),
-    el("dl", { class: "gate-detail-facts" }, facts.map(([label, value]) =>
-      el("div", {}, el("dt", {}, label), el("dd", {}, value || "—")))),
     gateDetail.error ? el("div", { class: "gate-packet-error", role: "alert" },
       el("b", {}, "EVIDENCE LOOKUP ERROR"), el("span", {}, gateDetail.error)) : null,
     gateDetail.packet
@@ -1551,6 +1562,8 @@ function renderGateDetail(s) {
         gateDetail.declined_note ? textEvidence("declined note", gateDetail.declined_note) : null,
         gateDetail.unverified_ledger_row
           ? textEvidence(gateDetail.ledger_label || "unverified ledger row", gateDetail.unverified_ledger_row) : null),
+    el("dl", { class: "gate-detail-facts" }, facts.map(([label, value]) =>
+      el("div", {}, el("dt", {}, label), el("dd", {}, value || "—")))),
     commandBox,
     actions);
 }
