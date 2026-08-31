@@ -1,5 +1,7 @@
 # Backlot — the living storyboard
 
+> New to Backlot? Start with the plain-language guide: [`docs/BACKLOT_GUIDE.md`](../docs/BACKLOT_GUIDE.md).
+
 Backlot is a read-only local observer of a production: pipeline stages light
 up, the script appears as a screenplay page, the scene plan fills in as a
 filmstrip, and authored-film approval requests appear in the Gates panel.
