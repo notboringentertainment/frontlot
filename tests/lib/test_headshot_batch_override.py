@@ -312,14 +312,14 @@ class TestFixRound1:
 class TestFixRound2:
     def test_replay_rejects_extras_and_malformed_citations(self):
         from lib.headshots import HeadshotError, headshot_record
-        rec = headshot_record(entity_id='e', look_hash='l' * 64, asset_id='a' * 64, origin='generated',
-                              import_receipt_id=None, prompt_recipe_sha256='p' * 64,
+        rec = headshot_record(entity_id='e', look_hash='1' * 64, asset_id='a' * 64, origin='generated',
+                              import_receipt_id=None, prompt_recipe_sha256='0' * 64,
                               candidates_checkpoint_digest='c' * 64, record_version='1.2',
                               generation_receipt_id='g', qc_receipt_id='q')
         assert rec['legacy_citations'] == [] and rec['qc_override_receipt_id'] is None
         with pytest.raises(HeadshotError, match='sha256'):
-            headshot_record(entity_id='e', look_hash='l' * 64, asset_id='a' * 64, origin='generated',
-                            import_receipt_id=None, prompt_recipe_sha256='p' * 64,
+            headshot_record(entity_id='e', look_hash='1' * 64, asset_id='a' * 64, origin='generated',
+                            import_receipt_id=None, prompt_recipe_sha256='0' * 64,
                             candidates_checkpoint_digest='c' * 64, record_version='1.2',
                             generation_receipt_id='g', qc_receipt_id='q',
                             qc_override_receipt_id='o', qc_override_record_sha256='short',
@@ -362,15 +362,15 @@ class TestFixRound3:
         with unknown fields or non-hex digests (r3 #5/#7)."""
         from lib.headshots import HeadshotError, headshot_record
         with pytest.raises(HeadshotError, match="lowercase sha256"):
-            headshot_record(entity_id='e', look_hash='l' * 64, asset_id='a' * 64, origin='generated',
-                            import_receipt_id=None, prompt_recipe_sha256='p' * 64,
+            headshot_record(entity_id='e', look_hash='1' * 64, asset_id='a' * 64, origin='generated',
+                            import_receipt_id=None, prompt_recipe_sha256='0' * 64,
                             candidates_checkpoint_digest='c' * 64, record_version='1.2',
                             generation_receipt_id='g', qc_receipt_id='q',
                             qc_override_receipt_id='o', qc_override_record_sha256='z' * 64,
                             field_manifest_sha256='f' * 64)
         with pytest.raises(HeadshotError, match="unique and sorted"):
-            headshot_record(entity_id='e', look_hash='l' * 64, asset_id='a' * 64, origin='generated',
-                            import_receipt_id=None, prompt_recipe_sha256='p' * 64,
+            headshot_record(entity_id='e', look_hash='1' * 64, asset_id='a' * 64, origin='generated',
+                            import_receipt_id=None, prompt_recipe_sha256='0' * 64,
                             candidates_checkpoint_digest='c' * 64, record_version='1.2',
                             generation_receipt_id='g', qc_receipt_id='q',
                             legacy_citations=[{"receipt_id": "b", "record_sha256": "e" * 64},
@@ -432,3 +432,68 @@ class TestFixRound3:
         assert done["status"] == "retired"
         hist = (_cp(w)["metadata"].get("rejected_candidates") or {}).get(CHAR) or []
         assert asset in hist, "the SIGNED receipt chain, not state, names the retired face"
+
+
+class TestFixRound4:
+    def test_active_headshots_replay_refuses_forged_record(self, bworld):
+        """REAL replay: a signed receipt whose 1.2 record smuggles an extra
+        field is refused by active_headshots itself (r4 #7 / r2 #10)."""
+        from lib.headshots import HeadshotError, headshot_record
+        from tests.lib.look_lock_helpers import _approve
+        from lib.look_spec import look_hash as lh
+        w = bworld
+        rec = headshot_record(entity_id=CHAR, look_hash=lh(w["c"]), asset_id="a" * 64, origin="generated",
+                              import_receipt_id=None, prompt_recipe_sha256="0" * 64,
+                              candidates_checkpoint_digest="c" * 64, record_version="1.2",
+                              generation_receipt_id="g", qc_receipt_id="q")
+        rec["smuggled"] = True  # forged AFTER construction, then genuinely signed
+        _approve(w["project"], "headshots", f"character:{CHAR}", rec, "headshot", CHAR,
+                 {"action": "activate", "entity_kind": "character", "look_hash": lh(w["c"]), "supersedes_receipt_id": None})
+        with pytest.raises(HeadshotError, match="unknown fields"):
+            active_headshots(w["project"])
+
+    def test_post_token_precommit_failure_abandons(self, bworld, monkeypatch):
+        """r4 #1/#7: a NON-GateHandlerError failure inside the pre-commit
+        callback (after the token is consumed) still abandons the request."""
+        import lib.look_ingest as li
+        from scripts import gate_approve
+        from lib import gates
+        w = bworld
+        _run(w, candidates=1, judge_adapter=PlanJudge([_fail(), _fail(), _fail()]))
+        ov = json.loads(_batch_reqs(w)[0].read_text())
+        req = dict(ov); req["_chosen_items"] = ["no_text"]; req["reason"] = "a fine typed reason here"
+        shown = gate_approve.construct(w["project"], req)
+        real = li.active_look_for
+        import lib.receipts as lr
+
+        def sabotage(*a, **k):
+            if lr._in_flight:
+                # only INSIDE the receipt transaction — i.e., the pre-commit
+                # callback, after the one-use token is consumed
+                raise RuntimeError("filesystem exploded mid-pre-commit")
+            return real(*a, **k)
+
+        monkeypatch.setattr(li, "active_look_for", sabotage)
+        with pytest.raises(gate_approve.GateHandlerError, match="pre-commit re-derivation failed"):
+            with gates.handler_context():
+                gate_approve._decide(req, w["project"], shown=shown, note=None)
+        assert (w["project"] / ".gate-requests" / "abandoned" / f"{ov['request_id']}.json").is_file(), \
+            "spent-token pre-commit failure of ANY exception type abandons the request"
+
+    def test_raw_legacy_state_without_counter_never_reissues_id(self, bworld):
+        """r4 #4/#7: a RAW legacy checkpoint (no override_request_seq, no look
+        binding) whose request file is gone gets a NEW id on recovery."""
+        w = bworld
+        _run(w, candidates=1, judge_adapter=PlanJudge([_fail(), _fail(), _fail()]))
+        p1 = _batch_reqs(w)[0]
+        rid1 = json.loads(p1.read_text())["request_id"]
+        p1.unlink()
+        cp_path = w["project"] / "checkpoint_headshots.json"
+        raw = json.loads(cp_path.read_text())
+        st = raw["metadata"]["run_state"][CHAR]
+        st.pop("look_hash", None); st.pop("look_receipt_id", None)
+        raw["metadata"].pop("override_request_seq", None)  # simulate pre-fix checkpoint
+        cp_path.write_text(json.dumps(raw, indent=2))
+        r = _run(w)
+        assert r["status"] == "pending"
+        assert r["request_id"] != rid1, "the cleared legacy id must not be reissued"

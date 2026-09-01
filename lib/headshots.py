@@ -96,10 +96,12 @@ def headshot_record(
         raise HeadshotError("an imported_synthetic hero must cite its import receipt")
     if origin == "generated" and import_receipt_id:
         raise HeadshotError("a generated hero has no import receipt")
-    if not isinstance(asset_id, str) or len(asset_id) != 64:
-        raise HeadshotError("asset_id must be a sha256")
-    if not isinstance(candidates_checkpoint_digest, str) or len(candidates_checkpoint_digest) != 64:
-        raise HeadshotError("candidates_checkpoint_digest must be a sha256")
+    if not _is_hex64(asset_id):
+        raise HeadshotError("asset_id must be a lowercase sha256 hex digest")
+    if not _is_hex64(candidates_checkpoint_digest):
+        raise HeadshotError("candidates_checkpoint_digest must be a lowercase sha256 hex digest")
+    if not _is_hex64(look_hash):
+        raise HeadshotError("look_hash must be a lowercase sha256 hex digest")
     record: dict[str, Any] = {
         "entity_kind": "character",
         "entity_id": entity_id,
@@ -203,6 +205,9 @@ def active_headshots(project_dir: Path | str, *, project_id: Optional[str] = Non
                 extras = sorted(set(record) - set(wanted))
                 if extras:
                     raise HeadshotError(f"headshot receipt {row.get('receipt_id')} record carries unknown fields {extras}")
+                for f in ("asset_id", "normalized_pixel_hash", "look_hash", "candidates_checkpoint_digest"):
+                    if not _is_hex64(record.get(f)):
+                        raise HeadshotError(f"headshot receipt {row.get('receipt_id')}: {f} must be a lowercase sha256 hex digest")
             if rv == HEADSHOT_RECORD_VERSION_1_2:
                 # Replay enforces the 1.2 conditional matrix, not just presence:
                 # batch citation all-or-none, exclusive with legacy_citations.

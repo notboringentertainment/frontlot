@@ -752,7 +752,7 @@ def _construct_qc_override_batch(root: Path, req: dict) -> Constructed:
     rejected = set(((cp.get("metadata") or {}).get("rejected_candidates") or {}).get(entity_id) or [])
     if current is not None:
         rejected.add(current.asset_id)  # the active face is never in a waiver field (inspection #9)
-    field = hero_override_field(root, entity_id, look.look_hash, qc=qc, rejected=rejected)
+    field = hero_override_field(root, entity_id, look.look_hash, qc=qc, rejected=rejected, look_receipt_id=look.receipt_id)
     prior_unlocked: set[str] = set()
     for r in verified_approvals(root, "qc_override", entity_id=entity_id):
         rec = r.get("record") or {}
@@ -828,7 +828,18 @@ def _construct_qc_override_batch(root: Path, req: dict) -> Constructed:
         the last look at live state before the signature publishes
         (post-build inspection #6): checkpoint digest, look (both bindings),
         verified config, budget exhaustion, headshot tip, and the field
-        manifest are all re-derived and must still hold."""
+        manifest are all re-derived and must still hold. EVERY failure in
+        here — whatever its type — surfaces as GateHandlerError so _decide
+        abandons the spent-token request (round-4 #1); publication failures
+        outside this callback stay pending for WAL recovery."""
+        try:
+            _pre_commit_body()
+        except GateHandlerError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — typed refusal boundary
+            raise GateHandlerError(f"pre-commit re-derivation failed: {exc}") from exc
+
+    def _pre_commit_body() -> None:
         from lib.headshots import active_headshots as _ah
         from lib.look_ingest import active_look_for as _alf
         from lib.project_config import ProjectConfigError as _PCE, load_verified_project_config as _lvpc
@@ -851,7 +862,7 @@ def _construct_qc_override_batch(root: Path, req: dict) -> Constructed:
             raise GateHandlerError("the active headshot changed while approving; the waiver is void")
         from lib.receipts import field_manifest_sha256 as _fms
         rejected_now = rejected
-        now_field = [r for r in hero_override_field(root, entity_id, look.look_hash, qc=now_cfg.require_hero_qc(), rejected=rejected_now)
+        now_field = [r for r in hero_override_field(root, entity_id, look.look_hash, qc=now_cfg.require_hero_qc(), rejected=rejected_now, look_receipt_id=look.receipt_id)
                      if r["asset_id"] not in prior_unlocked]
         if _fms(now_field) != manifest:
             raise GateHandlerError("the reviewed field changed while approving; the waiver is void")

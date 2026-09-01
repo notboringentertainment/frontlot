@@ -158,7 +158,7 @@ def batch_row_for(
 
 def hero_override_field(
     project_dir: Path | str, entity_id: str, look_hash: str, *, qc: Any,
-    rejected: set[str],
+    rejected: set[str], look_receipt_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """The SHARED field validator: every ledger row a hero batch waiver may
     cover, used identically at request construction, signer reconstruction,
@@ -187,8 +187,16 @@ def hero_override_field(
             continue
         if v.get("verdict") != "fail" or v.get("provider") == "local":
             continue
-        if v.get("entity_id") != entity_id or v.get("role") != "hero":
+        if v.get("entity_id") != entity_id or v.get("role") != "hero" or v.get("entity_kind") != "character":
             continue  # the verdict itself must name this entity and the hero role (r3 #2)
+        if v.get("look_hash") != look_hash:
+            continue
+        if look_receipt_id is not None and v.get("look_receipt_id") != look_receipt_id:
+            continue  # judged against the exact active look receipt (r4 #3)
+        if v.get("headshot_asset_id") is not None or v.get("headshot_receipt_id") is not None:
+            continue  # a hero verdict names no headshot
+        if not v.get("provider_request_id"):
+            continue
         key = a.get("series_key") or {}
         if qr.IMPORTED_SENTINEL in (key.get("generation_endpoint"), key.get("builder_policy_sha256"), key.get("generation_model")):
             continue

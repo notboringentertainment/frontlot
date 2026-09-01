@@ -150,6 +150,13 @@ def _write(root: Path, packet: dict[str, Any], *, status: str, run_state: dict[s
     states = dict(meta.get("run_state") or {})
     for entity, state in run_state.items():
         if state is None:
+            prior = states.get(entity) or {}
+            if prior.get("mode") == "override_pending" and prior.get("request_id"):
+                tail = str(prior["request_id"]).rsplit("-", 1)[-1]
+                if tail.isdigit():
+                    seq = dict(meta.get("override_request_seq") or {})
+                    seq[entity] = max(int(seq.get(entity) or 0), int(tail))
+                    meta["override_request_seq"] = seq  # a cleared id is never reissued (r4 #4)
             states.pop(entity, None)
         else:
             states[entity] = state
@@ -854,7 +861,7 @@ def _batch_field(ctx) -> list[dict]:
     from lib.sheet_qc.verify import hero_override_field
 
     root, entity_id = ctx["root"], ctx["entity_id"]
-    return hero_override_field(root, entity_id, ctx["look"].look_hash, qc=ctx["qc"], rejected=_rejected_assets(root, entity_id, include_active=True))
+    return hero_override_field(root, entity_id, ctx["look"].look_hash, qc=ctx["qc"], rejected=_rejected_assets(root, entity_id, include_active=True), look_receipt_id=ctx["look"].receipt_id)
 
 
 def _maybe_batch_override(ctx, passing: dict) -> Optional[dict[str, Any]]:
@@ -1137,15 +1144,15 @@ def _finish_retire(ctx, state) -> dict[str, Any]:
         raise HeadshotRunError(f"request {state['request_id']} is done but {entity_id!r} still has an active hero; refusing")
     from lib.headshots import headshot_receipts as _hsr
     rows = _hsr(root)
-    # the SIGNED retire receipt for THIS request (bound by checkpoint digest),
-    # never mutable run state (r3 #3)
-    where2, req2 = read_request(root, str(state.get("request_id") or ""))
-    bound2 = (req2 or {}).get("source_checkpoint_digest")
-    retire_rows = [r for r in rows if r.get("action") == "retire" and r.get("entity_id") == entity_id
-                   and (bound2 is None or r.get("source_checkpoint_digest") == bound2)]
-    if len(retire_rows) != 1:
-        raise HeadshotRunError(f"expected exactly one signed retire receipt for request {state.get('request_id')}; found {len(retire_rows)} — refusing")
-    superseded_rid = str(retire_rows[0].get("supersedes_receipt_id") or "")
+    # The retired face comes from the verified, append-only receipt CHAIN
+    # alone (round-4 #2): the LAST retire row for this entity is the one this
+    # request signed (the entity has no active hero — checked above — and any
+    # later retire would need another signed activation first). No mutable
+    # request or state field participates.
+    retire_rows = [r for r in rows if r.get("action") == "retire" and r.get("entity_id") == entity_id]
+    if not retire_rows:
+        raise HeadshotRunError(f"request {state.get('request_id')} is done but no signed retire receipt exists for {entity_id!r} — refusing")
+    superseded_rid = str(retire_rows[-1].get("supersedes_receipt_id") or "")
     activation = next((r for r in rows if r.get("receipt_id") == superseded_rid), None)
     retired = []
     if activation is not None:
