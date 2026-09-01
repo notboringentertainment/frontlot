@@ -214,12 +214,18 @@ def _receipt_for_asset(project_dir: Path, asset_id: str, receipts_by_sha: Option
 def verify_headshot_candidate(
     project_dir: Path | str, entry: dict[str, Any], candidate: dict[str, Any], *, active_look: Any, config: Any, pin: Any,
     receipts_by_sha: Optional[dict[str, dict[str, Any]]] = None, require_verdict: bool = True,
+    approved_record_version: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Verify one candidate ImageRef of a pending (or the hero of an approved)
     headshot entry. Returns the hero verdict row under 1.4, else None.
     ``require_verdict=False`` runs every check except the candidate's own
     verdict — for the approved hero of a GRANDFATHERED legacy record, whose
-    verdict is bound through the attestation (``verify_active_headshot``)."""
+    verdict is bound through the attestation (``verify_active_headshot``).
+    ``approved_record_version`` — the ACTIVE headshot record's version when
+    the candidate is an approved hero (None for pending candidates): it, not
+    the pin, decides whether a citation-less candidate keeps the pre-batch
+    verdict-bound override scan."""
+    from lib.headshots import HEADSHOT_RECORD_VERSION_1_2
     from lib.receipts import normalize_prompt_recipe
     from lib.reference_import import ReferenceImportError, synthetic_import_receipt, verify_lineage
 
@@ -299,9 +305,15 @@ def verify_headshot_candidate(
                     "field_manifest_sha256": candidate.get("field_manifest_sha256")}
     elif isinstance(candidate.get("legacy_citations"), list):
         legacy = list(candidate["legacy_citations"])
-    elif _hero_batch(pin) and kind != "imported":
+    elif kind != "imported" and (
+            approved_record_version == HEADSHOT_RECORD_VERSION_1_2
+            if approved_record_version is not None else _hero_batch(pin)):
         # A generated candidate under a 1.5 pin with NO citations has ZERO
         # override authority — never a license to scan 1.0 receipts (r3 #4).
+        # For an APPROVED hero the authority era is the RECORD's version, the
+        # same rule verify_active_headshot applies: a pre-batch (1.1) hero
+        # approved under 1.4 keeps 1.4's verdict-bound scan after the project
+        # pins 1.5 — its era had no citations to seal.
         legacy = []
     return require_hero_verdict(
         project_dir, qc_receipt_id=candidate.get("qc_receipt_id"), asset_id=asset_id, entity_id=entity_id,

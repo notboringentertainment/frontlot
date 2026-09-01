@@ -18,7 +18,7 @@ from lib.look_spec import look_hash as _look_hash
 from scripts import headshot_run as hr
 from scripts.headshot_run import Blocked, run_headshot
 from tests.lib.d19_helpers import config_1_2
-from tests.lib.look_lock_helpers import CHAR, PROJECT, activate_look, approve_request, character_look, decline_request
+from tests.lib.look_lock_helpers import CHAR, PROJECT, activate_look, approve_request, character_look, decline_request, pin_project
 from tests.lib.test_authored_film_contract import project, write_project_config  # noqa: F401
 from tests.lib.test_headshot_run import FakeGen, PlanJudge, _cp, _req, _run, _world
 from scripts.gate_approve import GateHandlerError
@@ -227,6 +227,31 @@ class TestStaleAuthority:
 
 
 class TestLegacyRegression:
+    def test_1_4_override_hero_survives_the_1_5_pin(self, project, monkeypatch):
+        """A hero approved under 1.4 through a verdict-bound 1.0 override (a
+        1.1 record — no citations existed to seal) must still verify, and its
+        project must still checkpoint-write, after the pin moves to 1.5. The
+        r3 #4 zero-authority rule applies to 1.5-era shapes, not to a
+        migrated pre-batch approval (Bloodless, 2026-08-31)."""
+        w = _world(project, monkeypatch, version="1.4")
+        with pytest.raises(Blocked):
+            _run(w, candidates=1, judge_adapter=PlanJudge([_fail(), _fail(), _fail()]))
+        ov = json.loads(_batch_reqs(w)[0].read_text())
+        ov["reason"] = "the writer accepts this item for this character"
+        approve_request(ov, w["project"])
+        r = _run(w)
+        assert r["status"] == "pending"
+        approve_request(_req(w, r["request_id"]), w["project"], selection=1)
+        assert _run(w)["status"] == "approved"
+        from lib.headshots import record_version_of
+        cur = active_headshots(w["project"])[CHAR]
+        assert record_version_of(cur.record) == "1.1" and not cur.record.get("qc_override_receipt_id")
+        from lib.pipeline_pin import refresh_cache
+        pin_project(w["project"], "1.5", supersedes=refresh_cache(w["project"], "authored-film").receipt_id)
+        refresh_cache(w["project"], "authored-film")
+        # the next headshots checkpoint write re-verifies the migrated hero
+        hr._write(w["project"], hr._current_pending_packet(w["project"]), status="in_progress", run_state={})
+
     def test_1_4_still_writes_single_verdict_requests_and_1_1_records(self, project, monkeypatch):
         w = _world(project, monkeypatch, version="1.4")
         with pytest.raises(Blocked):

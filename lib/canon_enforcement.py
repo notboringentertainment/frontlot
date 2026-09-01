@@ -1699,11 +1699,12 @@ def _check_headshots(
     all_rows = _generation_receipt_rows(project_dir)  # every verified row: identical pixels may carry several (D20 #6)
     receipts = {r["output_sha256"]: r for r in all_rows}
 
-    def _candidate(entry: dict[str, Any], cand: dict[str, Any], label: str, look: Any, *, require_verdict: bool = True) -> None:
+    def _candidate(entry: dict[str, Any], cand: dict[str, Any], label: str, look: Any, *, require_verdict: bool = True,
+                   approved_record_version: Any = None) -> None:
         if hero_qc:
             try:
                 verify_headshot_candidate(project_dir, entry, cand, active_look=look, config=config, pin=pin, receipts_by_sha=receipts,
-                                          require_verdict=require_verdict)
+                                          require_verdict=require_verdict, approved_record_version=approved_record_version)
             except HeadshotVerifyError as exc:
                 _fail(f"{label}: {exc}")
         _check_image_ref(project_dir, label, cand, all_rows)
@@ -1736,7 +1737,8 @@ def _check_headshots(
         # through the attestation, not on the candidate; verify_active_headshot
         # below is what binds it.
         legacy_grandfathered = hero_qc and record_version_of(current.record) == "1.0"
-        _candidate(entry, hero, label, look, require_verdict=not legacy_grandfathered)
+        _candidate(entry, hero, label, look, require_verdict=not legacy_grandfathered,
+                   approved_record_version=record_version_of(current.record) if hero_qc else None)
         if current.receipt_id != entry.get("approval_receipt_id") or current.asset_id != hero.get("asset_id"):
             _fail(
                 f"{label} names receipt {entry.get('approval_receipt_id')!r} / asset {hero.get('asset_id')} but the "
