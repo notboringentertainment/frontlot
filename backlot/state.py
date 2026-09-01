@@ -1184,7 +1184,28 @@ def _render_sheet(root: Path, req: dict[str, Any]) -> dict[str, Any]:
 
 
 def _render_qc_override(root: Path, req: dict[str, Any]) -> dict[str, Any]:
-    """Authoritative source: raw qc-receipts.jsonl verdict selected by request qc_receipt_id."""
+    """Authoritative source: raw qc-receipts.jsonl verdict selected by request qc_receipt_id.
+    Batch requests (authored-film 1.5) render the whole reviewed field —
+    every failed candidate with its image and failing items; only the signer
+    reconstructs and binds it, the board just shows it."""
+    if req.get("batch"):
+        field = req.get("field") if isinstance(req.get("field"), list) else []
+        rows_out = []
+        any_error = False
+        for r in field:
+            if not isinstance(r, dict):
+                continue
+            visual = _file_packet(root, r.get("asset_id"), label="failed candidate")
+            any_error |= bool(visual.get("error"))
+            rows_out.append({"asset_id": r.get("asset_id"), "failing_items": r.get("failing_items") or [],
+                             "qc_receipt_id": r.get("qc_receipt_id"), "visual": visual,
+                             "label": "unverified field row"})
+        return {"batch": True, "field_rows": rows_out, "item_ids": req.get("item_ids") or [],
+                "field_manifest_sha256": req.get("field_manifest_sha256"),
+                "reason_reminder": "The signer reconstructs this field, previews exactly which faces your chosen "
+                                   "items unlock, and requires a typed reason. Declining needs a typed note.",
+                "packet_error": not rows_out or any_error,
+                "error": None if rows_out else "batch request carries no field rows"}
     rid = req.get("qc_receipt_id")
     rows, lookup_error = _raw_jsonl_targets(root / "qc-receipts.jsonl", {rid}) if isinstance(rid, str) else ({}, None)
     row = rows.get(rid) if isinstance(rid, str) else None

@@ -1225,6 +1225,18 @@ function renderPacketEvidence(s, packet) {
     }
   }
   if (packet.visual) visuals.push(visualFigure(s, packet.visual, packet.visual.label));
+  if (Array.isArray(packet.field_rows)) {
+    // Batch hero waiver (authored-film 1.5): the whole reviewed field —
+    // every failed candidate with its failing items. The board only shows;
+    // the signer reconstructs, previews the unlock, and binds the digest.
+    let n = 0;
+    for (const row of packet.field_rows) {
+      if (!row || !row.visual) continue;
+      n += 1;
+      const items = Array.isArray(row.failing_items) ? row.failing_items.join(", ") : "";
+      visuals.push(visualFigure(s, row.visual, `FAIL ${items || "(unknown items)"}`, n));
+    }
+  }
   if (visuals.length) {
     output.append(el("div", { class: "gate-contact-sheet" }, visuals));
   }
@@ -1241,7 +1253,7 @@ function renderPacketEvidence(s, packet) {
     output.append(qc);
   }
 
-  const visualKeys = new Set(["candidates", "visuals", "visual", "qc_rows", "packet_error", "error"]);
+  const visualKeys = new Set(["candidates", "visuals", "visual", "qc_rows", "field_rows", "packet_error", "error"]);
   // Short scalar fields (counts, hashes, flags) read as one quiet chip strip;
   // anything long or structured keeps its own labelled block.
   const chips = [];

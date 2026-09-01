@@ -114,13 +114,21 @@ def validate_request_id(request_id: str) -> str:
 def request_paths(root: Path, request_id: str) -> dict[str, Path]:
     rid = validate_request_id(request_id)
     base = root / REQUEST_DIRNAME
-    return {"pending": base / f"{rid}.json", "done": base / "done" / f"{rid}.json", "declined": base / "declined" / f"{rid}.json"}
+    return {
+        "pending": base / f"{rid}.json",
+        "done": base / "done" / f"{rid}.json",
+        "declined": base / "declined" / f"{rid}.json",
+        "abandoned": base / "abandoned" / f"{rid}.json",
+    }
 
 
 def request_state(root: Path, request_id: str) -> str:
-    """``missing | pending | done | declined`` — where the gate left the
-    request. More than one location is a corrupted request directory and
-    fails closed."""
+    """``missing | pending | done | declined | abandoned`` — where the gate
+    left the request. ``abandoned`` is terminal: a pre-commit check failed
+    after the one-use token was consumed; the id is never reused. A ``missing``
+    request (the checkpoint-before-request crash window) is revalidated and
+    republished under the SAME id. More than one location is a corrupted
+    request directory and fails closed."""
     paths = request_paths(root, request_id)
     found = [state for state, p in paths.items() if p.is_file() and not p.is_symlink()]
     if not found:

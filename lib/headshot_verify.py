@@ -65,12 +65,18 @@ def grandfather_record(
 def require_hero_verdict(
     project_dir: Path | str, *, qc_receipt_id: Any, asset_id: str, entity_id: str, active_look: Any, config: Any,
     gen_receipt: Optional[dict[str, Any]], grandfather: bool = False,
+    override_citation: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Return the verified ``hero`` verdict row or raise HeadshotVerifyError
     listing every reason. ``grandfather`` says whether the attempt must be
-    (or must not be) a legacy-hero grandfather attempt."""
+    (or must not be) a legacy-hero grandfather attempt. ``override_citation``
+    — ``{qc_override_receipt_id, qc_override_record_sha256,
+    field_manifest_sha256}`` — is the candidate's carried batch authority:
+    when present, coverage comes ONLY from that cited record-1.1 row
+    (verified through ``batch_row_for``'s full binding); when absent, only
+    from verdict-bound 1.0 overrides. The two are never unioned."""
     from lib import qc_receipts
-    from lib.sheet_qc.verify import SeriesMismatch, overrides_for, raw_response_ok, verify_series_against_receipt
+    from lib.sheet_qc.verify import SeriesMismatch, batch_row_for, overrides_for, raw_response_ok, verify_series_against_receipt
 
     project_dir = Path(project_dir)
     qc = config.require_hero_qc()
@@ -141,7 +147,19 @@ def require_hero_verdict(
         failing = set(row.get("failing_items") or [])
         if failing & NON_OVERRIDABLE:
             reasons.append(f"verdict failed on {sorted(failing & NON_OVERRIDABLE)} (judge protocol failure); not overridable — re-judge")
-        covered = overrides_for(project_dir, row["receipt_id"], entity_id) - NON_OVERRIDABLE
+        if override_citation is not None:
+            cit = override_citation
+            accepted = batch_row_for(
+                project_dir,
+                override_receipt_id=str(cit.get("qc_override_receipt_id") or ""),
+                override_record_sha256=str(cit.get("qc_override_record_sha256") or ""),
+                qc_receipt_id=row["receipt_id"], asset_id=asset_id,
+                field_manifest_sha256=str(cit.get("field_manifest_sha256") or ""),
+                entity_id=entity_id,
+            )
+            covered = (accepted or set()) - NON_OVERRIDABLE
+        else:
+            covered = overrides_for(project_dir, row["receipt_id"], entity_id) - NON_OVERRIDABLE
         uncovered = sorted(failing - covered)
         if uncovered:
             reasons.append(f"verdict failed {sorted(failing)}; no signed qc_override covers {uncovered}")
@@ -244,9 +262,16 @@ def verify_headshot_candidate(
                 raise HeadshotVerifyError(f"{label}: the receipted prompt does not hash to prompt_recipe.rendered_sha256")
     if not hero_qc or not require_verdict:
         return None
+    citation = None
+    if candidate.get("qc_override_receipt_id"):
+        # A packet-1.2 candidate carries its batch authority; coverage is
+        # tested ONLY through the cited record's full binding (r3 #1/#2).
+        citation = {"qc_override_receipt_id": candidate.get("qc_override_receipt_id"),
+                    "qc_override_record_sha256": candidate.get("qc_override_record_sha256"),
+                    "field_manifest_sha256": candidate.get("field_manifest_sha256")}
     return require_hero_verdict(
         project_dir, qc_receipt_id=candidate.get("qc_receipt_id"), asset_id=asset_id, entity_id=entity_id,
-        active_look=active_look, config=config, gen_receipt=receipt,
+        active_look=active_look, config=config, gen_receipt=receipt, override_citation=citation,
     )
 
 

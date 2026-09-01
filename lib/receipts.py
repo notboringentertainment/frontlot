@@ -82,9 +82,101 @@ ENVELOPE_FIELDS: dict[str, dict[str, bool]] = {
     },
     "reference_import": {"origin_class": True, "normalized_pixel_hash": True},
     "pipeline_migration": {"supersedes_receipt_id": False},
-    "qc_override": {"qc_receipt_id": True},
+    # qc_override has two envelope shapes, enforced exactly-one in
+    # validate_envelope: record 1.0 (verdict-bound) carries qc_receipt_id;
+    # record 1.1 (field-bound batch) carries field_manifest_sha256.
+    "qc_override": {"qc_receipt_id": False, "field_manifest_sha256": False},
     "headshot_grandfather": {"attests_receipt_id": True, "entity_kind": True, "look_hash": True},
 }
+
+# Record 1.1 (batch) allowlist: a field-bound waiver over the exact candidates
+# the human was shown. No future-verdict authority; the manifest digest binds
+# the reviewed field, unlocked_asset_ids binds the previewed result.
+QC_OVERRIDE_BATCH_FIELDS = frozenset({
+    "record_version", "request_id", "batch", "field_manifest_sha256",
+    "unlocked_asset_ids", "look_hash", "look_receipt_id",
+    "config_approval_receipt_id", "config_sha256", "budget_cap",
+    "attempts_spent", "expected_active_headshot_receipt_id", "reason",
+})
+_QC_OVERRIDE_BATCH_MARKERS = frozenset({"record_version", "batch", "field_manifest_sha256", "unlocked_asset_ids"})
+
+
+def field_manifest_sha256(rows: list[dict]) -> str:
+    """Canonical digest of a reviewed candidate field: sorted
+    ``{qc_receipt_id, asset_id, failing_items}`` tuples, canonical JSON."""
+    canon = sorted(
+        (
+            {
+                "qc_receipt_id": str(r["qc_receipt_id"]),
+                "asset_id": str(r["asset_id"]),
+                "failing_items": sorted(str(i) for i in (r.get("failing_items") or [])),
+            }
+            for r in rows
+        ),
+        key=lambda r: (r["qc_receipt_id"], r["asset_id"]),
+    )
+    return _record_sha256({"field_manifest_version": "1", "rows": canon})
+
+
+def _validate_qc_override_batch(record: dict, env: dict) -> None:
+    """Record 1.1: strict allowlist, canonical batch, nonempty previewed
+    unlock. Reached only when record_version is present."""
+    if record.get("record_version") != "1.1":
+        raise ValueError(f"qc_override: unknown record_version {record.get('record_version')!r}")
+    unknown = sorted(set(record) - QC_OVERRIDE_BATCH_FIELDS)
+    if unknown:
+        raise ValueError(f"qc_override 1.1: unknown record fields {unknown}")
+    missing = sorted(f for f in QC_OVERRIDE_BATCH_FIELDS - {"expected_active_headshot_receipt_id"} if record.get(f) is None)
+    if missing:
+        raise ValueError(f"qc_override 1.1: record is missing {missing}")
+    if env.get("qc_receipt_id") is not None:
+        raise ValueError("qc_override 1.1: envelope must carry field_manifest_sha256, not qc_receipt_id")
+    if record["field_manifest_sha256"] != env.get("field_manifest_sha256"):
+        raise ValueError("qc_override 1.1: record.field_manifest_sha256 must equal the envelope's")
+    if not isinstance(record["field_manifest_sha256"], str) or len(record["field_manifest_sha256"]) != 64:
+        raise ValueError("qc_override 1.1: field_manifest_sha256 must be a sha256 hex digest")
+    batch = record["batch"]
+    if not isinstance(batch, list) or not batch:
+        raise ValueError("qc_override 1.1: batch must be a non-empty list")
+    seen_rids: set = set()
+    seen_assets: set = set()
+    prev_key = None
+    for row in batch:
+        if not isinstance(row, dict) or set(row) != {"qc_receipt_id", "asset_id", "accepted_item_ids"}:
+            raise ValueError("qc_override 1.1: each batch row is exactly {qc_receipt_id, asset_id, accepted_item_ids}")
+        rid, aid, items = row["qc_receipt_id"], row["asset_id"], row["accepted_item_ids"]
+        if not isinstance(rid, str) or not rid or not isinstance(aid, str) or not aid:
+            raise ValueError("qc_override 1.1: batch row ids must be non-empty strings")
+        if not isinstance(items, list) or not items or not all(isinstance(i, str) and i for i in items):
+            raise ValueError("qc_override 1.1: accepted_item_ids must be a non-empty list of item ids")
+        if rid in seen_rids or aid in seen_assets:
+            raise ValueError("qc_override 1.1: batch rows must have unique qc_receipt_ids and asset_ids")
+        seen_rids.add(rid)
+        seen_assets.add(aid)
+        key = (rid, aid)
+        if prev_key is not None and key <= prev_key:
+            raise ValueError("qc_override 1.1: batch rows must be in canonical (qc_receipt_id, asset_id) order")
+        prev_key = key
+    unlocked = record["unlocked_asset_ids"]
+    if not isinstance(unlocked, list) or not unlocked or not all(isinstance(a, str) and a for a in unlocked):
+        raise ValueError("qc_override 1.1: unlocked_asset_ids must be a non-empty list — a waiver that unlocks nothing cannot be signed")
+    if not set(unlocked) <= seen_assets:
+        raise ValueError("qc_override 1.1: unlocked_asset_ids must be a subset of the batch's asset_ids")
+    if not isinstance(record["request_id"], str) or not record["request_id"]:
+        raise ValueError("qc_override 1.1: request_id is required")
+    for f in ("look_hash", "config_sha256"):
+        if not isinstance(record[f], str) or len(record[f]) != 64:
+            raise ValueError(f"qc_override 1.1: {f} must be a sha256 hex digest")
+    for f in ("look_receipt_id", "config_approval_receipt_id"):
+        if not isinstance(record[f], str) or not record[f]:
+            raise ValueError(f"qc_override 1.1: {f} is required")
+    eah = record.get("expected_active_headshot_receipt_id")
+    if eah is not None and (not isinstance(eah, str) or not eah):
+        raise ValueError("qc_override 1.1: expected_active_headshot_receipt_id must be null or a receipt id")
+    if not isinstance(record["budget_cap"], int) or not isinstance(record["attempts_spent"], int):
+        raise ValueError("qc_override 1.1: budget_cap and attempts_spent must be integers")
+    if not isinstance(record.get("reason"), str) or not record["reason"].strip():
+        raise ValueError("qc_override 1.1: record.reason is required")
 REFERENCE_ORIGIN_CLASSES = frozenset({"imported_synthetic", "casting_inspiration"})
 ENTITY_KINDS = frozenset({"character", "location"})
 
@@ -282,13 +374,24 @@ def validate_envelope(
     if kind == "headshot" and record.get("look_hash") != env["look_hash"]:
         raise ValueError("headshot: record.look_hash must equal envelope look_hash")
     if kind == "qc_override":
-        if record.get("qc_receipt_id") != env["qc_receipt_id"]:
-            raise ValueError("qc_override: record.qc_receipt_id must equal envelope qc_receipt_id")
-        items = record.get("item_ids")
-        if not isinstance(items, list) or not items or not all(isinstance(i, str) and i for i in items):
-            raise ValueError("qc_override: record.item_ids must be a non-empty list of item ids")
-        if not isinstance(record.get("reason"), str) or not record["reason"].strip():
-            raise ValueError("qc_override: record.reason is required")
+        has_rid = env.get("qc_receipt_id") is not None
+        has_manifest = env.get("field_manifest_sha256") is not None
+        if has_rid == has_manifest:
+            raise ValueError("qc_override: envelope carries exactly one of qc_receipt_id (record 1.0) or field_manifest_sha256 (record 1.1)")
+        if "record_version" in record or (set(record) & _QC_OVERRIDE_BATCH_MARKERS):
+            # 1.1 batch branch — strict, versioned, field-bound.
+            _validate_qc_override_batch(record, env)
+        else:
+            # 1.0 verdict-bound branch — preserved exactly.
+            if not has_rid:
+                raise ValueError("qc_override 1.0: envelope must carry qc_receipt_id")
+            if record.get("qc_receipt_id") != env["qc_receipt_id"]:
+                raise ValueError("qc_override: record.qc_receipt_id must equal envelope qc_receipt_id")
+            items = record.get("item_ids")
+            if not isinstance(items, list) or not items or not all(isinstance(i, str) and i for i in items):
+                raise ValueError("qc_override: record.item_ids must be a non-empty list of item ids")
+            if not isinstance(record.get("reason"), str) or not record["reason"].strip():
+                raise ValueError("qc_override: record.reason is required")
     if kind == "headshot_grandfather":
         missing_fields = [f for f in HEADSHOT_GRANDFATHER_FIELDS if not record.get(f)]
         if missing_fields or set(record) != set(HEADSHOT_GRANDFATHER_FIELDS):

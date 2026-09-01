@@ -69,6 +69,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -179,7 +180,7 @@ def _complete_committed_decline(path: Path, data: dict) -> None:
 # from disk at decision), the agent's non-authoritative hints, and the
 # transition markers the gate itself writes. Every other field of a pending
 # request is immutable between display and decision.
-DECISION_FIELDS = frozenset({"reason", "note", "selection"})
+DECISION_FIELDS = frozenset({"reason", "note", "selection", "_chosen_items"})
 HINT_FIELDS = frozenset({"approval_record", "envelope"})
 MARKER_FIELDS = frozenset({"approval_receipt_id", "declined_note"})
 
@@ -687,12 +688,138 @@ def _construct_character(root: Path, req: dict) -> Constructed:
                        pre_commit_check=pre_commit)
 
 
+def _show_batch_field(req: dict) -> list[str]:
+    """Display convenience only — the authoritative field is reconstructed
+    and compared inside the constructor; this just orients the human."""
+    field = req.get("field") or []
+    items = sorted({str(i) for r in field for i in r.get("failing_items") or []})
+    print(f"\nBatch hero waiver — {len(field)} failed candidate(s) in the reviewed field:")
+    for i, r in enumerate(field, 1):
+        print(f"  {i}. {str(r.get('asset_id'))[:12]}…  FAIL {sorted(r.get('failing_items') or [])}  ({r.get('path')})")
+    for it in items:
+        blocks = sum(1 for r in field if it in (r.get("failing_items") or []))
+        alone = sum(1 for r in field if set(r.get("failing_items") or []) == {it})
+        print(f"  item {it!r}: blocks {blocks} candidate(s); accepting it alone unlocks {alone}")
+    return items
+
+
+def _construct_qc_override_batch(root: Path, req: dict) -> Constructed:
+    """Field-bound batch waiver (qc_override record 1.1, authored-film 1.5).
+    The field is RECONSTRUCTED from the verified QC chain — the request's
+    field is compared, never trusted — and the signed record binds the
+    manifest digest, the previewed unlock list, the look (hash AND receipt),
+    the config snapshot, the request id, and the active-headshot tip. All
+    live-state checks re-run at signature time because ``_decide``
+    re-constructs under the approval lock."""
+    from lib import qc_receipts
+    from lib.canon_enforcement import _is_hero_batch_manifest
+    from lib.canonical_json import record_sha256
+    from lib.headshots import active_headshots
+    from lib.look_ingest import active_look_for
+    from lib.pipeline_pin import _read_marker, pinned_pipeline
+    from lib.project_config import load_verified_project_config
+    from lib.receipts import field_manifest_sha256, find_approval, verified_approvals
+    from lib.sheet_qc.verify import NON_OVERRIDABLE, hero_override_field, overrides_for
+
+    entity_id = _require_entity(req)
+    pin = pinned_pipeline(root, str(_read_marker(root).get("pipeline_type") or "authored-film"))
+    if not _is_hero_batch_manifest(pin):
+        raise GateHandlerError(f"a batch qc_override needs authored-film 1.5; project is pinned to {pin.name}@{pin.version}")
+    config = load_verified_project_config(root)
+    qc = config.require_hero_qc()
+    cfg_receipt = find_approval(root, "config", record_sha256=record_sha256({"config_sha256": config.digest}))
+    if cfg_receipt is None:
+        raise GateHandlerError("no verified config approval receipt")
+    if req.get("config_sha256") != config.digest or req.get("config_approval_receipt_id") != cfg_receipt["receipt_id"]:
+        raise GateHandlerError("the request's config snapshot is not the currently verified project.yaml — state moved; re-run headshot_run")
+    look = active_look_for(root, "character", entity_id)
+    if look is None or look.look_hash != req.get("look_hash") or look.receipt_id != req.get("look_receipt_id"):
+        raise GateHandlerError("the request's look binding is not the active look (hash AND receipt) — state moved; re-run headshot_run")
+    used = len(qc_receipts.hero_attempts_started(root, entity_id, look.look_hash))
+    cap = int(qc.max_hero_attempts)
+    if used < cap:
+        raise GateHandlerError(f"the hero budget is no longer exhausted ({used} of {cap} attempts) — generation should resume; re-run headshot_run")
+    if int(req.get("budget_cap") or -1) != cap:
+        raise GateHandlerError("the request's budget snapshot does not match the signed config — a cap change voids the request; re-run headshot_run")
+    current = active_headshots(root).get(entity_id)
+    expected = req.get("expected_active_headshot_receipt_id")
+    if (current.receipt_id if current else None) != expected:
+        raise GateHandlerError("the active headshot changed since the request was published — refused; re-run headshot_run")
+    try:
+        cp = json.loads((root / "checkpoint_headshots.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cp = {}
+    rejected = set(((cp.get("metadata") or {}).get("rejected_candidates") or {}).get(entity_id) or [])
+    field = hero_override_field(root, entity_id, look.look_hash, qc=qc, rejected=rejected)
+    prior_unlocked: set[str] = set()
+    for r in verified_approvals(root, "qc_override", entity_id=entity_id):
+        rec = r.get("record") or {}
+        if rec.get("record_version") == "1.1" and rec.get("look_hash") == look.look_hash \
+                and rec.get("look_receipt_id") == look.receipt_id:
+            prior_unlocked |= set(rec.get("unlocked_asset_ids") or [])
+    field = [r for r in field if r["asset_id"] not in prior_unlocked]
+    if not field:
+        raise GateHandlerError("the reconstructed residual field is empty — nothing left to waive; re-run headshot_run")
+    manifest = field_manifest_sha256(field)
+    if manifest != req.get("field_manifest_sha256"):
+        raise GateHandlerError("the reconstructed field does not match the request's manifest — state moved; re-run headshot_run")
+    if {(str(r.get("qc_receipt_id")), str(r.get("asset_id"))) for r in req.get("field") or []} \
+            != {(r["qc_receipt_id"], r["asset_id"]) for r in field}:
+        raise GateHandlerError("the request's displayed field disagrees with reconstruction — refused")
+    for r in field:
+        _verify_image_ref(root, {"asset_id": r["asset_id"], "path": f"canon/visual/objects/{r['asset_id']}.png"},
+                          f"candidate {r['asset_id'][:12]}")
+    all_items = sorted({i for r in field for i in r["failing_items"]})
+    chosen_raw = req.get("_chosen_items")
+    if not isinstance(chosen_raw, list) or not chosen_raw:
+        raise GateHandlerError("a batch qc_override needs the human's chosen item subset")
+    chosen = {str(i) for i in chosen_raw}
+    unknown = sorted(chosen - set(all_items))
+    if unknown:
+        raise GateHandlerError(f"item_ids {unknown} are not failing items of the field (field items: {all_items})")
+    if chosen & NON_OVERRIDABLE:
+        raise GateHandlerError("a judge protocol failure is never overridable; re-judge")
+    batch: list[dict] = []
+    unlocked: list[str] = []
+    evidence = [f"field of {len(field)} failed candidate(s), manifest {manifest[:12]}…, look {look.look_hash[:12]}… "
+                f"(receipt {look.receipt_id}), budget {used}/{cap} under config receipt {cfg_receipt['receipt_id']}"]
+    for r in field:
+        failing = set(r["failing_items"])
+        inherited = overrides_for(root, r["qc_receipt_id"], entity_id) & failing
+        accepted = (chosen & failing) | inherited
+        if failing <= accepted:
+            batch.append({"qc_receipt_id": r["qc_receipt_id"], "asset_id": r["asset_id"],
+                          "accepted_item_ids": sorted(accepted)})
+            unlocked.append(r["asset_id"])
+            inh = f" (+{sorted(inherited)} inherited from signed 1.0 overrides)" if inherited - chosen else ""
+            evidence.append(f"UNLOCKS {r['asset_id'][:12]}… accepting {sorted(accepted)}{inh} — canon/visual/objects/{r['asset_id']}.png")
+    batch.sort(key=lambda b: (b["qc_receipt_id"], b["asset_id"]))
+    if not unlocked:
+        raise GateHandlerError(f"accepting {sorted(chosen)} unlocks NO candidate — nothing to sign; choose more items or decline with a note")
+    evidence.append(f"result previewed and sealed: {len(unlocked)} candidate(s) unlocked; casting stays at the selection gate")
+    reason = req.get("reason")
+    if not isinstance(reason, str) or len(reason.strip()) < 10 or "REPLACE" in reason:
+        raise GateHandlerError("qc_override needs the human's typed reason (10+ characters); the request's placeholder is not one")
+    record = {"record_version": "1.1", "request_id": req["request_id"], "batch": batch,
+              "field_manifest_sha256": manifest, "unlocked_asset_ids": sorted(unlocked),
+              "look_hash": look.look_hash, "look_receipt_id": look.receipt_id,
+              "config_approval_receipt_id": cfg_receipt["receipt_id"], "config_sha256": config.digest,
+              "budget_cap": cap, "attempts_spent": used,
+              "expected_active_headshot_receipt_id": expected, "reason": reason.strip()}
+    return Constructed(record=record, envelope={"field_manifest_sha256": manifest},
+                       entity_id=entity_id, evidence=tuple(evidence))
+
+
 def _construct_qc_override(root: Path, req: dict) -> Constructed:
     """D19.4: the human accepts specific FAILED items of ONE verdict. The
     record is rebuilt from the signed verdict: the request only names the
     receipt, the item ids and the reason; everything else comes from the
-    QC chain and is shown before signing."""
+    QC chain and is shown before signing. Batch requests (authored-film 1.5)
+    dispatch to the field-bound constructor."""
     from lib import qc_receipts
+
+    if req.get("batch"):
+        return _construct_qc_override_batch(root, req)
 
     entity_id = _require_entity(req)
     rid = req.get("qc_receipt_id")
@@ -822,8 +949,15 @@ def headshot_candidates(req: dict, root: Path) -> tuple[str, dict, list[dict]]:
     if entry is None:
         raise GateHandlerError(f"character {entity_id!r} has no pending candidates in the packet")
     candidates = list(entry.get("candidates") or [])
-    if not 1 <= len(candidates) <= 4:
-        raise GateHandlerError(f"character {entity_id!r} has {len(candidates)} candidates; expected 1..4")
+    hero_qc, pin, config = _hero_qc_context(root, req)
+    packet_version = str(packet.get("version") or "1.0")
+    # The presentation cap is version-keyed (round-2 #6 / round-4 #4): 4 for
+    # packets ≤1.1; the signed hero-attempt cap for a 1.2 packet (1.5 pin).
+    from lib.canon_enforcement import _is_hero_batch_manifest
+    batch_pin = _is_hero_batch_manifest(pin)
+    cap = int(config.require_hero_qc().max_hero_attempts) if (batch_pin and packet_version == "1.2") else 4
+    if not 1 <= len(candidates) <= cap:
+        raise GateHandlerError(f"character {entity_id!r} has {len(candidates)} candidates; expected 1..{cap}")
     seen: set[str] = set()
     for i, cand in enumerate(candidates):
         asset_id = cand.get("asset_id")
@@ -834,13 +968,24 @@ def headshot_candidates(req: dict, root: Path) -> tuple[str, dict, list[dict]]:
     # D20 (inspection #3): under 1.4 nothing is SHOWN that has not been judged —
     # every candidate is verified before the list is displayed, not only the
     # one the human picks.
-    hero_qc, pin, config = _hero_qc_context(root, req)
     if hero_qc:
         from lib.headshot_verify import HeadshotVerifyError, verify_headshot_candidate
         from lib.look_ingest import active_look_for
 
-        if str(packet.get("version") or "1.0") != "1.1":
-            raise GateHandlerError(f"authored-film 1.4 selects from a headshot_packet 1.1; the pending packet is {packet.get('version')!r}")
+        expected_pkt = "1.2" if batch_pin else "1.1"
+        if packet_version != expected_pkt:
+            raise GateHandlerError(f"authored-film {pin.version} selects from a headshot_packet {expected_pkt}; the pending packet is {packet.get('version')!r}")
+        if batch_pin and any(c.get("qc_override_receipt_id") for c in candidates):
+            # A 1.2 packet whose field relied on exhaustion must still be
+            # exhausted under the CURRENT config (round-4 #4): a raised cap
+            # means generation should resume, not a stale field get cast.
+            from lib import qc_receipts as _qr
+            look_hash = str((entry.get("look_ref") or {}).get("look_hash") or "")
+            used = len(_qr.hero_attempts_started(root, entity_id, look_hash))
+            hero_cap = int(config.require_hero_qc().max_hero_attempts)
+            if used < hero_cap:
+                raise GateHandlerError(f"the hero budget is no longer exhausted ({used} of {hero_cap}); "
+                                       f"the presented field is stale — re-run headshot_run to resume generation")
         look = active_look_for(root, "character", entity_id)
         for i, cand in enumerate(candidates):
             try:
@@ -1045,22 +1190,52 @@ def _construct_headshot(root: Path, req: dict, selection: Optional[int] = None) 
         generation_receipt_id = str((chosen.get("provenance") or {}).get("generation_receipt_id"))
         qc_receipt_id = str(verdict["receipt_id"])
         warn = ", ".join(verdict.get("warnings") or []) or "none"
-        state = "pass" if verdict.get("verdict") == "pass" else f"FAIL {verdict.get('failing_items')} accepted by qc_override"
+        if chosen.get("qc_override_receipt_id"):
+            state = (f"FAIL {verdict.get('failing_items')} accepted by batch override {chosen['qc_override_receipt_id']} "
+                     f"(field manifest {str(chosen.get('field_manifest_sha256'))[:12]}…)")
+        elif chosen.get("legacy_citations"):
+            state = f"FAIL {verdict.get('failing_items')} accepted by qc_override {[c['receipt_id'] for c in chosen['legacy_citations']]}"
+        else:
+            state = "pass" if verdict.get("verdict") == "pass" else f"FAIL {verdict.get('failing_items')} accepted by qc_override"
         evidence.append(f"hero QC {state} (judge {verdict.get('provider')}/{verdict.get('model')}, attempt {verdict.get('attempt_n')}, "
                         f"receipt {qc_receipt_id}, warnings: {warn})")
+    # Record version follows the packet contract: 1.2 under a 1.5 pin (the
+    # packet carried each candidate's authority; the record copies the chosen
+    # candidate's citation verbatim — round-3 #7, round-4 #1), 1.1 under 1.4.
+    from lib.canon_enforcement import _is_hero_batch_manifest as _batch_pin_fn
+    batch_record = hero_qc and _batch_pin_fn(pin)
     try:
-        record = headshot_record(
-            entity_id=entry["entity_id"],
-            look_hash=look_hash,
-            asset_id=chosen["asset_id"],
-            origin=origin,
-            import_receipt_id=import_receipt_id,
-            prompt_recipe_sha256=prompt_recipe_sha256(entry.get("prompt_recipe")),
-            candidates_checkpoint_digest=digest,
-            record_version="1.1" if hero_qc else "1.0",
-            generation_receipt_id=generation_receipt_id,
-            qc_receipt_id=qc_receipt_id,
-        )
+        if batch_record and origin == "imported_synthetic":
+            record = headshot_record(
+                entity_id=entry["entity_id"], look_hash=look_hash, asset_id=chosen["asset_id"], origin=origin,
+                import_receipt_id=import_receipt_id, prompt_recipe_sha256=prompt_recipe_sha256(entry.get("prompt_recipe")),
+                candidates_checkpoint_digest=digest, record_version="1.2",
+                generation_receipt_id=generation_receipt_id, qc_receipt_id=qc_receipt_id,
+            )
+        elif batch_record:
+            record = headshot_record(
+                entity_id=entry["entity_id"], look_hash=look_hash, asset_id=chosen["asset_id"], origin=origin,
+                import_receipt_id=import_receipt_id, prompt_recipe_sha256=prompt_recipe_sha256(entry.get("prompt_recipe")),
+                candidates_checkpoint_digest=digest, record_version="1.2",
+                generation_receipt_id=generation_receipt_id, qc_receipt_id=qc_receipt_id,
+                qc_override_receipt_id=chosen.get("qc_override_receipt_id"),
+                qc_override_record_sha256=chosen.get("qc_override_record_sha256"),
+                field_manifest_sha256=chosen.get("field_manifest_sha256"),
+                legacy_citations=list(chosen.get("legacy_citations") or []),
+            )
+        else:
+            record = headshot_record(
+                entity_id=entry["entity_id"],
+                look_hash=look_hash,
+                asset_id=chosen["asset_id"],
+                origin=origin,
+                import_receipt_id=import_receipt_id,
+                prompt_recipe_sha256=prompt_recipe_sha256(entry.get("prompt_recipe")),
+                candidates_checkpoint_digest=digest,
+                record_version="1.1" if hero_qc else "1.0",
+                generation_receipt_id=generation_receipt_id,
+                qc_receipt_id=qc_receipt_id,
+            )
         current = active_headshots(root, project_id=req["project_id"]).get(entry["entity_id"])
     except HeadshotError as exc:
         raise GateHandlerError(str(exc)) from exc
@@ -1318,12 +1493,25 @@ def _decide(
 
     with gates.receipt_lock(str(req["project_id"]), "approval"):
         req_path, current = _reload_pending(req, root)
-        built = construct(root, current, selection=selection)
-        if shown.digest != built.digest or shown.record != built.record or shown.envelope != built.envelope:
-            raise GateHandlerError(
-                "the authoritative inputs changed between display and approval — the record shown is not the "
-                "record that would be signed; re-run the request"
-            )
+        is_batch_override = kind == "qc_override" and bool(current.get("batch"))
+        try:
+            built = construct(root, current, selection=selection)
+            if shown.digest != built.digest or shown.record != built.record or shown.envelope != built.envelope:
+                raise GateHandlerError(
+                    "the authoritative inputs changed between display and approval — the record shown is not the "
+                    "record that would be signed; re-run the request"
+                )
+        except GateHandlerError:
+            if is_batch_override:
+                # State moved between display and approval: the field-bound
+                # request can never be signed as displayed. Mandated order
+                # (round-4 #8), under the approval lock: move pending →
+                # abandoned FIRST; the runner clears its run_state on resume.
+                abandoned = req_path.parent / "abandoned" / req_path.name
+                abandoned.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(req_path, abandoned)
+                print(f"request {current.get('request_id')} moved to abandoned/ — state changed; re-run headshot_run", file=sys.stderr)
+            raise
         bound = current.get("source_checkpoint_digest")
 
         marker = current.get("approval_receipt_id")
@@ -1357,6 +1545,13 @@ def _decide(
                     f"{len(matches)} verified sheet receipts already match this request's tuple "
                     f"({[r.get('receipt_id') for r in matches]}); refusing to guess — a human must reconcile"
                 )
+        elif kind == "qc_override" and len(matches) == 1 \
+                and (matches[0].get("record") or {}).get("record_version") == "1.1" \
+                and (matches[0].get("record") or {}).get("request_id") == current.get("request_id"):
+            # Batch records bind their request_id (round-3 #4): a crash after
+            # receipt commit but before the done-move left a pending request
+            # whose unique verified receipt names it. Attach and complete.
+            receipt = matches[0]
         elif matches and bound is not None:
             # A request bound to a checkpoint digest whose exact tuple is
             # already signed is a duplicate of a decided request: refuse and
@@ -1470,6 +1665,23 @@ def main(argv: list[str] | None = None) -> int:
                     return 0
         else:
             if req["kind"] == "qc_override":
+                if req.get("batch"):
+                    # Field-bound batch waiver (authored-film 1.5): the human
+                    # chooses WHICH failed items to accept; the constructor
+                    # reconstructs the field from the QC chain and previews
+                    # exactly which candidates the choice unlocks before
+                    # anything is signed.
+                    items = _show_batch_field(req)
+                    while True:
+                        raw = input(f"Accept which failed items? (comma list from {items}, 'all', or q to quit): ").strip().lower()
+                        if raw == "q":
+                            print("quit — nothing decided, request left pending")
+                            return 0
+                        chosen = sorted(items) if raw == "all" else sorted({p.strip() for p in raw.split(",") if p.strip()})
+                        if chosen and set(chosen) <= set(items):
+                            break
+                        print(f"  choose from {items} (comma-separated) or 'all'")
+                    req["_chosen_items"] = chosen
                 # The reason is the human's, typed here — never the request's text.
                 while True:
                     typed = input("Why is the judge wrong on these items? (10+ characters, or q to quit): ").strip()
@@ -1491,7 +1703,15 @@ def main(argv: list[str] | None = None) -> int:
                 print("quit — nothing decided, request left pending")
                 return 0
             approved = a == "y"
-            note = input("Note (optional): ").strip() or None
+            if not approved and req["kind"] == "qc_override" and req.get("batch"):
+                # Declining a batch waiver is a recorded decision (round-3 #8).
+                while True:
+                    note = input("Decline note (required, 10+ characters): ").strip()
+                    if len(note) >= 10:
+                        break
+                    print("  declining the field needs a real note — it is the record that the writer chose the judge-approved faces only")
+            else:
+                note = input("Note (optional): ").strip() or None
         if approved and shown is not None:
             # The handler marker exists only for this call; minting is refused elsewhere.
             with gates.handler_context():

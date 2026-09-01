@@ -56,8 +56,13 @@ LOOK_LOCK_MANIFEST = ("authored-film", "1.2")
 # D20: 1.4 keeps all of 1.3 and adds hero QC (judged headshot candidates).
 LOOK_LOCK_MANIFESTS = frozenset({("authored-film", "1.2"), ("authored-film", "1.3"), ("authored-film", "1.4")})
 QC_MANIFEST = ("authored-film", "1.3")
-QC_MANIFESTS = frozenset({("authored-film", "1.3"), ("authored-film", "1.4")})
-HERO_QC_MANIFEST = ("authored-film", "1.4")
+QC_MANIFESTS = frozenset({("authored-film", "1.3"), ("authored-film", "1.4"), ("authored-film", "1.5")})
+HERO_QC_MANIFESTS = frozenset({("authored-film", "1.4"), ("authored-film", "1.5")})
+HERO_QC_MANIFEST = ("authored-film", "1.4")  # kept for callers that name 1.4 exactly
+# Batch hero overrides (field-bound qc_override 1.1, headshot_packet 1.2,
+# up-to-cap presentation) exist only from 1.5; a 1.4 pin keeps 1.0-only
+# overrides and the four-candidate packet, behaviorally.
+HERO_BATCH_MANIFEST = ("authored-film", "1.5")
 SPOILER_SENSITIVE_FORMATS = {"trailer", "teaser"}
 _CONFIG_DIGEST_RE = re.compile(r"config_sha256:\s*([a-f0-9]{64})")
 
@@ -1489,8 +1494,15 @@ def _is_qc_manifest(pin: Any) -> bool:
 
 
 def _is_hero_qc_manifest(pin: Any) -> bool:
-    """Hero QC applies: every headshot candidate carries a hero verdict (1.4)."""
-    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) == HERO_QC_MANIFEST
+    """Hero QC applies: every headshot candidate carries a hero verdict (1.4+)."""
+    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) in HERO_QC_MANIFESTS
+
+
+def _is_hero_batch_manifest(pin: Any) -> bool:
+    """Field-bound batch overrides and the up-to-cap packet apply (1.5 only).
+    Every batch/packet-1.2 branch keys off THIS predicate; under 1.4 the
+    behavior stays 1.0-override, four-candidate — tested behaviorally."""
+    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) == HERO_BATCH_MANIFEST
 
 
 def _cast_keys(proposal: dict[str, Any]) -> list[tuple[str, str]]:
@@ -1660,8 +1672,13 @@ def _check_headshots(
             config.require_hero_qc()
         except ProjectConfigError as exc:
             _fail(f"headshots under authored-film 1.4 need a verified 1.2 project config: {exc}")
-        if _version(packet) != "1.1":
-            _fail(f"headshot_packet version {_version(packet)!r}; authored-film 1.4 writes headshot_packet 1.1.")
+        expected_pkt = "1.2" if _is_hero_batch_manifest(pin) else "1.1"
+        allowed = {expected_pkt} if packet.get("state") == "pending" else {"1.0", "1.1", expected_pkt}
+        # An APPROVED packet keeps the version it was approved under (a 1.4-era
+        # 1.1 packet survives the 1.5 pin); a PENDING packet must match the pin.
+        if _version(packet) not in allowed:
+            _fail(f"headshot_packet version {_version(packet)!r}; authored-film "
+                  f"{getattr(pin, 'version', '?')} writes headshot_packet {expected_pkt}.")
     char_ids = list((proposal.get("cast") or {}).get("character_ids") or [])
     entries = {e.get("entity_id"): e for e in packet.get("characters", []) if isinstance(e, dict)}
     state = packet.get("state")

@@ -33,7 +33,16 @@ HEADSHOT_RECORD_FIELDS = (
 # and the hero verdict) so downstream verification reloads them by id.
 HEADSHOT_RECORD_VERSION_1_1 = "1.1"
 HEADSHOT_RECORD_FIELDS_1_1 = HEADSHOT_RECORD_FIELDS + ("record_version", "generation_receipt_id", "qc_receipt_id")
-HEADSHOT_RECORD_VERSIONS = ("1.0", HEADSHOT_RECORD_VERSION_1_1)
+# 1.2 (authored-film 1.5): additionally seals the selection's override
+# authority — either the candidate's cited batch receipt (all three batch
+# fields set) or the sealed legacy citation list, or neither for a clean pass.
+# The conditional-shape matrix is enforced in headshot_record(); grandfather
+# emits NO headshot record at all (its attestation is its record).
+HEADSHOT_RECORD_VERSION_1_2 = "1.2"
+HEADSHOT_RECORD_FIELDS_1_2 = HEADSHOT_RECORD_FIELDS_1_1 + (
+    "qc_override_receipt_id", "qc_override_record_sha256", "field_manifest_sha256", "legacy_citations",
+)
+HEADSHOT_RECORD_VERSIONS = ("1.0", HEADSHOT_RECORD_VERSION_1_1, HEADSHOT_RECORD_VERSION_1_2)
 
 
 class HeadshotError(RuntimeError):
@@ -61,6 +70,10 @@ def headshot_record(
     record_version: str = "1.0",
     generation_receipt_id: Optional[str] = None,
     qc_receipt_id: Optional[str] = None,
+    qc_override_receipt_id: Optional[str] = None,
+    qc_override_record_sha256: Optional[str] = None,
+    field_manifest_sha256: Optional[str] = None,
+    legacy_citations: Optional[list[dict[str, str]]] = None,
 ) -> dict[str, Any]:
     """The record hashed into a headshot receipt. ``normalized_pixel_hash``
     equals ``asset_id`` because canon objects are the normalized PNG bytes.
@@ -92,20 +105,56 @@ def headshot_record(
         "prompt_recipe_sha256": prompt_recipe_sha256,
         "candidates_checkpoint_digest": candidates_checkpoint_digest,
     }
+    override_args = (qc_override_receipt_id, qc_override_record_sha256, field_manifest_sha256, legacy_citations)
+    if record_version != HEADSHOT_RECORD_VERSION_1_2 and any(a is not None for a in override_args):
+        raise HeadshotError("override citation fields belong to record_version 1.2 only")
     if record_version == "1.0":
         if generation_receipt_id is not None or qc_receipt_id is not None:
             raise HeadshotError("a 1.0 headshot record carries no generation_receipt_id / qc_receipt_id; use record_version 1.1")
         return record
     if not isinstance(generation_receipt_id, str) or not generation_receipt_id:
-        raise HeadshotError("a 1.1 headshot record must seal generation_receipt_id (the import receipt for an imported hero)")
+        raise HeadshotError(f"a {record_version} headshot record must seal generation_receipt_id (the import receipt for an imported hero)")
     if origin == "imported_synthetic" and generation_receipt_id != import_receipt_id:
         raise HeadshotError("an imported hero's generation_receipt_id must equal its import_receipt_id")
     if not isinstance(qc_receipt_id, str) or not qc_receipt_id:
-        raise HeadshotError("a 1.1 headshot record must seal qc_receipt_id (the hero verdict the gate relied on)")
+        raise HeadshotError(f"a {record_version} headshot record must seal qc_receipt_id (the hero verdict the gate relied on)")
     record.update({
-        "record_version": HEADSHOT_RECORD_VERSION_1_1,
+        "record_version": record_version,
         "generation_receipt_id": generation_receipt_id,
         "qc_receipt_id": qc_receipt_id,
+    })
+    if record_version == HEADSHOT_RECORD_VERSION_1_1:
+        return record
+    # 1.2 — the conditional-shape matrix (r3 #7 / r4 #2 #5 #7):
+    #   clean pass:            no batch fields, legacy_citations []
+    #   legacy 1.0 coverage:   legacy_citations nonempty, no batch fields
+    #   batch-unlocked:        all three batch fields, legacy_citations []
+    #   imported selection:    all override fields null/[], like a clean pass
+    batch = (qc_override_receipt_id, qc_override_record_sha256, field_manifest_sha256)
+    has_batch = [b is not None for b in batch]
+    if any(has_batch) and not all(has_batch):
+        raise HeadshotError("a 1.2 record's batch citation is all-or-none: qc_override_receipt_id + qc_override_record_sha256 + field_manifest_sha256")
+    legacy = list(legacy_citations or [])
+    if all(has_batch) and legacy:
+        raise HeadshotError("a 1.2 record carries a batch citation OR legacy_citations, never both")
+    if origin == "imported_synthetic" and (any(has_batch) or legacy):
+        raise HeadshotError("an imported selection carries no override citation fields")
+    for c in legacy:
+        if not isinstance(c, dict) or set(c) != {"receipt_id", "record_sha256"} \
+                or not isinstance(c.get("receipt_id"), str) or not c["receipt_id"] \
+                or not isinstance(c.get("record_sha256"), str) or len(c["record_sha256"]) != 64:
+            raise HeadshotError("each legacy citation is exactly {receipt_id, record_sha256 (sha256 hex)}")
+    if all(has_batch):
+        for name, val in (("qc_override_record_sha256", qc_override_record_sha256), ("field_manifest_sha256", field_manifest_sha256)):
+            if not isinstance(val, str) or len(val) != 64:
+                raise HeadshotError(f"a 1.2 record's {name} must be a sha256 hex digest")
+        if not isinstance(qc_override_receipt_id, str) or not qc_override_receipt_id:
+            raise HeadshotError("a 1.2 record's qc_override_receipt_id must be a receipt id")
+    record.update({
+        "qc_override_receipt_id": qc_override_receipt_id,
+        "qc_override_record_sha256": qc_override_record_sha256,
+        "field_manifest_sha256": field_manifest_sha256,
+        "legacy_citations": legacy,
     })
     return record
 

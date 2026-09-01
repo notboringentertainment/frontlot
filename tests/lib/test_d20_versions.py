@@ -104,7 +104,7 @@ class TestHeroLocalRules:
 
 class TestManifest14:
     def test_versions_and_1_3_frozen(self):
-        assert manifest_versions("authored-film") == ["1.1", "1.2", "1.3", "1.4"]
+        assert manifest_versions("authored-film") == ["1.1", "1.2", "1.3", "1.4", "1.5"]
         assert manifest_digest("authored-film@1.3") == MANIFEST_1_3_SHA256
         assert hashlib.sha256((ROOT / "skills/pipelines/authored-film/headshots-director.md").read_bytes()).hexdigest() == LEGACY_DIRECTOR_SHA256
         assert (ROOT / "skills/pipelines/authored-film/headshots-director-1.4.md").is_file()
@@ -204,8 +204,12 @@ class TestHeadshotPacket11:
             validate_artifact("headshot_packet", _pending("1.1", False))
         with pytest.raises(Exception):
             validate_artifact("headshot_packet", _approved("1.1", False))
+        # packet 1.2 (authored-film 1.5) is a valid version; a bare 1.2
+        # pending packet with per-candidate qc_receipt_ids validates, and
+        # unknown versions still refuse.
+        validate_artifact("headshot_packet", _pending("1.2", True))
         with pytest.raises(Exception):
-            validate_artifact("headshot_packet", _pending("1.2", True))
+            validate_artifact("headshot_packet", _pending("1.3", True))
 
     def test_qc_verdict_accepts_role_hero(self):
         schema = json.loads((ROOT / "schemas/artifacts/qc_verdict.schema.json").read_text())

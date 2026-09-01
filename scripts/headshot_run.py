@@ -177,8 +177,8 @@ def _next_revision(root: Path, entity_id: str) -> int:
     return int((_meta(root).get("run_revisions") or {}).get(entity_id, 0)) + 1
 
 
-def _packet(state: str, entries: list[dict]) -> dict[str, Any]:
-    return {"version": "1.1", "state": state, "characters": entries}
+def _packet(state: str, entries: list[dict], *, version: str = "1.1") -> dict[str, Any]:
+    return {"version": version, "state": state, "characters": entries}
 
 
 # ---- refs ----
@@ -210,7 +210,7 @@ def run_headshot(
     grandfather: bool = False, retire: bool = False, palette: Optional[list[str]] = None,
     generate: Optional[Callable[[Path, dict[str, Any]], tuple[str, str]]] = None, judge_adapter: Any = None, out=None,
 ) -> dict[str, Any]:
-    from lib.canon_enforcement import _is_hero_qc_manifest, _is_qc_manifest
+    from lib.canon_enforcement import _is_hero_batch_manifest, _is_hero_qc_manifest, _is_qc_manifest
     from lib.headshots import HeadshotError, active_headshots
     from lib.look_ingest import LookIngestError, active_look_for
     from lib.pipeline_pin import PipelinePinError, _read_marker, pinned_pipeline
@@ -255,7 +255,8 @@ def run_headshot(
             palette = list(stored.get("palette") or [])
         ctx = {"root": root, "project_id": project_id, "entity_id": entity_id, "look": look, "config": config, "qc": qc,
                "pin": pin, "candidates": int(candidates), "open": open_images, "palette": palette or ["neutral grey"],
-               "generate": generate or default_generate, "judge_adapter": judge_adapter, "out": out}
+               "generate": generate or default_generate, "judge_adapter": judge_adapter, "out": out,
+               "batch_mode": _is_hero_batch_manifest(pin)}
         state = _run_state(root, entity_id)
         if state is not None:
             return _resume(ctx, state)
@@ -561,15 +562,44 @@ def _generate_and_present(ctx) -> dict[str, Any]:
         else:
             failed.append(verdict)
             _log(out, f"[hero] FAIL {r.data['failing_items']}" + (f" — {r.data.get('note')}" if r.data.get("note") else ""))
+    if ctx.get("batch_mode"):
+        # 1.5: the waiver gate fires whenever the budget is spent and the
+        # field is enlargeable — even when some candidates already pass
+        # (round-2 #8). Declining is a recorded choice, not a construction.
+        blocked = _maybe_batch_override(ctx, passing)
+        if blocked is not None:
+            return blocked
     if not passing:
-        best = min((v for v in failed if v.get("provider") != "local"), key=lambda v: len(v.get("failing_items") or []), default=None)
-        req = _write_override_request(root, ctx["project_id"], entity_id, best) if best is not None else None
-        _log(out, f"[hero] BLOCKED: the hero budget ({cap}) is spent with no passing candidate. Change the look (a ticket edit "
-                  f"opens a new budget) or accept the judge's failed items:" + (f"\n  {gate_command(root, req.stem)}" if req else " (only deterministic failures; nothing to override)"))
-        raise Blocked("no passing candidate")
+        if ctx.get("batch_mode"):
+            unlocked_now = _unlocked_candidates(ctx, exclude=set())
+            if not unlocked_now:
+                _log(out, f"[hero] BLOCKED: the hero budget ({cap}) is spent, nothing passed, and no failed candidate is "
+                          f"unlockable (deterministic, non-overridable, imported/grandfather, rejected history, or a declined "
+                          f"waiver). Repair the judge chain or change the look (a ticket edit opens a new budget).")
+                raise Blocked("no passing candidate and no unlockable field")
+        else:
+            best = min((v for v in failed if v.get("provider") != "local"), key=lambda v: len(v.get("failing_items") or []), default=None)
+            req = _write_override_request(root, ctx["project_id"], entity_id, best) if best is not None else None
+            _log(out, f"[hero] BLOCKED: the hero budget ({cap}) is spent with no passing candidate. Change the look (a ticket edit "
+                      f"opens a new budget) or accept the judge's failed items:" + (f"\n  {gate_command(root, req.stem)}" if req else " (only deterministic failures; nothing to override)"))
+            raise Blocked("no passing candidate")
+    cands = [(a, g, q) for a, (g, q) in passing.items()]
+    citations: dict[str, dict] = {}
+    if ctx.get("batch_mode"):
+        for a, g, q, cit in _unlocked_candidates(ctx, exclude=set(passing)):
+            cands.append((a, g, q))
+            citations[a] = cit
+        present_cap = int(ctx["qc"].max_hero_attempts)
+        if len(cands) > present_cap:
+            cands = cands[:present_cap]
+        if len(cands) < want and not citations:
+            _log(out, f"[hero] budget spent: presenting {len(cands)} of {want} requested")
+        elif citations:
+            _log(out, f"[hero] presenting {len(cands)} candidate(s): {len(cands) - len(citations)} passing, "
+                      f"{len(citations)} unlocked by the signed batch waiver")
+        return _present(ctx, cands, recipe=built["prompt_recipe"], replacing_state=None, citations=citations)
     if len(passing) < want:
         _log(out, f"[hero] budget spent: presenting {len(passing)} of {want} requested")
-    cands = [(a, g, q) for a, (g, q) in passing.items()]
     return _present(ctx, cands, recipe=built["prompt_recipe"], replacing_state=None)
 
 
@@ -595,14 +625,29 @@ def _recover_attempt_generation(root: Path, attempt: dict, qr, out) -> Optional[
 
 # ---- present: pending packet 1.1 + run state + selection request ----
 
-def _present(ctx, cands: list[tuple[str, dict, str]], *, recipe: Optional[dict], replacing_state: Optional[dict]) -> dict[str, Any]:
+def _present(ctx, cands: list[tuple[str, dict, str]], *, recipe: Optional[dict], replacing_state: Optional[dict],
+             citations: Optional[dict[str, dict]] = None) -> dict[str, Any]:
+    from lib import qc_receipts as qr
     from lib.headshots import headshot_request
 
     root, entity_id, look, out = ctx["root"], ctx["entity_id"], ctx["look"], ctx["out"]
     rev = int((replacing_state or {}).get("revision") or 0) + 1 if replacing_state else _next_revision(root, entity_id)
     request_id = request_id_for("headshot", entity_id, rev)
-    entry = {"entity_kind": "character", "entity_id": entity_id, "look_ref": _look_ref(look),
-             "candidates": [_image_ref(root, a, g, q) for a, g, q in cands]}
+    batch_mode = bool(ctx.get("batch_mode"))
+    refs = []
+    for a, g, q in cands:
+        ref = _image_ref(root, a, g, q)
+        if batch_mode:
+            cit = (citations or {}).get(a)
+            if cit is not None:
+                ref.update(cit)  # the full three-field batch citation, carried verbatim
+            else:
+                v = qr.find_verdict_by_id(root, q)
+                legacy = _legacy_citations_for(root, entity_id, v) if v is not None else []
+                if legacy:
+                    ref["legacy_citations"] = legacy  # sealed at packet creation (round-5 #4)
+        refs.append(ref)
+    entry = {"entity_kind": "character", "entity_id": entity_id, "look_ref": _look_ref(look), "candidates": refs}
     if recipe is not None:
         entry["prompt_recipe"] = recipe
     notes = _rejection_notes(root, entity_id)
@@ -610,8 +655,14 @@ def _present(ctx, cands: list[tuple[str, dict, str]], *, recipe: Optional[dict],
         entry["rejection_notes"] = notes
     state = {"mode": "select", "revision": rev, "request_id": request_id, "candidate_hashes": [a for a, _, _ in cands],
              "expected_kind": "headshot"}
+    if batch_mode:
+        _, cap, used = _budget(ctx)
+        cfg_receipt = _config_approval_receipt(root, ctx["config"])
+        state.update({"config_approval_receipt_id": cfg_receipt["receipt_id"], "config_sha256": ctx["config"].digest,
+                      "budget_cap": int(cap), "attempts_spent": int(used)})
     approved = _approved_entries(root)
-    digest = _write(root, _packet("pending", [entry]), status="awaiting_human", run_state={entity_id: state}, approved_entries=approved,
+    digest = _write(root, _packet("pending", [entry], version="1.2" if batch_mode else "1.1"),
+                    status="awaiting_human", run_state={entity_id: state}, approved_entries=approved,
                     palette=ctx["palette"] if recipe is not None else None)
     headshot_request(root, ctx["project_id"], entity_id, request_id=request_id, source_checkpoint_digest=digest)
     paths = [str(root / "canon/visual/objects" / f"{a}.png") for a, _, _ in cands]
@@ -655,6 +706,258 @@ def _write_override_request(root, project_id, entity_id, verdict) -> Path:
     path = d / f"{req_id}.json"
     path.write_text(json.dumps(req, indent=2))
     return path
+
+
+# ---- batch overrides (authored-film 1.5): waive items, don't cast ----
+#
+# The exhausted-budget flow under 1.5 separates the policy decision (accept
+# these failed items for the exact reviewed candidates) from the casting
+# decision (which face). ONE field-bound qc_override record 1.1 is signed over
+# the residual field; the selection gate then presents passing ∪ unlocked,
+# each unlocked candidate carrying its full citation. Nothing here exists
+# under a 1.4 pin — every entry point is gated on ctx["batch_mode"].
+
+def _config_approval_receipt(root: Path, config) -> dict:
+    from lib.canonical_json import record_sha256
+    from lib.receipts import find_approval
+
+    r = find_approval(root, "config", record_sha256=record_sha256({"config_sha256": config.digest}))
+    if r is None:
+        raise HeadshotRunError("no verified config approval receipt for the current project.yaml")
+    return r
+
+
+def _signed_batches(root: Path, ctx) -> list[dict]:
+    """Signed record-1.1 batch receipts bound to the ACTIVE look (hash AND
+    receipt id). Fails closed when two batches claim the same unlocked asset —
+    a candidate has exactly one authority."""
+    from lib.receipts import verified_approvals
+
+    look = ctx["look"]
+    rows: list[dict] = []
+    claimed: dict[str, str] = {}
+    for r in verified_approvals(root, "qc_override", entity_id=ctx["entity_id"]):
+        rec = r.get("record") or {}
+        if rec.get("record_version") != "1.1":
+            continue
+        if rec.get("look_hash") != look.look_hash or rec.get("look_receipt_id") != look.receipt_id:
+            continue
+        for a in rec.get("unlocked_asset_ids") or []:
+            if a in claimed and claimed[a] != r["receipt_id"]:
+                raise HeadshotRunError(f"two signed batch overrides claim asset {a[:12]}…; refusing to guess authority")
+            claimed[a] = r["receipt_id"]
+        rows.append(r)
+    return rows
+
+
+def _unlocked_candidates(ctx, exclude: set) -> list[tuple[str, dict, str, dict]]:
+    """``(asset_id, generation receipt, qc_receipt_id, citation)`` for every
+    batch-unlocked candidate, each re-verified through its cited row's FULL
+    binding (``batch_row_for``) — authority is carried, never discovered."""
+    from lib import qc_receipts as qr
+    from lib.receipts import find_generation
+    from lib.sheet_qc.verify import batch_row_for
+
+    root, entity_id = ctx["root"], ctx["entity_id"]
+    rejected = set((_meta(root).get("rejected_candidates") or {}).get(entity_id) or [])
+    out: list[tuple[str, dict, str, dict]] = []
+    for r in _signed_batches(root, ctx):
+        rec = r["record"]
+        for row in rec.get("batch") or []:
+            a = str(row.get("asset_id") or "")
+            if not a or a in exclude or a in rejected or a not in (rec.get("unlocked_asset_ids") or []):
+                continue
+            v = qr.find_verdict_by_id(root, str(row.get("qc_receipt_id") or ""))
+            if v is None or v.get("asset_id") != a:
+                continue
+            citation = {"qc_override_receipt_id": r["receipt_id"],
+                        "qc_override_record_sha256": r["record_sha256"],
+                        "field_manifest_sha256": rec["field_manifest_sha256"]}
+            accepted = batch_row_for(
+                root, override_receipt_id=citation["qc_override_receipt_id"],
+                override_record_sha256=citation["qc_override_record_sha256"],
+                qc_receipt_id=str(row["qc_receipt_id"]), asset_id=a,
+                field_manifest_sha256=citation["field_manifest_sha256"], entity_id=entity_id,
+            )
+            failing = set(v.get("failing_items") or [])
+            if accepted is None or not failing <= accepted:
+                continue
+            gen = find_generation(root, a)
+            if gen is None or not (root / "canon/visual/objects" / f"{a}.png").is_file():
+                continue
+            out.append((a, gen, str(row["qc_receipt_id"]), citation))
+    return out
+
+
+def _legacy_citations_for(root: Path, entity_id: str, verdict: dict) -> list[dict[str, str]]:
+    """Deterministic sufficient set of verdict-bound 1.0 override citations
+    for one covered candidate: oldest receipts first until the verdict's
+    failing items are covered, sealed at packet creation (round-5 #4).
+    Empty for a clean pass."""
+    from lib.receipts import verified_approvals
+
+    failing = set(verdict.get("failing_items") or [])
+    if not failing or verdict.get("verdict") == "pass":
+        return []
+    cites: list[dict[str, str]] = []
+    covered: set[str] = set()
+    for r in verified_approvals(root, "qc_override", entity_id=entity_id):
+        rec = r.get("record") or {}
+        if r.get("qc_receipt_id") != verdict["receipt_id"] or rec.get("qc_receipt_id") != verdict["receipt_id"]:
+            continue
+        items = {str(i) for i in rec.get("item_ids") or []}
+        if not items - covered:
+            continue
+        covered |= items
+        cites.append({"receipt_id": r["receipt_id"], "record_sha256": r["record_sha256"]})
+        if failing <= covered:
+            break
+    return cites if failing <= covered else []
+
+
+def _declined_batch_manifests(root: Path, entity_id: str) -> set[str]:
+    out: set[str] = set()
+    for p in sorted((root / ".gate-requests" / "declined").glob(f"override-{entity_id}-hero-*.json")):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        m = data.get("field_manifest_sha256")
+        if isinstance(m, str):
+            out.add(m)
+    return out
+
+
+def _batch_field(ctx) -> list[dict]:
+    from lib.sheet_qc.verify import hero_override_field
+
+    root, entity_id = ctx["root"], ctx["entity_id"]
+    rejected = set((_meta(root).get("rejected_candidates") or {}).get(entity_id) or [])
+    return hero_override_field(root, entity_id, ctx["look"].look_hash, qc=ctx["qc"], rejected=rejected)
+
+
+def _maybe_batch_override(ctx, passing: dict) -> Optional[dict[str, Any]]:
+    """When the budget is exhausted and unlockable failed candidates remain
+    uncovered, raise ONE batch override request over the residual field and
+    stop — even when some candidates already pass (round-2 #8). Returns the
+    pending result, or None when presentation should proceed."""
+    from lib.headshots import active_headshots
+    from lib.receipts import field_manifest_sha256
+
+    root, entity_id, out = ctx["root"], ctx["entity_id"], ctx["out"]
+    _, cap, used = _budget(ctx)
+    if used < cap:
+        return None
+    field = _batch_field(ctx)
+    unlocked_assets = {a for a, _, _, _ in _unlocked_candidates(ctx, exclude=set())}
+    residual = [r for r in field if r["asset_id"] not in passing and r["asset_id"] not in unlocked_assets]
+    if not residual:
+        return None
+    manifest = field_manifest_sha256(residual)
+    if manifest in _declined_batch_manifests(root, entity_id):
+        _log(out, f"[hero] a batch override for this exact field was declined; presenting without it")
+        return None
+    cfg_receipt = _config_approval_receipt(root, ctx["config"])
+    current = active_headshots(root).get(entity_id)
+    d = root / ".gate-requests"
+    d.mkdir(exist_ok=True)
+    for existing in sorted(d.glob(f"override-{entity_id}-hero-*.json")):
+        try:
+            data = json.loads(existing.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if data.get("field_manifest_sha256") == manifest:
+            return _pending(root, entity_id, existing.stem, out,
+                            f"[hero] the batch override request {existing.stem} for this field is still waiting for the writer")
+    n = 1 + sum(1 for _ in d.glob(f"override-{entity_id}-hero-*.json"))
+    n += sum(1 for _ in (d / "done").glob(f"override-{entity_id}-hero-*.json")) if (d / "done").is_dir() else 0
+    n += sum(1 for _ in (d / "declined").glob(f"override-{entity_id}-hero-*.json")) if (d / "declined").is_dir() else 0
+    n += sum(1 for _ in (d / "abandoned").glob(f"override-{entity_id}-hero-*.json")) if (d / "abandoned").is_dir() else 0
+    req_id = f"override-{entity_id}-hero-{n}"
+    state = {"mode": "override_pending", "revision": _next_revision(root, entity_id), "request_id": req_id,
+             "expected_kind": "qc_override", "field_manifest_sha256": manifest,
+             "config_approval_receipt_id": cfg_receipt["receipt_id"], "config_sha256": ctx["config"].digest,
+             "budget_cap": int(cap), "attempts_spent": int(used),
+             "expected_active_headshot_receipt_id": current.receipt_id if current else None}
+    # Checkpoint FIRST, then its digest goes into the request (round-3 #1):
+    # run_state never contains a digest of its own checkpoint.
+    digest = _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: state})
+    look = ctx["look"]
+    items = sorted({str(i) for r in residual for i in r["failing_items"]})
+    req = {"request_id": req_id, "project_id": ctx["project_id"], "stage": STAGE, "scope": f"character:{entity_id}",
+           "kind": "qc_override", "entity_id": entity_id, "batch": True,
+           "field": [{"qc_receipt_id": r["qc_receipt_id"], "asset_id": r["asset_id"],
+                      "failing_items": list(r["failing_items"]),
+                      "path": f"canon/visual/objects/{r['asset_id']}.png"} for r in residual],
+           "field_manifest_sha256": manifest, "item_ids": items, "reason": "",
+           "look_hash": look.look_hash, "look_receipt_id": look.receipt_id,
+           "config_approval_receipt_id": cfg_receipt["receipt_id"], "config_sha256": ctx["config"].digest,
+           "budget_cap": int(cap), "attempts_spent": int(used),
+           "expected_active_headshot_receipt_id": state["expected_active_headshot_receipt_id"],
+           "source_checkpoint_digest": digest,
+           "summary": f"Accept failed hero QC items (writer's choice of {items}) across {len(residual)} reviewed candidate(s) "
+                      f"of {entity_id} — a field-bound waiver; casting stays at the selection gate",
+           "preview_paths": [f"canon/visual/objects/{r['asset_id']}.png" for r in residual]}
+    (d / f"{req_id}.json").write_text(json.dumps(req, indent=2), encoding="utf-8")
+    _log(out, f"[hero] the hero budget ({cap}) is spent; {len(residual)} failed candidate(s) could be unlocked by accepting "
+              f"items from {items}. Review the WHOLE field and choose at the gate (decline needs a typed note):")
+    return _pending(root, entity_id, req_id, out, f"batch override request written for {entity_id!r}")
+
+
+def _resume_override(ctx, state) -> dict[str, Any]:
+    """Dispatcher branch for run-state mode ``override_pending``."""
+    root, entity_id, out = ctx["root"], ctx["entity_id"], ctx["out"]
+    request_id = str(state.get("request_id") or "")
+    where, req = read_request(root, request_id)
+    if where == "pending":
+        return _pending(root, entity_id, request_id, out, f"batch override {request_id} is still waiting for the writer")
+    if where == "declined":
+        _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: None})
+        _log(out, f"[hero] the writer declined batch override {request_id}; proceeding with judge-approved candidates only")
+        return _generate_and_present(ctx)
+    if where == "abandoned":
+        _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: None})
+        _log(out, f"[hero] request {request_id} was abandoned (state moved between publish and signing); re-evaluating")
+        return _generate_and_present(ctx)
+    if where == "missing":
+        # The checkpoint-before-request crash window: revalidate and republish
+        # under the SAME id (D20 rule, round-3 #3). A field that no longer
+        # reproduces the state's manifest means live state moved — clear and
+        # re-evaluate under a NEW id instead.
+        from lib.receipts import field_manifest_sha256
+        field = _batch_field(ctx)
+        unlocked_assets = {a for a, _, _, _ in _unlocked_candidates(ctx, exclude=set())}
+        residual = [r for r in field if r["asset_id"] not in unlocked_assets]
+        if residual and field_manifest_sha256(residual) == state.get("field_manifest_sha256"):
+            _log(out, f"[hero] request {request_id} is missing; field revalidated — republishing under the same id")
+            digest = _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: state})
+            look = ctx["look"]
+            items = sorted({str(i) for r in residual for i in r["failing_items"]})
+            req_body = {"request_id": request_id, "project_id": ctx["project_id"], "stage": STAGE,
+                        "scope": f"character:{entity_id}", "kind": "qc_override", "entity_id": entity_id, "batch": True,
+                        "field": [{"qc_receipt_id": r["qc_receipt_id"], "asset_id": r["asset_id"],
+                                   "failing_items": list(r["failing_items"]),
+                                   "path": f"canon/visual/objects/{r['asset_id']}.png"} for r in residual],
+                        "field_manifest_sha256": state.get("field_manifest_sha256"), "item_ids": items, "reason": "",
+                        "look_hash": look.look_hash, "look_receipt_id": look.receipt_id,
+                        "config_approval_receipt_id": state.get("config_approval_receipt_id"),
+                        "config_sha256": state.get("config_sha256"),
+                        "budget_cap": state.get("budget_cap"), "attempts_spent": state.get("attempts_spent"),
+                        "expected_active_headshot_receipt_id": state.get("expected_active_headshot_receipt_id"),
+                        "source_checkpoint_digest": digest,
+                        "summary": f"Accept failed hero QC items (writer's choice of {items}) across {len(residual)} "
+                                   f"reviewed candidate(s) of {entity_id} — republished after a crash, same request",
+                        "preview_paths": [f"canon/visual/objects/{r['asset_id']}.png" for r in residual]}
+            (root / ".gate-requests" / f"{request_id}.json").write_text(json.dumps(req_body, indent=2), encoding="utf-8")
+            return _pending(root, entity_id, request_id, out, f"batch override request republished for {entity_id!r}")
+        _log(out, f"[hero] request {request_id} is missing and its field no longer reproduces; re-evaluating fresh")
+        _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: None})
+        return _generate_and_present(ctx)
+    # done — the batch was signed; verify and present the widened field.
+    if req is None or req.get("kind") != "qc_override" or not req.get("batch"):
+        raise HeadshotRunError(f"run state names batch request {request_id}; the done request does not match — refusing to guess")
+    _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: None})
+    return _generate_and_present(ctx)
 
 
 # ---- grandfather (D20.7) ----
@@ -709,8 +1012,12 @@ def _write_grandfather_request(root, project_id, entity_id, request_id, qc_recei
 def _resume(ctx, state: dict) -> dict[str, Any]:
     root, entity_id, out = ctx["root"], ctx["entity_id"], ctx["out"]
     request_id, mode = str(state.get("request_id") or ""), state.get("mode")
-    if mode not in ("import", "select", "grandfather", "retire", "import_blocked") or not request_id:
+    if mode not in ("import", "select", "grandfather", "retire", "import_blocked", "override_pending") or not request_id:
         raise HeadshotRunError(f"run state for {entity_id!r} is malformed: {state}")
+    if mode == "override_pending":
+        if not ctx.get("batch_mode"):
+            raise HeadshotRunError(f"run state for {entity_id!r} is a batch override, but the project is not pinned to a batch manifest (authored-film 1.5)")
+        return _resume_override(ctx, state)
     where, req = read_request(root, request_id)
     if where == "pending":
         return _pending(root, entity_id, request_id, out, f"request {request_id} is still waiting for the writer")

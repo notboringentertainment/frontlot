@@ -9,6 +9,7 @@ callers — Codex R1#11).
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, Optional
 
@@ -111,7 +112,8 @@ def raw_response_ok(project_dir: Path | str, row: dict[str, Any]) -> bool:
 
 def overrides_for(project_dir: Path | str, qc_receipt_id: str, entity_id: str) -> set[str]:
     """Item ids a human has explicitly accepted for ONE verdict (signed
-    qc_override receipts bound to that receipt id)."""
+    qc_override receipts bound to that receipt id). Record-1.1 batch receipts
+    never match here: their envelope carries no qc_receipt_id."""
     from lib.receipts import verified_approvals
 
     covered: set[str] = set()
@@ -120,6 +122,106 @@ def overrides_for(project_dir: Path | str, qc_receipt_id: str, entity_id: str) -
         if r.get("qc_receipt_id") == qc_receipt_id and rec.get("qc_receipt_id") == qc_receipt_id:
             covered.update(str(i) for i in rec.get("item_ids") or [])
     return covered
+
+
+def batch_row_for(
+    project_dir: Path | str, *, override_receipt_id: str, override_record_sha256: str,
+    qc_receipt_id: str, asset_id: str, field_manifest_sha256: str, entity_id: str,
+) -> Optional[set[str]]:
+    """Accepted item ids for ONE candidate under its CITED record-1.1 batch
+    receipt — authority is carried, never discovered by scanning. The whole
+    binding is enforced: exact receipt id + record hash (``exact_approval``),
+    record_version 1.1, manifest equality, the row matching BOTH verdict and
+    asset, and the asset appearing in the previewed ``unlocked_asset_ids``.
+    Any mismatch returns None (not covered)."""
+    from lib.receipts import ReceiptError, exact_approval
+
+    try:
+        r = exact_approval(
+            project_dir, receipt_id=override_receipt_id, kind="qc_override",
+            entity_id=entity_id, record_sha256=override_record_sha256,
+        )
+    except ReceiptError:
+        return None
+    rec = r.get("record") or {}
+    if rec.get("record_version") != "1.1":
+        return None
+    if rec.get("field_manifest_sha256") != field_manifest_sha256:
+        return None
+    if asset_id not in (rec.get("unlocked_asset_ids") or []):
+        return None
+    for row in rec.get("batch") or []:
+        if row.get("qc_receipt_id") == qc_receipt_id and row.get("asset_id") == asset_id:
+            return {str(i) for i in row.get("accepted_item_ids") or []}
+    return None
+
+
+def hero_override_field(
+    project_dir: Path | str, entity_id: str, look_hash: str, *, qc: Any,
+    rejected: set[str],
+) -> list[dict[str, Any]]:
+    """The SHARED field validator: every ledger row a hero batch waiver may
+    cover, used identically at request construction, signer reconstruction,
+    and pre-commit. A row enters the field iff its attempt is committed and
+    not voided; its verdict resolves, failed, and was judged by a non-local
+    provider under the currently signed hero policy; its series is a real
+    model generation (never the imported sentinel, never a grandfather
+    series); its budget position is within the signed cap; its failing items
+    are all overridable; its generation receipt resolves to the asset; the
+    pixels are present and re-hash to the asset id; and the asset is not in
+    rejected history. Returns rows sorted canonically."""
+    from lib import qc_receipts as qr
+    from lib.receipts import find_generation
+
+    root = Path(project_dir)
+    out: list[dict[str, Any]] = []
+    started_rows = qr.hero_attempts_started(root, entity_id, look_hash)
+    ordered_ids = [r.get("attempt_id") for r in started_rows]
+    seen_assets: set[str] = set()
+    for a in started_rows:
+        rows = qr.attempt_rows(root, a["attempt_id"])
+        if rows["verdict"] is None or rows.get("voided") is not None:
+            continue
+        v = qr.find_verdict_by_id(root, rows["verdict"]["qc_receipt_id"])
+        if v is None or v.get("attempt_id") != a["attempt_id"]:
+            continue
+        if v.get("verdict") != "fail" or v.get("provider") == "local":
+            continue
+        key = a.get("series_key") or {}
+        if qr.IMPORTED_SENTINEL in (key.get("generation_endpoint"), key.get("builder_policy_sha256"), key.get("generation_model")):
+            continue
+        if key.get("grandfather"):
+            continue
+        if v.get("policy_bundle_sha256") != qc.hero_policy_sha256:
+            continue
+        position = ordered_ids.index(a["attempt_id"]) + 1
+        if position > int(qc.max_hero_attempts):
+            continue
+        if a.get("budget_cap") is not None and int(a["budget_cap"]) > int(qc.max_hero_attempts):
+            continue
+        failing = {str(i) for i in v.get("failing_items") or []}
+        if not failing or failing & NON_OVERRIDABLE:
+            continue
+        asset_id = str(v.get("asset_id") or "")
+        if not asset_id or asset_id in rejected or asset_id in seen_assets:
+            continue
+        gen_row = rows.get("generation")
+        gen = find_generation(root, asset_id)
+        if gen is None or gen_row is None or gen_row.get("asset_id") != asset_id:
+            continue
+        img = root / "canon" / "visual" / "objects" / f"{asset_id}.png"
+        try:
+            if img.is_symlink() or not img.is_file() or hashlib.sha256(img.read_bytes()).hexdigest() != asset_id:
+                continue
+        except OSError:
+            continue
+        seen_assets.add(asset_id)
+        out.append({
+            "qc_receipt_id": str(v["receipt_id"]), "asset_id": asset_id,
+            "failing_items": sorted(failing), "attempt_id": str(a["attempt_id"]),
+        })
+    out.sort(key=lambda r: (r["qc_receipt_id"], r["asset_id"]))
+    return out
 
 
 def require_qc_pass(
