@@ -968,8 +968,8 @@ def _resume_override(ctx, state) -> dict[str, Any]:
             and int(state.get("budget_cap") or -1) == int(cap_now)
             and used_now >= cap_now
             and state.get("expected_active_headshot_receipt_id") == (tip_now.receipt_id if tip_now else None)
-            and (state.get("look_hash") is None or (state.get("look_hash") == look_now.look_hash
-                                                    and state.get("look_receipt_id") == look_now.receipt_id))
+            and state.get("look_hash") == look_now.look_hash
+            and state.get("look_receipt_id") == look_now.receipt_id
         )
         if snapshot_holds and residual and field_manifest_sha256(residual) == state.get("field_manifest_sha256"):
             _log(out, f"[hero] request {request_id} is missing; field revalidated — republishing under the same id")
@@ -1136,13 +1136,22 @@ def _finish_retire(ctx, state) -> dict[str, Any]:
     if entity_id in active_headshots(root):
         raise HeadshotRunError(f"request {state['request_id']} is done but {entity_id!r} still has an active hero; refusing")
     from lib.headshots import headshot_receipts as _hsr
+    rows = _hsr(root)
+    # the SIGNED retire receipt for THIS request (bound by checkpoint digest),
+    # never mutable run state (r3 #3)
+    where2, req2 = read_request(root, str(state.get("request_id") or ""))
+    bound2 = (req2 or {}).get("source_checkpoint_digest")
+    retire_rows = [r for r in rows if r.get("action") == "retire" and r.get("entity_id") == entity_id
+                   and (bound2 is None or r.get("source_checkpoint_digest") == bound2)]
+    if len(retire_rows) != 1:
+        raise HeadshotRunError(f"expected exactly one signed retire receipt for request {state.get('request_id')}; found {len(retire_rows)} — refusing")
+    superseded_rid = str(retire_rows[0].get("supersedes_receipt_id") or "")
+    activation = next((r for r in rows if r.get("receipt_id") == superseded_rid), None)
     retired = []
-    legacy_rid = str(state.get("legacy_receipt_id") or "")
-    row = next((r for r in _hsr(root) if r.get("receipt_id") == legacy_rid), None)
-    if row is not None:
-        asset = str((row.get("record") or {}).get("asset_id") or "")
+    if activation is not None:
+        asset = str((activation.get("record") or {}).get("asset_id") or "")
         if asset:
-            retired = [asset]  # from the SIGNED superseded receipt, never mutable state (r2 #9)
+            retired = [asset]
     # inspection #9: the retired face joins durable rejected history in the
     # SAME write that clears the run state — it can never be re-presented.
     # The retired entity's approved entry leaves the packet too: the receipt

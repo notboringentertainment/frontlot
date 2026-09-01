@@ -42,6 +42,12 @@ def _hero_qc(pin: Any) -> bool:
     return _is_hero_qc_manifest(pin)
 
 
+def _hero_batch(pin: Any) -> bool:
+    from lib.canon_enforcement import _is_hero_batch_manifest
+
+    return _is_hero_batch_manifest(pin)
+
+
 def grandfather_record(
     *, entity_id: str, legacy_headshot_receipt_id: str, asset_id: str, look_hash: str, qc_receipt_id: str,
 ) -> dict[str, Any]:
@@ -293,6 +299,10 @@ def verify_headshot_candidate(
                     "field_manifest_sha256": candidate.get("field_manifest_sha256")}
     elif isinstance(candidate.get("legacy_citations"), list):
         legacy = list(candidate["legacy_citations"])
+    elif _hero_batch(pin) and kind != "imported":
+        # A generated candidate under a 1.5 pin with NO citations has ZERO
+        # override authority — never a license to scan 1.0 receipts (r3 #4).
+        legacy = []
     return require_hero_verdict(
         project_dir, qc_receipt_id=candidate.get("qc_receipt_id"), asset_id=asset_id, entity_id=entity_id,
         active_look=active_look, config=config, gen_receipt=receipt, override_citation=citation,
@@ -373,6 +383,8 @@ def verify_active_headshot(project_dir: Path | str, current: Any, *, active_look
                     "field_manifest_sha256": record.get("field_manifest_sha256")}
     elif record.get("legacy_citations"):
         legacy = list(record["legacy_citations"])
+    elif rv == "1.2" and record.get("origin") != "imported_synthetic":
+        legacy = []  # a clean generated 1.2 record carries zero override authority (r3 #4)
     return require_hero_verdict(project_dir, qc_receipt_id=record.get("qc_receipt_id"), asset_id=current.asset_id, entity_id=entity_id,
                                 active_look=active_look, config=config, gen_receipt=gen,
                                 override_citation=citation, legacy_citations=legacy)

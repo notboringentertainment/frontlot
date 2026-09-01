@@ -187,6 +187,8 @@ def hero_override_field(
             continue
         if v.get("verdict") != "fail" or v.get("provider") == "local":
             continue
+        if v.get("entity_id") != entity_id or v.get("role") != "hero":
+            continue  # the verdict itself must name this entity and the hero role (r3 #2)
         key = a.get("series_key") or {}
         if qr.IMPORTED_SENTINEL in (key.get("generation_endpoint"), key.get("builder_policy_sha256"), key.get("generation_model")):
             continue
@@ -217,6 +219,10 @@ def hero_override_field(
             # the ATTEMPT's attached generation receipt, resolved by ID —
             # never a same-hash receipt from elsewhere (post-build inspection #4)
             continue
+        try:
+            verify_series_against_receipt(dict(key), gen, asset_id=asset_id)
+        except SeriesMismatch:
+            continue  # the series must be what the sealed receipt says happened (r3 #2)
         img = root / "canon" / "visual" / "objects" / f"{asset_id}.png"
         try:
             if img.is_symlink() or not img.is_file() or hashlib.sha256(img.read_bytes()).hexdigest() != asset_id:

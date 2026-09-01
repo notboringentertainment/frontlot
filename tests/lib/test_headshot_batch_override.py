@@ -354,3 +354,81 @@ class TestFixRound2:
         # in checkpoint metadata remembers it (r2 #8)
         seq = _cp(w)["metadata"].get("override_request_seq") or {}
         assert int(seq.get(CHAR) or 0) >= 1
+
+
+class TestFixRound3:
+    def test_replay_rejects_forged_extras_and_nonhex(self, bworld):
+        """The REAL replay path (active_headshots) refuses a signed 1.2 record
+        with unknown fields or non-hex digests (r3 #5/#7)."""
+        from lib.headshots import HeadshotError, headshot_record
+        with pytest.raises(HeadshotError, match="lowercase sha256"):
+            headshot_record(entity_id='e', look_hash='l' * 64, asset_id='a' * 64, origin='generated',
+                            import_receipt_id=None, prompt_recipe_sha256='p' * 64,
+                            candidates_checkpoint_digest='c' * 64, record_version='1.2',
+                            generation_receipt_id='g', qc_receipt_id='q',
+                            qc_override_receipt_id='o', qc_override_record_sha256='z' * 64,
+                            field_manifest_sha256='f' * 64)
+        with pytest.raises(HeadshotError, match="unique and sorted"):
+            headshot_record(entity_id='e', look_hash='l' * 64, asset_id='a' * 64, origin='generated',
+                            import_receipt_id=None, prompt_recipe_sha256='p' * 64,
+                            candidates_checkpoint_digest='c' * 64, record_version='1.2',
+                            generation_receipt_id='g', qc_receipt_id='q',
+                            legacy_citations=[{"receipt_id": "b", "record_sha256": "e" * 64},
+                                              {"receipt_id": "a", "record_sha256": "e" * 64}])
+
+    def test_deleted_pending_id_is_never_reissued(self, bworld):
+        """r2 #8 / r3 #7: delete the pending request AND its run state — the
+        durable counter still refuses to reuse the id."""
+        import scripts.headshot_run as hrun
+        w = bworld
+        _run(w, candidates=1, judge_adapter=PlanJudge([_fail(), _fail(), _fail()]))
+        p1 = _batch_reqs(w)[0]
+        rid1 = json.loads(p1.read_text())["request_id"]
+        p1.unlink()
+        hrun._write(w["project"], hrun._current_pending_packet(w["project"]), status="in_progress",
+                    run_state={CHAR: None})  # simulate a stale run losing its state
+        r = _run(w)  # re-evaluates and raises a fresh request
+        assert r["status"] == "pending"
+        rid2 = r["request_id"]
+        assert rid2 != rid1 and rid2.endswith("-2"), f"expected a NEW id, got {rid2!r}"
+
+    def test_stale_look_in_recovery_state_never_republishes_same_id(self, bworld):
+        """r3 #6: a missing request whose state lacks/breaks the look binding
+        is discarded and rebuilt, never republished."""
+        import scripts.headshot_run as hrun
+        w = bworld
+        _run(w, candidates=1, judge_adapter=PlanJudge([_fail(), _fail(), _fail()]))
+        p1 = _batch_reqs(w)[0]
+        rid1 = json.loads(p1.read_text())["request_id"]
+        p1.unlink()
+        # corrupt the look binding in run state (simulates pre-fix legacy state)
+        cp = _cp(w)
+        st = cp["metadata"]["run_state"][CHAR]
+        st.pop("look_hash", None); st.pop("look_receipt_id", None)
+        hrun._write(w["project"], hrun._current_pending_packet(w["project"]), status="in_progress",
+                    run_state={CHAR: st})
+        r = _run(w)
+        assert r["status"] == "pending"
+        assert r["request_id"] != rid1, "incomplete recovery state must rebuild under a NEW id"
+
+    def test_retire_receipt_drives_rejection_not_state(self, bworld):
+        """r3 #3: the rejected face comes from the signed retire receipt's
+        superseded activation, immune to run-state tampering."""
+        import scripts.headshot_run as hrun
+        w = bworld
+        r = _run(w, candidates=1, generate=FakeGen(fixed="retire-me-2"))
+        approve_request(_req(w, r["request_id"]), w["project"], selection=1)
+        assert _run(w)["status"] == "approved"
+        asset = active_headshots(w["project"])[CHAR].asset_id
+        rr = _run(w, retire=True)
+        approve_request(_req(w, rr["request_id"]), w["project"])
+        # tamper the mutable pointer before finishing — directly on disk,
+        # the way an attacker would (the checkpoint writer would refuse)
+        cp_path = w["project"] / "checkpoint_headshots.json"
+        raw = json.loads(cp_path.read_text())
+        raw["metadata"]["run_state"][CHAR]["legacy_receipt_id"] = "not-a-receipt"
+        cp_path.write_text(json.dumps(raw, indent=2))
+        done = _run(w, retire=True)
+        assert done["status"] == "retired"
+        hist = (_cp(w)["metadata"].get("rejected_candidates") or {}).get(CHAR) or []
+        assert asset in hist, "the SIGNED receipt chain, not state, names the retired face"

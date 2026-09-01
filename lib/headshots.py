@@ -24,6 +24,12 @@ from typing import Any, Optional
 
 from lib.canonical_json import record_sha256
 
+_HEX64 = "0123456789abcdef"
+
+
+def _is_hex64(value) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(c in _HEX64 for c in value)
+
 HEADSHOT_KIND = "headshot"
 HEADSHOT_RECORD_FIELDS = (
     "entity_kind", "entity_id", "look_hash", "asset_id", "normalized_pixel_hash", "origin",
@@ -142,12 +148,14 @@ def headshot_record(
     for c in legacy:
         if not isinstance(c, dict) or set(c) != {"receipt_id", "record_sha256"} \
                 or not isinstance(c.get("receipt_id"), str) or not c["receipt_id"] \
-                or not isinstance(c.get("record_sha256"), str) or len(c["record_sha256"]) != 64:
-            raise HeadshotError("each legacy citation is exactly {receipt_id, record_sha256 (sha256 hex)}")
+                or not _is_hex64(c.get("record_sha256")):
+            raise HeadshotError("each legacy citation is exactly {receipt_id, record_sha256 (lowercase sha256 hex)}")
+    if legacy != sorted(legacy, key=lambda c: c["receipt_id"]) or len({c["receipt_id"] for c in legacy}) != len(legacy):
+        raise HeadshotError("legacy_citations must be unique and sorted by receipt_id")
     if all(has_batch):
         for name, val in (("qc_override_record_sha256", qc_override_record_sha256), ("field_manifest_sha256", field_manifest_sha256)):
-            if not isinstance(val, str) or len(val) != 64:
-                raise HeadshotError(f"a 1.2 record's {name} must be a sha256 hex digest")
+            if not _is_hex64(val):
+                raise HeadshotError(f"a 1.2 record's {name} must be a lowercase sha256 hex digest")
         if not isinstance(qc_override_receipt_id, str) or not qc_override_receipt_id:
             raise HeadshotError("a 1.2 record's qc_override_receipt_id must be a receipt id")
     record.update({
@@ -209,13 +217,16 @@ def active_headshots(project_dir: Path | str, *, project_id: Optional[str] = Non
                     raise HeadshotError(f"headshot receipt {row.get('receipt_id')}: an imported 1.2 record carries no override citations")
                 for f in ("qc_override_record_sha256", "field_manifest_sha256"):
                     val = record.get(f)
-                    if val is not None and (not isinstance(val, str) or len(val) != 64):
-                        raise HeadshotError(f"headshot receipt {row.get('receipt_id')}: {f} must be a sha256 hex digest")
-                for c in record.get("legacy_citations") or []:
+                    if val is not None and not _is_hex64(val):
+                        raise HeadshotError(f"headshot receipt {row.get('receipt_id')}: {f} must be a lowercase sha256 hex digest")
+                lc = record.get("legacy_citations") or []
+                for c in lc:
                     if not isinstance(c, dict) or set(c) != {"receipt_id", "record_sha256"} \
                             or not isinstance(c.get("receipt_id"), str) or not c["receipt_id"] \
-                            or not isinstance(c.get("record_sha256"), str) or len(c["record_sha256"]) != 64:
+                            or not _is_hex64(c.get("record_sha256")):
                         raise HeadshotError(f"headshot receipt {row.get('receipt_id')}: malformed legacy citation")
+                if lc != sorted(lc, key=lambda c: c["receipt_id"]) or len({c["receipt_id"] for c in lc}) != len(lc):
+                    raise HeadshotError(f"headshot receipt {row.get('receipt_id')}: legacy_citations must be unique and sorted")
             if current is None:
                 if supersedes is not None:
                     raise HeadshotError(

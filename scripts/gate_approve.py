@@ -1646,10 +1646,12 @@ def _decide(
                     envelope=built.envelope,
                     pre_commit_check=built.pre_commit_check,
                 )
-            except Exception:
+            except GateHandlerError:
                 if is_batch_override:
-                    # Post-token pre-commit failure — ANY exception, not only
-                    # GateHandlerError (round-2 inspection #6):
+                    # Post-token TYPED pre-commit failure only (round-3 #1):
+                    # once publication begins, any other exception leaves the
+                    # request pending so WAL recovery can complete the commit —
+                    # abandoning there would hide authority the WAL replays.
                     # the one-use token is spent and the field-bound request
                     # can never be signed as displayed — durably abandon it,
                     # move first, under the approval lock (round-4 #8).
