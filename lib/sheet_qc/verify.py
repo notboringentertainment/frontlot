@@ -202,6 +202,9 @@ def hero_override_field(
             continue
         if key.get("grandfather"):
             continue
+        if key.get("judge_provider") != qc.judge_provider or key.get("judge_model") != qc.judge_model \
+                or key.get("policy_bundle_sha256") != qc.hero_policy_sha256:
+            continue  # the attempt SERIES must name the current judge/policy too (r5 #1)
         if v.get("policy_bundle_sha256") != qc.hero_policy_sha256:
             continue
         if v.get("provider") != qc.judge_provider or v.get("model") != qc.judge_model:

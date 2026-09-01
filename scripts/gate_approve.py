@@ -836,8 +836,10 @@ def _construct_qc_override_batch(root: Path, req: dict) -> Constructed:
             _pre_commit_body()
         except GateHandlerError:
             raise
-        except Exception as exc:  # noqa: BLE001 — typed refusal boundary
-            raise GateHandlerError(f"pre-commit re-derivation failed: {exc}") from exc
+        except BaseException as exc:  # noqa: BLE001 — typed refusal boundary:
+            # even KeyboardInterrupt inside the callback must abandon the
+            # spent-token request rather than leave it pending (r5 #2)
+            raise GateHandlerError(f"pre-commit re-derivation failed: {exc!r}") from exc
 
     def _pre_commit_body() -> None:
         from lib.headshots import active_headshots as _ah
