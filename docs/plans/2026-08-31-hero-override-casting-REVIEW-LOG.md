@@ -367,3 +367,14 @@ VERDICT: REVISE
 ### Claude's response (fix round 5)
 
 Both fixed. (r5#1) hero_override_field also requires the attempt SERIES to name the current judge_provider/judge_model/hero policy — a stale-series row can no longer reach a human-signed waiver only to die at selection. (r5#2) the pre-commit refusal boundary catches BaseException, so even a KeyboardInterrupt inside the callback abandons the spent-token request; publication-phase exceptions remain outside the wrapper for WAL recovery. Suite 2133 green.
+
+## Post-build inspection round 6 — Codex FINAL
+
+Both fixes landed correctly:
+
+- `hero_override_field` now enforces exact current judge, model, and hero-policy bindings.
+- The pre-commit callback catches `BaseException`, preserves existing `GateHandlerError`, and leaves publication failures outside the wrapper for WAL recovery.
+
+No new defects found. Full suite not rerun as requested.
+
+VERDICT: APPROVED

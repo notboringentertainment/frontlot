@@ -1,8 +1,11 @@
 # Hero override: waive items, don't cast — casting stays with the writer
 
-Status: revision 6 (after Codex rounds 1–5; round cap reached with the core
-design judged sound and zero contested points — see REVIEW-LOG). Awaiting
-Ben's build decision.
+Status: BUILT and APPROVED. Plan: 5 Codex review rounds (49 findings, all
+accepted). Build: Claude, commits b132783 through fix round 5; 5 fresh-session
+Codex inspection rounds (43 findings: fixed or rejected-with-logged-reason),
+final verdict APPROVED. Suite 2133 green. Adoption: a project moves to
+authored-film@1.5 only through its signed pipeline_migration pin gate —
+Bloodless stays on 1.4 until Ben signs.
 Origin: found live 2026-08-31 on Alyssa Byrne (Bloodless). Twelve hero candidates
 generated, all failed `no_occlusion` (her canonical thin-framed glasses). The
 budget-spent path wrote an override request bound to ONE candidate — the judge's
