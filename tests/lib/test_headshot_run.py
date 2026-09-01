@@ -406,7 +406,7 @@ class TestInspectionRound2:
         done = w["project"] / ".gate-requests" / "done" / f"{r['request_id']}.json"
         d = json.loads(done.read_text()); d["source_checkpoint_digest"] = "0" * 64
         done.write_text(json.dumps(d))
-        with pytest.raises(HeadshotRunError, match="not signed for request"):
+        with pytest.raises(HeadshotRunError, match="not signed for request|no longer hashes to the digest"):
             _run(w)
 
     def test_one_character_at_a_time(self, world):

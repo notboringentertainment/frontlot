@@ -153,6 +153,12 @@ def _write(root: Path, packet: dict[str, Any], *, status: str, run_state: dict[s
             states.pop(entity, None)
         else:
             states[entity] = state
+            if state.get("mode") == "override_pending" and state.get("request_id"):
+                tail = str(state["request_id"]).rsplit("-", 1)[-1]
+                if tail.isdigit():
+                    seq = dict(meta.get("override_request_seq") or {})
+                    seq[entity] = max(int(seq.get(entity) or 0), int(tail))
+                    meta["override_request_seq"] = seq
     meta["run_state"] = states
     revs = dict(meta.get("run_revisions") or {})
     for entity, state in run_state.items():
@@ -874,6 +880,7 @@ def _maybe_batch_override(ctx, passing: dict) -> Optional[dict[str, Any]]:
         return None
     cfg_receipt = _config_approval_receipt(root, ctx["config"])
     current = active_headshots(root).get(entity_id)
+    look = ctx["look"]
     d = root / ".gate-requests"
     d.mkdir(exist_ok=True)
     for existing in sorted(d.glob(f"override-{entity_id}-hero-*.json")):
@@ -884,23 +891,27 @@ def _maybe_batch_override(ctx, passing: dict) -> Optional[dict[str, Any]]:
         if data.get("field_manifest_sha256") == manifest:
             return _pending(root, entity_id, existing.stem, out,
                             f"[hero] the batch override request {existing.stem} for this field is still waiting for the writer")
-    suffixes = [0]
+    # Durable monotonic counter (round-2 inspection #8): the checkpoint
+    # metadata remembers the highest suffix ever issued, so even a deleted
+    # highest file never frees its id. File suffixes only ratchet it up.
+    seq = dict(_meta(root).get("override_request_seq") or {})
+    suffixes = [int(seq.get(entity_id) or 0)]
     for sub in ("", "done", "declined", "abandoned"):
         for f in (d / sub if sub else d).glob(f"override-{entity_id}-hero-*.json"):
             tail = f.stem.rsplit("-", 1)[-1]
             if tail.isdigit():
                 suffixes.append(int(tail))
-    n = max(suffixes) + 1  # monotonic — a deleted file never frees its id (inspection #10)
+    n = max(suffixes) + 1
     req_id = f"override-{entity_id}-hero-{n}"
     state = {"mode": "override_pending", "revision": _next_revision(root, entity_id), "request_id": req_id,
              "expected_kind": "qc_override", "field_manifest_sha256": manifest,
+             "look_hash": look.look_hash, "look_receipt_id": look.receipt_id,
              "config_approval_receipt_id": cfg_receipt["receipt_id"], "config_sha256": ctx["config"].digest,
              "budget_cap": int(cap), "attempts_spent": int(used),
              "expected_active_headshot_receipt_id": current.receipt_id if current else None}
     # Checkpoint FIRST, then its digest goes into the request (round-3 #1):
     # run_state never contains a digest of its own checkpoint.
     digest = _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: state})
-    look = ctx["look"]
     items = sorted({str(i) for r in residual for i in r["failing_items"]})
     req = {"request_id": req_id, "project_id": ctx["project_id"], "stage": STAGE, "scope": f"character:{entity_id}",
            "kind": "qc_override", "entity_id": entity_id, "batch": True,
@@ -950,12 +961,15 @@ def _resume_override(ctx, state) -> dict[str, Any]:
         cfg_now = _config_approval_receipt(root, ctx["config"])
         tip_now = _ah(root).get(entity_id)
         _, cap_now, used_now = _budget(ctx)
+        look_now = ctx["look"]
         snapshot_holds = (
             state.get("config_approval_receipt_id") == cfg_now["receipt_id"]
             and state.get("config_sha256") == ctx["config"].digest
             and int(state.get("budget_cap") or -1) == int(cap_now)
             and used_now >= cap_now
             and state.get("expected_active_headshot_receipt_id") == (tip_now.receipt_id if tip_now else None)
+            and (state.get("look_hash") is None or (state.get("look_hash") == look_now.look_hash
+                                                    and state.get("look_receipt_id") == look_now.receipt_id))
         )
         if snapshot_holds and residual and field_manifest_sha256(residual) == state.get("field_manifest_sha256"):
             _log(out, f"[hero] request {request_id} is missing; field revalidated — republishing under the same id")
@@ -1121,7 +1135,14 @@ def _finish_retire(ctx, state) -> dict[str, Any]:
     root, entity_id, out = ctx["root"], ctx["entity_id"], ctx["out"]
     if entity_id in active_headshots(root):
         raise HeadshotRunError(f"request {state['request_id']} is done but {entity_id!r} still has an active hero; refusing")
-    retired = [str(state["retired_asset_id"])] if state.get("retired_asset_id") else []
+    from lib.headshots import headshot_receipts as _hsr
+    retired = []
+    legacy_rid = str(state.get("legacy_receipt_id") or "")
+    row = next((r for r in _hsr(root) if r.get("receipt_id") == legacy_rid), None)
+    if row is not None:
+        asset = str((row.get("record") or {}).get("asset_id") or "")
+        if asset:
+            retired = [asset]  # from the SIGNED superseded receipt, never mutable state (r2 #9)
     # inspection #9: the retired face joins durable rejected history in the
     # SAME write that clears the run state — it can never be re-presented.
     # The retired entity's approved entry leaves the packet too: the receipt
@@ -1200,7 +1221,14 @@ def _finish_select(ctx, state, bound: str) -> dict[str, Any]:
         current = active_headshots(root).get(entity_id)
     except HeadshotError as exc:
         raise HeadshotRunError(str(exc)) from exc
-    hashes = list(state.get("candidate_hashes") or [])
+    from lib.checkpoint import checkpoint_digest as _cpd
+    if _cpd(root / f"checkpoint_{STAGE}.json") != bound:
+        raise HeadshotRunError(f"the headshots checkpoint no longer hashes to the digest request {state['request_id']} was "
+                               f"signed against; refusing to derive rejections from a moved packet (r2 #9)")
+    pending_now = (_checkpoint(root).get("artifacts") or {}).get("headshot_packet") or {}
+    entry_now = next((e for e in pending_now.get("characters") or []
+                      if isinstance(e, dict) and e.get("entity_id") == entity_id), {}) if pending_now.get("state") == "pending" else {}
+    hashes = [c.get("asset_id") for c in entry_now.get("candidates") or [] if isinstance(c, dict)]
     if current is None or current.asset_id not in hashes or current.look_hash != look.look_hash:
         raise HeadshotRunError(f"request {state['request_id']} is done but the active hero for {entity_id!r} is not one of its candidates")
     row = next((r for r in headshot_receipts(root) if r.get("receipt_id") == current.receipt_id), None)

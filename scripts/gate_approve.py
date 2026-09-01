@@ -768,11 +768,15 @@ def _construct_qc_override_batch(root: Path, req: dict) -> Constructed:
     # Full-tuple comparison (post-build inspection #5): the DISPLAYED rows —
     # failing items included — must equal the reconstruction, so a doctored
     # request cannot show the human a misleading description of the field.
-    shown_rows = {(str(r.get("qc_receipt_id")), str(r.get("asset_id")),
-                   tuple(sorted(str(i) for i in r.get("failing_items") or []))) for r in req.get("field") or []}
-    real_rows = {(r["qc_receipt_id"], r["asset_id"], tuple(r["failing_items"])) for r in field}
+    shown_rows = sorted((str(r.get("qc_receipt_id")), str(r.get("asset_id")),
+                         tuple(sorted(str(i) for i in r.get("failing_items") or [])),
+                         str(r.get("path"))) for r in req.get("field") or [])
+    real_rows = sorted((r["qc_receipt_id"], r["asset_id"], tuple(r["failing_items"]),
+                        f"canon/visual/objects/{r['asset_id']}.png") for r in field)
     if shown_rows != real_rows:
-        raise GateHandlerError("the request's displayed field disagrees with reconstruction (rows or failing items) — refused")
+        raise GateHandlerError("the request's displayed field disagrees with reconstruction (rows, failing items, or paths) — refused")
+    if sorted(req.get("preview_paths") or []) != sorted(f"canon/visual/objects/{r['asset_id']}.png" for r in field):
+        raise GateHandlerError("the request's preview_paths disagree with the reconstructed field — refused")
     for r in field:
         _verify_image_ref(root, {"asset_id": r["asset_id"], "path": f"canon/visual/objects/{r['asset_id']}.png"},
                           f"candidate {r['asset_id'][:12]}")
@@ -1027,11 +1031,19 @@ def headshot_candidates(req: dict, root: Path) -> tuple[str, dict, list[dict]]:
             # binds the config that produced the presentation.
             meta = (checkpoint.get("metadata") or {})
             sel_state = (meta.get("run_state") or {}).get(entity_id) or {}
-            if sel_state.get("mode") == "select":
-                if sel_state.get("config_sha256") != config.digest:
-                    raise GateHandlerError("project.yaml changed since this packet was presented — re-run headshot_run")
-                if int(sel_state.get("budget_cap") or -1) != int(config.require_hero_qc().max_hero_attempts):
-                    raise GateHandlerError("the hero-attempt cap changed since this packet was presented — re-run headshot_run")
+            # round-2 inspection #7: the select snapshot is REQUIRED and fully
+            # checked — an absent or wrong-mode state never skips validation.
+            if sel_state.get("mode") != "select" or sel_state.get("request_id") != req.get("request_id"):
+                raise GateHandlerError("no select run-state binds this request to the presented packet — re-run headshot_run")
+            if sel_state.get("config_sha256") != config.digest:
+                raise GateHandlerError("project.yaml changed since this packet was presented — re-run headshot_run")
+            if int(sel_state.get("budget_cap") or -1) != int(config.require_hero_qc().max_hero_attempts):
+                raise GateHandlerError("the hero-attempt cap changed since this packet was presented — re-run headshot_run")
+            from lib.canonical_json import record_sha256 as _rs256
+            from lib.receipts import find_approval as _fa
+            cfg_row = _fa(root, "config", record_sha256=_rs256({"config_sha256": config.digest}))
+            if cfg_row is None or sel_state.get("config_approval_receipt_id") != cfg_row.get("receipt_id"):
+                raise GateHandlerError("the config approval receipt changed since this packet was presented — re-run headshot_run")
         if batch_pin and any(c.get("qc_override_receipt_id") for c in candidates):
             # A 1.2 packet whose field relied on exhaustion must still be
             # exhausted under the CURRENT config (round-4 #4): a raised cap
@@ -1634,9 +1646,10 @@ def _decide(
                     envelope=built.envelope,
                     pre_commit_check=built.pre_commit_check,
                 )
-            except GateHandlerError:
+            except Exception:
                 if is_batch_override:
-                    # Post-token pre-commit failure (post-build inspection #7):
+                    # Post-token pre-commit failure — ANY exception, not only
+                    # GateHandlerError (round-2 inspection #6):
                     # the one-use token is spent and the field-bound request
                     # can never be signed as displayed — durably abandon it,
                     # move first, under the approval lock (round-4 #8).

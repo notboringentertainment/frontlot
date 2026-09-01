@@ -171,7 +171,7 @@ def hero_override_field(
     pixels are present and re-hash to the asset id; and the asset is not in
     rejected history. Returns rows sorted canonically."""
     from lib import qc_receipts as qr
-    from lib.receipts import find_generation
+    from lib.receipts import find_generation_by_id
 
     root = Path(project_dir)
     out: list[dict[str, Any]] = []
@@ -194,6 +194,10 @@ def hero_override_field(
             continue
         if v.get("policy_bundle_sha256") != qc.hero_policy_sha256:
             continue
+        if v.get("provider") != qc.judge_provider or v.get("model") != qc.judge_model:
+            continue  # judged by something other than the configured judge (r2 #4)
+        if not raw_response_ok(root, v):
+            continue  # the raw judge response must still be present and hash-true
         position = ordered_ids.index(a["attempt_id"]) + 1
         if position > int(qc.max_hero_attempts):
             continue
@@ -206,11 +210,12 @@ def hero_override_field(
         if not asset_id or asset_id in rejected or asset_id in seen_assets:
             continue
         gen_row = rows.get("generation")
-        gen = find_generation(root, asset_id)
-        if gen is None or gen_row is None or gen_row.get("asset_id") != asset_id \
-                or gen.get("receipt_id") != gen_row.get("generation_receipt_id"):
-            # the ATTEMPT's attached generation receipt, exactly — never a
-            # same-hash receipt from elsewhere (post-build inspection #4)
+        if gen_row is None or gen_row.get("asset_id") != asset_id:
+            continue
+        gen = find_generation_by_id(root, str(gen_row.get("generation_receipt_id") or ""), output_sha256=asset_id)
+        if gen is None:
+            # the ATTEMPT's attached generation receipt, resolved by ID —
+            # never a same-hash receipt from elsewhere (post-build inspection #4)
             continue
         img = root / "canon" / "visual" / "objects" / f"{asset_id}.png"
         try:

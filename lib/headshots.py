@@ -191,6 +191,10 @@ def active_headshots(project_dir: Path | str, *, project_id: Optional[str] = Non
             missing = [f for f in wanted if f not in record]
             if missing:
                 raise HeadshotError(f"headshot receipt {row.get('receipt_id')} record lacks {missing}")
+            if rv != "1.0":
+                extras = sorted(set(record) - set(wanted))
+                if extras:
+                    raise HeadshotError(f"headshot receipt {row.get('receipt_id')} record carries unknown fields {extras}")
             if rv == HEADSHOT_RECORD_VERSION_1_2:
                 # Replay enforces the 1.2 conditional matrix, not just presence:
                 # batch citation all-or-none, exclusive with legacy_citations.
@@ -201,6 +205,17 @@ def active_headshots(project_dir: Path | str, *, project_id: Optional[str] = Non
                     raise HeadshotError(f"headshot receipt {row.get('receipt_id')}: 1.2 batch citation is all-or-none")
                 if all(has) and record.get("legacy_citations"):
                     raise HeadshotError(f"headshot receipt {row.get('receipt_id')}: 1.2 record carries batch citation AND legacy_citations")
+                if record.get("origin") == "imported_synthetic" and (any(has) or record.get("legacy_citations")):
+                    raise HeadshotError(f"headshot receipt {row.get('receipt_id')}: an imported 1.2 record carries no override citations")
+                for f in ("qc_override_record_sha256", "field_manifest_sha256"):
+                    val = record.get(f)
+                    if val is not None and (not isinstance(val, str) or len(val) != 64):
+                        raise HeadshotError(f"headshot receipt {row.get('receipt_id')}: {f} must be a sha256 hex digest")
+                for c in record.get("legacy_citations") or []:
+                    if not isinstance(c, dict) or set(c) != {"receipt_id", "record_sha256"} \
+                            or not isinstance(c.get("receipt_id"), str) or not c["receipt_id"] \
+                            or not isinstance(c.get("record_sha256"), str) or len(c["record_sha256"]) != 64:
+                        raise HeadshotError(f"headshot receipt {row.get('receipt_id')}: malformed legacy citation")
             if current is None:
                 if supersedes is not None:
                     raise HeadshotError(

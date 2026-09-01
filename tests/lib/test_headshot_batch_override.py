@@ -147,9 +147,8 @@ class TestBatchSigningAndCasting:
         # the A+B candidate is the residual field of a NEW request
         res = _run(w)
         assert res["status"] == "pending"
-        if res["request_id"].startswith("headshot-"):
-            # presentation happened first; the residual gate comes on the next pass
-            pytest.skip("presentation preceded residual request in this ordering")
+        assert res["request_id"].startswith("override-"), \
+            "the residual field raises its waiver gate BEFORE presentation — deterministic, no skip (r2 #13)"
         ov2 = json.loads((w["project"] / ".gate-requests" / f"{res['request_id']}.json").read_text())
         assert len(ov2["field"]) == 1 and sorted(ov2["item_ids"]) == ["no_text", "plain_background"]
         r2 = _sign_batch(w, ov2, ["no_text", "plain_background"])
@@ -308,3 +307,50 @@ class TestFixRound1:
         out = R.validate_envelope("qc_override", {"qc_receipt_id": "q1", "item_ids": ["x"], "reason": "long enough reason"},
                                    "d" * 64, "e", {"qc_receipt_id": "q1"})
         assert out == {"qc_receipt_id": "q1"}, "no null field_manifest_sha256 in 1.0 envelopes"
+
+
+class TestFixRound2:
+    def test_replay_rejects_extras_and_malformed_citations(self):
+        from lib.headshots import HeadshotError, headshot_record
+        rec = headshot_record(entity_id='e', look_hash='l' * 64, asset_id='a' * 64, origin='generated',
+                              import_receipt_id=None, prompt_recipe_sha256='p' * 64,
+                              candidates_checkpoint_digest='c' * 64, record_version='1.2',
+                              generation_receipt_id='g', qc_receipt_id='q')
+        assert rec['legacy_citations'] == [] and rec['qc_override_receipt_id'] is None
+        with pytest.raises(HeadshotError, match='sha256'):
+            headshot_record(entity_id='e', look_hash='l' * 64, asset_id='a' * 64, origin='generated',
+                            import_receipt_id=None, prompt_recipe_sha256='p' * 64,
+                            candidates_checkpoint_digest='c' * 64, record_version='1.2',
+                            generation_receipt_id='g', qc_receipt_id='q',
+                            qc_override_receipt_id='o', qc_override_record_sha256='short',
+                            field_manifest_sha256='f' * 64)
+
+    def test_receipt_lists_must_be_canonical(self):
+        import lib.receipts as R
+        base = {"record_version": "1.1", "request_id": "override-x-hero-1",
+                "batch": [{"qc_receipt_id": "qa", "asset_id": "aa", "accepted_item_ids": ["no_text", "bust_front"]}],
+                "field_manifest_sha256": "f" * 64, "unlocked_asset_ids": ["aa"],
+                "look_hash": "1" * 64, "look_receipt_id": "lr",
+                "config_approval_receipt_id": "cr", "config_sha256": "2" * 64,
+                "budget_cap": 12, "attempts_spent": 12,
+                "expected_active_headshot_receipt_id": None, "reason": "a real typed reason here"}
+        env = {"field_manifest_sha256": "f" * 64}
+        with pytest.raises(ValueError, match="sorted and unique"):
+            R.validate_envelope("qc_override", base, "d" * 64, "e", env)  # unsorted items
+        base["batch"][0]["accepted_item_ids"] = ["bust_front", "no_text"]
+        R.validate_envelope("qc_override", base, "d" * 64, "e", env)
+        import copy
+        bad = copy.deepcopy(base); bad["request_id"] = "x" * 80
+        with pytest.raises(ValueError, match="request id"):
+            R.validate_envelope("qc_override", bad, "d" * 64, "e", env)
+
+    def test_override_ids_are_monotonic_even_after_deletion(self, bworld):
+        w = bworld
+        _run(w, candidates=1, judge_adapter=PlanJudge([_fail(), _fail(), _fail()]))
+        p1 = _batch_reqs(w)[0]
+        rid1 = json.loads(p1.read_text())["request_id"]
+        assert rid1.endswith("-1")
+        # deleting the highest file must not free its id: the durable counter
+        # in checkpoint metadata remembers it (r2 #8)
+        seq = _cp(w)["metadata"].get("override_request_seq") or {}
+        assert int(seq.get(CHAR) or 0) >= 1

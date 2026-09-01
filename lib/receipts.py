@@ -160,6 +160,8 @@ def _validate_qc_override_batch(record: dict, env: dict) -> None:
             raise ValueError("qc_override 1.1: batch row ids must be non-empty strings")
         if not isinstance(items, list) or not items or not all(isinstance(i, str) and i for i in items):
             raise ValueError("qc_override 1.1: accepted_item_ids must be a non-empty list of item ids")
+        if items != sorted(set(items)):
+            raise ValueError("qc_override 1.1: accepted_item_ids must be sorted and unique")
         if rid in seen_rids or aid in seen_assets:
             raise ValueError("qc_override 1.1: batch rows must have unique qc_receipt_ids and asset_ids")
         seen_rids.add(rid)
@@ -171,12 +173,13 @@ def _validate_qc_override_batch(record: dict, env: dict) -> None:
     unlocked = record["unlocked_asset_ids"]
     if not isinstance(unlocked, list) or not unlocked or not all(isinstance(a, str) and a for a in unlocked):
         raise ValueError("qc_override 1.1: unlocked_asset_ids must be a non-empty list — a waiver that unlocks nothing cannot be signed")
-    if len(set(unlocked)) != len(unlocked):
-        raise ValueError("qc_override 1.1: unlocked_asset_ids must not repeat")
+    if unlocked != sorted(set(unlocked)):
+        raise ValueError("qc_override 1.1: unlocked_asset_ids must be sorted and unique")
     if not set(unlocked) <= seen_assets:
         raise ValueError("qc_override 1.1: unlocked_asset_ids must be a subset of the batch's asset_ids")
-    if not isinstance(record["request_id"], str) or not record["request_id"]:
-        raise ValueError("qc_override 1.1: request_id is required")
+    rid_val = record["request_id"]
+    if not isinstance(rid_val, str) or not rid_val or len(rid_val) > 64 or not all(c.isalnum() or c == "-" for c in rid_val):
+        raise ValueError("qc_override 1.1: request_id must be a short [a-z0-9-] request id")
     for f in ("look_hash", "config_sha256"):
         if not _is_sha256_hex(record[f]):
             raise ValueError(f"qc_override 1.1: {f} must be a sha256 hex digest")

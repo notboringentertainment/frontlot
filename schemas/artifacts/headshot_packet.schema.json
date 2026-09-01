@@ -299,63 +299,182 @@
       "additionalProperties": false,
       "allOf": [
         {
-          "if": {
-            "anyOf": [
-              {
-                "properties": {
-                  "qc_override_receipt_id": {
-                    "type": "string"
-                  }
+          "oneOf": [
+            {
+              "allOf": [
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "required": [
+                          "qc_override_receipt_id"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "qc_override_receipt_id": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "qc_override_receipt_id"
+                      ]
+                    }
+                  ]
                 },
-                "required": [
-                  "qc_override_receipt_id"
-                ]
-              },
-              {
-                "properties": {
-                  "qc_override_record_sha256": {
-                    "type": "string"
-                  }
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "required": [
+                          "qc_override_record_sha256"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "qc_override_record_sha256": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "qc_override_record_sha256"
+                      ]
+                    }
+                  ]
                 },
-                "required": [
-                  "qc_override_record_sha256"
-                ]
-              },
-              {
-                "properties": {
-                  "field_manifest_sha256": {
-                    "type": "string"
-                  }
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "required": [
+                          "field_manifest_sha256"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "field_manifest_sha256": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "field_manifest_sha256"
+                      ]
+                    }
+                  ]
                 },
-                "required": [
-                  "field_manifest_sha256"
-                ]
-              }
-            ]
-          },
-          "then": {
-            "required": [
-              "qc_override_receipt_id",
-              "qc_override_record_sha256",
-              "field_manifest_sha256"
-            ],
-            "properties": {
-              "qc_override_receipt_id": {
-                "type": "string"
-              },
-              "qc_override_record_sha256": {
-                "type": "string"
-              },
-              "field_manifest_sha256": {
-                "type": "string"
-              }
-            },
-            "not": {
-              "required": [
-                "legacy_citations"
+                {
+                  "not": {
+                    "required": [
+                      "legacy_citations"
+                    ]
+                  }
+                }
               ]
+            },
+            {
+              "allOf": [
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "required": [
+                          "qc_override_receipt_id"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "qc_override_receipt_id": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "qc_override_receipt_id"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "required": [
+                          "qc_override_record_sha256"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "qc_override_record_sha256": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "qc_override_record_sha256"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "required": [
+                          "field_manifest_sha256"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "field_manifest_sha256": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "field_manifest_sha256"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "required": [
+                    "legacy_citations"
+                  ],
+                  "properties": {
+                    "legacy_citations": {
+                      "minItems": 1
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "required": [
+                "qc_override_receipt_id",
+                "qc_override_record_sha256",
+                "field_manifest_sha256"
+              ],
+              "properties": {
+                "qc_override_receipt_id": {
+                  "type": "string"
+                },
+                "qc_override_record_sha256": {
+                  "type": "string"
+                },
+                "field_manifest_sha256": {
+                  "type": "string"
+                }
+              },
+              "not": {
+                "required": [
+                  "legacy_citations"
+                ]
+              }
             }
-          }
+          ]
         }
       ]
     },

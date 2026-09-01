@@ -1778,6 +1778,14 @@ def _check_headshots(
                           f"this record is {rv} — grandfather it or re-approve with --replace.")
                 if rec.get("qc_receipt_id") != entry.get("qc_receipt_id") or rec.get("generation_receipt_id") != provenance.get("generation_receipt_id"):
                     _fail(f"{label} qc_receipt_id / generation receipt differ from the signed headshot record.")
+                if rv == "1.2":
+                    # round-2 inspection #3: the packet hero's authority shape
+                    # must equal the signed record verbatim.
+                    for f in ("qc_override_receipt_id", "qc_override_record_sha256", "field_manifest_sha256"):
+                        if hero.get(f) != rec.get(f):
+                            _fail(f"{label} {f} differs from the signed 1.2 headshot record.")
+                    if list(hero.get("legacy_citations") or []) != list(rec.get("legacy_citations") or []):
+                        _fail(f"{label} legacy_citations differ from the signed 1.2 headshot record.")
 
 
 def _load_headshot_packet(
