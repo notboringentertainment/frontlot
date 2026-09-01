@@ -144,7 +144,14 @@ def cmd_serve(port: int) -> int:
         server_log(f"server start failed: could not publish token for 127.0.0.1:{port}")
         return 1
     app = create_app(port=port, capability_token=token)
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, workers=workers, log_level="warning")
+    # timeout_graceful_shutdown: without it uvicorn waits FOREVER for open
+    # SSE event streams (which never end by design), leaving a half-dead
+    # zombie on shutdown — not accepting requests but still heartbeating old
+    # connections, so every open board tab keeps trusting stale state
+    # (verified live 2026-09-01). Force-closing the streams lets tabs see the
+    # drop and self-heal.
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, workers=workers, log_level="warning",
+                            timeout_graceful_shutdown=3)
     assert config.workers == 1, "Backlot must run with exactly one uvicorn worker"
     server = uvicorn.Server(config)
     server_log(f"server starting on 127.0.0.1:{port}")

@@ -86,21 +86,117 @@ export function thumbURL(projectId, relPath, w = 640) {
 }
 
 // Subscribe to a server-sent change feed; call onChange (debounced) per burst.
+// Full-viewport-width banner shown while the live connection is down: a page
+// with a dead event stream silently displays stale gates, which reads as the
+// app being broken (2026-09-01). One banner per page, shared by every
+// subscription on it.
+const CONN_BANNER_ID = "bk-conn-banner";
+function connBanner(show) {
+  let el = document.getElementById(CONN_BANNER_ID);
+  if (!show) { if (el) el.remove(); return; }
+  if (el) return;
+  el = document.createElement("div");
+  el.id = CONN_BANNER_ID;
+  el.textContent = "⚠ CONNECTION LOST — this page is showing old data. Reconnecting…";
+  el.style.cssText = [
+    "position:fixed", "top:0", "left:0", "right:0", "z-index:99999",
+    "padding:10px 16px", "background:#8a1f1f", "color:#fff",
+    "font:600 14px/1.4 system-ui,sans-serif", "text-align:center",
+    "letter-spacing:.02em",
+  ].join(";");
+  document.body.append(el);
+}
+
+// The server heartbeats every 15s on every event stream. A restarting (or
+// half-dead) server often leaves the old connection LOOKING open — no error
+// ever fires in the browser, the page just goes quiet and stale (verified
+// live 2026-09-01). So liveness is judged by received data, not socket state.
+const SSE_DEAD_AFTER_MS = 40_000;  // ~2.5 missed heartbeats
+const SSE_SUSPECT_AFTER_MS = 20_000;
+
 export function subscribe(url, onChange) {
-  let timer = null;
-  const source = new EventSource(url);
-  source.onmessage = (msg) => {
-    try {
-      const data = JSON.parse(msg.data);
-      if (data.type !== "change") return;
-    } catch {
-      return;
-    }
-    clearTimeout(timer);
-    timer = setTimeout(onChange, 250);
+  let timer = null;        // debounce for change events
+  let bannerTimer = null;  // grace period so a sub-second blip never flashes the banner
+  let source = null;
+  let everOpened = false;
+  let retryDelay = 1000;
+  let closed = false;
+  let lastBeat = Date.now();
+
+  const heal = () => {
+    // Treat the current connection as dead: banner (after grace), rebuild.
+    if (closed) return;
+    try { source.close(); } catch { /* already closed */ }
+    if (!bannerTimer) bannerTimer = setTimeout(() => connBanner(true), 1200);
+    setTimeout(connect, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 10_000);
   };
-  source.onerror = () => { /* EventSource auto-reconnects */ };
-  return source;
+
+  const connect = () => {
+    if (closed) return;
+    source = new EventSource(url);
+    source.onopen = () => {
+      retryDelay = 1000;
+      lastBeat = Date.now();
+      clearTimeout(bannerTimer); bannerTimer = null;
+      connBanner(false);
+      if (everOpened) {
+        // Reconnected after a drop (server restart): events sent while we
+        // were gone are lost, so re-pull the full state instead of trusting
+        // what is on screen.
+        clearTimeout(timer);
+        timer = setTimeout(onChange, 100);
+      }
+      everOpened = true;
+    };
+    source.onmessage = (msg) => {
+      lastBeat = Date.now();  // hello/heartbeat/change all count as life
+      try {
+        const data = JSON.parse(msg.data);
+        if (data.type !== "change") return;
+      } catch {
+        return;
+      }
+      clearTimeout(timer);
+      timer = setTimeout(onChange, 250);
+    };
+    source.onerror = () => {
+      if (closed) return;
+      if (!bannerTimer) bannerTimer = setTimeout(() => connBanner(true), 1200);
+      if (source.readyState === EventSource.CLOSED) {
+        // The browser gave up (it only auto-retries while CONNECTING);
+        // rebuild the connection ourselves, forever, with capped backoff.
+        heal();
+      }
+    };
+  };
+
+  // Dead-man switch: heartbeats arrive every 15s; prolonged silence means the
+  // connection is a zombie even though the browser reports it open.
+  const watchdog = setInterval(() => {
+    if (!closed && Date.now() - lastBeat > SSE_DEAD_AFTER_MS) heal();
+  }, 5_000);
+  // Returning to the tab checks immediately — nobody should look at a page
+  // that is quietly stale while the watchdog counts down.
+  const onWake = () => {
+    if (closed || document.hidden) return;
+    if (Date.now() - lastBeat > SSE_SUSPECT_AFTER_MS) heal();
+  };
+  document.addEventListener("visibilitychange", onWake);
+  window.addEventListener("focus", onWake);
+
+  connect();
+  return {
+    close() {
+      closed = true;
+      clearInterval(watchdog);
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener("focus", onWake);
+      clearTimeout(timer); clearTimeout(bannerTimer);
+      try { source.close(); } catch { /* already closed */ }
+      connBanner(false);
+    },
+  };
 }
 
 // Deterministic pseudo-waveform bars (seeded by a string).
