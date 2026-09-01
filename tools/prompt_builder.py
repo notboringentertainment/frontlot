@@ -46,6 +46,10 @@ LOCATION_ROLES = ("establishing", "detail", "time_variant")
 ROLES = CHARACTER_ROLES + LOCATION_ROLES
 
 MAX_FIELD_CHARS = 400
+# prompt_safe_description is validated at 20-80 WORDS by lib/look_spec.py; 80
+# words routinely exceeds 400 chars, so the field gets its own cap sized to
+# what the word limit actually admits. Keep the two in agreement.
+MAX_DESCRIPTION_CHARS = 600
 MAX_LIST_ITEMS = 12
 MAX_PALETTE = 6
 
@@ -109,7 +113,8 @@ def builder_policy_sha256() -> str:
         "negative_defaults": list(NEGATIVE_DEFAULTS),
         "negative_prefix": NEGATIVE_BLOCK_PREFIX,
         "negative_separator": NEGATIVE_BLOCK_SEPARATOR,
-        "limits": {"field_chars": MAX_FIELD_CHARS, "list_items": MAX_LIST_ITEMS, "palette": MAX_PALETTE},
+        "limits": {"field_chars": MAX_FIELD_CHARS, "description_chars": MAX_DESCRIPTION_CHARS,
+                   "list_items": MAX_LIST_ITEMS, "palette": MAX_PALETTE},
         "props_rendered": False,
     })
 
@@ -152,7 +157,7 @@ def rendered_prompt_sha256(text: str) -> str:
 _DELIMITER_MAP = str.maketrans({'"': "'", "`": "'", "{": "(", "}": ")", "[": "(", "]": ")", "<": "(", ">": ")", "|": "/", "\\": "/"})
 
 
-def canonical_text(value: Any, *, field: str) -> str:
+def canonical_text(value: Any, *, field: str, max_chars: int = MAX_FIELD_CHARS) -> str:
     """NFKC, control/format characters stripped, whitespace collapsed — the
     form the safety patterns are checked against (delimiters still intact)."""
     if not isinstance(value, str):
@@ -163,8 +168,8 @@ def canonical_text(value: Any, *, field: str) -> str:
     text = "".join(" " if ch.isspace() else ch for ch in text)
     text = "".join(ch for ch in text if unicodedata.category(ch)[0] != "C")
     text = re.sub(r"\s+", " ", text).strip()
-    if len(text) > MAX_FIELD_CHARS:
-        raise PromptBuildError(f"{field}: exceeds {MAX_FIELD_CHARS} characters after normalization")
+    if len(text) > max_chars:
+        raise PromptBuildError(f"{field}: exceeds {max_chars} characters after normalization")
     return text
 
 
@@ -183,8 +188,8 @@ def check_safe_line(text: str, *, field: str) -> None:
             raise PromptBuildError(f"{field}: real-person name pattern refused; describe the fictional subject in type terms")
 
 
-def _clean(value: Any, field: str) -> str:
-    raw = canonical_text(value, field=field)
+def _clean(value: Any, field: str, *, max_chars: int = MAX_FIELD_CHARS) -> str:
+    raw = canonical_text(value, field=field, max_chars=max_chars)
     if not raw:
         raise PromptBuildError(f"{field}: empty after normalization")
     # Patterns are checked on the canonical text (delimiters intact, so a
@@ -323,7 +328,8 @@ def build_prompt(
         raise PromptBuildError(f"role {role!r} does not apply to a {kind} look")
 
     sections: list[tuple[str, str]] = [
-        ("prompt_safe_description", _clean(look_spec.get("prompt_safe_description"), "prompt_safe_description")),
+        ("prompt_safe_description", _clean(look_spec.get("prompt_safe_description"), "prompt_safe_description",
+                                           max_chars=MAX_DESCRIPTION_CHARS)),
     ]
     sections += _character_sections(look_spec) if kind == "character" else _location_sections(look_spec)
     palette_names = _palette(palette)

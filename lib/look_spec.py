@@ -31,6 +31,10 @@ LOOK_SPEC_VERSION = "1.0"
 ENTITY_KINDS = ("character", "location")
 DESCRIPTION_MIN_WORDS = 20
 DESCRIPTION_MAX_WORDS = 80
+# Must match tools/prompt_builder.py MAX_DESCRIPTION_CHARS: a look that
+# validates here but exceeds the builder's cap would sign cleanly and then
+# fail at generation time (Ivy, 2026-08-31 — 80 words / 462 chars).
+DESCRIPTION_MAX_CHARS = 600
 
 # Vendored verbatim (as JS regex source, case-insensitive) from WriterOS
 # importer.ts IMPERATIVE_PATTERNS. Keep the ORDER and the SOURCE strings —
@@ -98,10 +102,16 @@ def validate_look_spec(payload: Any) -> dict[str, Any]:
         jsonschema.validate(instance=payload, schema=branch)
     except jsonschema.ValidationError as exc:
         raise LookSpecError(f"[look_spec {kind}] {exc.message} at {list(exc.absolute_path)}") from exc
-    words = len(str(payload.get("prompt_safe_description", "")).split())
+    desc = str(payload.get("prompt_safe_description", ""))
+    words = len(desc.split())
     if not DESCRIPTION_MIN_WORDS <= words <= DESCRIPTION_MAX_WORDS:
         raise LookSpecError(
             f"prompt_safe_description must be {DESCRIPTION_MIN_WORDS}-{DESCRIPTION_MAX_WORDS} words, got {words}"
+        )
+    if len(desc) > DESCRIPTION_MAX_CHARS:
+        raise LookSpecError(
+            f"prompt_safe_description must be at most {DESCRIPTION_MAX_CHARS} characters "
+            f"(the prompt builder's cap), got {len(desc)}"
         )
     hits = find_prompt_injection(payload)
     if hits:
