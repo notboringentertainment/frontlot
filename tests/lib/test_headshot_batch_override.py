@@ -223,7 +223,7 @@ class TestStaleAuthority:
         r = _run(w)
         assert r["request_id"].startswith("headshot-")
         write_project_config(w["project"], config_1_2(max_hero_attempts=6, budget=50.0))
-        with pytest.raises(GateHandlerError, match="no longer exhausted|stale"):
+        with pytest.raises(GateHandlerError, match="no longer exhausted|stale|project.yaml changed"):
             approve_request(_req(w, r["request_id"]), w["project"], selection=1)
 
 
@@ -237,3 +237,74 @@ class TestLegacyRegression:
         ov = json.loads(reqs[0].read_text())
         assert "batch" not in ov and ov.get("qc_receipt_id"), "1.4 keeps the verdict-bound 1.0 request"
         assert "field" not in ov
+
+
+class TestFixRound1:
+    def test_replace_field_excludes_the_active_face(self, bworld):
+        w = bworld
+        # cast a hero cleanly first
+        r = _run(w, candidates=1, generate=FakeGen(fixed="first-face"))
+        sel = approve_request(_req(w, r["request_id"]), w["project"], selection=1)
+        assert _run(w)["status"] == "approved"
+        active_asset = active_headshots(w["project"])[CHAR].asset_id
+        # replace: the presented/waiver field must never contain the active face
+        from scripts.headshot_run import _rejected_assets
+        assert active_asset in _rejected_assets(w["project"], CHAR, include_active=True)
+        assert active_asset not in _rejected_assets(w["project"], CHAR, include_active=False), \
+            "1.4 reuse semantics preserved: exclusion is 1.5-only"
+
+    def test_retire_adds_face_to_durable_rejected_history(self, bworld):
+        w = bworld
+        r = _run(w, candidates=1, generate=FakeGen(fixed="retire-me"))
+        approve_request(_req(w, r["request_id"]), w["project"], selection=1)
+        assert _run(w)["status"] == "approved"
+        asset = active_headshots(w["project"])[CHAR].asset_id
+        rr = _run(w, retire=True)
+        req = _req(w, rr["request_id"])
+        approve_request(req, w["project"])
+        done = _run(w, retire=True)
+        assert done["status"] == "retired"
+        hist = (_cp(w)["metadata"].get("rejected_candidates") or {}).get(CHAR) or []
+        assert asset in hist, "inspection #9: the retired face is durably rejected"
+
+    def test_doctored_request_field_text_is_refused(self, bworld):
+        w = bworld
+        _run(w, candidates=1, judge_adapter=PlanJudge([_fail(), _fail(), _fail()]))
+        p = _batch_reqs(w)[0]
+        ov = json.loads(p.read_text())
+        ov["field"][0]["failing_items"] = ["hair_matches"]  # lie about why it failed
+        p.write_text(json.dumps(ov, indent=2))
+        with pytest.raises(GateHandlerError, match="disagrees with reconstruction"):
+            _sign_batch(w, json.loads(p.read_text()), ["no_text"])
+
+    def test_hybrid_and_lax_records_are_refused(self):
+        import lib.receipts as R
+        base = {"record_version": "1.1", "request_id": "override-x-1",
+                "batch": [{"qc_receipt_id": "qa", "asset_id": "aa", "accepted_item_ids": ["no_text"]}],
+                "field_manifest_sha256": "f" * 64, "unlocked_asset_ids": ["aa"],
+                "look_hash": "1" * 64, "look_receipt_id": "lr",
+                "config_approval_receipt_id": "cr", "config_sha256": "2" * 64,
+                "budget_cap": 12, "attempts_spent": 12,
+                "expected_active_headshot_receipt_id": None, "reason": "a real typed reason here"}
+        env = {"field_manifest_sha256": "f" * 64}
+        R.validate_envelope("qc_override", dict(base), "d" * 64, "e", env)  # sane baseline
+        import copy
+        for mutate, why in [
+            (lambda r: r.__setitem__("field_manifest_sha256", "F" * 64), "uppercase hex refused"),
+            (lambda r: r.__setitem__("budget_cap", True), "boolean counter refused"),
+            (lambda r: r.__setitem__("attempts_spent", -1), "negative counter refused"),
+            (lambda r: r.__setitem__("unlocked_asset_ids", ["aa", "aa"]), "duplicate unlocked ids refused"),
+        ]:
+            bad = copy.deepcopy(base)
+            mutate(bad)
+            bad_env = {"field_manifest_sha256": bad["field_manifest_sha256"]} if "manifest" not in why else env
+            with pytest.raises(ValueError):
+                R.validate_envelope("qc_override", bad, "d" * 64, "e", {"field_manifest_sha256": bad["field_manifest_sha256"]})
+        # a versionless record smuggling a batch field is a hybrid
+        with pytest.raises(ValueError):
+            R.validate_envelope("qc_override", {"qc_receipt_id": "q1", "item_ids": ["x"], "reason": "long enough reason",
+                                                "unlocked_asset_ids": ["aa"]}, "d" * 64, "e", {"qc_receipt_id": "q1"})
+        # a fresh 1.0 envelope keeps its historical single-field shape
+        out = R.validate_envelope("qc_override", {"qc_receipt_id": "q1", "item_ids": ["x"], "reason": "long enough reason"},
+                                   "d" * 64, "e", {"qc_receipt_id": "q1"})
+        assert out == {"qc_receipt_id": "q1"}, "no null field_manifest_sha256 in 1.0 envelopes"

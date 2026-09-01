@@ -66,6 +66,7 @@ def require_hero_verdict(
     project_dir: Path | str, *, qc_receipt_id: Any, asset_id: str, entity_id: str, active_look: Any, config: Any,
     gen_receipt: Optional[dict[str, Any]], grandfather: bool = False,
     override_citation: Optional[dict[str, Any]] = None,
+    legacy_citations: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """Return the verified ``hero`` verdict row or raise HeadshotVerifyError
     listing every reason. ``grandfather`` says whether the attempt must be
@@ -158,6 +159,26 @@ def require_hero_verdict(
                 entity_id=entity_id,
             )
             covered = (accepted or set()) - NON_OVERRIDABLE
+        elif legacy_citations is not None:
+            # Packet 1.2 seals its legacy authority as an exact citation list
+            # (post-build inspection #3): resolve those receipts only — later
+            # duplicate overrides can neither grow nor invalidate coverage.
+            from lib.receipts import ReceiptError, exact_approval
+
+            covered = set()
+            for c in legacy_citations:
+                try:
+                    r = exact_approval(project_dir, receipt_id=str(c.get("receipt_id") or ""), kind="qc_override",
+                                       entity_id=entity_id, record_sha256=str(c.get("record_sha256") or ""))
+                except ReceiptError:
+                    reasons.append(f"sealed legacy citation {c.get('receipt_id')!r} does not resolve to a verified qc_override")
+                    continue
+                rec = r.get("record") or {}
+                if rec.get("qc_receipt_id") != row["receipt_id"]:
+                    reasons.append(f"sealed legacy citation {c.get('receipt_id')!r} is bound to another verdict")
+                    continue
+                covered |= {str(i) for i in rec.get("item_ids") or []}
+            covered -= NON_OVERRIDABLE
         else:
             covered = overrides_for(project_dir, row["receipt_id"], entity_id) - NON_OVERRIDABLE
         uncovered = sorted(failing - covered)
@@ -263,15 +284,19 @@ def verify_headshot_candidate(
     if not hero_qc or not require_verdict:
         return None
     citation = None
+    legacy = None
     if candidate.get("qc_override_receipt_id"):
         # A packet-1.2 candidate carries its batch authority; coverage is
         # tested ONLY through the cited record's full binding (r3 #1/#2).
         citation = {"qc_override_receipt_id": candidate.get("qc_override_receipt_id"),
                     "qc_override_record_sha256": candidate.get("qc_override_record_sha256"),
                     "field_manifest_sha256": candidate.get("field_manifest_sha256")}
+    elif isinstance(candidate.get("legacy_citations"), list):
+        legacy = list(candidate["legacy_citations"])
     return require_hero_verdict(
         project_dir, qc_receipt_id=candidate.get("qc_receipt_id"), asset_id=asset_id, entity_id=entity_id,
         active_look=active_look, config=config, gen_receipt=receipt, override_citation=citation,
+        legacy_citations=legacy,
     )
 
 
@@ -338,8 +363,19 @@ def verify_active_headshot(project_dir: Path | str, current: Any, *, active_look
             raise HeadshotVerifyError(f"headshot for {entity_id!r}: sealed generation receipt does not bind the active look")
         if record.get("prompt_recipe_sha256") != prompt_recipe_sha256(gen.get("prompt_recipe")):
             raise HeadshotVerifyError(f"headshot for {entity_id!r}: sealed recipe hash differs from the generation receipt's prompt_recipe")
+    citation = None
+    legacy = None
+    if record.get("qc_override_receipt_id"):
+        # A 1.2 record sealed its batch authority at selection; active
+        # verification replays that exact citation (post-build inspection #1).
+        citation = {"qc_override_receipt_id": record.get("qc_override_receipt_id"),
+                    "qc_override_record_sha256": record.get("qc_override_record_sha256"),
+                    "field_manifest_sha256": record.get("field_manifest_sha256")}
+    elif record.get("legacy_citations"):
+        legacy = list(record["legacy_citations"])
     return require_hero_verdict(project_dir, qc_receipt_id=record.get("qc_receipt_id"), asset_id=current.asset_id, entity_id=entity_id,
-                                active_look=active_look, config=config, gen_receipt=gen)
+                                active_look=active_look, config=config, gen_receipt=gen,
+                                override_citation=citation, legacy_citations=legacy)
 
 
 def _generation_by_asset(project_dir: Path, asset_id: str) -> Optional[dict[str, Any]]:

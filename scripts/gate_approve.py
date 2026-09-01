@@ -750,6 +750,8 @@ def _construct_qc_override_batch(root: Path, req: dict) -> Constructed:
     except (OSError, ValueError):
         cp = {}
     rejected = set(((cp.get("metadata") or {}).get("rejected_candidates") or {}).get(entity_id) or [])
+    if current is not None:
+        rejected.add(current.asset_id)  # the active face is never in a waiver field (inspection #9)
     field = hero_override_field(root, entity_id, look.look_hash, qc=qc, rejected=rejected)
     prior_unlocked: set[str] = set()
     for r in verified_approvals(root, "qc_override", entity_id=entity_id):
@@ -763,9 +765,14 @@ def _construct_qc_override_batch(root: Path, req: dict) -> Constructed:
     manifest = field_manifest_sha256(field)
     if manifest != req.get("field_manifest_sha256"):
         raise GateHandlerError("the reconstructed field does not match the request's manifest — state moved; re-run headshot_run")
-    if {(str(r.get("qc_receipt_id")), str(r.get("asset_id"))) for r in req.get("field") or []} \
-            != {(r["qc_receipt_id"], r["asset_id"]) for r in field}:
-        raise GateHandlerError("the request's displayed field disagrees with reconstruction — refused")
+    # Full-tuple comparison (post-build inspection #5): the DISPLAYED rows —
+    # failing items included — must equal the reconstruction, so a doctored
+    # request cannot show the human a misleading description of the field.
+    shown_rows = {(str(r.get("qc_receipt_id")), str(r.get("asset_id")),
+                   tuple(sorted(str(i) for i in r.get("failing_items") or []))) for r in req.get("field") or []}
+    real_rows = {(r["qc_receipt_id"], r["asset_id"], tuple(r["failing_items"])) for r in field}
+    if shown_rows != real_rows:
+        raise GateHandlerError("the request's displayed field disagrees with reconstruction (rows or failing items) — refused")
     for r in field:
         _verify_image_ref(root, {"asset_id": r["asset_id"], "path": f"canon/visual/objects/{r['asset_id']}.png"},
                           f"candidate {r['asset_id'][:12]}")
@@ -800,14 +807,53 @@ def _construct_qc_override_batch(root: Path, req: dict) -> Constructed:
     reason = req.get("reason")
     if not isinstance(reason, str) or len(reason.strip()) < 10 or "REPLACE" in reason:
         raise GateHandlerError("qc_override needs the human's typed reason (10+ characters); the request's placeholder is not one")
+    # The request binds the headshots checkpoint it was published against
+    # (post-build inspection #6).
+    if req.get("source_checkpoint_digest") is None:
+        raise GateHandlerError("a batch qc_override request must bind its source checkpoint digest")
+    _bind_request_digest(req, root / HEADSHOT_CHECKPOINT, required=True)
     record = {"record_version": "1.1", "request_id": req["request_id"], "batch": batch,
               "field_manifest_sha256": manifest, "unlocked_asset_ids": sorted(unlocked),
               "look_hash": look.look_hash, "look_receipt_id": look.receipt_id,
               "config_approval_receipt_id": cfg_receipt["receipt_id"], "config_sha256": config.digest,
               "budget_cap": cap, "attempts_spent": used,
               "expected_active_headshot_receipt_id": expected, "reason": reason.strip()}
+
+    def pre_commit() -> None:
+        """Runs INSIDE the receipt transaction, after the one-use token —
+        the last look at live state before the signature publishes
+        (post-build inspection #6): checkpoint digest, look (both bindings),
+        verified config, budget exhaustion, headshot tip, and the field
+        manifest are all re-derived and must still hold."""
+        from lib.headshots import active_headshots as _ah
+        from lib.look_ingest import active_look_for as _alf
+        from lib.project_config import ProjectConfigError as _PCE, load_verified_project_config as _lvpc
+
+        _bind_request_digest(req, root / HEADSHOT_CHECKPOINT, required=True)
+        now_look = _alf(root, "character", entity_id)
+        if now_look is None or now_look.look_hash != look.look_hash or now_look.receipt_id != look.receipt_id:
+            raise GateHandlerError("the active look changed while approving; the field-bound waiver is void")
+        try:
+            now_cfg = _lvpc(root)
+        except _PCE as exc:
+            raise GateHandlerError(f"config no longer verifies while approving: {exc}") from exc
+        if now_cfg.digest != config.digest:
+            raise GateHandlerError("project.yaml changed while approving; the config snapshot is void")
+        now_used = len(qc_receipts.hero_attempts_started(root, entity_id, look.look_hash))
+        if now_used < int(now_cfg.require_hero_qc().max_hero_attempts):
+            raise GateHandlerError("the hero budget is no longer exhausted while approving; generation should resume")
+        now_tip = _ah(root).get(entity_id)
+        if (now_tip.receipt_id if now_tip else None) != expected:
+            raise GateHandlerError("the active headshot changed while approving; the waiver is void")
+        from lib.receipts import field_manifest_sha256 as _fms
+        rejected_now = rejected
+        now_field = [r for r in hero_override_field(root, entity_id, look.look_hash, qc=now_cfg.require_hero_qc(), rejected=rejected_now)
+                     if r["asset_id"] not in prior_unlocked]
+        if _fms(now_field) != manifest:
+            raise GateHandlerError("the reviewed field changed while approving; the waiver is void")
+
     return Constructed(record=record, envelope={"field_manifest_sha256": manifest},
-                       entity_id=entity_id, evidence=tuple(evidence))
+                       entity_id=entity_id, evidence=tuple(evidence), pre_commit_check=pre_commit)
 
 
 def _construct_qc_override(root: Path, req: dict) -> Constructed:
@@ -975,6 +1021,17 @@ def headshot_candidates(req: dict, root: Path) -> tuple[str, dict, list[dict]]:
         expected_pkt = "1.2" if batch_pin else "1.1"
         if packet_version != expected_pkt:
             raise GateHandlerError(f"authored-film {pin.version} selects from a headshot_packet {expected_pkt}; the pending packet is {packet.get('version')!r}")
+        if batch_pin:
+            # Every 1.2 selection validates the sealed run snapshot (post-build
+            # inspection #8) — clean-only packets included: the select state
+            # binds the config that produced the presentation.
+            meta = (checkpoint.get("metadata") or {})
+            sel_state = (meta.get("run_state") or {}).get(entity_id) or {}
+            if sel_state.get("mode") == "select":
+                if sel_state.get("config_sha256") != config.digest:
+                    raise GateHandlerError("project.yaml changed since this packet was presented — re-run headshot_run")
+                if int(sel_state.get("budget_cap") or -1) != int(config.require_hero_qc().max_hero_attempts):
+                    raise GateHandlerError("the hero-attempt cap changed since this packet was presented — re-run headshot_run")
         if batch_pin and any(c.get("qc_override_receipt_id") for c in candidates):
             # A 1.2 packet whose field relied on exhaustion must still be
             # exhausted under the CURRENT config (round-4 #4): a raised cap
@@ -1569,13 +1626,27 @@ def _decide(
                 current["project_id"], current["stage"], current["scope"], built.digest,
                 user_response={"answer": "approved", "note": note, "selection": selection},
             )
-            receipt = record_human_approval(
-                root, current["project_id"], current["stage"], current["scope"], built.record, token, kind,
-                entity_id=built.entity_id, artifact=built.artifact,
-                source_checkpoint_digest=bound,
-                envelope=built.envelope,
-                pre_commit_check=built.pre_commit_check,
-            )
+            try:
+                receipt = record_human_approval(
+                    root, current["project_id"], current["stage"], current["scope"], built.record, token, kind,
+                    entity_id=built.entity_id, artifact=built.artifact,
+                    source_checkpoint_digest=bound,
+                    envelope=built.envelope,
+                    pre_commit_check=built.pre_commit_check,
+                )
+            except GateHandlerError:
+                if is_batch_override:
+                    # Post-token pre-commit failure (post-build inspection #7):
+                    # the one-use token is spent and the field-bound request
+                    # can never be signed as displayed — durably abandon it,
+                    # move first, under the approval lock (round-4 #8).
+                    abandoned = req_path.parent / "abandoned" / req_path.name
+                    abandoned.parent.mkdir(parents=True, exist_ok=True)
+                    if req_path.is_file():
+                        os.replace(req_path, abandoned)
+                    print(f"request {current.get('request_id')} moved to abandoned/ — state changed after the token was "
+                          f"consumed; re-run headshot_run", file=sys.stderr)
+                raise
             if kind == "pipeline_migration":
                 from lib.pipeline_pin import refresh_cache
 

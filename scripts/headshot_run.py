@@ -496,7 +496,7 @@ def _generate_and_present(ctx) -> dict[str, Any]:
     budget_key, cap, used = _budget(ctx)
     want = ctx["candidates"]
     passing: dict[str, tuple[dict, str]] = {}  # asset_id -> (gen receipt, qc id); unique assets only (R1#15)
-    rejected = set((_meta(root).get("rejected_candidates") or {}).get(entity_id) or [])  # history after a reject-all
+    rejected = _rejected_assets(root, entity_id, include_active=bool(ctx.get("batch_mode")))  # history; under 1.5 also the active face (inspection #9)
     for v in _passing_verdicts(root, series_sha, entity_id, qr):
         if v["asset_id"] in rejected:
             continue
@@ -717,6 +717,22 @@ def _write_override_request(root, project_id, entity_id, verdict) -> Path:
 # each unlocked candidate carrying its full citation. Nothing here exists
 # under a 1.4 pin — every entry point is gated on ctx["batch_mode"].
 
+def _rejected_assets(root: Path, entity_id: str, *, include_active: bool) -> set:
+    """Durable rejected history; under a BATCH manifest (1.5) also the
+    currently active hero asset — the active face is never re-presented as a
+    fresh candidate there (a --replace field excludes it; inspection #9).
+    Under 1.4 the documented reuse contract stands (inspection #7: the
+    earlier pick IS reusable on --replace), byte-identical."""
+    from lib.headshots import active_headshots
+
+    rejected = set((_meta(root).get("rejected_candidates") or {}).get(entity_id) or [])
+    if include_active:
+        current = active_headshots(root).get(entity_id)
+        if current is not None:
+            rejected.add(current.asset_id)
+    return rejected
+
+
 def _config_approval_receipt(root: Path, config) -> dict:
     from lib.canonical_json import record_sha256
     from lib.receipts import find_approval
@@ -759,7 +775,7 @@ def _unlocked_candidates(ctx, exclude: set) -> list[tuple[str, dict, str, dict]]
     from lib.sheet_qc.verify import batch_row_for
 
     root, entity_id = ctx["root"], ctx["entity_id"]
-    rejected = set((_meta(root).get("rejected_candidates") or {}).get(entity_id) or [])
+    rejected = _rejected_assets(root, entity_id, include_active=True)
     out: list[tuple[str, dict, str, dict]] = []
     for r in _signed_batches(root, ctx):
         rec = r["record"]
@@ -832,8 +848,7 @@ def _batch_field(ctx) -> list[dict]:
     from lib.sheet_qc.verify import hero_override_field
 
     root, entity_id = ctx["root"], ctx["entity_id"]
-    rejected = set((_meta(root).get("rejected_candidates") or {}).get(entity_id) or [])
-    return hero_override_field(root, entity_id, ctx["look"].look_hash, qc=ctx["qc"], rejected=rejected)
+    return hero_override_field(root, entity_id, ctx["look"].look_hash, qc=ctx["qc"], rejected=_rejected_assets(root, entity_id, include_active=True))
 
 
 def _maybe_batch_override(ctx, passing: dict) -> Optional[dict[str, Any]]:
@@ -869,10 +884,13 @@ def _maybe_batch_override(ctx, passing: dict) -> Optional[dict[str, Any]]:
         if data.get("field_manifest_sha256") == manifest:
             return _pending(root, entity_id, existing.stem, out,
                             f"[hero] the batch override request {existing.stem} for this field is still waiting for the writer")
-    n = 1 + sum(1 for _ in d.glob(f"override-{entity_id}-hero-*.json"))
-    n += sum(1 for _ in (d / "done").glob(f"override-{entity_id}-hero-*.json")) if (d / "done").is_dir() else 0
-    n += sum(1 for _ in (d / "declined").glob(f"override-{entity_id}-hero-*.json")) if (d / "declined").is_dir() else 0
-    n += sum(1 for _ in (d / "abandoned").glob(f"override-{entity_id}-hero-*.json")) if (d / "abandoned").is_dir() else 0
+    suffixes = [0]
+    for sub in ("", "done", "declined", "abandoned"):
+        for f in (d / sub if sub else d).glob(f"override-{entity_id}-hero-*.json"):
+            tail = f.stem.rsplit("-", 1)[-1]
+            if tail.isdigit():
+                suffixes.append(int(tail))
+    n = max(suffixes) + 1  # monotonic — a deleted file never frees its id (inspection #10)
     req_id = f"override-{entity_id}-hero-{n}"
     state = {"mode": "override_pending", "revision": _next_revision(root, entity_id), "request_id": req_id,
              "expected_kind": "qc_override", "field_manifest_sha256": manifest,
@@ -925,10 +943,21 @@ def _resume_override(ctx, state) -> dict[str, Any]:
         # reproduces the state's manifest means live state moved — clear and
         # re-evaluate under a NEW id instead.
         from lib.receipts import field_manifest_sha256
+        from lib.headshots import active_headshots as _ah
         field = _batch_field(ctx)
         unlocked_assets = {a for a, _, _, _ in _unlocked_candidates(ctx, exclude=set())}
         residual = [r for r in field if r["asset_id"] not in unlocked_assets]
-        if residual and field_manifest_sha256(residual) == state.get("field_manifest_sha256"):
+        cfg_now = _config_approval_receipt(root, ctx["config"])
+        tip_now = _ah(root).get(entity_id)
+        _, cap_now, used_now = _budget(ctx)
+        snapshot_holds = (
+            state.get("config_approval_receipt_id") == cfg_now["receipt_id"]
+            and state.get("config_sha256") == ctx["config"].digest
+            and int(state.get("budget_cap") or -1) == int(cap_now)
+            and used_now >= cap_now
+            and state.get("expected_active_headshot_receipt_id") == (tip_now.receipt_id if tip_now else None)
+        )
+        if snapshot_holds and residual and field_manifest_sha256(residual) == state.get("field_manifest_sha256"):
             _log(out, f"[hero] request {request_id} is missing; field revalidated — republishing under the same id")
             digest = _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: state})
             look = ctx["look"]
@@ -1072,7 +1101,8 @@ def _start_retire(ctx, current) -> dict[str, Any]:
         raise HeadshotRunError(f"{entity_id!r} has no active headshot to retire")
     rev = _next_revision(root, entity_id)
     request_id = request_id_for("retire", entity_id, rev)
-    state = {"mode": "retire", "revision": rev, "request_id": request_id, "legacy_receipt_id": current.receipt_id, "expected_kind": "headshot"}
+    state = {"mode": "retire", "revision": rev, "request_id": request_id, "legacy_receipt_id": current.receipt_id,
+             "retired_asset_id": current.asset_id, "expected_kind": "headshot"}
     digest = _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: state})
     d = root / ".gate-requests"; d.mkdir(exist_ok=True)
     req = {"request_id": request_id, "project_id": ctx["project_id"], "stage": STAGE, "scope": f"character:{entity_id}",
@@ -1091,7 +1121,17 @@ def _finish_retire(ctx, state) -> dict[str, Any]:
     root, entity_id, out = ctx["root"], ctx["entity_id"], ctx["out"]
     if entity_id in active_headshots(root):
         raise HeadshotRunError(f"request {state['request_id']} is done but {entity_id!r} still has an active hero; refusing")
-    _write(root, _current_pending_packet(root), status="in_progress", run_state={entity_id: None})
+    retired = [str(state["retired_asset_id"])] if state.get("retired_asset_id") else []
+    # inspection #9: the retired face joins durable rejected history in the
+    # SAME write that clears the run state — it can never be re-presented.
+    # The retired entity's approved entry leaves the packet too: the receipt
+    # chain no longer backs it, and canon enforcement fails closed on a
+    # heroless entry.
+    packet = _current_pending_packet(root)
+    packet["characters"] = [e for e in packet.get("characters") or [] if e.get("entity_id") != entity_id]
+    remaining = [e for e in _approved_entries(root) if e.get("entity_id") != entity_id]
+    _write(root, packet, status="in_progress", run_state={entity_id: None}, rejected=retired or None,
+           approved_entries=remaining)
     _log(out, f"hero of {entity_id!r} retired; generate a new one after the 1.4 migration with headshot_run.py")
     return {"entity_id": entity_id, "status": "retired"}
 
@@ -1176,8 +1216,18 @@ def _finish_select(ctx, state, bound: str) -> dict[str, Any]:
     cp = _checkpoint(root)
     pending = (cp.get("artifacts") or {}).get("headshot_packet") or {}
     prev = next((e for e in pending.get("characters") or [] if isinstance(e, dict) and e.get("entity_id") == entity_id), {}) if pending.get("state") == "pending" else {}
+    hero_ref = _image_ref(root, current.asset_id, gen, rec.get("qc_receipt_id"))
+    if ctx.get("batch_mode"):
+        # The approved hero carries the citation its 1.2 record sealed —
+        # completion never discards authority (post-build inspection #1).
+        if rec.get("qc_override_receipt_id"):
+            hero_ref.update({"qc_override_receipt_id": rec["qc_override_receipt_id"],
+                             "qc_override_record_sha256": rec.get("qc_override_record_sha256"),
+                             "field_manifest_sha256": rec.get("field_manifest_sha256")})
+        elif rec.get("legacy_citations"):
+            hero_ref["legacy_citations"] = list(rec["legacy_citations"])
     entry = {"entity_kind": "character", "entity_id": entity_id, "look_ref": _look_ref(look),
-             "hero": _image_ref(root, current.asset_id, gen, rec.get("qc_receipt_id")), "origin": rec.get("origin"),
+             "hero": hero_ref, "origin": rec.get("origin"),
              "normalized_pixel_hash": current.asset_id, "approval_receipt_id": current.receipt_id,
              "candidates_checkpoint_digest": rec.get("candidates_checkpoint_digest"),
              "candidates_rejected": [h for h in hashes if h != current.asset_id], "qc_receipt_id": rec.get("qc_receipt_id")}
@@ -1188,7 +1238,8 @@ def _finish_select(ctx, state, bound: str) -> dict[str, Any]:
     if prev.get("rejection_notes"):
         entry["rejection_notes"] = prev["rejection_notes"]
     approved = [_upgrade_legacy_entry(root, e) for e in _approved_entries(root) if e.get("entity_id") != entity_id] + [entry]
-    _write(root, _packet("approved", approved), status="in_progress", run_state={entity_id: None}, approved_entries=approved,
+    _write(root, _packet("approved", approved, version="1.2" if ctx.get("batch_mode") else "1.1"),
+           status="in_progress", run_state={entity_id: None}, approved_entries=approved,
            rejected=entry["candidates_rejected"])  # inspection #7: rejected candidates are history
     try:
         from lib.canon_view import build_view

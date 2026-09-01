@@ -593,40 +593,136 @@
         "properties": {
           "characters": {
             "items": {
-              "properties": {
-                "candidates": {
-                  "maxItems": 4,
-                  "items": {
-                    "not": {
-                      "anyOf": [
-                        {
-                          "required": [
-                            "qc_override_receipt_id"
-                          ]
-                        },
-                        {
-                          "required": [
-                            "qc_override_record_sha256"
-                          ]
-                        },
-                        {
-                          "required": [
-                            "field_manifest_sha256"
-                          ]
-                        },
-                        {
-                          "required": [
-                            "legacy_citations"
+              "allOf": [
+                {
+                  "properties": {
+                    "candidates": {
+                      "maxItems": 4,
+                      "items": {
+                        "not": {
+                          "anyOf": [
+                            {
+                              "required": [
+                                "qc_override_receipt_id"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "qc_override_record_sha256"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "field_manifest_sha256"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "legacy_citations"
+                              ]
+                            }
                           ]
                         }
-                      ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "hero": {
+                      "not": {
+                        "anyOf": [
+                          {
+                            "required": [
+                              "qc_override_receipt_id"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "qc_override_record_sha256"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "field_manifest_sha256"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "legacy_citations"
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "else": {
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "version": {
+                  "const": "1.2"
+                },
+                "state": {
+                  "const": "pending"
+                }
+              },
+              "required": [
+                "version"
+              ]
+            },
+            "then": {
+              "properties": {
+                "characters": {
+                  "items": {
+                    "properties": {
+                      "candidates": {
+                        "items": {
+                          "required": [
+                            "qc_receipt_id"
+                          ]
+                        }
+                      }
                     }
                   }
                 }
               }
             }
+          },
+          {
+            "if": {
+              "properties": {
+                "version": {
+                  "const": "1.2"
+                },
+                "state": {
+                  "const": "approved"
+                }
+              },
+              "required": [
+                "version"
+              ]
+            },
+            "then": {
+              "properties": {
+                "characters": {
+                  "items": {
+                    "required": [
+                      "qc_receipt_id"
+                    ]
+                  }
+                }
+              }
+            }
           }
-        }
+        ]
       }
     }
   }

@@ -98,7 +98,18 @@ QC_OVERRIDE_BATCH_FIELDS = frozenset({
     "config_approval_receipt_id", "config_sha256", "budget_cap",
     "attempts_spent", "expected_active_headshot_receipt_id", "reason",
 })
-_QC_OVERRIDE_BATCH_MARKERS = frozenset({"record_version", "batch", "field_manifest_sha256", "unlocked_asset_ids"})
+# Any 1.1-only key in a versionless record marks a hybrid, which is rejected;
+# "reason" is shared with 1.0 and excluded.
+_QC_OVERRIDE_BATCH_MARKERS = QC_OVERRIDE_BATCH_FIELDS - {"reason"}
+_SHA256_HEX_RE = None  # compiled lazily in _is_sha256_hex
+
+
+def _is_sha256_hex(value: Any) -> bool:
+    global _SHA256_HEX_RE
+    if _SHA256_HEX_RE is None:
+        import re as _re
+        _SHA256_HEX_RE = _re.compile(r"^[a-f0-9]{64}$")
+    return isinstance(value, str) and bool(_SHA256_HEX_RE.match(value))
 
 
 def field_manifest_sha256(rows: list[dict]) -> str:
@@ -133,7 +144,7 @@ def _validate_qc_override_batch(record: dict, env: dict) -> None:
         raise ValueError("qc_override 1.1: envelope must carry field_manifest_sha256, not qc_receipt_id")
     if record["field_manifest_sha256"] != env.get("field_manifest_sha256"):
         raise ValueError("qc_override 1.1: record.field_manifest_sha256 must equal the envelope's")
-    if not isinstance(record["field_manifest_sha256"], str) or len(record["field_manifest_sha256"]) != 64:
+    if not _is_sha256_hex(record["field_manifest_sha256"]):
         raise ValueError("qc_override 1.1: field_manifest_sha256 must be a sha256 hex digest")
     batch = record["batch"]
     if not isinstance(batch, list) or not batch:
@@ -160,12 +171,14 @@ def _validate_qc_override_batch(record: dict, env: dict) -> None:
     unlocked = record["unlocked_asset_ids"]
     if not isinstance(unlocked, list) or not unlocked or not all(isinstance(a, str) and a for a in unlocked):
         raise ValueError("qc_override 1.1: unlocked_asset_ids must be a non-empty list — a waiver that unlocks nothing cannot be signed")
+    if len(set(unlocked)) != len(unlocked):
+        raise ValueError("qc_override 1.1: unlocked_asset_ids must not repeat")
     if not set(unlocked) <= seen_assets:
         raise ValueError("qc_override 1.1: unlocked_asset_ids must be a subset of the batch's asset_ids")
     if not isinstance(record["request_id"], str) or not record["request_id"]:
         raise ValueError("qc_override 1.1: request_id is required")
     for f in ("look_hash", "config_sha256"):
-        if not isinstance(record[f], str) or len(record[f]) != 64:
+        if not _is_sha256_hex(record[f]):
             raise ValueError(f"qc_override 1.1: {f} must be a sha256 hex digest")
     for f in ("look_receipt_id", "config_approval_receipt_id"):
         if not isinstance(record[f], str) or not record[f]:
@@ -173,8 +186,10 @@ def _validate_qc_override_batch(record: dict, env: dict) -> None:
     eah = record.get("expected_active_headshot_receipt_id")
     if eah is not None and (not isinstance(eah, str) or not eah):
         raise ValueError("qc_override 1.1: expected_active_headshot_receipt_id must be null or a receipt id")
-    if not isinstance(record["budget_cap"], int) or not isinstance(record["attempts_spent"], int):
-        raise ValueError("qc_override 1.1: budget_cap and attempts_spent must be integers")
+    for f in ("budget_cap", "attempts_spent"):
+        v = record[f]
+        if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+            raise ValueError(f"qc_override 1.1: {f} must be a non-negative integer")
     if not isinstance(record.get("reason"), str) or not record["reason"].strip():
         raise ValueError("qc_override 1.1: record.reason is required")
 REFERENCE_ORIGIN_CLASSES = frozenset({"imported_synthetic", "casting_inspiration"})
@@ -382,7 +397,12 @@ def validate_envelope(
             # 1.1 batch branch — strict, versioned, field-bound.
             _validate_qc_override_batch(record, env)
         else:
-            # 1.0 verdict-bound branch — preserved exactly.
+            # 1.0 verdict-bound branch — preserved exactly, plus a strict
+            # hybrid rejection (a versionless record must not smuggle any
+            # 1.1-only field).
+            leaked = sorted(set(record) & (_QC_OVERRIDE_BATCH_MARKERS - {"qc_receipt_id", "look_hash"}))
+            if leaked:
+                raise ValueError(f"qc_override 1.0: record carries 1.1-only fields {leaked}; hybrids are refused")
             if not has_rid:
                 raise ValueError("qc_override 1.0: envelope must carry qc_receipt_id")
             if record.get("qc_receipt_id") != env["qc_receipt_id"]:
@@ -410,7 +430,12 @@ def validate_envelope(
                 raise ValueError(f"reference_import: record.{field} must equal envelope {field}")
         if not isinstance(env["normalized_pixel_hash"], str) or len(env["normalized_pixel_hash"]) != 64:
             raise ValueError("reference_import: normalized_pixel_hash must be a sha256 hex digest")
-    return {k: env.get(k) for k in spec}
+    out = {k: env.get(k) for k in spec}
+    if kind == "qc_override":
+        # exactly-one shape: never embed the absent alternative as a null —
+        # a 1.0 envelope keeps its historical bytes ({qc_receipt_id} only).
+        out = {k: v for k, v in out.items() if v is not None}
+    return out
 
 
 def _rows_for_commit(root: Path, stream: str, receipt: dict) -> tuple[list[dict], bool]:

@@ -54,7 +54,7 @@ CHARACTER_APPROVAL_KINDS = ("sheet", "hero")
 LOOK_LOCK_MANIFEST = ("authored-film", "1.2")
 # D19: 1.3 keeps the whole 1.2 look-lock contract and adds sheet QC.
 # D20: 1.4 keeps all of 1.3 and adds hero QC (judged headshot candidates).
-LOOK_LOCK_MANIFESTS = frozenset({("authored-film", "1.2"), ("authored-film", "1.3"), ("authored-film", "1.4")})
+LOOK_LOCK_MANIFESTS = frozenset({("authored-film", "1.2"), ("authored-film", "1.3"), ("authored-film", "1.4"), ("authored-film", "1.5")})
 QC_MANIFEST = ("authored-film", "1.3")
 QC_MANIFESTS = frozenset({("authored-film", "1.3"), ("authored-film", "1.4"), ("authored-film", "1.5")})
 HERO_QC_MANIFESTS = frozenset({("authored-film", "1.4"), ("authored-film", "1.5")})
@@ -1770,9 +1770,12 @@ def _check_headshots(
                         or (hero.get("qc_receipt_id") not in (None, verdict.get("receipt_id"))):
                     _fail(f"{label} qc_receipt_id is not the verdict its headshot_grandfather attestation names.")
             else:
-                if record_version_of(rec) != "1.1":
-                    _fail(f"{label}: authored-film 1.4 approves heroes with a 1.1 headshot record (sealed generation + hero verdict); "
-                          f"this record is {record_version_of(rec)} — grandfather it or re-approve with --replace.")
+                rv = record_version_of(rec)
+                allowed_rv = {"1.1", "1.2"} if _is_hero_batch_manifest(pin) else {"1.1"}
+                if rv not in allowed_rv:
+                    _fail(f"{label}: authored-film {getattr(pin, 'version', '?')} approves heroes with a "
+                          f"{'1.1 or 1.2' if len(allowed_rv) > 1 else '1.1'} headshot record (sealed generation + hero verdict); "
+                          f"this record is {rv} — grandfather it or re-approve with --replace.")
                 if rec.get("qc_receipt_id") != entry.get("qc_receipt_id") or rec.get("generation_receipt_id") != provenance.get("generation_receipt_id"):
                     _fail(f"{label} qc_receipt_id / generation receipt differ from the signed headshot record.")
 

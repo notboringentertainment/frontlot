@@ -207,7 +207,10 @@ def hero_override_field(
             continue
         gen_row = rows.get("generation")
         gen = find_generation(root, asset_id)
-        if gen is None or gen_row is None or gen_row.get("asset_id") != asset_id:
+        if gen is None or gen_row is None or gen_row.get("asset_id") != asset_id \
+                or gen.get("receipt_id") != gen_row.get("generation_receipt_id"):
+            # the ATTEMPT's attached generation receipt, exactly — never a
+            # same-hash receipt from elsewhere (post-build inspection #4)
             continue
         img = root / "canon" / "visual" / "objects" / f"{asset_id}.png"
         try:

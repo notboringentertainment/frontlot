@@ -185,10 +185,22 @@ def active_headshots(project_dir: Path | str, *, project_id: Optional[str] = Non
             rv = record_version_of(record)
             if rv not in HEADSHOT_RECORD_VERSIONS:
                 raise HeadshotError(f"headshot receipt {row.get('receipt_id')} record_version {rv!r} is unknown")
-            wanted = HEADSHOT_RECORD_FIELDS_1_1 if rv == HEADSHOT_RECORD_VERSION_1_1 else HEADSHOT_RECORD_FIELDS
+            wanted = {"1.0": HEADSHOT_RECORD_FIELDS,
+                      HEADSHOT_RECORD_VERSION_1_1: HEADSHOT_RECORD_FIELDS_1_1,
+                      HEADSHOT_RECORD_VERSION_1_2: HEADSHOT_RECORD_FIELDS_1_2}[rv]
             missing = [f for f in wanted if f not in record]
             if missing:
                 raise HeadshotError(f"headshot receipt {row.get('receipt_id')} record lacks {missing}")
+            if rv == HEADSHOT_RECORD_VERSION_1_2:
+                # Replay enforces the 1.2 conditional matrix, not just presence:
+                # batch citation all-or-none, exclusive with legacy_citations.
+                trio = [record.get("qc_override_receipt_id"), record.get("qc_override_record_sha256"),
+                        record.get("field_manifest_sha256")]
+                has = [t is not None for t in trio]
+                if any(has) and not all(has):
+                    raise HeadshotError(f"headshot receipt {row.get('receipt_id')}: 1.2 batch citation is all-or-none")
+                if all(has) and record.get("legacy_citations"):
+                    raise HeadshotError(f"headshot receipt {row.get('receipt_id')}: 1.2 record carries batch citation AND legacy_citations")
             if current is None:
                 if supersedes is not None:
                     raise HeadshotError(
