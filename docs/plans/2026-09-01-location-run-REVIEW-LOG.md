@@ -327,3 +327,29 @@ substance (R1#20 scoped down with logged rationale). Round-over-round the findin
 core trust-model gaps (R1) to transactional edge cases (R5), and round 5 raised no objection to
 the architecture itself — the shape is settled; the remaining risk is implementation fidelity.
 Handed to Ben with the options: build now, buy a confirmation round, or park.
+
+## Confirmation round — Codex (post-cap, authorized by Ben)
+
+Six fixes are correctly specified, but three material gaps remain:
+
+1. **`qc_override` 1.2 recovery is incomplete.** The new three-way validation dispatch is sound, but the plan does not update post-commit recovery, which currently recognizes only 1.1 overrides; a crash after receipt commit can strand a bound request or permit a duplicate unbound receipt. See [gate_approve.py](/Users/ben/Projects/OpenMontage/scripts/gate_approve.py:1617) and the [plan](/Users/ben/Projects/OpenMontage/docs/plans/2026-09-01-location-run.md:287).  
+   Fix: Require `request_id` in the 1.2 record and recover only the unique verified receipt matching request ID, source digest, scope, and record.
+
+2. **The post-signature restoration ban leaves an undefined recovery path.** The plan says a parked signed run can receive a further superseding signature, but the existing pre-sign rule requires the current approved bible entry to equal the old chain tip; an unprojected signed tip cannot satisfy that prerequisite. See the [pre-sign rule](/Users/ben/Projects/OpenMontage/docs/plans/2026-09-01-location-run.md:218) and [restoration rule](/Users/ben/Projects/OpenMontage/docs/plans/2026-09-01-location-run.md:326).  
+   Fix: Either make immutable-snapshot projection the sole recovery path or specify a distinct signed-recovery gate and state transition bound to the unprojected tip.
+
+3. **`effective_max_attempts` is persisted but not unambiguously enforced.** The retry/budget section still calculates against `max_location_attempts`, so an implementation can legally ignore a lower persisted effective cap. See the [effective-cap rule](/Users/ben/Projects/OpenMontage/docs/plans/2026-09-01-location-run.md:263) and [budget rule](/Users/ben/Projects/OpenMontage/docs/plans/2026-09-01-location-run.md:299).  
+   Fix: Require every attempt allocation, remaining-attempt calculation, cost preflight, and exhaustion check to use persisted `effective_max_attempts`, treating configuration only as its upper bound.
+
+VERDICT: REVISE
+### Claude's response (→ revision 6, final)
+
+6 of 9 post-cap fixes confirmed correct. The 3 gaps (C1–C3) accepted and applied: C1 qc_override
+1.2 requires request_id; post-commit recovery matches the unique verified receipt on request id +
+source digest + scope + record digest. C2 immutable-snapshot projection is the SOLE
+post-signature recovery path (the "further signed receipt" alternative removed — it could not
+satisfy the pre-sign tip rule while a signed tip sat unprojected); --abandon re-arms projection
+retry, never parks indefinitely. C3 effective_max_attempts is the operative cap in every
+allocation, remaining calculation, cost preflight, and exhaustion check; the signed config cap
+is only its upper bound. Verdict remained REVISE on those 3 items; they are now applied.
+Argument closed at revision 6 — 6 rounds, 62 findings, none rejected on substance.

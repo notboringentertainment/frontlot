@@ -1,5 +1,5 @@
 # Plan: location_run — the location imagery command (D21)
-_Revision 5 — after Codex round 5, the cap (R1: 20 findings, 19 accepted + #20 partial; R2: 13, R3: 8, R4: 9, R5: 9 — all accepted). R5 fixes applied POST-CAP without Codex re-review; see the review log's closing note._
+_Revision 6 — final. 5 capped rounds + 1 confirmation round authorized by Ben (R1: 20, R2: 13, R3: 8, R4: 9, R5: 9, C: 3 — 62 findings, all accepted; R1#20 partial with logged rationale). Confirmation round verified the R5 fixes: 6 confirmed, 3 gaps (C1–C3) applied here._
 
 ## Goal
 
@@ -290,17 +290,22 @@ location_run.py --project P --entity E                      # generate establish
   three-way dispatch** (R5#3) — record_version absent → legacy single-verdict validator;
   `1.1` → batch validator; the NEW version (`1.2`, exact strict schema) → kind-bound
   single-verdict validator. (Today any record carrying `record_version` routes to the batch
-  validator, which rejects everything but 1.1 — the naive version bump would break.) The gate
-  constructor requires the request scope to equal the verdict's `(entity_kind, entity_id)`,
-  and read-side lookup requires the expected kind — a same-slug location request can never
-  solicit authority over a character verdict. A signed override is sealed as a citation in the
+  validator, which rejects everything but 1.1 — the naive version bump would break.) The 1.2
+  record REQUIRES `request_id`, and post-commit crash recovery (which today recognizes only
+  1.1) recovers a 1.2 override only via the unique verified receipt matching request id,
+  source digest, scope, AND record digest (C1) — no stranded bound requests, no duplicate
+  unbound receipts. The gate constructor requires the request scope to equal the verdict's
+  `(entity_kind, entity_id)`, and read-side lookup requires the expected kind — a same-slug
+  location request can never solicit authority over a character verdict. A signed override is sealed as a citation in the
   slot; decline discards the image into rejected history.
 - **Generate mode**: `build_prompt(look.payload, role, palette)`; Seedream v5 Pro ($0.07/image),
   landscape 1536×1024; reservation → `start_attempt` pre-submit hook → judge → retry within the
-  cap. **Budget**: one cap (`max_location_attempts`) per entity per look shared across all slots
-  and both modes; pre-flight cost check is `remaining_attempts × (price + reserve)` — the cap is
-  global, so it is NOT multiplied by slot count (R1#17); judge-only attempts (imports) price at
-  the judge call.
+  cap. **Budget** (C3): the operative cap EVERYWHERE is the persisted `effective_max_attempts`
+  — every attempt allocation, remaining-attempt calculation, cost preflight, and exhaustion
+  check uses it; the signed `max_location_attempts` is only its upper bound. One cap per entity
+  per look shared across all slots and both modes; pre-flight cost check is
+  `remaining_effective_attempts × (price + reserve)` — global, NOT multiplied by slot count
+  (R1#17); judge-only attempts (imports) price at the judge call.
 - **Rejected history** (R1#15): rejected/declined asset ids AND verdict ids persist per
   entity+look in checkpoint metadata; excluded from pass-reuse, import re-offer, override
   scope, and slot filling — the sheet_run `rejected_sheets` discipline.
@@ -330,10 +335,13 @@ location_run.py --project P --entity E                      # generate establish
   overwritten) bible. Restoration applies ONLY pre-signature: decline and `--abort` (both
   strictly before a signed receipt exists) restore atomically. **Once a replacement is SIGNED,
   restoration is forbidden** — the new receipt is the unique chain tip and unsigned state can
-  never revoke signed authority; from that point the only paths are irrevocable projection
-  recovery from an immutable request snapshot (`--finish`/`--resume` retry until sealed) or a
-  further signed superseding receipt. `--abandon` on a signed-but-stale location request
-  therefore does NOT restore the old entry; it parks the run for a new signed resolution.
+  never revoke signed authority; from that point **immutable-snapshot projection is the SOLE
+  recovery path** (C2): `--finish`/`--resume` retry projection from the request's immutable
+  snapshot until the entry is sealed — there is no alternative "further signed receipt" route,
+  because the pre-sign rule (current entry = old tip) cannot be satisfied while a signed tip
+  sits unprojected. `--abandon` on a signed-but-stale location request therefore does NOT
+  restore the old entry and does NOT park indefinitely; it re-arms the same projection retry.
+  Only after the signed tip is projected can a new `--replace` cycle begin.
 - **Present**: when every requested slot holds a passing (or override-cited) image, write the
   draft entry (`status: "draft"`, slot map sealed) at `awaiting_human`, publish
   `location-<E>-<rev>` with `approval_record: location_approval_record(entry, palette)` +
