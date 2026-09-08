@@ -1,4 +1,7 @@
 # Plan: location_run — the location imagery command (D21)
+_Version note (2026-09-08): authored-film **1.6** was taken by the shot-ready rule (`docs/plans/2026-09-08-shot-ready-rule.md`), which is built and on branch `shot-ready-rule`._
+_When D21 resumes, every `authored-film 1.6` in this plan renumbers to **1.7**; nothing else about it changes._
+
 _Revision 6 — final. 5 capped rounds + 1 confirmation round authorized by Ben (R1: 20, R2: 13, R3: 8, R4: 9, R5: 9, C: 3 — 62 findings, all accepted; R1#20 partial with logged rationale). Confirmation round verified the R5 fixes: 6 confirmed, 3 gaps (C1–C3) applied here._
 
 ## Goal

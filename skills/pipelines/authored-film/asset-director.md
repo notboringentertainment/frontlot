@@ -183,6 +183,35 @@ approved frame).
 - Prefer one longer take per shot over stitching shorter clips; a take that
   drifts identity mid-shot is `rejected`, not trimmed around.
 
+### 3a. The Shot-Ready Rule (authored-film 1.6+) — Three Refusals You Will Meet
+
+Making shots before the visual bible is finished needs the project pinned to
+authored-film 1.6 or later. That pin is one signed migration receipt (S0),
+published with
+`scripts/pipeline_migrate.py --project <slug> --to 1.6` and signed by the
+writer on the board; the command refuses to publish while any gate request is
+pending or a run is parked mid-flight. Under an older pin the partial-bible
+path does not exist and `script` onward stays blocked, exactly as before.
+
+Three refusals happen at the paid boundary, before any upload:
+
+- **Over the shot's allowance.** Every paid call for a shot spends from the
+  shot's `spend_allowance_usd`, and every video call also spends one of its
+  `max_video_takes`. When either is exhausted the call is refused, nothing is
+  uploaded and no reservation is written. Ask the writer for a larger
+  allowance or take limit — that is a new shot-package decision. Never edit
+  the scene plan to raise a number the writer approved; the allowance is read
+  from the signed, pin-bound checkpoint, never from your inputs.
+- **A reference not owned by an approved bible entry.** A reference with a
+  perfectly good generation receipt is still refused if the visual-bible entry
+  that owns it is not `approved` (C3). This catches drafts and candidates
+  before the money, not after. Finish that entity's approval, or pack a
+  different reference.
+- **A shot the plan does not contain.** A shot id with no record in the
+  approved scene plan has no allowance and is not a planned shot; both the
+  allowance read and the prompt rules refuse it. Add the shot through the
+  scene plan and the writer's approval, not through the call.
+
 ### 4. Continuity Into Every Prompt
 
 For each generated asset involving a tracked character or location:

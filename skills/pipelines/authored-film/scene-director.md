@@ -78,9 +78,24 @@ function; `shot_intent` says why the shot exists in the writer's story terms.
 
 ### 4. Shots (v1.1) and the Trailer Format
 
-Every scene carries `shots[]`, each `{shot_id, description}`; `shot_id` is
+Every scene carries `shots[]`, each
+`{shot_id, description, spend_allowance_usd, max_video_takes}`; `shot_id` is
 unique across the plan (e.g. `s03-sh02`) and is the key the storyboard frame,
-every take, and every receipt downstream use. When `runtime_shape.format` is
+every take, and every receipt downstream use.
+
+`spend_allowance_usd` is one dollar allowance covering every paid call made for
+that shot — storyboard frames and video takes alike, out of the same purse.
+`max_video_takes` counts video generation attempts only; a storyboard frame
+spends dollars but never consumes a take.
+
+Both numbers are the writer's, approved as part of the shot package alongside
+the beat, the references and the staging — not something the agent picks and
+not something it may raise on its own. Under a shot-ready manifest
+(authored-film 1.6 and later) a shot whose record is missing either number is
+refused at the paid boundary before anything is uploaded, and there is no
+fallback to the project cap.
+
+When `runtime_shape.format` is
 `trailer` or `teaser`:
 
 - **12–20 shots total** across the plan. Fewer is a thin trailer; more is a
