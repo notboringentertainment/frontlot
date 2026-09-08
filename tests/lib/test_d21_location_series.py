@@ -390,6 +390,12 @@ class TestLocationSeriesVerifier:
         with pytest.raises(SeriesMismatch, match="establishing plate"):
             verify_series_against_receipt(key, _imported_receipt(), entry=ENTRY)
 
+    def test_an_unproven_anchor_is_refused(self):
+        """R1#8: neither the entry nor the ledger was offered, so nothing proves
+        the anchor is an approved plate — refuse rather than assume."""
+        with pytest.raises(SeriesMismatch, match="must be proven"):
+            verify_series_against_receipt(_series(role="angle"), _imported_receipt())
+
     def test_a_generated_location_plate_names_the_deferral(self):
         gen = _imported_receipt(generator_kind="model", model_endpoint="vendor/edit", origin_tool=None,
                                 attestation_receipt_id=None)
@@ -487,7 +493,7 @@ def world(tmp_path, monkeypatch):
     look = H.location_look(LOC)
     look_receipt = H.activate_look(project, look)
     plates = {}
-    for name, seed in (("establishing", "plate-est"), ("angle", "plate-ang")):
+    for name, seed in (("establishing", "plate-est"), ("establishing2", "plate-est2"), ("angle", "plate-ang")):
         data = _png(1600, 1024, seed)
         sha = hashlib.sha256(data).hexdigest()
         (project / "canon/visual/objects" / f"{sha}.png").write_bytes(data)
@@ -500,9 +506,9 @@ def world(tmp_path, monkeypatch):
     return {"project": project, "look": look, "look_receipt": look_receipt, "plates": plates}
 
 
-def _key(w, *, role="establishing", anchor=None):
+def _key(w, *, role="establishing", anchor=None, look_receipt_id=None):
     key = {"entity_kind": "location", "entity_id": LOC, "role": role, "look_hash": _look_hash(w["look"]),
-           "look_receipt_id": w["look_receipt"]["receipt_id"], "headshot_receipt_id": None,
+           "look_receipt_id": look_receipt_id or w["look_receipt"]["receipt_id"], "headshot_receipt_id": None,
            "policy_bundle_sha256": policy.location_bundle_sha256(),
            "builder_policy_sha256": qr.IMPORTED_SENTINEL, "generation_endpoint": qr.IMPORTED_SENTINEL,
            "generation_model": qr.IMPORTED_SENTINEL, "judge_provider": "openai", "judge_model": JUDGE_MODEL}
@@ -511,13 +517,29 @@ def _key(w, *, role="establishing", anchor=None):
     return key
 
 
-def _attempt(w, key, slot):
+def _attempt(w, key, slot, *, cap=9):
     budget = qr.location_budget_key(H.PROJECT, LOC, _look_hash(w["look"]))
-    a = qr.start_attempt(w["project"], key, max_attempts=3, budget_key=budget, budget_cap=3)
+    a = qr.start_attempt(w["project"], key, max_attempts=cap, budget_key=budget, budget_cap=cap)
     qr.attach_generation(w["project"], a["attempt_id"],
                          generation_receipt_id=w["plates"][slot]["gen"]["receipt_id"],
                          asset_id=w["plates"][slot]["asset_id"])
     return a
+
+
+def _judge(w, key, slot, answers=None, *, role="establishing", adapter=None):
+    a = _attempt(w, key, slot)
+    fake = adapter or FakeAdapter(answers if answers is not None else _all(role))
+    r = SheetJudge(adapter=fake).execute({"project_dir": str(w["project"]), "attempt_id": a["attempt_id"],
+                                          "asset_id": w["plates"][slot]["asset_id"]})
+    return r, fake
+
+
+def _approved_plate(w, slot="establishing"):
+    """Judge an establishing plate to a PASS and return its asset id — the only
+    thing an angle may be anchored to."""
+    r, _ = _judge(w, _key(w), slot)
+    assert r.success and r.data["verdict"] == "pass", r.error or r.data
+    return w["plates"][slot]["asset_id"]
 
 
 class TestJudgeLocationBranch:
@@ -562,11 +584,8 @@ class TestJudgeLocationBranch:
     def test_an_angle_is_judged_beside_the_establishing_plate(self, world, monkeypatch):
         w = world
         _patch_location_config(monkeypatch)
-        anchor = w["plates"]["establishing"]["asset_id"]
-        a = _attempt(w, _key(w, role="angle", anchor=anchor), "angle")
-        fake = FakeAdapter(_all("angle"))
-        r = SheetJudge(adapter=fake).execute({"project_dir": str(w["project"]), "attempt_id": a["attempt_id"],
-                                              "asset_id": w["plates"]["angle"]["asset_id"]})
+        anchor = _approved_plate(w)
+        r, fake = _judge(w, _key(w, role="angle", anchor=anchor), "angle", role="angle")
         assert r.success, r.error
         call = fake.calls[0]
         assert call["n_images"] == 2
@@ -578,38 +597,30 @@ class TestJudgeLocationBranch:
     def test_the_second_image_is_the_anchor_plate_bytes(self, world, monkeypatch):
         w = world
         _patch_location_config(monkeypatch)
-        anchor = w["plates"]["establishing"]["asset_id"]
-        a = _attempt(w, _key(w, role="angle", anchor=anchor), "angle")
+        anchor = _approved_plate(w)
 
         class _Recording(FakeAdapter):
             def submit(self, *, model, system, user, images, schema):
                 self.images = list(images)
                 return super().submit(model=model, system=system, user=user, images=images, schema=schema)
 
-        fake = _Recording(_all("angle"))
-        r = SheetJudge(adapter=fake).execute({"project_dir": str(w["project"]), "attempt_id": a["attempt_id"],
-                                              "asset_id": w["plates"]["angle"]["asset_id"]})
+        r, fake = _judge(w, _key(w, role="angle", anchor=anchor), "angle",
+                         adapter=_Recording(_all("angle")))
         assert r.success, r.error
         assert [hashlib.sha256(b).hexdigest() for b in fake.images] == [w["plates"]["angle"]["asset_id"], anchor]
 
     def test_an_angle_beside_another_plate_is_a_new_evaluation(self, world, monkeypatch):
-        """R2#4 end to end: the same pixels judged under a different anchor are
-        judged again, never reused."""
+        """R2#4 end to end: the same pixels judged beside a different APPROVED
+        plate are judged again, never reused."""
         w = world
         _patch_location_config(monkeypatch)
-        est = w["plates"]["establishing"]["asset_id"]
-        a1 = _attempt(w, _key(w, role="angle", anchor=est), "angle")
-        first = SheetJudge(adapter=FakeAdapter(_all("angle"))).execute(
-            {"project_dir": str(w["project"]), "attempt_id": a1["attempt_id"],
-             "asset_id": w["plates"]["angle"]["asset_id"]})
+        first_plate = _approved_plate(w)
+        second_plate = _approved_plate(w, "establishing2")
+        assert first_plate != second_plate
+        first, _ = _judge(w, _key(w, role="angle", anchor=first_plate), "angle", role="angle")
         assert first.success, first.error
-        # same pixels, same look, same policy — but anchored to the OTHER plate
-        other = w["plates"]["angle"]["asset_id"]
-        a2 = _attempt(w, _key(w, role="angle", anchor=other), "angle")
-        fake = FakeAdapter(_all("angle"))
-        second = SheetJudge(adapter=fake).execute(
-            {"project_dir": str(w["project"]), "attempt_id": a2["attempt_id"],
-             "asset_id": w["plates"]["angle"]["asset_id"]})
+        # same pixels, same look, same policy — but beside the OTHER approved plate
+        second, fake = _judge(w, _key(w, role="angle", anchor=second_plate), "angle", role="angle")
         assert second.success, second.error
         assert second.data.get("reused") is not True and fake.calls != []
         assert second.data["qc_receipt_id"] != first.data["qc_receipt_id"]
@@ -617,18 +628,64 @@ class TestJudgeLocationBranch:
     def test_identical_anchor_and_pixels_reuse_the_verdict(self, world, monkeypatch):
         w = world
         _patch_location_config(monkeypatch)
-        est = w["plates"]["establishing"]["asset_id"]
-        a1 = _attempt(w, _key(w, role="angle", anchor=est), "angle")
-        first = SheetJudge(adapter=FakeAdapter(_all("angle"))).execute(
-            {"project_dir": str(w["project"]), "attempt_id": a1["attempt_id"],
-             "asset_id": w["plates"]["angle"]["asset_id"]})
+        anchor = _approved_plate(w)
+        first, _ = _judge(w, _key(w, role="angle", anchor=anchor), "angle", role="angle")
         assert first.success, first.error
-        a2 = _attempt(w, _key(w, role="angle", anchor=est), "angle")
-        fake = FakeAdapter(_all("angle", "no"))
-        second = SheetJudge(adapter=fake).execute(
-            {"project_dir": str(w["project"]), "attempt_id": a2["attempt_id"],
-             "asset_id": w["plates"]["angle"]["asset_id"]})
+        second, fake = _judge(w, _key(w, role="angle", anchor=anchor), "angle",
+                              answers=_all("angle", "no"))
         assert second.success and second.data["reused"] and fake.calls == []
+
+    def test_a_self_anchored_angle_is_refused(self, world, monkeypatch):
+        """An angle cannot vouch for its own anchor: the plate must carry a
+        passing establishing verdict of its own."""
+        w = world
+        _patch_location_config(monkeypatch)
+        own = w["plates"]["angle"]["asset_id"]
+        r, fake = _judge(w, _key(w, role="angle", anchor=own), "angle", role="angle")
+        assert not r.success and "no verified passing establishing verdict" in r.error
+        assert fake.calls == []
+
+    def test_an_anchor_whose_establishing_verdict_failed_is_refused(self, world, monkeypatch):
+        w = world
+        _patch_location_config(monkeypatch)
+        failed, _ = _judge(w, _key(w), "establishing", answers=_all("establishing", no_people="no"))
+        assert failed.success and failed.data["verdict"] == "fail"
+        anchor = w["plates"]["establishing"]["asset_id"]
+        r, fake = _judge(w, _key(w, role="angle", anchor=anchor), "angle", role="angle")
+        assert not r.success and "no verified passing establishing verdict" in r.error
+        assert fake.calls == []
+
+    def test_an_anchor_proven_under_another_look_receipt_is_refused(self, world, monkeypatch):
+        """The anchor's passing verdict must be under the SAME signed look
+        receipt the angle series names."""
+        w = world
+        _patch_location_config(monkeypatch)
+        anchor = _approved_plate(w)
+        from lib.sheet_qc.verify import SeriesMismatch as _SM
+        from lib.sheet_qc.verify import require_approved_anchor
+        key = _key(w, role="angle", anchor=anchor)
+        require_approved_anchor(w["project"], key, anchor)  # the real receipt resolves
+        with pytest.raises(_SM, match="no verified passing establishing verdict"):
+            require_approved_anchor(w["project"], dict(key, look_receipt_id="lk-other"), anchor)
+
+    def test_a_rotated_look_receipt_is_refused_before_any_paid_call(self, world, monkeypatch):
+        w = world
+        _patch_location_config(monkeypatch)
+        r, fake = _judge(w, _key(w, look_receipt_id="lk-not-the-tip"), "establishing")
+        assert not r.success and "is not the active look receipt" in r.error
+        assert fake.calls == []
+
+    def test_missing_anchor_bytes_refuse_before_any_paid_call(self, world, monkeypatch):
+        """The angle prompt names an image 2; if those bytes are not there the
+        call is refused, never sent."""
+        w = world
+        _patch_location_config(monkeypatch)
+        anchor = _approved_plate(w)
+        import tools.qa.sheet_judge as sj
+        monkeypatch.setattr(sj, "_read_anchor_bytes", lambda objects_dir, a: None)
+        r, fake = _judge(w, _key(w, role="angle", anchor=anchor), "angle", role="angle")
+        assert not r.success and "image 2 that is not there" in r.error
+        assert fake.calls == []
 
     def test_a_portrait_plate_fails_locally_without_a_provider_call(self, world, monkeypatch):
         w = world

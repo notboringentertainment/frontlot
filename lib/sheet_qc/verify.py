@@ -33,7 +33,7 @@ class SeriesMismatch(RuntimeError):
 
 def verify_series_against_receipt(
     series_key: dict[str, Any], gen_receipt: dict[str, Any] | None, *, asset_id: str | None = None,
-    entry: dict[str, Any] | None = None,
+    entry: dict[str, Any] | None = None, project_dir: Path | str | None = None,
 ) -> None:
     """The attempt series a caller names must be what the sealed generation
     receipt says happened (Codex inspection #1): builder policy from the
@@ -41,9 +41,12 @@ def verify_series_against_receipt(
     headshot from the receipt's look_refs / headshot_ref. Otherwise a caller
     could rotate one series field per candidate and never hit the cap.
 
-    ``entry`` is the visual-bible entry the series belongs to, when the caller
-    has one: a location ``angle`` series is checked against the entry's
-    establishing slot (D21 R1#8)."""
+    A location ``angle`` series must have its anchor PROVEN, never asserted
+    (D21 R1#8). Two proofs, and at least one is required: ``entry`` — the
+    visual-bible entry, whose establishing slot the anchor must equal (the
+    gate-side callers) — and ``project_dir``, against whose QC ledger the
+    anchor must carry a verified passing ``establishing`` verdict for the same
+    place, look and look receipt (the candidate-time caller)."""
     if not isinstance(gen_receipt, dict):
         raise SeriesMismatch("no verified generation receipt for the judged asset")
     if asset_id is not None and gen_receipt.get("output_sha256") != asset_id:
@@ -52,7 +55,7 @@ def verify_series_against_receipt(
         _verify_hero_series(series_key, gen_receipt)
         return
     if series_key.get("entity_kind") == "location":
-        _verify_location_series(series_key, gen_receipt, entry=entry)
+        _verify_location_series(series_key, gen_receipt, entry=entry, project_dir=project_dir)
         return
     if gen_receipt.get("generator_kind") == "imported":
         raise SeriesMismatch("an imported receipt can only back a hero or a location series")
@@ -104,13 +107,49 @@ def _verify_hero_series(series_key: dict[str, Any], gen_receipt: dict[str, Any])
         raise SeriesMismatch("series look_hash is not among the receipt's look_refs")
 
 
+def require_approved_anchor(
+    project_dir: Path | str, series_key: dict[str, Any], anchor: str
+) -> dict[str, Any]:
+    """The plate an ``angle`` is anchored to must itself have PASSED
+    ``establishing`` QC for the same place, under the same look and the same
+    signed look receipt — proven from this project's verified QC ledger, not
+    asserted by the caller (D21 R1#8). Returns that verdict row.
+
+    This is the candidate-time proof, used before any paid judge call. The
+    gate-side callers pass ``entry`` instead and are checked against the
+    entry's establishing slot; a plate whose establishing verdict FAILED and
+    was relieved by a signed ``qc_override`` is proven that way, not here.
+    """
+    from lib import qc_receipts as qr
+
+    for v in qr.rows_of_kind(project_dir, "verdict"):
+        if v.get("asset_id") != anchor or v.get("verdict") != "pass":
+            continue
+        if v.get("entity_kind") != "location" or v.get("role") != "establishing":
+            continue
+        if v.get("entity_id") != series_key.get("entity_id"):
+            continue
+        if v.get("look_hash") != series_key.get("look_hash"):
+            continue
+        if v.get("look_receipt_id") != series_key.get("look_receipt_id"):
+            continue
+        return v
+    raise SeriesMismatch(
+        f"the angle's anchor {str(anchor)[:12]} carries no verified passing establishing verdict for "
+        f"{series_key.get('entity_id')!r} under this look and look receipt; an angle is judged beside an "
+        f"establishing plate that passed QC, never beside an unproven one"
+    )
+
+
 def _verify_location_series(
-    series_key: dict[str, Any], gen_receipt: dict[str, Any], *, entry: dict[str, Any] | None = None
+    series_key: dict[str, Any], gen_receipt: dict[str, Any], *, entry: dict[str, Any] | None = None,
+    project_dir: Path | str | None = None,
 ) -> None:
     """D21: a location series names NO headshot (a place has none), is bound to
     the signed look receipt it was judged under, and — for an ``angle`` — binds
-    the approved establishing plate it was judged beside (R1#8). When the
-    caller has the entry, that anchor must be the entry's establishing slot.
+    the establishing plate it was judged beside (R1#8). That anchor is proven
+    against the entry's establishing slot when the caller has the entry, and
+    against the project's QC ledger otherwise; one of the two is required.
 
     IMPORT PATH ONLY. Generated location plates land with generate mode, and
     the R2#5 proof that a generated angle's sealed ``references_applied``
@@ -149,12 +188,18 @@ def _verify_location_series(
     if role == ANGLE_ROLE:
         if not isinstance(anchor, str) or len(anchor) != 64:
             raise SeriesMismatch("an angle series must bind the establishing plate it is judged beside")
+        if entry is None and project_dir is None:
+            raise SeriesMismatch(
+                "an angle series' anchor must be proven — against the entry's establishing slot or against "
+                "the project's QC ledger — and neither was given")
         if entry is not None:
             slot = (entry.get("establishing") or {}).get("asset_id")
             if anchor != slot:
                 raise SeriesMismatch(
                     f"angle series is anchored to plate {anchor[:12]} but the entry's establishing slot is "
                     f"{str(slot)[:12]}")
+        if project_dir is not None:
+            require_approved_anchor(project_dir, series_key, anchor)
     elif anchor is not None:
         raise SeriesMismatch("only an angle series binds an establishing plate")
 

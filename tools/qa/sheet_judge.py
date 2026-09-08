@@ -57,6 +57,17 @@ def location_policy_sha256(qc: Any) -> str:
     return str(pinned)
 
 
+def _read_anchor_bytes(objects_dir: Path, anchor: Optional[str]) -> Optional[bytes]:
+    """The bytes of the establishing plate an angle is judged beside, read
+    hash-checked like any other asset. Its own seam so the "prompt names an
+    image 2 that is not there" guard can be exercised."""
+    if not anchor:
+        return None
+    from lib.sheet_qc import local_checks
+
+    return local_checks.read_asset_bytes(objects_dir, str(anchor))
+
+
 class JudgeAdapter:
     """Provider contract every adapter must satisfy (and prove with the probe):
     ``submit`` returns a provider id BEFORE the answer exists; ``wait`` polls
@@ -329,6 +340,13 @@ class SheetJudge(BaseTool):
                 # for an angle, the approved establishing plate the series binds.
                 if key.get("headshot_receipt_id") is not None:
                     raise RuntimeError("a location attempt series must name no headshot")
+                # The location series hashes the look RECEIPT, not just the look hash:
+                # it must be the receipt of the active look tip, or a superseded look
+                # could be judged as if it were current.
+                if look.receipt_id != key.get("look_receipt_id"):
+                    raise RuntimeError(
+                        f"attempt series look receipt {key.get('look_receipt_id')!r} is not the active look "
+                        f"receipt {look.receipt_id!r} for {entity_id!r}")
             elif entity_kind == "character":
                 heads = active_headshots(root)
                 current = heads.get(entity_id) if isinstance(heads, dict) else None
@@ -344,13 +362,20 @@ class SheetJudge(BaseTool):
             if gen_receipt is None or gen_receipt.get("receipt_id") != gen_row.get("generation_receipt_id"):
                 raise RuntimeError("generation_attached names a receipt that is not the asset's verified generation receipt")
             try:
-                verify_series_against_receipt(key, gen_receipt, asset_id=asset_id)
+                # project_dir: an angle's anchor is proven from this project's QC
+                # ledger (a passing establishing verdict) before any paid call.
+                verify_series_against_receipt(key, gen_receipt, asset_id=asset_id, project_dir=root)
             except SeriesMismatch as exc:
                 raise RuntimeError(f"attempt series does not match the sealed generation receipt: {exc}") from exc
             # D21 global constraint 5: an angle is never judged alone. The anchor comes
             # from the signed series, and its bytes are read hash-checked like any asset.
             anchor = key.get("establishing_asset_id") if is_location else None
-            anchor_bytes = local_checks.read_asset_bytes(root / OBJECTS_SUBDIR, str(anchor)) if anchor else None
+            anchor_bytes = _read_anchor_bytes(root / OBJECTS_SUBDIR, anchor)
+            needs_establishing = any(i.evidence == "establishing_image" for i in policy.checklist(role))
+            if needs_establishing and anchor_bytes is None:
+                raise RuntimeError(
+                    f"role {role!r} is judged beside the establishing plate but no anchor bytes were read; "
+                    f"refusing rather than sending a prompt that names an image 2 that is not there")
             adapter = self._resolve_adapter(root, qc.judge_provider)
         except Exception as exc:  # noqa: BLE001
             return ToolResult(success=False, error=f"sheet_judge preflight failed: {exc}")
@@ -390,8 +415,9 @@ class SheetJudge(BaseTool):
         images = [data]
         if needs_hero:
             images.append(local_checks.read_asset_bytes(objects_dir, hero_asset))
-        elif any(i.evidence == "establishing_image" for i in items) and anchor_bytes is not None:
-            images.append(anchor_bytes)  # image 2: the approved establishing plate of the same place
+        elif needs_establishing:
+            # image 2: the establishing plate of the same place, proven in preflight
+            images.append(anchor_bytes)
         pieces = list(((look.payload.get("default_wardrobe") or {}).get("pieces")) or []) if any(i.evidence == "wardrobe_pieces" for i in items) else None
         # D20/D21: the look_* evidence a role's checklist needs, substituted from the
         # SIGNED active look — for a location that is where time_of_day_matches gets
