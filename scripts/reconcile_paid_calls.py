@@ -25,6 +25,14 @@ Read-only towards the provider: this script NEVER resubmits and never mints a
 gate token or approval. The project must be registered under PROJECTS_DIR with
 a human-approved ``project.yaml`` (that is where the budget tracker comes from).
 No TTY is required.
+
+Because it generates nothing, this script runs through
+``tools.video._shared.reconcile_call_context`` rather than ``paid_call_context``:
+look governance is a generation check (it demands verified ``look_refs``) and
+would make every look-governed project unreconcilable, and the resume check is
+the very block reconciling exists to clear. Nothing else is relaxed — the root
+must still be registered and the config still verified — and no reservation is
+ever created here, so the per-shot allowance has nothing to bound.
 """
 from __future__ import annotations
 
@@ -235,9 +243,12 @@ def reconcile_project(project_root: Path, *, api_key: str | None, out=None) -> d
     from lib.receipts import GenerationWalError, recover_generation_wal
 
     out = out or sys.stdout
-    project_root, tracker, _config = _shared.paid_call_context(
-        {"project_dir": str(project_root)}, check_resume=False  # reconciling IS the resume path
-    )
+    # The reconciler-only context: same registered-root path safety, same
+    # verified project.yaml, same CAP-mode tracker, but no resume check
+    # (reconciling IS the resume path) and no look governance (this script
+    # generates nothing, so it has no look_refs to verify and would otherwise
+    # be unrunnable on every look-governed project).
+    project_root, tracker, _config = _shared.reconcile_call_context(project_root)
     summary: dict[str, list[str]] = {"completed": [], "failed": [], "running": [], "manual": [], "replayed": []}
     # Generation WAL first: a crash between a staged output and its receipt /
     # ledger / terminal reservation is finished here (idempotent). An entry

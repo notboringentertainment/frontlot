@@ -982,6 +982,89 @@ class PaidCallContextError(RuntimeError):
     """The paid call cannot be attributed to a registered, approved project."""
 
 
+def _registered_project_root(inputs: dict[str, Any], *, subject: str) -> Path:
+    """The registered project root named by ``inputs['project_dir']``.
+
+    The one path-safety rule ``paid_call_context`` and
+    ``reconcile_call_context`` share: the root is
+    derived ONLY from ``lib.events.infer_project_dir`` and must be a real
+    (non-symlink) directory under ``lib.paths.PROJECTS_DIR``; arbitrary
+    directories are rejected. ``subject`` names the caller in the refusals.
+    """
+    from lib.events import infer_project_dir
+    from lib.paths import PROJECTS_DIR
+
+    if not isinstance(inputs, dict) or not inputs.get("project_dir"):
+        raise PaidCallContextError(f"{subject} requires inputs['project_dir'] (a registered project root)")
+    project_root = infer_project_dir(inputs)
+    if project_root is None:
+        raise PaidCallContextError(
+            f"{subject} requires a registered project under {PROJECTS_DIR}; "
+            f"got project_dir={inputs.get('project_dir')!r}"
+        )
+    project_root = Path(project_root).resolve()
+    try:
+        project_root.relative_to(Path(PROJECTS_DIR).resolve())
+    except ValueError as exc:
+        raise PaidCallContextError(f"{project_root} is not under {PROJECTS_DIR}") from exc
+    if project_root.is_symlink() or not project_root.is_dir():
+        raise PaidCallContextError(f"registered project directory missing or a symlink: {project_root}")
+    return project_root
+
+
+def _cap_mode_tracker(project_root: Path, config: Any) -> Any:
+    """The CAP-mode CostTracker ``paid_call_context`` and
+    ``reconcile_call_context`` hand back.
+
+    Caller-injected trackers and caps are never honored: the budget comes from
+    the human-approved ``project.yaml`` and the ledger from
+    ``<root>/cost_log.json``.
+    """
+    from lib.config_model import BudgetMode
+    from tools.cost_tracker import CostTracker
+
+    return CostTracker(
+        budget_total_usd=float(config.budget_usd_cap),
+        reserve_pct=0.0,
+        single_action_approval_usd=float("inf"),
+        require_approval_for_new_paid_tool=False,
+        mode=BudgetMode.CAP,
+        cost_log_path=project_root / "cost_log.json",
+    )
+
+
+def reconcile_call_context(project_root: Path | str) -> tuple[Path, Any, Any]:
+    """Resolve ``(project_root, tracker, config)`` for the human reconciler.
+
+    RECONCILER ONLY — ``scripts/reconcile_paid_calls.py`` and nothing else.
+    NOT a generation context and not usable as one: it returns no governance
+    dict, so a caller has nothing to bind into a generation receipt.
+
+    The reconciler generates nothing. It polls the provider for jobs that
+    already left the machine and settles their reservations, so the two checks
+    ``paid_call_context`` runs before a generation would be wrong here:
+
+    - ``verify_look_governance`` refuses a governed visual call that carries no
+      verified ``look_refs``. The reconciler has no prompt, no references and
+      no look to verify; every look-governed project would be unreconcilable.
+    - ``resume_check`` blocks on any nonterminal reservation. Those are exactly
+      what the reconciler exists to resolve — reconciling IS the resume path.
+
+    Everything else is identical to ``paid_call_context``: the same path safety
+    (``_registered_project_root``), the same verified ``project.yaml``
+    (``load_verified_project_config``, which is also returned so egress can be
+    required per content class), and the same CAP-mode tracker over
+    ``<root>/cost_log.json``. The per-shot allowance (C2) is not checked either:
+    it bounds new spend, and the reconciler opens no new paid call — it only
+    settles reservations that already hold their dollars and takes.
+    """
+    from lib.project_config import load_verified_project_config
+
+    root = _registered_project_root({"project_dir": str(project_root)}, subject="reconciliation")
+    config = load_verified_project_config(root)  # raises ProjectConfigError
+    return root, _cap_mode_tracker(root, config), config
+
+
 def paid_call_context(
     inputs: dict[str, Any], *, check_resume: bool = True, governance: dict[str, Any] | None = None,
     media: str = "image", estimated_usd: float | None = None,
@@ -1005,8 +1088,11 @@ def paid_call_context(
     from the human-approved ``project.yaml`` (``load_verified_project_config``),
     which is also returned so callers can ``require_egress(...)`` per content
     class before any upload. ``resume_check`` runs first: an unreconciled
-    paid call blocks every new one before any upload or reservation
-    (``check_resume=False`` is reserved for scripts/reconcile_paid_calls.py).
+    paid call blocks every new one before any upload or reservation. The
+    human reconciler is the one caller allowed past that block, and it does
+    not come through here at all — it uses ``reconcile_call_context``, which
+    also skips the look governance a caller that generates nothing cannot
+    satisfy.
 
     Per-shot allowance (C2): a call named for a shot — ``asset_class``
     ``shot_visual`` / ``storyboard_frame``, or any call carrying ``shot_id``
@@ -1018,33 +1104,17 @@ def paid_call_context(
     call's kind, so only a video call consumes a take. The same check runs
     again inside ``reserve_paid_call`` under the reservation lock.
     """
-    from lib.config_model import BudgetMode
-    from lib.events import infer_project_dir
-    from lib.paths import PROJECTS_DIR
     from lib.project_config import load_verified_project_config
     from lib.shot_allowance import check_call
-    from tools.cost_tracker import CostTracker, resume_check
+    from tools.cost_tracker import resume_check
 
-    if not isinstance(inputs, dict) or not inputs.get("project_dir"):
-        raise PaidCallContextError("paid generation requires inputs['project_dir'] (a registered project root)")
-    project_root = infer_project_dir(inputs)
-    if project_root is None:
-        raise PaidCallContextError(
-            f"paid generation requires a registered project under {PROJECTS_DIR}; "
-            f"got project_dir={inputs.get('project_dir')!r}"
-        )
-    project_root = Path(project_root).resolve()
-    try:
-        project_root.relative_to(Path(PROJECTS_DIR).resolve())
-    except ValueError as exc:
-        raise PaidCallContextError(f"{project_root} is not under {PROJECTS_DIR}") from exc
-    if project_root.is_symlink() or not project_root.is_dir():
-        raise PaidCallContextError(f"registered project directory missing or a symlink: {project_root}")
+    project_root = _registered_project_root(inputs, subject="paid generation")
 
     # Any nonterminal reservation (submitting / pending_billing) means a prior
     # paid call has no known outcome; refuse to spend again before a human runs
     # scripts/reconcile_paid_calls.py. Checked before any upload or reservation.
-    # Only the human-run reconciler (which never resubmits) opts out.
+    # Only the human-run reconciler (which never resubmits) is exempt, and it
+    # runs through reconcile_call_context rather than here.
     if check_resume:
         resume_check(project_root)  # raises IndeterminatePaidCallError
 
@@ -1057,15 +1127,7 @@ def paid_call_context(
     # Raises lib.shot_allowance.ShotAllowanceError; a non-shot call and a
     # project pinned below 1.6 pass straight through.
     check_call(project_root, inputs, kind=media, estimated_usd=estimated_usd)
-    tracker = CostTracker(
-        budget_total_usd=float(config.budget_usd_cap),
-        reserve_pct=0.0,
-        single_action_approval_usd=float("inf"),
-        require_approval_for_new_paid_tool=False,
-        mode=BudgetMode.CAP,
-        cost_log_path=project_root / "cost_log.json",
-    )
-    return project_root, tracker, config
+    return project_root, _cap_mode_tracker(project_root, config), config
 
 
 # ---- D19: pre-submit hook and the QC (judge) call context ----
