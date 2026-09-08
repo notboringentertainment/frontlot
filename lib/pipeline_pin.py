@@ -276,13 +276,13 @@ def prepare_migration_request(
     project_dir = Path(project_dir)
     if version not in manifest_versions(pipeline_name):
         raise PipelinePinError(f"no manifest pipeline_defs/{pipeline_name}@{version}.yaml")
-    require_migration_coverage(project_dir, pipeline_name, version)
+    request_id = request_id or f"pipeline-migration-{version.replace('.', '-')}"
+    require_migration_coverage(project_dir, pipeline_name, version, request_id=request_id)
     digest = manifest_digest(f"{pipeline_name}@{version}")
     from lib.receipts import verified_approvals
 
     tip = _chain_tip(verified_approvals(project_dir, MIGRATION_KIND, entity_id=pipeline_name), pipeline_name)
     record = migration_record(pipeline_name, version, digest, checkpoint_digests_on_disk(project_dir))
-    request_id = request_id or f"pipeline-migration-{version.replace('.', '-')}"
     request = {
         "request_id": request_id,
         "project_id": project_id,
@@ -309,7 +309,9 @@ def prepare_migration_request(
     return path
 
 
-def require_migration_coverage(project_dir: Path | str, pipeline_name: str, version: str) -> None:
+def require_migration_coverage(
+    project_dir: Path | str, pipeline_name: str, version: str, *, request_id: Optional[str] = None
+) -> None:
     """Per-version preconditions for pinning. Run at request time, at gate
     construction and again inside the gate's pre-commit check.
 
@@ -319,6 +321,9 @@ def require_migration_coverage(project_dir: Path | str, pipeline_name: str, vers
       predecessor means, so migrating mid-flight would re-interpret work
       already in progress: refuse while any governed gate request is pending
       or any run state is live.
+
+    ``request_id`` names THIS migration's own gate request, which is on disk by
+    the time the gate constructs and signs it and must not block itself.
     """
     if pipeline_name != "authored-film":
         return
@@ -332,7 +337,7 @@ def require_migration_coverage(project_dir: Path | str, pipeline_name: str, vers
                 "headshot_grandfather attestation — " + "; ".join(blockers)
             )
     elif version == "1.6":
-        blockers = shot_ready_migration_blockers(project_dir)
+        blockers = shot_ready_migration_blockers(project_dir, request_id=request_id)
         if blockers:
             raise PipelinePinError(
                 "cannot pin authored-film 1.6 while the project is mid-flight: finish or decline the pending "
@@ -341,40 +346,59 @@ def require_migration_coverage(project_dir: Path | str, pipeline_name: str, vers
 
 
 RUN_STATE_FIELDS = ("run_state", "location_run_state")
+# Every stage whose command parks a resumable run in its checkpoint metadata:
+# look_run (scripts/look_run.py), headshot_run and sheet_run / location_run.
+# A live entry in ANY of them means a command is mid-flight for some entity.
+RUN_STATE_STAGES = ("look_lock", "headshots", "visual_bible")
 
 
-def shot_ready_migration_blockers(project_dir: Path | str) -> list[str]:
+def shot_ready_migration_blockers(
+    project_dir: Path | str, *, request_id: Optional[str] = None
+) -> list[str]:
     """Why this project is not quiet enough to migrate to 1.6 (empty = quiet).
 
     A GOVERNED request is any unanswered gate request in ``.gate-requests/``
     itself — signed and declined requests have been moved into ``done/`` and
-    ``declined/`` and no longer block. The migration request itself is
-    excluded: it is the very request being signed.
+    ``declined/`` and no longer block. Only ``request_id``, this migration's
+    own request, is excluded; another pending pipeline_migration request is a
+    blocker like any other.
+
+    Everything here fails CLOSED: an unreadable or symlinked request or
+    checkpoint is a blocker, never a skip, because the guard cannot then prove
+    the project is quiet.
     """
     project_dir = Path(project_dir)
     blockers: list[str] = []
     req_dir = project_dir / ".gate-requests"
+    own = f"{request_id}.json" if request_id else None
     if req_dir.is_dir():
         for path in sorted(req_dir.glob("*.json")):
-            if not path.is_file() or path.is_symlink():
+            if path.name == own and path.is_file() and not path.is_symlink():
                 continue
-            try:
-                request = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                request = {}
-            if isinstance(request, dict) and request.get("kind") == MIGRATION_KIND:
+            if path.is_symlink() or not path.is_file():
+                blockers.append(f"gate request {path.name} is a symlink or not a regular file")
                 continue
             blockers.append(f"gate request {path.name} is still pending")
-    checkpoint = project_dir / "checkpoint_visual_bible.json"
-    if checkpoint.is_file() and not checkpoint.is_symlink():
+    for stage in RUN_STATE_STAGES:
+        checkpoint = project_dir / f"checkpoint_{stage}.json"
+        if checkpoint.is_symlink():
+            blockers.append(f"checkpoint_{stage}.json is a symlink; refusing to read run state through it")
+            continue
+        if not checkpoint.is_file():
+            continue
         try:
-            metadata = (json.loads(checkpoint.read_text(encoding="utf-8")) or {}).get("metadata") or {}
-        except (OSError, json.JSONDecodeError, AttributeError):
-            metadata = {}
+            data = json.loads(checkpoint.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            blockers.append(f"checkpoint_{stage}.json is unreadable; run state cannot be proven quiet")
+            continue
+        metadata = data.get("metadata") if isinstance(data, dict) else None
+        if not isinstance(metadata, dict):
+            continue
         for field in RUN_STATE_FIELDS:
-            live = metadata.get(field) if isinstance(metadata, dict) else None
+            live = metadata.get(field)
             if live:
-                blockers.append(f"checkpoint_visual_bible.json metadata.{field} is non-empty ({sorted(live)})")
+                entities = sorted(live) if isinstance(live, dict) else live
+                blockers.append(f"checkpoint_{stage}.json metadata.{field} is non-empty ({entities})")
     return blockers
 
 

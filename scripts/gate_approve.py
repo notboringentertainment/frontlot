@@ -493,7 +493,9 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
     digest = manifest_digest(f"{pipeline_name}@{version}")
     bound = checkpoint_digests_on_disk(root)
     try:
-        require_migration_coverage(root, pipeline_name, version)  # D20.7: legacy heroes must be grandfathered
+        # D20.7: legacy heroes must be grandfathered. 1.6: the project must be
+        # quiet — this request is on disk, so it names itself as the exception.
+        require_migration_coverage(root, pipeline_name, version, request_id=req.get("request_id"))
         record = migration_record(pipeline_name, version, digest, bound)
         tip = _chain_tip(
             verified_approvals(root, MIGRATION_KIND, entity_id=pipeline_name, project_id=req["project_id"]),
@@ -510,7 +512,7 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
 
     def pre_commit() -> None:  # re-derived under the consumed token (R3#4)
         try:
-            require_migration_coverage(root, pipeline_name, version)
+            require_migration_coverage(root, pipeline_name, version, request_id=req.get("request_id"))
         except PipelinePinError as exc:
             raise GateHandlerError(str(exc)) from exc
         if checkpoint_digests_on_disk(root) != bound:
