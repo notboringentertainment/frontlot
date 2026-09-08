@@ -1469,6 +1469,15 @@ def _scene_plan_shot_index(project_root: Path) -> dict[str, str]:
     entity-free is decided exclusively by ``lib.checkpoint.entity_free_scene_ids``
     (inspection round 2 #7); the checkpoint's ``status`` / ``human_approved`` /
     ``entity_free`` fields are not read here.
+
+    The scene key is ``id`` at both scene_plan 1.0 and 1.1 (required by
+    ``schemas/artifacts/scene_plan.schema.json``, and the key
+    ``lib.canon_enforcement`` and ``lib.checkpoint.entity_free_scene_ids``
+    read); there is no ``scene_id``. KEEP THIS TRAVERSAL IN STEP WITH
+    ``lib.shot_allowance.shot_record``, which walks the same
+    ``artifacts.scene_plan.scenes[].shots[]`` path to find a shot's allowance:
+    if one lookup finds a shot the other does not, a planned shot becomes
+    unplanned somewhere in the middle of the boundary.
     """
     import lib.checkpoint as checkpoint_mod
 
@@ -1482,7 +1491,7 @@ def _scene_plan_shot_index(project_root: Path) -> dict[str, str]:
     for scene in plan.get("scenes") or []:
         if not isinstance(scene, dict):
             continue
-        scene_id = scene.get("scene_id")
+        scene_id = scene.get("id")
         if not isinstance(scene_id, str) or not scene_id:
             continue
         for shot in scene.get("shots") or []:

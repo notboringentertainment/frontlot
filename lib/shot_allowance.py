@@ -106,6 +106,12 @@ def shot_record(project_root: Path | str, shot_id: str) -> dict[str, Any]:
 
     Fails closed: an absent, unreadable, pin-mismatched or duplicate-shot plan
     is a refusal, never an unlimited allowance.
+
+    KEEP THIS TRAVERSAL IN STEP WITH ``tools.video._shared._scene_plan_shot_index``,
+    which walks the same ``artifacts.scene_plan.scenes[].shots[]`` path to
+    decide whether a shot is a planned shot at all: a shot this function funds
+    must be a shot that index knows, or the boundary funds a call it then
+    refuses (or refuses a call it has already funded).
     """
     import lib.checkpoint as checkpoint_mod
 
