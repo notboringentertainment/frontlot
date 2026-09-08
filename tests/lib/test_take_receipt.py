@@ -20,26 +20,22 @@ Invented ids only.
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 
 import pytest
 
 from lib.canon_enforcement import take_record
-from lib.canonical_json import record_sha256
-from lib.checkpoint import CheckpointValidationError, read_checkpoint
+from lib.checkpoint import CheckpointValidationError, read_checkpoint, write_checkpoint
 from lib.pathsafe import sha256_file
 from lib.receipts import ReceiptError, find_generation, require_take_receipt, verified_approvals
 from scripts import gate_approve, take_request
 
 from tests.lib.look_lock_helpers import PROJECT
 from tests.lib.test_authored_film_contract import (  # noqa: F401  (gates_dir autouse, project fixture)
-    approval_policy_decision,
-    authored_script,
     gates_dir,
-    plain_decision_log,
     project,
-    write_project_config,
 )
 from tests.lib.test_shot_ready_rule import (
     FINISHED,
@@ -261,6 +257,85 @@ class TestT11TheReceiptIsRequiredAndBound:
 
         with pytest.raises(take_request.TakeRequestError, match="decided"):
             take_request.publish_take_request(world["project"], SHOT, take["id"])
+
+
+class TestT11ARequestIsAnEndingOrNothing:
+    """Fix round 1: applying a decision may touch nothing but the manifest;
+    one decision per shot is in flight at a time; and a request that can no
+    longer be decided can be withdrawn — but only then."""
+
+    def test_applying_a_decision_changes_the_manifest_and_nothing_else(self, shot_ready, monkeypatch):
+        world = shot_ready
+        published = _publish_takes(world, "take-1")
+        take = published["takes"][0]
+        # A real assets checkpoint carries a spend snapshot, a review, run
+        # state and policy flags. None of them is the take gate's business.
+        write_checkpoint(
+            world["pipeline"], PROJECT, "assets", "awaiting_human",
+            {"asset_manifest": published["manifest"]},
+            pipeline_type="authored-film", checkpoint_policy="manual_all", human_approval_required=True,
+            human_approved=True, review={"reviewer": "invented", "notes": "keep me"},
+            cost_snapshot={"total_spent_usd": 4.25}, metadata={"run_state": {"shot-1": {"mode": "takes"}}},
+        )
+        path = world["pipeline"] / PROJECT / "checkpoint_assets.json"
+        before = json.loads(path.read_text())
+        request = take_request.publish_take_request(world["project"], SHOT, take["id"])
+        _decide_at_the_gate(world, request["request_id"], "a", monkeypatch)
+        take_request.finish_take(world["project"], request["request_id"], out=io.StringIO())
+
+        after = json.loads(path.read_text())
+        volatile = {"timestamp", "artifacts"}
+        assert {k: v for k, v in after.items() if k not in volatile} == \
+               {k: v for k, v in before.items() if k not in volatile}
+        expected = copy.deepcopy(before["artifacts"])
+        next(a for a in expected["asset_manifest"]["assets"] if a["id"] == take["id"])["usage_status"] = "selected"
+        assert after["artifacts"] == expected
+
+    def test_a_shot_has_one_decision_in_flight_at_a_time(self, shot_ready, monkeypatch):
+        world = shot_ready
+        published = _publish_takes(world, "take-1", "take-2")
+        first, second = published["takes"]
+        request = take_request.publish_take_request(world["project"], SHOT, first["id"])
+
+        with pytest.raises(take_request.TakeRequestError, match=request["request_id"]):
+            take_request.publish_take_request(world["project"], SHOT, second["id"])
+        # Republishing the SAME take is the same decision, not a second one.
+        assert take_request.publish_take_request(world["project"], SHOT, first["id"])["request_id"] \
+               == request["request_id"]
+
+        _decide_at_the_gate(world, request["request_id"], "a", monkeypatch)
+        # Signed but not applied is still in flight.
+        with pytest.raises(take_request.TakeRequestError, match=request["request_id"]):
+            take_request.publish_take_request(world["project"], SHOT, second["id"])
+
+        take_request.finish_take(world["project"], request["request_id"], out=io.StringIO())
+        queued = take_request.publish_take_request(world["project"], SHOT, second["id"])
+        _decide_at_the_gate(world, queued["request_id"], "r", monkeypatch)
+        take_request.finish_take(world["project"], queued["request_id"], out=io.StringIO())
+        assert _asset_of(world, first["id"])["usage_status"] == "selected"
+        assert _asset_of(world, second["id"])["usage_status"] == "rejected"
+
+    def test_only_an_undecidable_request_can_be_withdrawn(self, shot_ready):
+        from lib.pipeline_pin import PipelinePinError, require_migration_coverage
+
+        world = shot_ready
+        published = _publish_takes(world, "take-1")
+        request = take_request.publish_take_request(world["project"], SHOT, published["takes"][0]["id"])
+        request_id = request["request_id"]
+
+        with pytest.raises(take_request.TakeRequestError, match="not stuck"):
+            take_request.withdraw_take_request(world["project"], request_id, out=io.StringIO())
+
+        # The stage moves on underneath it: the request can never be decided.
+        write(world["pipeline"], "assets", {"asset_manifest": published["manifest"]}, status="awaiting_human")
+        with pytest.raises(PipelinePinError, match=request_id):
+            require_migration_coverage(world["project"], "authored-film", "1.6")
+
+        assert take_request.withdraw_take_request(world["project"], request_id, out=io.StringIO())["withdrawn"]
+        assert not (world["project"] / ".gate-requests" / f"{request_id}.json").exists()
+        assert (world["project"] / ".gate-requests" / "abandoned" / f"{request_id}.json").is_file()
+        assert _take_receipts(world) == []
+        require_migration_coverage(world["project"], "authored-film", "1.6")
 
 
 class TestT11OlderPinsAreUnchanged:

@@ -261,6 +261,16 @@ covers. Apply what was signed with:
 which copies the receipt's `usage_status` into the manifest. A rejected take
 stays in the manifest as history; it is never deleted.
 
+**One decision per shot at a time.** Publishing a second take request for a
+shot is refused while the first is waiting or signed-but-unapplied — applying a
+decision moves the checkpoint digest, so a second request signed against the
+old one could never be applied, and asking the writer to decide the same shot
+twice is exactly what this gate exists to avoid. Publish the next candidate
+after the previous one is finished. If a request can no longer be decided (the
+stage moved under it, or the take is no longer a candidate), retire it with
+`--withdraw` — that records the withdrawal, mints nothing, and is refused while
+the request is still decidable.
+
 ## Common Pitfalls
 
 - Listing references in the manifest without them ever touching a prompt or
