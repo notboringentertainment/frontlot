@@ -503,6 +503,7 @@ def _write_override_request(root, project_id, entity_id, role, verdict) -> Path:
 
 def main(argv: Optional[list[str]] = None) -> int:
     from lib.env_loader import load_env
+    from lib.run_lease import LeaseHeldError
 
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--project", required=True)
@@ -525,7 +526,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         return EXIT_BLOCKED
     except Declined:
         return EXIT_DECLINED
-    except RunError as exc:
+    except (RunError, LeaseHeldError) as exc:
+        # Lease-first ordering means a held lease now refuses before the config
+        # and pin checks do; it is a refusal like any other, not a crash.
         print(f"sheet_run: {exc}", file=sys.stderr)
         return 1
     return 0

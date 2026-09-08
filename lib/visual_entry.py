@@ -43,8 +43,8 @@ STAGE = "visual_bible"
 PIPELINE_TYPE = "authored-film"
 ABANDONED_DIRNAME = "abandoned"
 DEFAULT_WALL_TIME_MINUTES = 60.0
-# Requests at this stage that a runner must not step over. A qc_override is
-# deliberately absent: a blocked run publishes one and then resumes past it.
+# Request kinds that compete for THIS checkpoint. A qc_override is deliberately
+# absent: a blocked run publishes one and then resumes past it.
 GOVERNED_REQUEST_KINDS = frozenset({"sheet", "location", "reference_import"})
 _HEX = frozenset("0123456789abcdef")
 
@@ -226,17 +226,31 @@ def foreign_owners(root: Path, runner: RunnerKind, entity_id: str) -> list[Owner
     return [o for o in transaction_owners(root) if (o.runner_kind, o.entity_id) != (runner.name, entity_id)]
 
 
+def is_governed_request(req: Any) -> bool:
+    """True when a request competes for this checkpoint.
+
+    BOTH halves are required: a governed kind AND this stage. Kind alone is not
+    enough — a character reference_import is published at the ``look_lock``
+    stage (``lib/reference_import.py``) and never touches
+    ``checkpoint_visual_bible.json``, so it must not block a sheet. The location
+    imports Step 6 adds are published at ``visual_bible``, so they will match.
+    """
+    return isinstance(req, dict) and req.get("stage") == STAGE and req.get("kind") in GOVERNED_REQUEST_KINDS
+
+
 def pending_requests(root: Path) -> list[dict[str, Any]]:
-    """Governed requests waiting for a human at this stage."""
+    """Governed requests waiting for a human at this stage. Fails closed: an
+    unreadable request file could be one that ought to block."""
     found: list[dict[str, Any]] = []
     for path in sorted((root / REQUEST_DIRNAME).glob("*.json")):
         if path.is_symlink() or not path.is_file():
             continue
         try:
             req = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(req, dict) and req.get("stage") == STAGE and req.get("kind") in GOVERNED_REQUEST_KINDS:
+        except (OSError, ValueError) as exc:
+            raise VisualEntryError(f"pending request {path} is unreadable: {exc}; it may be one that must block this run — "
+                                   f"repair or remove it") from exc
+        if is_governed_request(req):
             found.append(req)
     return found
 

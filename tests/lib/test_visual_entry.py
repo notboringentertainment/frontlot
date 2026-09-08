@@ -112,6 +112,28 @@ def test_a_pending_override_or_another_stage_never_blocks(world):
     ve.require_single_flight(w["project"], ve.SHEET, CHAR)
 
 
+def test_an_import_blocks_only_at_this_stage(world):
+    w = world
+    # a character reference_import lives at the look_lock stage and never touches
+    # checkpoint_visual_bible, so it must not block a sheet
+    _write_pending(w, f"import-{CHAR2}-1", "reference_import", CHAR2, stage="look_lock")
+    ve.require_single_flight(w["project"], ve.SHEET, CHAR)
+    assert ve.pending_requests(w["project"]) == []
+    # a location import (Step 6) is published at this stage and does block
+    _write_pending(w, f"import-{LOC}-establishing-1", "reference_import", LOC)
+    with pytest.raises(ve.VisualEntryError, match=f"import-{LOC}-establishing-1 .reference_import. is pending"):
+        ve.require_single_flight(w["project"], ve.SHEET, CHAR)
+
+
+def test_an_unreadable_pending_request_fails_closed(world):
+    w = world
+    d = w["project"] / ".gate-requests"
+    d.mkdir(exist_ok=True)
+    (d / "location-loc-alpha-1.json").write_text("{ this is not json")
+    with pytest.raises(ve.VisualEntryError, match="location-loc-alpha-1.json is unreadable"):
+        ve.require_single_flight(w["project"], ve.SHEET, CHAR)
+
+
 def test_a_run_is_not_blocked_by_the_request_its_own_transaction_owns(world):
     w = world
     _publish(w)  # leaves a pending sheet request AND the run state that owns it
@@ -155,6 +177,15 @@ def test_a_config_refusal_still_releases_the_lease(world):
         sheet_run.run_sheet(w["project"], CHAR, palette=PALETTE, max_attempts=99, generate=FakeGen(),
                             judge_adapter=FakeAdapter(_all("turnaround")), out=io.StringIO())
     assert not run_lease.lease_path(w["project"]).is_file()
+
+
+def test_a_held_lease_is_a_clean_refusal_not_a_traceback(world, capsys):
+    w = world
+    with run_lease.acquire(w["project"], 60):
+        code = sheet_run.main(["--project", PROJECT, "--entity", CHAR, "--palette", ",".join(PALETTE)])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert err.startswith("sheet_run: ") and "run lease" in err and "Traceback" not in err
 
 
 def test_retime_lease_replaces_the_provisional_wall_time(tmp_path):
