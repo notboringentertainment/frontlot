@@ -46,7 +46,7 @@ Request file contract::
       "request_id": "...", "project_id": "...", "stage": "visual_bible",
       "scope": "character:<id>",
       "kind": "hero|sheet|location|poster|storyboard_batch|config|artifact_review|
-               look_lock|reference_import|pipeline_migration|headshot",
+               look_lock|reference_import|pipeline_migration|headshot|take",
       "entity_id": "<id>" | null, "artifact": {...} | null,
       "approval_record": {...} | null,     # HINT — must equal the constructed record
       "envelope": {...} | null,            # HINT — must equal the constructed envelope
@@ -63,6 +63,13 @@ the request carries no approval_record. The handler validates the pending
 verifies each candidate's bytes, and — for the chosen candidate — re-runs
 the active-look, prompt_recipe, generation-receipt + lineage and origin
 enforcement before constructing the signed record (``lib.headshots.headshot_record``).
+
+Kind ``take`` is a DECISION gate (shot-ready C4 / D-C): the request carries no
+approval_record either, and the human's single answer at the prompt — accept
+or reject — IS the decision. Both answers are signed (``usage_status``
+``selected`` or ``rejected``), so a rejected take is recorded rather than
+merely undone; there is no separate confirmation step and no decline path
+that would leave the choice unrecorded.
 """
 from __future__ import annotations
 
@@ -89,6 +96,9 @@ REQUEST_DIRNAME = ".gate-requests"
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 REQUIRED = ("request_id", "project_id", "stage", "scope", "kind", "summary")
 SELECTION_KINDS = {"headshot"}
+# Kinds whose record IS the human's answer (C4): the constructor cannot build
+# one before the prompt, so the request never carries an approval_record.
+DECISION_KINDS = {"take"}
 HEADSHOT_CHECKPOINT = "checkpoint_headshots.json"
 _HEX = frozenset("0123456789abcdef")
 
@@ -145,7 +155,7 @@ def load_request(path: Path) -> dict:
         raise GateHandlerError(f"{path.name}: request missing fields {missing}")
     if data["kind"] not in APPROVAL_KINDS:
         raise GateHandlerError(f"{path.name}: unknown kind {data['kind']!r}")
-    if data["kind"] in SELECTION_KINDS and data.get("approval_record") is not None:
+    if data["kind"] in SELECTION_KINDS | DECISION_KINDS and data.get("approval_record") is not None:
         raise GateHandlerError(
             f"{path.name}: a {data['kind']} request must not carry approval_record — "
             f"the gate handler constructs the record from the pending packet"
@@ -180,7 +190,7 @@ def _complete_committed_decline(path: Path, data: dict) -> None:
 # from disk at decision), the agent's non-authoritative hints, and the
 # transition markers the gate itself writes. Every other field of a pending
 # request is immutable between display and decision.
-DECISION_FIELDS = frozenset({"reason", "note", "selection", "_chosen_items"})
+DECISION_FIELDS = frozenset({"reason", "note", "selection", "_chosen_items", "_usage_status"})
 HINT_FIELDS = frozenset({"approval_record", "envelope"})
 MARKER_FIELDS = frozenset({"approval_receipt_id", "declined_note"})
 
@@ -568,6 +578,94 @@ def _construct_storyboard_batch(root: Path, req: dict) -> Constructed:
         raise GateHandlerError(str(exc)) from exc
     evidence = tuple(f"shot {shot} -> {sha}" for shot, sha in sorted(frames.items()))
     return Constructed(record, None, STORYBOARD_BATCH_ENTITY_ID, evidence=evidence)
+
+
+def _construct_take(root: Path, req: dict) -> Constructed:
+    """C4 / D-C: the human's accept or reject on ONE candidate take.
+
+    The decision itself (``_usage_status``) is typed at the prompt, never read
+    from the request, so no record — and therefore no signature — exists until
+    a human has answered. Everything else is reloaded from the pending assets
+    checkpoint the request is digest-bound to: the take's bytes are re-hashed
+    from disk and its generation receipt is resolved by that hash, so the
+    receipt names the exact footage the human was shown."""
+    from lib.canon_enforcement import TAKE_USAGE_DECISIONS, take_record
+    from lib.receipts import find_generation
+
+    decision = req.get("_usage_status")
+    if decision not in TAKE_USAGE_DECISIONS:
+        raise GateHandlerError(
+            "a take is decided at the gate: accept it (selected) or reject it (rejected). "
+            "There is no record to sign until the human answers."
+        )
+    entity_id = _require_entity(req)
+
+    def _load() -> dict[str, Any]:
+        path, checkpoint = _load_pending_checkpoint(root, req, "assets")
+        bound = _bind_request_digest(req, path, required=True)
+        manifest = (checkpoint.get("artifacts") or {}).get("asset_manifest")
+        if not isinstance(manifest, dict):
+            raise GateHandlerError("the pending assets checkpoint carries no asset_manifest")
+        assets = [a for a in manifest.get("assets") or [] if isinstance(a, dict)]
+        named = [a for a in assets if a.get("id") == entity_id]
+        if len(named) != 1:
+            raise GateHandlerError(
+                f"take {entity_id!r} names {len(named)} assets in the pending asset_manifest; refusing to guess"
+            )
+        take = named[0]
+        if take.get("asset_class") != "shot_visual":
+            raise GateHandlerError(f"asset {entity_id!r} is a {take.get('asset_class')!r}, not a shot_visual take")
+        if take.get("usage_status") != "candidate":
+            raise GateHandlerError(
+                f"take {entity_id!r} is already {take.get('usage_status')!r} — a take is decided once"
+            )
+        shot_id = take.get("shot_id")
+        if not isinstance(shot_id, str) or not shot_id:
+            raise GateHandlerError(f"take {entity_id!r} names no shot_id")
+        scope_kind, scope_id = _scope_key(req)
+        if scope_kind != "shot" or scope_id != shot_id:
+            raise GateHandlerError(f"request scope {req.get('scope')!r} does not name the take's shot {shot_id!r}")
+        sha = _file_sha(root, take)
+        generation = find_generation(root, sha)
+        if generation is None:
+            raise GateHandlerError(
+                f"take {entity_id!r} ({take.get('path')!r}, sha256 {sha}) has no verified generation receipt"
+            )
+        frame = next(
+            (a for a in assets if a.get("asset_class") == "storyboard_frame" and a.get("shot_id") == shot_id), None
+        )
+        return {
+            "project_id": str(checkpoint["project_id"]), "shot_id": shot_id, "take": take, "sha": sha,
+            "generation_receipt_id": str(generation["receipt_id"]), "bound": bound,
+            "frame_sha": _file_sha(root, frame) if frame is not None else None,
+        }
+
+    loaded = _load()
+    record = take_record(
+        project_id=loaded["project_id"], shot_id=loaded["shot_id"], asset_id=loaded["sha"],
+        generation_receipt_id=loaded["generation_receipt_id"], usage_status=decision,
+    )
+    take = loaded["take"]
+    references = [
+        f"{r.get('role')}:{r.get('visual_bible_entity_id') or r.get('shot_id')} ({str(r.get('asset_id'))[:12]}…)"
+        for r in (take.get("continuity") or {}).get("references_applied") or [] if isinstance(r, dict)
+    ]
+    evidence = (
+        f"decision: {'ACCEPT' if decision == 'selected' else 'REJECT'} -> usage_status {decision}",
+        f"shot {loaded['shot_id']} take {take.get('take_id')!r} ({take.get('type')}) {root / str(take.get('path'))}",
+        f"take sha256 {loaded['sha']} from generation receipt {loaded['generation_receipt_id']} "
+        f"({take.get('model_endpoint')})",
+        f"storyboard frame {loaded['frame_sha'] or 'none'}",
+        "references: " + (", ".join(references) or "none"),
+    )
+
+    def pre_commit() -> None:
+        """Under the consumed token: the take, its bytes, its generation
+        receipt and the checkpoint digest must be exactly what was shown."""
+        if _load() != loaded:
+            raise GateHandlerError("the pending assets checkpoint changed while deciding; re-run the take request")
+
+    return Constructed(record, None, entity_id, evidence=evidence, pre_commit_check=pre_commit)
 
 
 def _file_sha(root: Path, asset: dict) -> str:
@@ -1426,6 +1524,7 @@ CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
     "headshot": _construct_headshot,
     "qc_override": _construct_qc_override,
     "headshot_grandfather": _construct_headshot_grandfather,
+    "take": _construct_take,
 }
 assert set(CONSTRUCTORS) == set(APPROVAL_KINDS), "every approval kind needs a gate-side constructor"
 
@@ -1510,6 +1609,11 @@ def _decline_request(req: dict, root: Path, note: str | None) -> None:
     require_tty()
     if req.get("kind") not in APPROVAL_KINDS:
         raise GateHandlerError(f"unknown kind {req.get('kind')!r}")
+    if req["kind"] in DECISION_KINDS:
+        raise GateHandlerError(
+            f"a {req['kind']} is not declined: reject it at the gate, which records the rejection as a "
+            f"signed receipt. A decline would leave the decision unrecorded."
+        )
     if req["kind"] in SELECTION_KINDS and not note:
         raise GateHandlerError("reject-all needs a note (it is logged for the regeneration round)")
     _pending_request_path(req, root)  # grammar + existence before any lock file is touched
@@ -1651,7 +1755,12 @@ def _decide(
         if receipt is None:
             token = gates.mint_gate_token(
                 current["project_id"], current["stage"], current["scope"], built.digest,
-                user_response={"answer": "approved", "note": note, "selection": selection},
+                user_response={
+                    # A take gate has two signed answers; every other kind
+                    # reaches this point only on an approval.
+                    "answer": built.record["usage_status"] if kind == "take" else "approved",
+                    "note": note, "selection": selection,
+                },
             )
             try:
                 receipt = record_human_approval(
@@ -1717,6 +1826,13 @@ def main(argv: list[str] | None = None) -> int:
                 _, entry, candidates = headshot_candidates(req, root)
                 show_candidates(entry, candidates, root)
                 print("dry-run: selection kinds stop here (no candidate chosen).")
+            elif req["kind"] == "take":
+                from lib.canon_enforcement import TAKE_USAGE_DECISIONS
+
+                for decision in TAKE_USAGE_DECISIONS:
+                    print(f"\n=== the record if the human answers {decision} ===")
+                    show_constructed(construct(root, dict(req, _usage_status=decision)))
+                print("dry-run: both outcomes constructed; nothing signed.")
             else:
                 show_constructed(construct(root, req))
                 print("dry-run: record constructed and verified; nothing signed.")
@@ -1764,6 +1880,23 @@ def main(argv: list[str] | None = None) -> int:
                 if not note:
                     print("a note is required to reject all — nothing decided, request left pending")
                     return 0
+        elif req["kind"] == "take":
+            # C4 / D-C: ONE action. Accept and reject are both decisions and
+            # both are signed; the answer is not shown back for confirmation,
+            # because a decision confirmed twice is two decisions.
+            while True:
+                a = input("Accept this take (a), reject it (r), or q to quit without deciding: ").strip().lower()
+                if a in ("a", "r", "q"):
+                    break
+                print("  enter a, r, or q")
+            if a == "q":
+                print("quit — nothing decided, request left pending")
+                return 0
+            req["_usage_status"] = "selected" if a == "a" else "rejected"
+            shown = construct(root, req)
+            show_constructed(shown)
+            approved = True
+            note = None
         else:
             if req["kind"] == "qc_override":
                 if req.get("batch"):
@@ -1817,7 +1950,8 @@ def main(argv: list[str] | None = None) -> int:
             # The handler marker exists only for this call; minting is refused elsewhere.
             with gates.handler_context():
                 receipt = _decide(req, root, shown=shown, note=note, selection=selection)
-            print(f"approved — receipt {receipt['receipt_id']}")
+            decided = req["_usage_status"] if req["kind"] == "take" else "approved"
+            print(f"{decided} — receipt {receipt['receipt_id']}")
         else:
             _decline_request(req, root, note)
             print("declined — no receipt written")

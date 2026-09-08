@@ -61,6 +61,8 @@ APPROVAL_KINDS = frozenset(
         # D20.7: a human attesting that a LEGACY (pre-QC) hero passed the hero
         # judge; adjunct to the headshot chain, never part of it.
         "headshot_grandfather",
+        # Shot-ready C4 (D-C): one signed take decision — accept or reject.
+        "take",
     }
 )
 HEADSHOT_GRANDFATHER_FIELDS = ("entity_kind", "entity_id", "legacy_headshot_receipt_id", "asset_id", "look_hash", "qc_receipt_id")
@@ -657,6 +659,45 @@ def require_storyboard_receipt(
         f"no verified storyboard_batch approval receipt covers shot {shot_id!r} "
         f"with frame sha256 {frame_sha256} in project {expected_project!r} — "
         f"the human approves the storyboard batch before any shot spend."
+    )
+
+
+def require_take_receipt(
+    project_root: Path | str,
+    *,
+    shot_id: str,
+    asset_id: str,
+    generation_receipt_id: Optional[str],
+    usage_status: str,
+    project_id: Optional[str] = None,
+) -> dict:
+    """The verified ``take`` receipt whose approved record IS this decision:
+    the same project, shot, take bytes, generation receipt and usage_status.
+    The record is compared whole, so a receipt signed for another take,
+    another shot or the other outcome never answers here. Raises ReceiptError
+    otherwise — enforcement calls this for every ``selected`` take under a
+    shot-ready pin."""
+    recover_pending_approvals(project_root)
+    expected_project = project_id_for(project_root, project_id)
+    expected = {
+        "project_id": expected_project,
+        "shot_id": shot_id,
+        "asset_id": asset_id,
+        "generation_receipt_id": generation_receipt_id,
+        "usage_status": usage_status,
+    }
+    for row in reversed(chained_rows(project_root, "approval", project_id=project_id)):
+        if row.get("kind") != "take" or row.get("record") != expected:
+            continue
+        if row.get("record_sha256") != _record_sha256(row["record"]):
+            continue
+        if not gates.verify_receipt(row):
+            continue
+        return row
+    raise ReceiptError(
+        f"no verified take approval receipt records {usage_status!r} for take {asset_id} of shot "
+        f"{shot_id!r} (generation receipt {generation_receipt_id!r}) in project {expected_project!r} — "
+        f"a take is selected only by the human's signed accept on the board."
     )
 
 

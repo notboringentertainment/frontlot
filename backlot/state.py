@@ -995,8 +995,16 @@ def _safe_project_file(root: Path, path: Path) -> Optional[Path]:
     return candidate
 
 
-def _file_packet(root: Path, asset_id: Any, *, path: Optional[Path] = None, label: Optional[str] = None) -> dict[str, Any]:
-    """One visual descriptor; vault IDs are only accepted when bytes match."""
+def _file_packet(root: Path, asset_id: Any, *, path: Optional[Path] = None, label: Optional[str] = None,
+                 expect_hash: bool = True) -> dict[str, Any]:
+    """One visual descriptor; vault IDs are only accepted when bytes match.
+
+    ``expect_hash=False`` is for an authoritative source that declares no
+    content hash for the file it names — a shot take and its storyboard frame
+    are addressed by path in the asset manifest. The bytes are still hashed
+    and reported; they are simply not compared against a claim that does not
+    exist. Nothing is verified here in either case: the signer re-hashes and
+    binds everything before a record is constructed."""
     expected = asset_id if isinstance(asset_id, str) else None
     requested = path or (root / "canon" / "visual" / "objects" / f"{expected}.png")
     file = _safe_project_file(root, requested)
@@ -1029,6 +1037,8 @@ def _file_packet(root: Path, asset_id: Any, *, path: Optional[Path] = None, labe
         result["error"] = "hash mismatch"
         return result
     result["sha256"] = actual
+    if expected is None and not expect_hash:
+        return result
     if expected is None or actual != expected:
         result["error"] = "hash mismatch"
     return result
@@ -1358,6 +1368,44 @@ def _render_storyboard(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _render_take(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative source: pending checkpoint asset_manifest shot_visual asset
+    named by the request's entity_id, its shot's storyboard_frame, and the
+    references it applied (those DO carry content hashes and are checked)."""
+    checkpoint, checkpoint_error = _read_gate_json(root / f"checkpoint_{req.get('stage')}.json")
+    if checkpoint is None:
+        return {"visuals": [], "packet_error": True, "error": checkpoint_error or "assets checkpoint unreadable"}
+    manifest = (checkpoint.get("artifacts") or {}).get("asset_manifest")
+    if not isinstance(manifest, dict):
+        return {"visuals": [], "packet_error": True, "error": "asset manifest unavailable"}
+    assets = [a for a in manifest.get("assets") or [] if isinstance(a, dict)]
+    take = next((a for a in assets if a.get("id") == req.get("entity_id") and a.get("asset_class") == "shot_visual"), None)
+    if take is None:
+        return {"visuals": [], "packet_error": True, "error": "take unavailable"}
+    shot_id = take.get("shot_id")
+    frame = next((a for a in assets if a.get("asset_class") == "storyboard_frame" and a.get("shot_id") == shot_id), None)
+    visuals = [_file_packet(root, take.get("asset_id"), path=Path(str(take.get("path") or "")),
+                            label="take", expect_hash=False)]
+    if frame is not None:
+        visuals.append(_file_packet(root, frame.get("asset_id"), path=Path(str(frame.get("path") or "")),
+                                    label="storyboard frame", expect_hash=False))
+    for ref in (take.get("continuity") or {}).get("references_applied") or []:
+        if not isinstance(ref, dict):
+            continue
+        label = str(ref.get("visual_bible_entity_id") or ref.get("shot_id") or "reference")
+        visuals.append(_file_packet(root, ref.get("asset_id"), path=Path(str(ref.get("path") or "")),
+                                    label=f"{ref.get('role')} · {label}"))
+    return {
+        "visuals": visuals,
+        "packet_error": any(bool(v.get("error")) for v in visuals) or frame is None,
+        "shot_id": shot_id,
+        "take_id": take.get("take_id"),
+        "usage_status": take.get("usage_status"),
+        "model_endpoint": take.get("model_endpoint"),
+        "summary": req.get("summary"),
+    }
+
+
 def _render_text_only(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     """Text-only kinds: no constructor source cites a required visual asset id."""
     excluded = {"approval_record", "envelope"}
@@ -1380,6 +1428,9 @@ class _GateRendererMap(dict[str, Any]):
     ``poster``: the same visual-bible ``poster.key_art|title_card|poster_final``.
     ``storyboard_batch``: ``checkpoint_<request.stage>.json`` →
     ``artifacts.asset_manifest.assets[asset_class=storyboard_frame]``.
+    ``take``: the same manifest →
+    ``assets[asset_class=shot_visual][id=request.entity_id]``, its shot's
+    storyboard frame, and its ``continuity.references_applied``.
     ``qc_override``: project ``qc-receipts.jsonl`` → verdict asset ID.
     ``reference_import``: ``reference_import.STAGING_DIR/reference-<pixel-hash>.png``.
     ``look_lock``: confined ``wayfinder/resolved`` ticket named by request.
@@ -1402,6 +1453,7 @@ GATE_RENDERERS = _GateRendererMap({
     "location": _render_location,
     "poster": _render_poster,
     "storyboard_batch": _render_storyboard,
+    "take": _render_take,
     "headshot_grandfather": _render_text_only,
     "artifact_review": _render_text_only,
 })

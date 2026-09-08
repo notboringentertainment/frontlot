@@ -239,6 +239,28 @@ sheet: storyboard frame beside each selected take, candidates with
 `usage_status`, prompts with the `@ImageN` mapping, `references_applied`,
 per-asset cost and receipt ids, spend against cap. END YOUR TURN.
 
+**Under a shot-ready pin (`authored-film@1.6` and later) the take gate is
+signed, one take at a time.** With the manifest written `awaiting_human` and
+the take still `candidate`, publish it and stop:
+
+```
+.venv/bin/python scripts/take_request.py --project <slug> --shot <shot_id> --take <manifest asset id>
+```
+
+The writer sees the take, its storyboard frame and its references on the
+board and clicks accept or reject. That single click is the decision: it mints
+a `take` receipt carrying `usage_status` `selected` or `rejected`. Never ask
+for the decision in conversation and never write `usage_status: selected`
+yourself — enforcement refuses a selected take that no verified `take` receipt
+covers. Apply what was signed with:
+
+```
+.venv/bin/python scripts/take_request.py --project <slug> --request <request id> --finish
+```
+
+which copies the receipt's `usage_status` into the manifest. A rejected take
+stays in the manifest as history; it is never deleted.
+
 ## Common Pitfalls
 
 - Listing references in the manifest without them ever touching a prompt or

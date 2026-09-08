@@ -223,12 +223,18 @@ def scene_plan_for(character_ids, *, entity_free: bool = False, shot_id: str = "
 
 
 def shot_assets(project_dir, refs, *, approve_board: bool = True):
+    """One approved storyboard frame and one take for shot-1.
+
+    The take is a CANDIDATE: under a shot-ready pin nothing is selected until
+    the human signs the take gate (C4), and these tests are about the pin and
+    the per-entity rules, not about that decision. The decision itself is
+    T11 (tests/lib/test_take_receipt.py)."""
     board = shot_asset(project_dir, "board-1", asset_class="storyboard_frame", references=refs,
                        endpoint=VIDEO_ENDPOINT)
     if approve_board:
         approve_storyboards(project_dir, board)
     take = shot_asset(project_dir, "take-1", asset_class="shot_visual", references=refs, board=board,
-                      endpoint=VIDEO_ENDPOINT)
+                      endpoint=VIDEO_ENDPOINT, usage_status="candidate")
     return {"version": "1.1", "assets": [board, take]}
 
 

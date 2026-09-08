@@ -802,6 +802,43 @@ def storyboard_batch_record(frames: dict[str, str]) -> dict[str, Any]:
     return {"storyboard_frames": dict(frames)}
 
 
+# D-C (2026-09-08 C4): the take decision. Ben's accept or reject on the board
+# is the one and only decision action for a take; both outcomes are signed,
+# because "no receipt" cannot tell a rejected take from an undecided one.
+TAKE_USAGE_DECISIONS = ("selected", "rejected")
+
+
+def take_record(
+    *,
+    project_id: str,
+    shot_id: str,
+    asset_id: str,
+    generation_receipt_id: str,
+    usage_status: str,
+) -> dict[str, Any]:
+    """Record hashed into a ``kind='take'`` receipt: the human's decision on
+    exactly one take. ``asset_id`` is the sha256 of the take's bytes and
+    ``generation_receipt_id`` the receipt that produced them, so the approval
+    binds the decision to that footage of that shot in that project — a
+    receipt can never be moved to another take, another shot, or a re-render.
+    """
+    if usage_status not in TAKE_USAGE_DECISIONS:
+        raise ValueError(f"take usage_status must be one of {list(TAKE_USAGE_DECISIONS)}, got {usage_status!r}")
+    for name, value in (("project_id", project_id), ("shot_id", shot_id),
+                        ("generation_receipt_id", generation_receipt_id)):
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"take record {name} must be a non-empty string, got {value!r}")
+    if not isinstance(asset_id, str) or len(asset_id) != 64 or set(asset_id) - set("0123456789abcdef"):
+        raise ValueError(f"take record asset_id must be a sha256 hex digest, got {asset_id!r}")
+    return {
+        "project_id": project_id,
+        "shot_id": shot_id,
+        "asset_id": asset_id,
+        "generation_receipt_id": generation_receipt_id,
+        "usage_status": usage_status,
+    }
+
+
 # ---- project config binding (PLAN §0) ----
 #
 # One verification path: lib.project_config.load_verified_project_config is
@@ -1318,8 +1355,16 @@ def _check_assets_v11(
     manifest: dict[str, Any],
     scene_plan: dict[str, Any],
     bible: dict[str, Any],
+    *,
+    pin: Any = None,
 ) -> None:
-    from lib.receipts import ReceiptError, find_generation, normalize_reference, require_storyboard_receipt
+    from lib.receipts import (
+        ReceiptError,
+        find_generation,
+        normalize_reference,
+        require_storyboard_receipt,
+        require_take_receipt,
+    )
 
     if manifest.get("migration_status") == "needs_review":
         _fail(
@@ -1470,6 +1515,22 @@ def _check_assets_v11(
                 f"{stated} vs receipt {sealed}. Record exactly what the tool reported in "
                 f"metadata.references_applied (same objects, same order)."
             )
+        if asset.get("usage_status") == "selected" and _is_shot_ready_manifest(pin):
+            # C4 / D-C: a take becomes part of the film only through the
+            # human's signed accept on the board. A rejected take needs no
+            # receipt here — it stays in the manifest as history — and a
+            # candidate is not yet a decision.
+            try:
+                require_take_receipt(
+                    project_dir, shot_id=shot_id, asset_id=file_sha.get(aid, ""),
+                    generation_receipt_id=(generation_receipt.get(aid) or {}).get("receipt_id"),
+                    usage_status="selected",
+                )
+            except ReceiptError as exc:
+                _fail(
+                    f"selected take {aid!r} for shot {shot_id!r} has no verified take approval "
+                    f"receipt: {exc}"
+                )
         if asset.get("usage_status") == "selected" and asset.get("model_endpoint") != scene.get("model_endpoint"):
             _fail(
                 f"selected take {aid!r} for shot {shot_id!r} used "
@@ -2114,7 +2175,7 @@ def enforce_authored_canon(
             scene_plan = _load_stage_artifact(
                 pipeline_dir, project_id, "scene_plan", "scene_plan", artifacts
             ) or {}
-            _check_assets_v11(project_dir, manifest, scene_plan, _bible())
+            _check_assets_v11(project_dir, manifest, scene_plan, _bible(), pin=pin)
     elif stage == "compose":
         _check_canon_pass(
             artifacts.get("final_review", {}), canon, strict=(status == "completed")

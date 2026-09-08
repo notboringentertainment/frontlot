@@ -160,6 +160,7 @@ def gate_world(tmp_path: Path, monkeypatch) -> dict[str, object]:
         "poster_final": _write_image(project, "poster-final", role="poster_final"),
         "story_a": _write_image(project, "story-a", role="storyboard_frame"),
         "story_b": _write_image(project, "story-b", role="storyboard_frame"),
+        "take_a": _write_image(project, "take-a", role="shot_visual"),
     }
     prompt_recipe = {
         "look_hash": "c" * 64,
@@ -290,6 +291,8 @@ def gate_world(tmp_path: Path, monkeypatch) -> dict[str, object]:
         "artifacts": {"asset_manifest": {"assets": [
             {"id": "frame-a", "asset_class": "storyboard_frame", "shot_id": "shot-a", **refs["story_a"]},
             {"id": "frame-b", "asset_class": "storyboard_frame", "shot_id": "shot-b", **refs["story_b"]},
+            {"id": "take-a", "asset_class": "shot_visual", "shot_id": "shot-a", "take_id": "t1",
+             "usage_status": "candidate", "model_endpoint": "test/video-model", **refs["take_a"]},
             {"id": "audio-a", "asset_class": "audio", "asset_id": "f" * 64},
         ]}},
     })
@@ -358,6 +361,7 @@ def gate_world(tmp_path: Path, monkeypatch) -> dict[str, object]:
         "location": "location-loc-01-aabbccdd-1",
         "poster": "poster-p-1",
         "storyboard_batch": "storyboard-p-1",
+        "take": "take-take-a-1",
         "headshot_grandfather": "grandfather-char-01-deadbeef-1",
         "artifact_review": "artifact-p-1",
     }
@@ -409,6 +413,10 @@ def gate_world(tmp_path: Path, monkeypatch) -> dict[str, object]:
     _request(project, "pending", rids["poster"], "poster", entity_id=POSTER_ID, scope="project:poster")
     _request(project, "pending", rids["storyboard_batch"], "storyboard_batch", stage="assets",
              entity_id="storyboard-batch", scope="project:storyboard")
+    _request(project, "pending", rids["take"], "take", stage="assets", entity_id="take-a",
+             scope="shot:shot-a", artifact=None, approval_record=None,
+             source_checkpoint_digest="8" * 64, summary="Accept or reject take 't1' for shot shot-a.",
+             preview_paths=[str(refs["take_a"]["path"])])
     _request(project, "pending", rids["headshot_grandfather"], "headshot_grandfather",
              preview_paths=["/private/evidence/hero.png"], envelope={"secret": "excluded"},
              approval_record={"secret": "excluded"}, qc_receipt_id="qc-grandfather")
@@ -570,6 +578,8 @@ def test_gate_summary_rows_are_exact_unique_and_pending_only_actionable(gate_wor
         },
         pending(rids["storyboard_batch"], "storyboard_batch", "assets", "project:storyboard",
                 "storyboard-batch"),
+        pending(rids["take"], "take", "assets", "shot:shot-a", "take-a",
+                "Accept or reject take 't1' for shot shot-a."),
     ]
     priority = {"pending": 0, "conflict": 1, "done": 2, "declined": 3, "abandoned": 4}
     assert gates["requests"] == sorted(expected, key=lambda row: (priority[row["state"]], row["request_id"]))
@@ -797,7 +807,7 @@ def test_legacy_and_governed_non_authored_cost_behavior(tmp_path):
 
 def test_renderer_map_and_all_pending_packet_envelopes(gate_world):
     assert set(GATE_RENDERERS) == set(APPROVAL_KINDS)
-    assert len(GATE_RENDERERS) == 13
+    assert len(GATE_RENDERERS) == 14
     for kind in APPROVAL_KINDS:
         detail = load_gate_detail(gate_world["project"], gate_world["rids"][kind])
         assert detail["state"] == "pending"

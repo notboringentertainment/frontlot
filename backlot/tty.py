@@ -362,6 +362,9 @@ _MAX_REQUEST_BYTES = 128 * 1024
 _REQUEST_STATES = (("pending", None), ("done", "done"), ("declined", "declined"), ("abandoned", "abandoned"))
 _REQUIRED_REQUEST_FIELDS = ("request_id", "project_id", "stage", "scope", "kind", "summary")
 _SELECTION_KINDS = {"headshot"}
+# Parity with gate_approve.DECISION_KINDS: a take's record is the human's
+# answer, so its request carries no approval_record either.
+_DECISION_KINDS = {"take"}
 _OPEN_DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
 _OPEN_FILE_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
 
@@ -384,8 +387,8 @@ def validate_request_structure(data: Any, *, project: str, request_id: str, stem
     kind = data.get("kind")
     if not isinstance(kind, str) or kind not in APPROVAL_KINDS:
         raise RequestInvalid("unknown gate request kind")
-    if kind in _SELECTION_KINDS and data.get("approval_record") is not None:
-        raise RequestInvalid("selection request must not carry approval_record")
+    if kind in _SELECTION_KINDS | _DECISION_KINDS and data.get("approval_record") is not None:
+        raise RequestInvalid("selection or decision request must not carry approval_record")
     if data.get("approval_record") is not None and not isinstance(data.get("approval_record"), dict):
         raise RequestInvalid("approval_record hint must be an object")
     try:
