@@ -57,9 +57,11 @@
         "turnaround",
         "expressions",
         "wardrobe",
-        "hero"
+        "hero",
+        "establishing",
+        "angle"
       ],
-      "description": "Sheet roles are judged under the sheet bundle; hero (D20) under the separate hero bundle."
+      "description": "Sheet roles are judged under the sheet bundle; hero (D20) under the separate hero bundle; the location roles establishing and angle (D21) under the separate location bundle."
     },
     "asset_id": {
       "type": "string",

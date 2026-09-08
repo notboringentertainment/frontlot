@@ -31,6 +31,10 @@ from schemas.artifacts import validate_artifact, validate_project_config
 # 2026-08-27; the legacy director is byte-frozen (R2#1). Changing either is
 # a policy change that needs a new human signature, not a silent edit.
 SHEET_BUNDLE_SHA256 = "f3709bd44037b4f1410149a07d3f831681b0da43a1bd739b792d9639a8a408f3"
+# D21: the location bundle, frozen the same way. Its own system prompt is part
+# of it, so editing that wording invalidates location verdicts only.
+LOCATION_BUNDLE_SHA256 = "4880c74d9b9494d6b2bd3d691781dd5eedbc94adfad1ee1fc77a30cc794d2a20"
+LOCATION_SYSTEM_PROMPT_SHA256 = "a5a92e94292bde173ae2411637784075d8a5b7fab27a42acfcd4701f7ed5c30d"
 LEGACY_DIRECTOR_SHA256 = "89782fdf439b5e84dcf002d4efa481f3ee2170fd9458b61004391a04b8235d72"
 MANIFEST_1_3_SHA256 = "ff541f0b3e7a3ce966166112f3da4df7eec6a9881d40f121e0eac7f13a609cd3"
 ROOT = Path(__file__).resolve().parents[2]
@@ -67,6 +71,31 @@ class TestPolicyBundles:
         assert "Described hair: close-cropped grey." in prompt and "Described build: (not described)." in prompt
         assert "reference face" in prompt and "hero" in prompt.splitlines()[0]
         assert policy.judge_prompt("turnaround", wardrobe_pieces=["coat"], has_hero=True).startswith("Sheet role: turnaround.")
+
+    def test_location_bundle_hash_is_frozen_and_distinct(self):
+        assert policy.location_bundle_sha256() == LOCATION_BUNDLE_SHA256
+        assert LOCATION_BUNDLE_SHA256 != SHEET_BUNDLE_SHA256
+        assert LOCATION_BUNDLE_SHA256 != policy.hero_bundle_sha256()
+        assert policy.bundle_sha256() == SHEET_BUNDLE_SHA256  # adding it moved neither existing hash
+        b = policy.location_bundle()
+        assert list(b["checklists"]) == list(b["response_schemas"]) == ["establishing", "angle"]
+
+    def test_location_system_prompt_is_hashed_into_both_location_roles(self):
+        digest = hashlib.sha256(policy.LOCATION_SYSTEM_PROMPT.encode("utf-8")).hexdigest()
+        assert digest == LOCATION_SYSTEM_PROMPT_SHA256
+        assert hashlib.sha256(policy.location_bundle()["system_prompt"].encode("utf-8")).hexdigest() == digest
+        for role in policy.LOCATION_ROLES:
+            assert policy.system_prompt_for(role) is policy.LOCATION_SYSTEM_PROMPT
+            assert policy.bundle_sha256_for_role(role) == LOCATION_BUNDLE_SHA256
+        for role in policy.SHEET_ROLES + (policy.HERO_ROLE,):
+            assert policy.system_prompt_for(role) is policy.SYSTEM_PROMPT
+
+    def test_editing_the_location_prompt_moves_only_the_location_hash(self, monkeypatch):
+        hero_before = policy.hero_bundle_sha256()
+        monkeypatch.setattr(policy, "LOCATION_SYSTEM_PROMPT", policy.LOCATION_SYSTEM_PROMPT + " (edited)")
+        assert policy.location_bundle_sha256() != LOCATION_BUNDLE_SHA256
+        assert policy.bundle_sha256() == SHEET_BUNDLE_SHA256
+        assert policy.hero_bundle_sha256() == hero_before
 
     def test_unknown_role_still_refused(self):
         with pytest.raises(KeyError):

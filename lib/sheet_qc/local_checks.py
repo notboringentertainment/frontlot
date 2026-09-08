@@ -84,8 +84,18 @@ def check_image(role: str, data: bytes) -> dict[str, Any]:
         tol = float(rule["tolerance"])
         if abs((w / h) - rule["aspect"]) > rule["aspect"] * tol:
             raise LocalCheckError("aspect", f"{role} aspect must be {rule['aspect']} ±{tol:.0%}, got {w / h:.3f}")
-    if rule.get("orientation") == "square_or_portrait" and w > h:
-        raise LocalCheckError("orientation", f"{role} must be square or portrait, got {w}x{h} (landscape)")
+    orientation = rule.get("orientation")
+    if orientation is not None:
+        # An unrecognised token is REJECTED, never ignored (D21, Codex R4#2):
+        # silently skipping one would let a mistyped rule pass every image.
+        if orientation == "square_or_portrait":
+            if w > h:
+                raise LocalCheckError("orientation", f"{role} must be square or portrait, got {w}x{h} (landscape)")
+        elif orientation == "landscape_or_square":
+            if h > w:
+                raise LocalCheckError("orientation", f"{role} must be landscape or square, got {w}x{h} (portrait)")
+        else:
+            raise LocalCheckError("orientation", f"unknown orientation rule {orientation!r} for role {role!r}")
     if "min_long_edge" in rule and max(w, h) < int(rule["min_long_edge"]):
         raise LocalCheckError("size", f"{role} long edge must be ≥ {rule['min_long_edge']}, got {max(w, h)}")
     return {"width": w, "height": h}

@@ -35,6 +35,12 @@ DESCRIPTION_MAX_WORDS = 80
 # validates here but exceeds the builder's cap would sign cleanly and then
 # fail at generation time (Ivy, 2026-08-31 — 80 words / 462 chars).
 DESCRIPTION_MAX_CHARS = 600
+# D21: the long free-text location fields become judge evidence
+# (lib.sheet_qc.policy.LOCATION_TEXT_MAX_CHARS) and rendered prompt sections
+# (tools.prompt_builder). Same treatment as the description cap: bound them
+# where they are signed, so nothing downstream inherits an unbounded string.
+LOCATION_TEXT_MAX_CHARS = 600
+LOCATION_CAPPED_FIELDS = ("architecture_or_terrain", "weather_or_light_rules")
 
 # Vendored verbatim (as JS regex source, case-insensitive) from WriterOS
 # importer.ts IMPERATIVE_PATTERNS. Keep the ORDER and the SOURCE strings —
@@ -87,6 +93,25 @@ def find_prompt_injection(obj: Any) -> list[tuple[str, str]]:
     return hits
 
 
+def check_location_text_caps(payload: dict[str, Any]) -> None:
+    """Bound the long free-text location fields at signing time (D21).
+
+    These two fields are the only unbounded prose a location look hands to the
+    QC judge as evidence and to the prompt builder as a rendered section, so
+    they are capped where they are signed — the ``prompt_safe_description``
+    precedent. The schema's own ``line`` cap is currently stricter; this is the
+    backstop that keeps the signed bound from drifting above what
+    ``lib.sheet_qc.policy.LOCATION_TEXT_MAX_CHARS`` will accept as evidence.
+    """
+    for field in LOCATION_CAPPED_FIELDS:
+        text = payload.get(field)
+        if isinstance(text, str) and len(text) > LOCATION_TEXT_MAX_CHARS:
+            raise LookSpecError(
+                f"{field} must be at most {LOCATION_TEXT_MAX_CHARS} characters "
+                f"(the QC evidence cap), got {len(text)}"
+            )
+
+
 def validate_look_spec(payload: Any) -> dict[str, Any]:
     """Validate ``payload`` against the look_spec schema plus the Python-level
     rules; returns the payload unchanged. Raises LookSpecError."""
@@ -113,6 +138,8 @@ def validate_look_spec(payload: Any) -> dict[str, Any]:
             f"prompt_safe_description must be at most {DESCRIPTION_MAX_CHARS} characters "
             f"(the prompt builder's cap), got {len(desc)}"
         )
+    if kind == "location":
+        check_location_text_caps(payload)
     hits = find_prompt_injection(payload)
     if hits:
         raise LookSpecError(

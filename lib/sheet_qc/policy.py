@@ -18,7 +18,14 @@ D20 (R2#1, R4#4): TWO independent bundles, pinned separately.
   prompt and scoring version. Pinned as ``qc.hero_policy_sha256`` in a 1.2
   config.
 
-``bundle_for_role`` says which hash a verdict for a role must carry.
+D21: a THIRD bundle, ``location_bundle()`` / ``location_bundle_sha256()`` —
+the ``establishing`` and ``angle`` checklists, their local size rules and a
+system prompt of their own (a location plate is not a character sheet, so the
+character-sheet wording would mislead the judge). The sheet and hero bundles
+are byte-frozen: ``system_prompt_for`` hands both of them the identical
+``SYSTEM_PROMPT`` object, so adding the location prompt moves neither hash.
+
+``bundle_sha256_for_role`` says which hash a verdict for a role must carry.
 """
 from __future__ import annotations
 
@@ -32,10 +39,36 @@ SCORING_RULES_VERSION = "1.0"
 SHEET_ROLES = ("turnaround", "expressions", "wardrobe")
 HERO_ROLE = "hero"
 ALL_ROLES = SHEET_ROLES + (HERO_ROLE,)
+# D21: the two location judge roles. ``angle`` is never judged alone — the
+# approved establishing plate rides along as evidence (global constraint 5).
+LOCATION_ROLES = ("establishing", "angle")
+KNOWN_ROLES = ALL_ROLES + LOCATION_ROLES
 ANSWERS = ("yes", "no", "unsure")
 # D20: look_* evidence is text from fields of the SIGNED active look.
-EVIDENCE_KINDS = ("none", "wardrobe_pieces", "hero_image", "look_hair", "look_age_band", "look_build")
+# D21 adds the location look fields plus ``establishing_image``, the one
+# image-shaped location evidence kind (it carries no text).
+EVIDENCE_KINDS = ("none", "wardrobe_pieces", "hero_image", "look_hair", "look_age_band", "look_build",
+                  "look_architecture", "look_establishing", "look_time_of_day", "look_palette",
+                  "establishing_image")
 LOOK_EVIDENCE_FIELDS = {"look_hair": "hair", "look_age_band": "age_band", "look_build": "build"}
+LOCATION_LOOK_EVIDENCE_FIELDS = {
+    "look_architecture": "architecture_or_terrain",
+    "look_establishing": "establishing_view",
+    "look_time_of_day": "time_of_day_default",
+    "look_palette": "palette_anchors",
+}
+# How each location evidence kind is introduced in the judge prompt.
+LOCATION_EVIDENCE_LABELS = {
+    "look_architecture": "architecture or terrain",
+    "look_establishing": "establishing view",
+    "look_time_of_day": "time of day",
+    "look_palette": "palette anchors",
+}
+# The long free-text location fields are capped where they are signed
+# (lib.look_spec.LOCATION_TEXT_MAX_CHARS) and again here, where they become
+# judge evidence. Keep the two in agreement — the prompt_safe_description
+# precedent (lib/look_spec.py:37, tools/prompt_builder.py:52).
+LOCATION_TEXT_MAX_CHARS = 600
 
 
 @dataclass(frozen=True)
@@ -92,12 +125,63 @@ HERO_CHECKLIST: tuple[Item, ...] = (
     Item("photoreal_or_treatment", "Is the rendering style consistent within the image (no half-illustrated face, no mixed media)?", severity="warn"),
 )
 
+# D21 — the LOCATION checklists, in their own bundle. YES = the plate passes.
+# Both roles share everything except how the place is identified: an
+# establishing plate is checked against the described establishing view; an
+# angle is checked against the approved establishing plate itself (R1#8).
+_LOCATION_ARCHITECTURE = Item(
+    "architecture_matches",
+    "Does the built form or terrain match the described architecture or terrain?",
+    evidence="look_architecture")
+_LOCATION_COMMON: tuple[Item, ...] = (
+    Item("time_of_day_matches", "Does the light and sky read as the described time of day?",
+         evidence="look_time_of_day"),
+    Item("palette_anchors_present", "Are the described palette anchor colours present in the image?",
+         severity="warn", evidence="look_palette"),
+    Item("no_people", "Is the image free of people and human figures?"),
+    Item("no_text", "Is the image free of legible text, lettering, signage words and logos?"),
+    Item("no_watermark_or_border", "Is the image free of watermarks, frames, borders and letterboxing?"),
+    Item("single_place", "Does the image show one single coherent place, not a collage, grid or split panel?"),
+    Item("render_quality", "Is the image free of obvious render defects such as melted geometry, "
+                           "impossible structure or smeared detail?"),
+)
+LOCATION_CHECKLISTS: dict[str, tuple[Item, ...]] = {
+    "establishing": (
+        _LOCATION_ARCHITECTURE,
+        Item("view_matches", "Is the camera looking at the place from the described establishing view?",
+             evidence="look_establishing"),
+    ) + _LOCATION_COMMON,
+    "angle": (
+        Item("same_place", "Is image 1 the same place as the approved establishing plate in image 2, "
+                           "sharing its architecture, materials and dressing?", evidence="establishing_image"),
+        _LOCATION_ARCHITECTURE,
+    ) + _LOCATION_COMMON,
+}
+
 SYSTEM_PROMPT = (
     "You are a strict quality-control inspector for character reference sheets used in film pre-production. "
     "You will receive one sheet image (and sometimes a reference face image). Answer every question by its id "
     "exactly once with yes, no or unsure. YES means the sheet PASSES that check. Say unsure whenever you cannot "
     "tell; never guess. Keep each note under twenty words. Output JSON only, matching the provided schema."
 )
+
+# D21 — location plates are judged under their own wording. Kept separate so
+# the sheet and hero bundles keep SYSTEM_PROMPT byte for byte.
+LOCATION_SYSTEM_PROMPT = (
+    "You are a strict quality-control inspector for location reference plates used in film pre-production. "
+    "You will receive one location image (and sometimes the approved establishing plate of the same place). "
+    "Answer every question by its id exactly once with yes, no or unsure. YES means the plate PASSES that "
+    "check. Say unsure whenever you cannot tell; never guess. Keep each note under twenty words. Output JSON "
+    "only, matching the provided schema."
+)
+
+
+def system_prompt_for(role: str) -> str:
+    """The judge's system turn for ``role``. Sheet and hero roles share the
+    character-sheet prompt object byte for byte (their bundle hashes must not
+    move); location roles get LOCATION_SYSTEM_PROMPT."""
+    return LOCATION_SYSTEM_PROMPT if is_location_role(role) else SYSTEM_PROMPT
+
 
 # The response schema the judge must satisfy. ``id`` enum is filled per role.
 def response_schema(role: str) -> dict[str, Any]:
@@ -139,20 +223,42 @@ HERO_LOCAL_RULES: dict[str, Any] = {
 }
 
 
+# D21 — location plates are wide by nature; a portrait plate is refused
+# locally, before any paid judge call.
+LOCATION_LOCAL_RULES: dict[str, Any] = {
+    "version": "1.0",
+    "format": "png",
+    "alpha_allowed": False,
+    "max_bytes": 40_000_000,
+    "size": {
+        "establishing": {"orientation": "landscape_or_square", "min_long_edge": 1024},
+        "angle": {"orientation": "landscape_or_square", "min_long_edge": 1024},
+    },
+}
+
+
 def is_hero_role(role: str) -> bool:
     return role == HERO_ROLE
+
+
+def is_location_role(role: str) -> bool:
+    return role in LOCATION_ROLES
 
 
 def checklist(role: str) -> tuple[Item, ...]:
     if role == HERO_ROLE:
         return HERO_CHECKLIST
+    if is_location_role(role):
+        return LOCATION_CHECKLISTS[role]
     if role not in CHECKLISTS:
-        raise KeyError(f"no QC checklist for role {role!r}; roles are {ALL_ROLES}")
+        raise KeyError(f"no QC checklist for role {role!r}; roles are {KNOWN_ROLES}")
     return CHECKLISTS[role]
 
 
 def local_rules_for(role: str) -> dict[str, Any]:
     """The local-check rule set a role is judged under (part of its bundle)."""
+    if is_location_role(role):
+        return LOCATION_LOCAL_RULES
     return HERO_LOCAL_RULES if role == HERO_ROLE else LOCAL_RULES
 
 
@@ -197,8 +303,26 @@ def hero_bundle_sha256() -> str:
     return record_sha256(hero_bundle())
 
 
+def location_bundle() -> dict[str, Any]:
+    """The complete executable LOCATION policy as data (D21)."""
+    return {
+        "policy_version": QC_POLICY_VERSION,
+        "scoring_rules_version": SCORING_RULES_VERSION,
+        "checklists": {role: checklist_payload(role) for role in LOCATION_ROLES},
+        "system_prompt": LOCATION_SYSTEM_PROMPT,
+        "response_schemas": {role: response_schema(role) for role in LOCATION_ROLES},
+        "local_rules": LOCATION_LOCAL_RULES,
+    }
+
+
+def location_bundle_sha256() -> str:
+    return record_sha256(location_bundle())
+
+
 def bundle_sha256_for_role(role: str) -> str:
     """Which bundle hash a verdict for ``role`` must carry."""
+    if is_location_role(role):
+        return location_bundle_sha256()
     return hero_bundle_sha256() if role == HERO_ROLE else bundle_sha256()
 
 
@@ -206,9 +330,23 @@ def look_evidence(role: str, look_payload: dict[str, Any] | None) -> dict[str, s
     """``{evidence_kind: text}`` for the look_* evidence the role's checklist
     needs, read from fields of the SIGNED active look payload (never caller
     text). A missing field yields an empty string; the judge then answers
-    ``unsure`` (scored as ``no``)."""
+    ``unsure`` (scored as ``no``). ``establishing_image`` evidence is an image,
+    not text, so it never appears here.
+
+    For location roles the caller may replace ``look_time_of_day`` with the
+    per-slot recipe's time of day before calling ``judge_prompt`` — the plate
+    is then judged against what it was ordered to be, not against the look's
+    default. Every other entry comes from the signed look and only the signed
+    look."""
     out: dict[str, str] = {}
     payload = look_payload or {}
+    if is_location_role(role):
+        for item in checklist(role):
+            field = LOCATION_LOOK_EVIDENCE_FIELDS.get(item.evidence)
+            if field is None:
+                continue
+            out[item.evidence] = _location_field_text(field, payload.get(field))
+        return out
     for item in checklist(role):
         field = LOOK_EVIDENCE_FIELDS.get(item.evidence)
         if field is not None:
@@ -216,11 +354,34 @@ def look_evidence(role: str, look_payload: dict[str, Any] | None) -> dict[str, s
     return out
 
 
-def judge_prompt(role: str, *, wardrobe_pieces: list[str] | None, has_hero: bool,
+def _location_field_text(field: str, value: Any) -> str:
+    """One location look field as judge-ready text. Lists are joined; the long
+    free-text fields are re-checked against the cap they were signed under, so
+    an over-cap look fails closed instead of blowing the evidence budget."""
+    if isinstance(value, (list, tuple)):
+        text = ", ".join(str(v).strip() for v in value if str(v).strip())
+    else:
+        text = str(value or "").strip()
+    if len(text) > LOCATION_TEXT_MAX_CHARS:
+        raise ValueError(
+            f"{field} exceeds the {LOCATION_TEXT_MAX_CHARS}-character evidence cap ({len(text)}); "
+            f"the look must be superseded within the cap before it can be judged"
+        )
+    return text
+
+
+def judge_prompt(role: str, *, wardrobe_pieces: list[str] | None = None, has_hero: bool = False,
                  look_fields: dict[str, str] | None = None) -> str:
     """The user-turn text sent with the image(s). Built only from policy data
     and fields of the SIGNED active look (never caller text)."""
-    if role == HERO_ROLE:
+    if is_location_role(role):
+        lines = [f"Location role: {role}."]
+        if role == "angle":
+            lines.append("Image 1 is the candidate, Image 2 is the approved establishing plate of the same place.")
+        else:
+            lines.append("Image 1 is the candidate under inspection. There is no second image; judge it on its "
+                         "own and against the described place.")
+    elif role == HERO_ROLE:
         lines = ["Candidate role: hero (a reference headshot of a fictional character)."]
         lines.append("Image 1 is the candidate under inspection. There is no reference face; judge the image on its own and against the described look.")
     else:
@@ -232,7 +393,7 @@ def judge_prompt(role: str, *, wardrobe_pieces: list[str] | None, has_hero: bool
     if wardrobe_pieces:
         lines.append("Listed wardrobe pieces: " + "; ".join(wardrobe_pieces) + ".")
     for kind, text in sorted((look_fields or {}).items()):
-        label = LOOK_EVIDENCE_FIELDS.get(kind, kind).replace("_", " ")
+        label = (LOCATION_EVIDENCE_LABELS.get(kind) or LOOK_EVIDENCE_FIELDS.get(kind, kind)).replace("_", " ")
         lines.append(f"Described {label}: {text or '(not described)'}.")
     lines.append("Questions:")
     for item in checklist(role):
