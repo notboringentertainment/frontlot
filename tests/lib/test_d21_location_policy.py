@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import io
 
+import jsonschema
 import pytest
 from PIL import Image
 
@@ -199,9 +200,30 @@ class TestLocationEvidenceAndPrompt:
 
 # ---- 600-char caps on the long free-text location fields ----
 
+def _resolve(schema: dict, spec: dict) -> dict:
+    ref = spec.get("$ref")
+    return schema["$defs"][ref.rsplit("/", 1)[-1]] if ref else spec
+
+
+def _schema_max_chars(schema: dict, spec: dict) -> int | None:
+    """The longest judge-ready text the schema permits for one location field,
+    or None if the schema leaves it unbounded. Lists are joined with ", ", the
+    way ``policy.look_evidence`` joins them."""
+    spec = _resolve(schema, spec)
+    if spec.get("type") == "array":
+        items, n = _resolve(schema, spec["items"]), spec.get("maxItems")
+        per = items.get("maxLength")
+        return None if n is None or per is None else n * per + 2 * (n - 1)
+    if "enum" in spec:
+        return max(len(v) for v in spec["enum"])
+    return spec.get("maxLength")
+
 class TestLocationTextCaps:
     def test_the_caps_agree_at_both_ends(self):
         assert policy.LOCATION_TEXT_MAX_CHARS == look_spec.LOCATION_TEXT_MAX_CHARS == 600
+        # both ends must bound EXACTLY the same fields, or a look that signs
+        # cleanly can still crash the judge
+        assert policy.LOCATION_CAPPED_FIELDS == look_spec.LOCATION_CAPPED_FIELDS
         assert look_spec.LOCATION_CAPPED_FIELDS == ("architecture_or_terrain", "weather_or_light_rules")
         # the prompt builder renders the same two fields; its cap must not be looser
         assert prompt_builder.MAX_FIELD_CHARS <= look_spec.LOCATION_TEXT_MAX_CHARS
@@ -218,15 +240,43 @@ class TestLocationTextCaps:
             look_spec.check_location_text_caps(
                 dict(over, **{field: "z" * look_spec.LOCATION_TEXT_MAX_CHARS}))
 
-    def test_the_schema_bound_is_no_looser_than_the_cap(self):
+    def test_every_capped_evidence_field_is_bounded_at_signing(self):
+        """Every field the evidence end caps must also be capped at signing, and
+        the schema's own bound must not sit above the cap."""
         schema = look_spec.load_look_spec_schema()
         props = schema["$defs"]["location"]["properties"]
-        for field in look_spec.LOCATION_CAPPED_FIELDS:
+        capped = set(policy.LOCATION_CAPPED_FIELDS)
+        assert capped <= set(look_spec.LOCATION_CAPPED_FIELDS)
+        # every field the evidence builder reads is bounded by the schema, so
+        # nothing reaches the judge unbounded whether or not it is capped
+        for field in policy.LOCATION_LOOK_EVIDENCE_FIELDS.values():
+            assert _schema_max_chars(schema, props[field]) is not None, field
+        for field in capped:
             ref = props[field]["$ref"].rsplit("/", 1)[-1]
             assert schema["$defs"][ref]["maxLength"] <= look_spec.LOCATION_TEXT_MAX_CHARS
 
     def test_signing_accepts_a_look_within_the_caps(self):
         assert look_spec.validate_look_spec(location_look("loc-alpha"))
+
+    def test_a_maximal_schema_valid_look_signs_and_judges(self):
+        """A look the schema calls valid at every bound must sign AND build
+        evidence — joined palette anchors run past the cap and must not be
+        capped, because signing never bounds them."""
+        schema = look_spec.load_look_spec_schema()
+        defs = schema["$defs"]
+        maximal = location_look(
+            "loc-alpha",
+            establishing_view="e" * defs["line"]["maxLength"],
+            architecture_or_terrain="a" * defs["line"]["maxLength"],
+            weather_or_light_rules="w" * defs["line"]["maxLength"],
+            dressing=["d" * defs["line"]["maxLength"]] * defs["location"]["properties"]["dressing"]["maxItems"],
+            palette_anchors=[c * defs["short_text"]["maxLength"] for c in "pqrs"],
+        )
+        assert look_spec.validate_look_spec(maximal)
+        for role in policy.LOCATION_ROLES:
+            ev = policy.look_evidence(role, maximal)
+            assert len(ev["look_palette"]) > policy.LOCATION_TEXT_MAX_CHARS
+            assert policy.judge_prompt(role, look_fields=ev)
 
     def test_evidence_refuses_an_over_cap_field(self):
         over = "x" * (policy.LOCATION_TEXT_MAX_CHARS + 1)
@@ -261,10 +311,9 @@ def _answers(role: str, no: str | None = None) -> list[dict]:
 
 class TestVerdictSchemaAcceptsLocationRoles:
     def test_role_enum_carries_both_location_roles(self):
-        v = _verdict("establishing")
-        assert validate_artifact("qc_verdict", v) is not None or True
+        validate_artifact("qc_verdict", _verdict("establishing", items=_answers("establishing")))
         validate_artifact("qc_verdict", _verdict("angle", items=_answers("angle")))
-        with pytest.raises(Exception):
+        with pytest.raises(jsonschema.ValidationError, match="detail"):
             validate_artifact("qc_verdict", _verdict("detail"))
 
     def test_local_fail_round_trips(self):
@@ -287,5 +336,5 @@ class TestVerdictSchemaAcceptsLocationRoles:
         validate_artifact("qc_verdict", dict(first))
 
     def test_remote_verdict_still_requires_provider_receipts(self):
-        with pytest.raises(Exception):
+        with pytest.raises(jsonschema.ValidationError):
             validate_artifact("qc_verdict", _verdict("angle", raw_response_asset_id=None))

@@ -31,6 +31,9 @@ from schemas.artifacts import validate_artifact, validate_project_config
 # 2026-08-27; the legacy director is byte-frozen (R2#1). Changing either is
 # a policy change that needs a new human signature, not a silent edit.
 SHEET_BUNDLE_SHA256 = "f3709bd44037b4f1410149a07d3f831681b0da43a1bd739b792d9639a8a408f3"
+# The hero bundle is pinned as qc.hero_policy_sha256 in a signed 1.2 config,
+# so it is frozen here too: computing it live proves nothing across commits.
+HERO_BUNDLE_SHA256 = "ad81a419425e8aa5fd37561471a0c8f6db597c7f063971313386ccac853b3eff"
 # D21: the location bundle, frozen the same way. Its own system prompt is part
 # of it, so editing that wording invalidates location verdicts only.
 LOCATION_BUNDLE_SHA256 = "4880c74d9b9494d6b2bd3d691781dd5eedbc94adfad1ee1fc77a30cc794d2a20"
@@ -51,6 +54,7 @@ class TestPolicyBundles:
         assert "hero" not in policy.LOCAL_RULES["size"]
 
     def test_hero_bundle_is_separate(self):
+        assert policy.hero_bundle_sha256() == HERO_BUNDLE_SHA256
         assert policy.hero_bundle_sha256() != SHEET_BUNDLE_SHA256
         b = policy.hero_bundle()
         assert list(b["checklists"]) == ["hero"] and list(b["response_schemas"]) == ["hero"]
@@ -75,7 +79,7 @@ class TestPolicyBundles:
     def test_location_bundle_hash_is_frozen_and_distinct(self):
         assert policy.location_bundle_sha256() == LOCATION_BUNDLE_SHA256
         assert LOCATION_BUNDLE_SHA256 != SHEET_BUNDLE_SHA256
-        assert LOCATION_BUNDLE_SHA256 != policy.hero_bundle_sha256()
+        assert LOCATION_BUNDLE_SHA256 != HERO_BUNDLE_SHA256
         assert policy.bundle_sha256() == SHEET_BUNDLE_SHA256  # adding it moved neither existing hash
         b = policy.location_bundle()
         assert list(b["checklists"]) == list(b["response_schemas"]) == ["establishing", "angle"]
@@ -91,11 +95,10 @@ class TestPolicyBundles:
             assert policy.system_prompt_for(role) is policy.SYSTEM_PROMPT
 
     def test_editing_the_location_prompt_moves_only_the_location_hash(self, monkeypatch):
-        hero_before = policy.hero_bundle_sha256()
         monkeypatch.setattr(policy, "LOCATION_SYSTEM_PROMPT", policy.LOCATION_SYSTEM_PROMPT + " (edited)")
         assert policy.location_bundle_sha256() != LOCATION_BUNDLE_SHA256
         assert policy.bundle_sha256() == SHEET_BUNDLE_SHA256
-        assert policy.hero_bundle_sha256() == hero_before
+        assert policy.hero_bundle_sha256() == HERO_BUNDLE_SHA256
 
     def test_unknown_role_still_refused(self):
         with pytest.raises(KeyError):

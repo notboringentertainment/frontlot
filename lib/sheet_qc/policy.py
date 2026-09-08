@@ -65,10 +65,16 @@ LOCATION_EVIDENCE_LABELS = {
     "look_palette": "palette anchors",
 }
 # The long free-text location fields are capped where they are signed
-# (lib.look_spec.LOCATION_TEXT_MAX_CHARS) and again here, where they become
-# judge evidence. Keep the two in agreement — the prompt_safe_description
-# precedent (lib/look_spec.py:37, tools/prompt_builder.py:52).
+# (lib.look_spec.LOCATION_TEXT_MAX_CHARS / LOCATION_CAPPED_FIELDS) and again
+# here, where they become judge evidence. The two ends must bound EXACTLY the
+# same fields: a look the system signed as valid may never fail at judge time.
+# Everything else a location look hands the judge is bounded by the schema
+# (``line``/``short_text`` lengths and the time-of-day enum). The
+# prompt_safe_description precedent (lib/look_spec.py:37,
+# tools/prompt_builder.py:52). ``test_the_caps_agree_at_both_ends`` pins both
+# the number and the field list against lib.look_spec.
 LOCATION_TEXT_MAX_CHARS = 600
+LOCATION_CAPPED_FIELDS = ("architecture_or_terrain", "weather_or_light_rules")
 
 
 @dataclass(frozen=True)
@@ -355,14 +361,15 @@ def look_evidence(role: str, look_payload: dict[str, Any] | None) -> dict[str, s
 
 
 def _location_field_text(field: str, value: Any) -> str:
-    """One location look field as judge-ready text. Lists are joined; the long
-    free-text fields are re-checked against the cap they were signed under, so
-    an over-cap look fails closed instead of blowing the evidence budget."""
+    """One location look field as judge-ready text. Lists are joined; only the
+    fields that carry a signing cap (LOCATION_CAPPED_FIELDS) are re-checked
+    against it here, so an over-cap look fails closed instead of blowing the
+    evidence budget — and no look that signed cleanly can fail at judge time."""
     if isinstance(value, (list, tuple)):
         text = ", ".join(str(v).strip() for v in value if str(v).strip())
     else:
         text = str(value or "").strip()
-    if len(text) > LOCATION_TEXT_MAX_CHARS:
+    if field in LOCATION_CAPPED_FIELDS and len(text) > LOCATION_TEXT_MAX_CHARS:
         raise ValueError(
             f"{field} exceeds the {LOCATION_TEXT_MAX_CHARS}-character evidence cap ({len(text)}); "
             f"the look must be superseded within the cap before it can be judged"
