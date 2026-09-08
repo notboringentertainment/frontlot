@@ -1238,6 +1238,15 @@ def bind_reference_manifest(
     order, with a project-local ``path`` resolving to the same file and an
     ``asset_id`` equal to the file's sha256. Returned items are the
     normalized objects recorded as ``references_applied``.
+
+    Under a SHOT-READY pin (authored-film 1.6+, C3) each object must also be
+    OWNED: the asset must belong to an ``approved`` visual-bible entry whose
+    id is the object's ``visual_bible_entity_id``. That was already the rule
+    when the asset_manifest was written (``_check_assets_v11``) — after the
+    spend. Here it runs before any upload and before any reservation. The
+    only exemption is the storyboard frame, which the tool packs and
+    re-hashes itself AFTER this binding; a caller-supplied storyboard entry
+    is rejected outright, as it was before 1.6.
     """
     from lib import pathsafe
     from lib.receipts import normalize_reference
@@ -1252,6 +1261,7 @@ def bind_reference_manifest(
             f"reference_manifest must list one object per reference_image_paths entry "
             f"({len(local_refs)}); got {len(manifest) if isinstance(manifest, list) else 'none'}"
         )
+    owners = _approved_reference_owners(project_root)
     applied: list[dict[str, Any]] = []
     for i, (resolved, item) in enumerate(zip(local_refs, manifest)):
         ref = normalize_reference(item)
@@ -1276,8 +1286,29 @@ def bind_reference_manifest(
                 f"reference_manifest[{i}] asset_id {ref['asset_id']} does not match the file "
                 f"{resolved} (sha256 {actual}) — refusing to upload an unproven reference"
             )
+        if owners is not None and owners.get(ref["asset_id"]) != ref["visual_bible_entity_id"]:
+            owner = owners.get(ref["asset_id"])
+            raise ValueError(
+                f"reference_manifest[{i}] asset {ref['asset_id'][:12]}… is not owned by an approved "
+                f"visual-bible entry for {ref['visual_bible_entity_id']!r} "
+                + (f"(it belongs to {owner!r})" if owner else "(no approved entry owns it)")
+                + " — approve the entry at its gate before spending on a shot that references it"
+            )
         applied.append(ref)
     return applied
+
+
+def _approved_reference_owners(project_root: Path) -> dict[str, str] | None:
+    """``asset_id -> approved entity id`` when this project's signed pin is
+    shot-ready, else None (older pins keep the pre-1.6 behaviour exactly).
+
+    Both helpers are imported by name and fail closed if the lib side is
+    missing, like every other check on this boundary.
+    """
+    if not _lazy("lib.canon_enforcement", "project_is_shot_ready")(project_root):
+        return None
+    bible = _lazy("lib.canon_enforcement", "on_disk_visual_bible")(project_root)
+    return _lazy("lib.canon_enforcement", "approved_image_owners")(bible or {})
 
 
 # ---------------------------------------------------------------------------
