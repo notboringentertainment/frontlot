@@ -54,15 +54,23 @@ CHARACTER_APPROVAL_KINDS = ("sheet", "hero")
 LOOK_LOCK_MANIFEST = ("authored-film", "1.2")
 # D19: 1.3 keeps the whole 1.2 look-lock contract and adds sheet QC.
 # D20: 1.4 keeps all of 1.3 and adds hero QC (judged headshot candidates).
-LOOK_LOCK_MANIFESTS = frozenset({("authored-film", "1.2"), ("authored-film", "1.3"), ("authored-film", "1.4"), ("authored-film", "1.5")})
+# Shot-ready (2026-09-08): 1.6 keeps every 1.5 contract byte-for-byte and adds
+# only the manifest-declared partial predecessors. It must therefore appear in
+# EVERY set 1.5 appears in — a missing entry silently drops 1.5 behaviour for a
+# 1.6 project (D21 R1#5).
+LOOK_LOCK_MANIFESTS = frozenset({("authored-film", "1.2"), ("authored-film", "1.3"), ("authored-film", "1.4"), ("authored-film", "1.5"), ("authored-film", "1.6")})
 QC_MANIFEST = ("authored-film", "1.3")
-QC_MANIFESTS = frozenset({("authored-film", "1.3"), ("authored-film", "1.4"), ("authored-film", "1.5")})
-HERO_QC_MANIFESTS = frozenset({("authored-film", "1.4"), ("authored-film", "1.5")})
+QC_MANIFESTS = frozenset({("authored-film", "1.3"), ("authored-film", "1.4"), ("authored-film", "1.5"), ("authored-film", "1.6")})
+HERO_QC_MANIFESTS = frozenset({("authored-film", "1.4"), ("authored-film", "1.5"), ("authored-film", "1.6")})
 HERO_QC_MANIFEST = ("authored-film", "1.4")  # kept for callers that name 1.4 exactly
 # Batch hero overrides (field-bound qc_override 1.1, headshot_packet 1.2,
 # up-to-cap presentation) exist only from 1.5; a 1.4 pin keeps 1.0-only
 # overrides and the four-candidate packet, behaviorally.
-HERO_BATCH_MANIFEST = ("authored-film", "1.5")
+HERO_BATCH_MANIFEST = ("authored-film", "1.5")  # kept for callers that name 1.5 exactly
+HERO_BATCH_MANIFESTS = frozenset({("authored-film", "1.5"), ("authored-film", "1.6")})
+# The shot-ready rule (manifest-declared partial predecessors, pre-upload
+# reference ownership, per-shot allowance) starts at authored-film 1.6.
+SHOT_READY_MANIFEST = ("authored-film", "1.6")
 SPOILER_SENSITIVE_FORMATS = {"trailer", "teaser"}
 _CONFIG_DIGEST_RE = re.compile(r"config_sha256:\s*([a-f0-9]{64})")
 
@@ -1499,10 +1507,57 @@ def _is_hero_qc_manifest(pin: Any) -> bool:
 
 
 def _is_hero_batch_manifest(pin: Any) -> bool:
-    """Field-bound batch overrides and the up-to-cap packet apply (1.5 only).
+    """Field-bound batch overrides and the up-to-cap packet apply (1.5 onward).
     Every batch/packet-1.2 branch keys off THIS predicate; under 1.4 the
     behavior stays 1.0-override, four-candidate — tested behaviorally."""
-    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) == HERO_BATCH_MANIFEST
+    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) in HERO_BATCH_MANIFESTS
+
+
+def _minor_version(version: Any) -> tuple[int, int] | None:
+    """``(major, minor)`` for a ``"<int>.<int>"`` manifest version, else None."""
+    parts = str(version).split(".")
+    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+        return None
+    return int(parts[0]), int(parts[1])
+
+
+def _is_shot_ready_manifest(pin: Any) -> bool:
+    """The shot-ready rule applies: authored-film 1.6 and every later 1.x minor.
+
+    THE predicate for everything the 2026-09-08 plan adds — manifest-declared
+    partial predecessors, the pre-upload reference-ownership check, the
+    per-shot allowance. A new major version is a new decision, so it is not
+    covered here; a 1.x minor above 1.6 (D21 renumbers to 1.7) is.
+    """
+    if pin is None or getattr(pin, "name", None) != SHOT_READY_MANIFEST[0]:
+        return False
+    version, floor = _minor_version(getattr(pin, "version", None)), _minor_version(SHOT_READY_MANIFEST[1])
+    return version is not None and version[0] == floor[0] and version[1] >= floor[1]
+
+
+def project_is_shot_ready(project_dir: Path | str, *, project_id: str | None = None) -> bool:
+    """Whether ``project_dir``'s SIGNED pin is a shot-ready manifest.
+
+    The pipeline name comes from ``project.json`` (``pipeline_type``), else
+    ``authored-film``; the version comes from the unique tip of the signed
+    pipeline_migration chain (``lib.pipeline_pin``), never from a marker file.
+    A pin that cannot be resolved raises ``PipelinePinError`` — fail closed.
+    """
+    from lib.pipeline_pin import _read_marker, pinned_pipeline
+
+    root = Path(project_dir)
+    pipeline_type = str(_read_marker(root).get("pipeline_type") or SHOT_READY_MANIFEST[0])
+    return _is_shot_ready_manifest(pinned_pipeline(root, pipeline_type, project_id=project_id))
+
+
+def on_disk_visual_bible(project_dir: Path | str) -> dict[str, Any] | None:
+    """The visual_bible artifact as recorded by its own checkpoint file.
+
+    Read regardless of that checkpoint's status: under a shot-ready pin the
+    bible is normally PARTIAL while shots are made, and its approved entries
+    are still the authority on what may be referenced."""
+    root = Path(project_dir)
+    return _load_stage_artifact(root.parent, root.name, "visual_bible", "visual_bible", {})
 
 
 def _cast_keys(proposal: dict[str, Any]) -> list[tuple[str, str]]:

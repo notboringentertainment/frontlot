@@ -30,7 +30,7 @@ def project_dir(tmp_path):
 
 class TestLoader:
     def test_versioned_manifests_resolve(self):
-        assert manifest_versions("authored-film") == ["1.1", "1.2", "1.3", "1.4", "1.5"]
+        assert manifest_versions("authored-film") == ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]
         assert load_pipeline("authored-film@1.2")["version"] == "1.2"
         assert parse_pipeline_ref("authored-film@1.2") == ("authored-film", "1.2")
         assert "authored-film" in list_pipelines() and "authored-film@1.2" not in list_pipelines()
@@ -95,6 +95,26 @@ class TestPin:
     def test_unversioned_pipeline_needs_no_receipt(self, project_dir):
         pin = pinned_pipeline(project_dir, "cinematic")
         assert pin.receipt_id is None and pin.manifest_digest == manifest_digest("cinematic")
+
+    def test_a_quiet_project_can_be_pinned_to_1_6(self, project_dir):
+        """T8, accepted half: the shot-ready pin is an ordinary migration on a
+        project with nothing pending."""
+        receipt = pin_project(project_dir, "1.6")
+        pin = pinned_pipeline(project_dir, "authored-film")
+        assert (pin.version, pin.receipt_id) == ("1.6", receipt["receipt_id"])
+        assert pin.manifest_digest == manifest_digest("authored-film@1.6")
+        req = json.loads(prepare_migration_request(project_dir, "p", "authored-film", "1.6").read_text())
+        assert req["approval_record"]["version"] == "1.6"
+
+    def test_a_mid_flight_project_cannot_be_pinned_to_1_6(self, project_dir):
+        """T8, refused half: the request is never even written."""
+        (project_dir / ".gate-requests").mkdir()
+        (project_dir / ".gate-requests" / "headshot-char-one-1.json").write_text(
+            json.dumps({"request_id": "headshot-char-one-1", "kind": "headshot"})
+        )
+        with pytest.raises(PipelinePinError, match="mid-flight"):
+            prepare_migration_request(project_dir, "p", "authored-film", "1.6")
+        assert not (project_dir / ".gate-requests" / "pipeline-migration-1-6.json").exists()
 
     def test_migration_helper_prepares_request_and_mints_nothing(self, project_dir):
         path = prepare_migration_request(project_dir, "p", "authored-film", "1.1")

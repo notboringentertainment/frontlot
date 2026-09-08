@@ -310,20 +310,72 @@ def prepare_migration_request(
 
 
 def require_migration_coverage(project_dir: Path | str, pipeline_name: str, version: str) -> None:
-    """D20.7 (R3#4): a project may be pinned to authored-film 1.4 only when
-    every active hero of a cast character is a 1.1 record or carries a valid
-    headshot_grandfather attestation. Run at request time, at gate
-    construction and again inside the gate's pre-commit check."""
-    if pipeline_name != "authored-film" or version != "1.4":
-        return
-    from lib.headshot_verify import hero_migration_blockers
+    """Per-version preconditions for pinning. Run at request time, at gate
+    construction and again inside the gate's pre-commit check.
 
-    blockers = hero_migration_blockers(project_dir)
-    if blockers:
-        raise PipelinePinError(
-            "cannot pin authored-film 1.4: every active hero needs a hero verdict (record 1.1) or a signed "
-            "headshot_grandfather attestation — " + "; ".join(blockers)
-        )
+    - 1.4 (D20.7, R3#4): every active hero of a cast character is a 1.1 record
+      or carries a valid headshot_grandfather attestation.
+    - 1.6 (2026-09-08): the project is QUIET. 1.6 changes what an unfinished
+      predecessor means, so migrating mid-flight would re-interpret work
+      already in progress: refuse while any governed gate request is pending
+      or any run state is live.
+    """
+    if pipeline_name != "authored-film":
+        return
+    if version == "1.4":
+        from lib.headshot_verify import hero_migration_blockers
+
+        blockers = hero_migration_blockers(project_dir)
+        if blockers:
+            raise PipelinePinError(
+                "cannot pin authored-film 1.4: every active hero needs a hero verdict (record 1.1) or a signed "
+                "headshot_grandfather attestation — " + "; ".join(blockers)
+            )
+    elif version == "1.6":
+        blockers = shot_ready_migration_blockers(project_dir)
+        if blockers:
+            raise PipelinePinError(
+                "cannot pin authored-film 1.6 while the project is mid-flight: finish or decline the pending "
+                "work first — " + "; ".join(blockers)
+            )
+
+
+RUN_STATE_FIELDS = ("run_state", "location_run_state")
+
+
+def shot_ready_migration_blockers(project_dir: Path | str) -> list[str]:
+    """Why this project is not quiet enough to migrate to 1.6 (empty = quiet).
+
+    A GOVERNED request is any unanswered gate request in ``.gate-requests/``
+    itself — signed and declined requests have been moved into ``done/`` and
+    ``declined/`` and no longer block. The migration request itself is
+    excluded: it is the very request being signed.
+    """
+    project_dir = Path(project_dir)
+    blockers: list[str] = []
+    req_dir = project_dir / ".gate-requests"
+    if req_dir.is_dir():
+        for path in sorted(req_dir.glob("*.json")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                request = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                request = {}
+            if isinstance(request, dict) and request.get("kind") == MIGRATION_KIND:
+                continue
+            blockers.append(f"gate request {path.name} is still pending")
+    checkpoint = project_dir / "checkpoint_visual_bible.json"
+    if checkpoint.is_file() and not checkpoint.is_symlink():
+        try:
+            metadata = (json.loads(checkpoint.read_text(encoding="utf-8")) or {}).get("metadata") or {}
+        except (OSError, json.JSONDecodeError, AttributeError):
+            metadata = {}
+        for field in RUN_STATE_FIELDS:
+            live = metadata.get(field) if isinstance(metadata, dict) else None
+            if live:
+                blockers.append(f"checkpoint_visual_bible.json metadata.{field} is non-empty ({sorted(live)})")
+    return blockers
 
 
 def record_sha256_of(record: dict) -> str:

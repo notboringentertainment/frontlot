@@ -24,10 +24,13 @@ from tests.lib.test_headshot_run import FakeGen, PlanJudge, _cp, _req, _run, _wo
 from scripts.gate_approve import GateHandlerError
 
 
-@pytest.fixture
-def bworld(project, monkeypatch):
-    """A 1.5-pinned world: batch overrides + packet 1.2 apply."""
-    return _world(project, monkeypatch, version="1.5")
+@pytest.fixture(params=["1.5", "1.6"])
+def bworld(request, project, monkeypatch):
+    """A world pinned to every manifest where batch overrides + packet 1.2
+    apply. 1.6 keeps the whole 1.5 contract and adds only the shot-ready
+    prerequisite, so this entire suite must pass identically under both —
+    that expectation is tested here, never asserted by construction (T6)."""
+    return _world(project, monkeypatch, version=request.param)
 
 
 def _fail(item="no_text"):

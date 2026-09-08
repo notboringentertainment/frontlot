@@ -482,6 +482,7 @@ def _enforce_manifest_artifact_contract(
     available = set(artifacts)
     stages = get_pipeline_stages(pipeline_type)
     invalidated = invalidated_stages(pipeline_dir, project_id, pipeline_type)
+    declared = _declared_partial_predecessors(stage_spec)
     if stage in stages:
         for predecessor in stages[: stages.index(stage)]:
             path = _checkpoint_path(pipeline_dir, project_id, predecessor)
@@ -494,9 +495,9 @@ def _enforce_manifest_artifact_contract(
                 continue
             if _pin_mismatch(pipeline_dir, project_id, pipeline_type, predecessor, path, checkpoint):
                 continue
-            if _predecessor_satisfies(stage, predecessor, checkpoint.get("status")) and isinstance(
-                checkpoint.get("artifacts"), dict
-            ):
+            if _predecessor_satisfies(
+                stage, predecessor, checkpoint.get("status"), declared=declared
+            ) and isinstance(checkpoint.get("artifacts"), dict):
                 available.update(checkpoint["artifacts"])
     missing_inputs = [name for name in required_in if name not in available]
     if missing_inputs:
@@ -513,6 +514,12 @@ def _enforce_manifest_artifact_contract(
 # other cast members are still unwritten. The per-entity checks live in
 # lib.canon_enforcement; every later stage (script onward) still needs these
 # stages ``completed``, which is what gates trailer assembly on the full cast.
+#
+# This map is the DEFAULT. From authored-film 1.6 a manifest may declare
+# ``partial_predecessors`` on a stage (plan 2026-09-08, C1); the declaration
+# replaces this default for that stage and nothing else, and the loader has
+# already checked that it names only earlier stages of the same manifest
+# (lib.pipeline_loader._validate_partial_predecessors).
 PARTIAL_PREDECESSORS: dict[str, frozenset[str]] = {
     "headshots": frozenset({"look_lock"}),
     "visual_bible": frozenset({"look_lock", "headshots"}),
@@ -520,12 +527,26 @@ PARTIAL_PREDECESSORS: dict[str, frozenset[str]] = {
 PARTIAL_STATUSES = frozenset({"in_progress", "awaiting_human"})
 
 
-def _predecessor_satisfies(stage: str, predecessor: str, status: Any) -> bool:
+def _declared_partial_predecessors(stage_spec: Optional[dict[str, Any]]) -> Optional[frozenset[str]]:
+    """The stage's manifest-declared partial predecessors, or None when it
+    declares none (an empty list declares that NOTHING may be partial)."""
+    if not isinstance(stage_spec, dict):
+        return None
+    declared = stage_spec.get("partial_predecessors")
+    return frozenset(declared) if isinstance(declared, list) else None
+
+
+def _predecessor_satisfies(
+    stage: str, predecessor: str, status: Any, *, declared: Optional[frozenset[str]] = None
+) -> bool:
     """Whether a predecessor checkpoint in ``status`` counts as available for
-    ``stage``: completed always; partial only for PARTIAL_PREDECESSORS."""
+    ``stage``: completed always; partial only for the stage's manifest
+    declaration when it has one, else PARTIAL_PREDECESSORS. A missing or
+    failed predecessor never satisfies — its status is neither."""
     if status == "completed":
         return True
-    return status in PARTIAL_STATUSES and predecessor in PARTIAL_PREDECESSORS.get(stage, frozenset())
+    allowed = PARTIAL_PREDECESSORS.get(stage, frozenset()) if declared is None else declared
+    return status in PARTIAL_STATUSES and predecessor in allowed
 
 
 def _enforce_stage_prerequisites(
@@ -541,7 +562,9 @@ def _enforce_stage_prerequisites(
     inspect or resume a broken run. Only lifecycle advancement
     (``awaiting_human``/``completed``) is gated. D18: the predecessors in
     PARTIAL_PREDECESSORS may be partial (their per-entity receipts are the
-    authority, so the checkpoint-level approval flag is not required).
+    authority, so the checkpoint-level approval flag is not required), and
+    from authored-film 1.6 a stage's own manifest entry may declare that set
+    itself (``partial_predecessors``).
     """
 
     if status not in {"awaiting_human", "completed"}:
@@ -556,6 +579,7 @@ def _enforce_stage_prerequisites(
 
     base_type, _ = parse_pipeline_ref(pipeline_type)
     invalidated = invalidated_stages(pipeline_dir, project_id, pipeline_type)
+    declared = _declared_partial_predecessors(_manifest_stage_spec(pipeline_type, stage)[1])
 
     incomplete: list[str] = []
     unapproved: list[str] = []
@@ -580,7 +604,7 @@ def _enforce_stage_prerequisites(
         ):
             incomplete.append(predecessor)
             continue
-        if not _predecessor_satisfies(stage, predecessor, checkpoint.get("status")):
+        if not _predecessor_satisfies(stage, predecessor, checkpoint.get("status"), declared=declared):
             incomplete.append(predecessor)
             continue
         partial = checkpoint.get("status") != "completed"

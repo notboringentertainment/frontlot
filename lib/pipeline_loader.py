@@ -126,7 +126,48 @@ def load_pipeline(name: str, defs_dir: Optional[Path] = None) -> dict[str, Any]:
             f"manifest {path.name} declares version {manifest.get('version')!r}, "
             f"but its filename pins {version!r}"
         )
+    _validate_partial_predecessors(manifest, path)
     return manifest
+
+
+def _validate_partial_predecessors(manifest: dict[str, Any], path: Path) -> None:
+    """A stage's ``partial_predecessors`` may name only EARLIER stages of this
+    same manifest (2026-09-08 plan, C1).
+
+    The key relaxes a prerequisite, so a typo or a forward reference would
+    silently widen what a project may write. It is checked here, at load, so
+    a bad manifest never reaches a checkpoint write. The JSON schema already
+    requires a list of strings; this adds the cross-stage rules.
+    """
+    stages = [
+        spec.get("name") for spec in manifest.get("stages") or [] if isinstance(spec, dict)
+    ]
+    for spec in manifest.get("stages") or []:
+        if not isinstance(spec, dict) or "partial_predecessors" not in spec:
+            continue
+        stage = spec.get("name")
+        declared = spec["partial_predecessors"]
+        if not isinstance(declared, list) or not all(isinstance(d, str) for d in declared):
+            raise ValueError(
+                f"manifest {path.name} stage {stage!r}: partial_predecessors must be a list of stage names, "
+                f"got {declared!r}"
+            )
+        position = stages.index(stage) if stage in stages else len(stages)
+        for name in declared:
+            if name == stage:
+                raise ValueError(
+                    f"manifest {path.name} stage {stage!r}: partial_predecessors names itself"
+                )
+            if name not in stages:
+                raise ValueError(
+                    f"manifest {path.name} stage {stage!r}: partial_predecessors names {name!r}, "
+                    f"which is not a stage of this manifest ({stages})"
+                )
+            if stages.index(name) > position:
+                raise ValueError(
+                    f"manifest {path.name} stage {stage!r}: partial_predecessors names {name!r}, "
+                    f"which does not precede it"
+                )
 
 
 def list_pipelines(defs_dir: Optional[Path] = None) -> list[str]:

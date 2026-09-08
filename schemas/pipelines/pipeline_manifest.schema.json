@@ -56,6 +56,11 @@
             "type": "array",
             "items": { "type": "string" }
           },
+          "partial_predecessors": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Earlier stages of THIS manifest that may still be in_progress/awaiting_human when this stage advances (lib/checkpoint.py). Absent means the code default applies."
+          },
           "produces": {
             "type": "array",
             "items": { "type": "string" },

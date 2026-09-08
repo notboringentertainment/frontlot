@@ -33,6 +33,10 @@ from schemas.artifacts import validate_artifact, validate_project_config
 SHEET_BUNDLE_SHA256 = "f3709bd44037b4f1410149a07d3f831681b0da43a1bd739b792d9639a8a408f3"
 LEGACY_DIRECTOR_SHA256 = "89782fdf439b5e84dcf002d4efa481f3ee2170fd9458b61004391a04b8235d72"
 MANIFEST_1_3_SHA256 = "ff541f0b3e7a3ce966166112f3da4df7eec6a9881d40f121e0eac7f13a609cd3"
+# The 1.5 manifest is frozen from the moment 1.6 exists: 1.6 is 1.5 plus the
+# declared partial predecessors, so any edit to the 1.5 bytes would silently
+# re-interpret every signature already given under a 1.5 pin.
+MANIFEST_1_5_SHA256 = "881e1f023e153331d6ce8aeaabc1510d794524eba3e20316ae59a50ca79b1913"
 ROOT = Path(__file__).resolve().parents[2]
 SHA = "a" * 64
 
@@ -103,9 +107,10 @@ class TestHeroLocalRules:
 # ---- manifest 1.4 ----
 
 class TestManifest14:
-    def test_versions_and_1_3_frozen(self):
-        assert manifest_versions("authored-film") == ["1.1", "1.2", "1.3", "1.4", "1.5"]
+    def test_versions_and_1_3_and_1_5_frozen(self):
+        assert manifest_versions("authored-film") == ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]
         assert manifest_digest("authored-film@1.3") == MANIFEST_1_3_SHA256
+        assert manifest_digest("authored-film@1.5") == MANIFEST_1_5_SHA256
         assert hashlib.sha256((ROOT / "skills/pipelines/authored-film/headshots-director.md").read_bytes()).hexdigest() == LEGACY_DIRECTOR_SHA256
         assert (ROOT / "skills/pipelines/authored-film/headshots-director-1.4.md").is_file()
 

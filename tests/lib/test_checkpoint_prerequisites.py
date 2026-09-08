@@ -150,3 +150,47 @@ def test_marker_derived_unknown_playbook_blocks_later_writes(tmp_path) -> None:
 
     with pytest.raises(CheckpointValidationError, match="style_playbook"):
         write_checkpoint(tmp_path, "run", "research", "in_progress", {})
+
+
+# ---------------------------------------------------------------------------
+# Manifest-declared partial predecessors (authored-film 1.6, plan 2026-09-08)
+# ---------------------------------------------------------------------------
+
+from lib.checkpoint import (  # noqa: E402
+    PARTIAL_PREDECESSORS,
+    _declared_partial_predecessors,
+    _predecessor_satisfies,
+)
+
+
+def test_partial_predecessors_default_to_the_code_constant() -> None:
+    """No declaration in the manifest -> the D18 code default decides."""
+    assert _declared_partial_predecessors(None) is None
+    assert _declared_partial_predecessors({"name": "script"}) is None
+    for stage, allowed in PARTIAL_PREDECESSORS.items():
+        for predecessor in allowed:
+            assert _predecessor_satisfies(stage, predecessor, "in_progress") is True
+            assert _predecessor_satisfies(stage, predecessor, "awaiting_human") is True
+    assert _predecessor_satisfies("script", "visual_bible", "in_progress") is False
+
+
+def test_a_declaration_replaces_the_code_default_for_that_stage() -> None:
+    declared = _declared_partial_predecessors(
+        {"name": "script", "partial_predecessors": ["look_lock", "headshots", "visual_bible"]}
+    )
+    assert declared == frozenset({"look_lock", "headshots", "visual_bible"})
+    assert _predecessor_satisfies("script", "visual_bible", "in_progress", declared=declared) is True
+    assert _predecessor_satisfies("script", "proposal", "in_progress", declared=declared) is False
+
+
+def test_an_empty_declaration_allows_nothing_partial() -> None:
+    declared = _declared_partial_predecessors({"name": "headshots", "partial_predecessors": []})
+    assert declared == frozenset()
+    assert _predecessor_satisfies("headshots", "look_lock", "in_progress", declared=declared) is False
+    assert _predecessor_satisfies("headshots", "look_lock", "completed", declared=declared) is True
+
+
+def test_a_failed_or_missing_predecessor_never_satisfies() -> None:
+    declared = frozenset({"visual_bible"})
+    for status in ("failed", "unknown", None, ""):
+        assert _predecessor_satisfies("script", "visual_bible", status, declared=declared) is False
