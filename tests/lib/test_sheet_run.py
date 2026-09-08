@@ -8,7 +8,7 @@ import json
 import pytest
 from PIL import Image
 
-from lib import qc_receipts as qr, receipts
+from lib import qc_receipts as qr, receipts, visual_entry
 from lib.checkpoint import checkpoint_digest, read_checkpoint, write_checkpoint
 from lib.look_spec import look_hash as _look_hash
 from lib.sheet_qc import policy
@@ -221,14 +221,14 @@ def test_stale_checkpoint_refuses_finish_then_abandon_restores(world, monkeypatc
     with pytest.raises(sheet_run.SheetRunError, match="--abandon"):
         _finish(w)
     # crash after the marker move (step d): the transition is completed by the next resume
-    real = sheet_run._clear_abandon_state
-    monkeypatch.setattr(sheet_run, "_clear_abandon_state", lambda *a: (_ for _ in ()).throw(RuntimeError("crash")))
+    real = visual_entry._clear_abandon_state
+    monkeypatch.setattr(visual_entry, "_clear_abandon_state", lambda *a: (_ for _ in ()).throw(RuntimeError("crash")))
     with pytest.raises(RuntimeError, match="crash"):
         sheet_run.run_sheet(w["project"], CHAR, palette=PALETTE, generate=gen, judge_adapter=judge, out=io.StringIO(), abandon=True)
     marker = w["project"] / ".gate-requests/abandoned" / f"{res['request_id']}.json"
     assert marker.is_file() and not (w["project"] / ".gate-requests/done" / f"{res['request_id']}.json").exists()
     assert _meta(w)["run_state"][CHAR]["mode"] == "abandoning" and _meta(w)["run_state"][CHAR]["receipt_id"] == receipt["receipt_id"]
-    monkeypatch.setattr(sheet_run, "_clear_abandon_state", real)
+    monkeypatch.setattr(visual_entry, "_clear_abandon_state", real)
     assert _finish(w)["status"] == "abandoned"
     cp = read_checkpoint(w["pipeline"], PROJECT, "visual_bible")
     assert cp["status"] == "in_progress" and cp["artifacts"]["visual_bible"]["characters"] == [] and cp["metadata"]["run_state"] == {}
