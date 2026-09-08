@@ -31,12 +31,19 @@ class SeriesMismatch(RuntimeError):
     pass
 
 
-def verify_series_against_receipt(series_key: dict[str, Any], gen_receipt: dict[str, Any] | None, *, asset_id: str | None = None) -> None:
+def verify_series_against_receipt(
+    series_key: dict[str, Any], gen_receipt: dict[str, Any] | None, *, asset_id: str | None = None,
+    entry: dict[str, Any] | None = None,
+) -> None:
     """The attempt series a caller names must be what the sealed generation
     receipt says happened (Codex inspection #1): builder policy from the
     sealed prompt_recipe, generation endpoint/model from the receipt, look and
     headshot from the receipt's look_refs / headshot_ref. Otherwise a caller
-    could rotate one series field per candidate and never hit the cap."""
+    could rotate one series field per candidate and never hit the cap.
+
+    ``entry`` is the visual-bible entry the series belongs to, when the caller
+    has one: a location ``angle`` series is checked against the entry's
+    establishing slot (D21 R1#8)."""
     if not isinstance(gen_receipt, dict):
         raise SeriesMismatch("no verified generation receipt for the judged asset")
     if asset_id is not None and gen_receipt.get("output_sha256") != asset_id:
@@ -44,8 +51,11 @@ def verify_series_against_receipt(series_key: dict[str, Any], gen_receipt: dict[
     if series_key.get("role") == "hero":
         _verify_hero_series(series_key, gen_receipt)
         return
+    if series_key.get("entity_kind") == "location":
+        _verify_location_series(series_key, gen_receipt, entry=entry)
+        return
     if gen_receipt.get("generator_kind") == "imported":
-        raise SeriesMismatch("an imported receipt can only back a hero series")
+        raise SeriesMismatch("an imported receipt can only back a hero or a location series")
     recipe = gen_receipt.get("prompt_recipe") or {}
     if recipe.get("builder_policy_sha256") != series_key.get("builder_policy_sha256"):
         raise SeriesMismatch("series builder_policy_sha256 is not the sealed prompt_recipe's")
@@ -92,6 +102,61 @@ def _verify_hero_series(series_key: dict[str, Any], gen_receipt: dict[str, Any])
     if not any(isinstance(l, dict) and l.get("look_hash") == series_key.get("look_hash")
                and l.get("entity_id") == series_key.get("entity_id") for l in looks):
         raise SeriesMismatch("series look_hash is not among the receipt's look_refs")
+
+
+def _verify_location_series(
+    series_key: dict[str, Any], gen_receipt: dict[str, Any], *, entry: dict[str, Any] | None = None
+) -> None:
+    """D21: a location series names NO headshot (a place has none), is bound to
+    the signed look receipt it was judged under, and — for an ``angle`` — binds
+    the approved establishing plate it was judged beside (R1#8). When the
+    caller has the entry, that anchor must be the entry's establishing slot.
+
+    IMPORT PATH ONLY. Generated location plates land with generate mode, and
+    the R2#5 proof that a generated angle's sealed ``references_applied``
+    carries exactly its establishing plate is deferred with them; until that
+    proof exists a non-imported location series is refused rather than
+    accepted on an unproven anchor.
+    """
+    from lib.qc_receipts import ANCHOR_FIELD, ANGLE_ROLE, IMPORTED_SENTINEL
+
+    role = series_key.get("role")
+    if series_key.get("headshot_receipt_id") is not None:
+        raise SeriesMismatch("a location series must have headshot_receipt_id null (a place has no headshot)")
+    if gen_receipt.get("headshot_ref"):
+        raise SeriesMismatch("a location plate's generation receipt must carry no headshot_ref")
+    if gen_receipt.get("generator_kind") != "imported":
+        raise SeriesMismatch(
+            "only imported location plates can be verified today: generated location plates — and the "
+            "references_applied proof that a generated angle was anchored to its establishing plate — "
+            "are deferred with generate mode"
+        )
+    if series_key.get("builder_policy_sha256") != IMPORTED_SENTINEL or \
+            series_key.get("generation_endpoint") != IMPORTED_SENTINEL or \
+            series_key.get("generation_model") != IMPORTED_SENTINEL:
+        raise SeriesMismatch(
+            "an imported location plate's series must carry the 'imported' sentinel for builder policy, "
+            "endpoint and model")
+    if gen_receipt.get("prompt_recipe"):
+        raise SeriesMismatch("an imported receipt carries no prompt_recipe")
+    if not str(series_key.get("look_receipt_id") or "").strip():
+        raise SeriesMismatch("a location series must name the signed look receipt it is bound to")
+    looks = gen_receipt.get("look_refs") or []
+    if looks and not any(isinstance(l, dict) and l.get("look_hash") == series_key.get("look_hash")
+                         and l.get("entity_id") == series_key.get("entity_id") for l in looks):
+        raise SeriesMismatch("series look_hash is not among the receipt's look_refs")
+    anchor = series_key.get(ANCHOR_FIELD)
+    if role == ANGLE_ROLE:
+        if not isinstance(anchor, str) or len(anchor) != 64:
+            raise SeriesMismatch("an angle series must bind the establishing plate it is judged beside")
+        if entry is not None:
+            slot = (entry.get("establishing") or {}).get("asset_id")
+            if anchor != slot:
+                raise SeriesMismatch(
+                    f"angle series is anchored to plate {anchor[:12]} but the entry's establishing slot is "
+                    f"{str(slot)[:12]}")
+    elif anchor is not None:
+        raise SeriesMismatch("only an angle series binds an establishing plate")
 
 
 def raw_response_ok(project_dir: Path | str, row: dict[str, Any]) -> bool:

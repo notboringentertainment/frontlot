@@ -14,6 +14,23 @@ Only ``attempt_started`` rows count toward the per-series cap; a verdict is
 unique per ``tuple_sha256`` (one evaluation per pixels+look+headshot+policy+
 judge). Nothing here mints approvals; a verdict is evidence the gate verifier
 (lib.sheet_verify) reads, never an authority on its own.
+
+D21 (R1#6, R2#4): both hashed shapes are VERSIONED and ENTITY-KIND AWARE.
+
+* a character series hashes ``SERIES_FIELDS`` exactly as D19/D20 signed them —
+  no version key is hashed into it, so every character series and hero series
+  keeps its bytes (``tests/lib/test_d21_location_series.py`` pins the hashes);
+* a LOCATION series (schema ``1.1``) hashes those fields plus its own
+  ``series_version``, the signed ``look_receipt_id`` it is bound to, and —
+  for an ``angle`` — the ``establishing_asset_id`` of the approved plate it is
+  judged beside (R1#8);
+* the verdict reuse tuple is versioned the same way: a character tuple is the
+  frozen ``TUPLE_FIELDS``; a location tuple adds ``tuple_version`` and, for an
+  ``angle``, ``establishing_asset_id``, so an angle judged beside plate A can
+  never be reused beside plate B.
+
+``ROLES_BY_ENTITY_KIND`` is the strict matrix: a role belongs to exactly one
+entity kind, at both the series and the tuple.
 """
 from __future__ import annotations
 
@@ -44,6 +61,31 @@ TUPLE_FIELDS = (
     "headshot_asset_id", "headshot_receipt_id", "policy_bundle_sha256", "provider", "model",
 )
 
+# ---- D21: the versioned, entity-kind-aware schemas ----
+
+CHARACTER_KIND = "character"
+LOCATION_KIND = "location"
+SHEET_ROLES = ("turnaround", "expressions", "wardrobe")
+CHARACTER_ROLES = SHEET_ROLES + (HERO_ROLE,)
+ESTABLISHING_ROLE = "establishing"
+ANGLE_ROLE = "angle"
+LOCATION_ROLES = (ESTABLISHING_ROLE, ANGLE_ROLE)
+# The strict matrix. A role belongs to exactly one entity kind; a series or a
+# verdict tuple that pairs them differently is refused, never hashed.
+ROLES_BY_ENTITY_KIND = {CHARACTER_KIND: CHARACTER_ROLES, LOCATION_KIND: LOCATION_ROLES}
+
+SERIES_VERSION_FIELD = "series_version"
+# 1.0 is the D19/D20 shape and is IMPLICIT: it is never hashed, so no character
+# or hero series moves a byte. 1.1 is the location shape and hashes its version.
+SERIES_VERSION_CHARACTER = "1.0"
+SERIES_VERSION_LOCATION = "1.1"
+LOCATION_SERIES_FIELDS = SERIES_FIELDS + ("look_receipt_id",)
+ANCHOR_FIELD = "establishing_asset_id"
+
+TUPLE_VERSION_FIELD = "tuple_version"
+TUPLE_VERSION_CHARACTER = "1.0"   # implicit, never hashed (byte-frozen)
+TUPLE_VERSION_LOCATION = "1.1"
+
 
 class QCReceiptError(RuntimeError):
     pass
@@ -57,16 +99,76 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _is_sha256(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def kind_and_role(record: dict[str, Any], what: str) -> tuple[str, str]:
+    """The (entity_kind, role) of a series key or evaluation tuple, checked
+    against the strict matrix. Raises rather than hashing a pair that has no
+    meaning (D21 R1#6)."""
+    kind, role = record.get("entity_kind"), record.get("role")
+    allowed = ROLES_BY_ENTITY_KIND.get(kind) if isinstance(kind, str) else None
+    if allowed is None:
+        raise QCReceiptError(
+            f"{what} entity_kind {kind!r} is not one of {sorted(ROLES_BY_ENTITY_KIND)}")
+    if role not in allowed:
+        raise QCReceiptError(f"{what} role {role!r} is not a {kind} role; {kind} roles are {list(allowed)}")
+    return kind, role
+
+
+def series_version_for(entity_kind: str, role: str) -> str:
+    return SERIES_VERSION_LOCATION if entity_kind == LOCATION_KIND else SERIES_VERSION_CHARACTER
+
+
+def series_fields_for(entity_kind: str, role: str) -> tuple[str, ...]:
+    """The hashed field names of one (entity_kind, role) series schema."""
+    if entity_kind != LOCATION_KIND:
+        return SERIES_FIELDS
+    return LOCATION_SERIES_FIELDS + ((ANCHOR_FIELD,) if role == ANGLE_ROLE else ())
+
+
+def _check_location_shape(record: dict[str, Any], role: str, what: str) -> None:
+    """Value-level rules both location shapes share: no headshot (a place has
+    none), and the anchor exactly where it belongs."""
+    if record.get("headshot_receipt_id") is not None:
+        raise QCReceiptError(f"a location {what} names no headshot: headshot_receipt_id must be present and null")
+    if "headshot_asset_id" in record and record.get("headshot_asset_id") is not None:
+        raise QCReceiptError(f"a location {what} names no headshot: headshot_asset_id must be null")
+    anchor = record.get(ANCHOR_FIELD)
+    if role == ANGLE_ROLE:
+        if not _is_sha256(anchor):
+            raise QCReceiptError(
+                f"an angle {what} must bind {ANCHOR_FIELD} (the sha256 of the approved establishing "
+                f"plate it is judged beside); got {anchor!r}")
+    elif anchor is not None:
+        raise QCReceiptError(f"only an angle {what} binds {ANCHOR_FIELD}")
+
+
 def series_fields(series_key: dict[str, Any]) -> dict[str, Any]:
-    """The hashed subset of a series key: every SERIES_FIELD plus any
-    SERIES_OPTIONAL_FIELD that is present."""
-    missing = [f for f in SERIES_FIELDS if f not in series_key]
+    """The hashed subset of a series key: every field of the schema its
+    (entity_kind, role) selects, plus any SERIES_OPTIONAL_FIELD that is
+    present. A location series additionally carries its ``series_version``,
+    authored here and never by a caller."""
+    kind, role = kind_and_role(series_key, "series_key")
+    fields = series_fields_for(kind, role)
+    missing = [f for f in fields if f not in series_key]
     if missing:
         raise QCReceiptError(f"series_key is missing {missing}")
-    out = {f: series_key[f] for f in SERIES_FIELDS}
+    version = series_version_for(kind, role)
+    declared = series_key.get(SERIES_VERSION_FIELD)
+    if declared is not None and str(declared) != version:
+        raise QCReceiptError(
+            f"series_key declares {SERIES_VERSION_FIELD} {declared!r}; a {kind} {role} series is {version}")
+    out = {f: series_key[f] for f in fields}
     for f in SERIES_OPTIONAL_FIELDS:
         if f in series_key:
             out[f] = series_key[f]
+    if kind == LOCATION_KIND:
+        _check_location_shape(series_key, role, "series")
+        if not str(series_key.get("look_receipt_id") or "").strip():
+            raise QCReceiptError("a location series must name the signed look receipt it is bound to")
+        out[SERIES_VERSION_FIELD] = version
     return out
 
 
@@ -92,11 +194,54 @@ def hero_attempts_started(project_root: Path | str, entity_id: str, look_hash: s
     return out
 
 
+def location_budget_key(project_id: str, entity_id: str, look_hash: str) -> dict[str, str]:
+    """D21 D2: the ONE location allowance is counted per (project, entity,
+    look) across every slot — the establishing plate and every angle — and
+    across every series those slots open (a new anchor or a rotated judge opens
+    a new series for reuse semantics, never a new allowance)."""
+    return {"project_id": project_id, "entity_id": entity_id, "look_hash": look_hash}
+
+
+def location_attempts_started(
+    project_root: Path | str, entity_id: str, look_hash: str, *, project_id: Optional[str] = None
+) -> list[dict]:
+    """Every attempt_started row of a LOCATION series for this entity + look,
+    whatever slot or series it belongs to (voided or not: all count)."""
+    out = []
+    for r in rows_of_kind(project_root, "attempt_started", project_id=project_id):
+        key = r.get("series_key") or {}
+        if key.get("entity_kind") == LOCATION_KIND and key.get("role") in LOCATION_ROLES \
+                and key.get("entity_id") == entity_id and key.get("look_hash") == look_hash:
+            out.append(r)
+    return out
+
+
+def tuple_version_for(entity_kind: str, role: str) -> str:
+    return TUPLE_VERSION_LOCATION if entity_kind == LOCATION_KIND else TUPLE_VERSION_CHARACTER
+
+
+def tuple_fields_for(entity_kind: str, role: str) -> tuple[str, ...]:
+    """The hashed field names of one (entity_kind, role) verdict tuple."""
+    if entity_kind != LOCATION_KIND:
+        return TUPLE_FIELDS
+    return TUPLE_FIELDS + ((ANCHOR_FIELD,) if role == ANGLE_ROLE else ())
+
+
 def tuple_sha256(evaluation: dict[str, Any]) -> str:
-    missing = [f for f in TUPLE_FIELDS if f not in evaluation]
+    """The reuse identity of one evaluation. A character tuple is exactly the
+    D19/D20 bytes; a location tuple hashes its ``tuple_version`` and, for an
+    ``angle``, the establishing plate it was judged beside — so the same pixels
+    beside a different plate are a different evaluation (R2#4)."""
+    kind, role = kind_and_role(evaluation, "evaluation tuple")
+    fields = tuple_fields_for(kind, role)
+    missing = [f for f in fields if f not in evaluation]
     if missing:
         raise QCReceiptError(f"evaluation tuple is missing {missing}")
-    return record_sha256({f: evaluation[f] for f in TUPLE_FIELDS})
+    payload = {f: evaluation[f] for f in fields}
+    if kind == LOCATION_KIND:
+        _check_location_shape(evaluation, role, "verdict")
+        payload[TUPLE_VERSION_FIELD] = tuple_version_for(kind, role)
+    return record_sha256(payload)
 
 
 # ---- reading ----
@@ -193,22 +338,31 @@ def start_attempt(
     D20: a ``hero`` attempt must also name the hero budget (``budget_key`` =
     ``hero_budget_key(...)``, ``budget_cap`` = the signed
     ``qc.max_hero_attempts``); the row records both and is refused when the
-    budget count across every series would exceed the cap."""
+    budget count across every series would exceed the cap.
+
+    D21: a LOCATION attempt names the location budget the same way
+    (``location_budget_key(...)``, ``budget_cap`` = the signed
+    ``qc.max_location_attempts``) — one allowance per entity per look, shared
+    by the establishing slot and every angle slot."""
     root = Path(project_root)
     pid = project_id_for(root)
     key = dict(series_key, project_id=pid)
     sha = series_sha256(key)
     is_hero = key.get("role") == HERO_ROLE
-    if is_hero:
+    is_location = key.get("entity_kind") == LOCATION_KIND
+    if is_hero or is_location:
+        label = "hero" if is_hero else "location"
+        signed_cap = "qc.max_hero_attempts" if is_hero else "qc.max_location_attempts"
         if budget_key is None or budget_cap is None:
-            raise QCReceiptError("a hero attempt must name budget_key and budget_cap (the signed qc.max_hero_attempts)")
-        if key.get("headshot_receipt_id") is not None:
+            raise QCReceiptError(f"a {label} attempt must name budget_key and budget_cap (the signed {signed_cap})")
+        if is_hero and key.get("headshot_receipt_id") is not None:
             raise QCReceiptError("a hero attempt has no headshot yet: series headshot_receipt_id must be null")
-        expected = hero_budget_key(pid, str(key["entity_id"]), str(key["look_hash"]))
+        make_key = hero_budget_key if is_hero else location_budget_key
+        expected = make_key(pid, str(key["entity_id"]), str(key["look_hash"]))
         if dict(budget_key) != expected:
             raise QCReceiptError(f"budget_key {budget_key} is not the series' own {expected}")
     elif budget_key is not None or budget_cap is not None:
-        raise QCReceiptError("only hero attempts carry a budget key")
+        raise QCReceiptError("only hero and location attempts carry a budget key")
     with gates.receipt_lock(pid, STREAM):
         if open_attempts(root, sha):
             raise QCReceiptError(f"series {sha[:12]} has an open attempt; resume or void it before starting another")
@@ -222,12 +376,14 @@ def start_attempt(
             "attempt_id": str(uuid.uuid4()), "series_key": series_fields(key),
             "series_sha256": sha, "attempt_n": n, "generation_reservation_id": generation_reservation_id,
         }
-        if is_hero:
-            used = len(hero_attempts_started(root, str(key["entity_id"]), str(key["look_hash"])))
+        if is_hero or is_location:
+            started = hero_attempts_started if is_hero else location_attempts_started
+            used = len(started(root, str(key["entity_id"]), str(key["look_hash"])))
             if used + 1 > int(budget_cap):
                 raise AttemptCapExceeded(
-                    f"hero budget for {key['entity_id']!r} under look {str(key['look_hash'])[:12]} is spent "
-                    f"({used} of {budget_cap} attempts across every series); the budget is the limit"
+                    f"{'hero' if is_hero else 'location'} budget for {key['entity_id']!r} under look "
+                    f"{str(key['look_hash'])[:12]} is spent ({used} of {budget_cap} attempts across every "
+                    f"series); the budget is the limit"
                 )
             fields["budget_key"] = dict(budget_key)
             fields["budget_cap"] = int(budget_cap)

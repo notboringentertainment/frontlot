@@ -300,6 +300,9 @@ def _verdict(role: str, **over) -> dict:
         "warnings": [], "cost_usd": 0.01, "judged_at": "2026-09-01T00:00:00+00:00",
         "provider_request_id": "req-1", "provider_model_version": "judge-x-2026", "raw_response_asset_id": "e" * 64,
     }
+    if role == "angle":
+        # step 2: an angle verdict names the establishing plate it was judged beside
+        v["establishing_asset_id"] = "f" * 64
     v.update(over)
     return v
 

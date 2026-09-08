@@ -179,7 +179,7 @@ class TestHeroBudget:
         with pytest.raises(qr.QCReceiptError, match="not the series' own"):
             qr.start_attempt(w["project"], _series(w), max_attempts=3, budget_key=_budget(w, entity=CHAR2), budget_cap=3)
         sheet_key = dict(_series(w), role="turnaround", headshot_receipt_id="hs-1", policy_bundle_sha256=policy.bundle_sha256())
-        with pytest.raises(qr.QCReceiptError, match="only hero attempts"):
+        with pytest.raises(qr.QCReceiptError, match="only hero and location attempts"):
             qr.start_attempt(w["project"], sheet_key, max_attempts=3, budget_key=_budget(w), budget_cap=3)
         gf = dict(_series(w, grandfather=True), project_id=PROJECT)
         assert qr.series_sha256(gf) != qr.series_sha256(dict(_series(w), project_id=PROJECT))

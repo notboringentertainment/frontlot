@@ -40,6 +40,23 @@ TEST_MODE_ENV = "OPENMONTAGE_TEST_MODE"
 DEFAULT_RESERVE_USD = 0.05
 
 
+def location_policy_sha256(qc: Any) -> str:
+    """The LOCATION policy bundle hash the signed config pins (D21).
+
+    Step 3 adds ``qc.location_policy_sha256`` — and ``qc.max_location_attempts``
+    — to a 1.3 project config. This is the one seam the judge reads it through,
+    so a location judge call against a config that pins no location policy
+    fails closed instead of borrowing the sheet bundle.
+    """
+    pinned = getattr(qc, "location_policy_sha256", None)
+    if not pinned:
+        raise RuntimeError(
+            "the signed config pins no qc.location_policy_sha256; judging a location plate needs a 1.3 "
+            "config naming the location policy bundle and qc.max_location_attempts, approved at the gate"
+        )
+    return str(pinned)
+
+
 class JudgeAdapter:
     """Provider contract every adapter must satisfy (and prove with the probe):
     ``submit`` returns a provider id BEFORE the answer exists; ``wait`` polls
@@ -284,12 +301,18 @@ class SheetJudge(BaseTool):
             entity_kind, entity_id, role = key["entity_kind"], key["entity_id"], key["role"]
             asset_id = str(inputs.get("asset_id") or "")
             is_hero = policy.is_hero_role(role)
-            # D20: the role picks the bundle; each is pinned separately in the signed config.
-            pinned_bundle = qc.hero_policy_sha256 if is_hero else qc.policy_bundle_sha256
+            is_location = policy.is_location_role(role)
+            # D20/D21: the role picks the bundle; each is pinned separately in the signed config.
+            if is_location:
+                bundle_label, pinned_bundle = "location", location_policy_sha256(qc)
+            elif is_hero:
+                bundle_label, pinned_bundle = "hero", qc.hero_policy_sha256
+            else:
+                bundle_label, pinned_bundle = "sheet", qc.policy_bundle_sha256
             local_bundle = policy.bundle_sha256_for_role(role)
             if pinned_bundle != local_bundle:
                 raise RuntimeError(
-                    f"signed config pins {'hero' if is_hero else 'sheet'} policy bundle {str(pinned_bundle)[:12]} but this "
+                    f"signed config pins {bundle_label} policy bundle {str(pinned_bundle)[:12]} but this "
                     f"checkout's bundle is {local_bundle[:12]} — re-sign the config for the new policy"
                 )
             # Signed state, never caller text.
@@ -301,6 +324,11 @@ class SheetJudge(BaseTool):
                 # R1#8: the hero is what is being chosen; the series names no headshot.
                 if key.get("headshot_receipt_id") is not None:
                     raise RuntimeError("a hero attempt series must name no headshot")
+            elif is_location:
+                # D21: a place has no headshot; its identity evidence is the look and,
+                # for an angle, the approved establishing plate the series binds.
+                if key.get("headshot_receipt_id") is not None:
+                    raise RuntimeError("a location attempt series must name no headshot")
             elif entity_kind == "character":
                 heads = active_headshots(root)
                 current = heads.get(entity_id) if isinstance(heads, dict) else None
@@ -319,6 +347,10 @@ class SheetJudge(BaseTool):
                 verify_series_against_receipt(key, gen_receipt, asset_id=asset_id)
             except SeriesMismatch as exc:
                 raise RuntimeError(f"attempt series does not match the sealed generation receipt: {exc}") from exc
+            # D21 global constraint 5: an angle is never judged alone. The anchor comes
+            # from the signed series, and its bytes are read hash-checked like any asset.
+            anchor = key.get("establishing_asset_id") if is_location else None
+            anchor_bytes = local_checks.read_asset_bytes(root / OBJECTS_SUBDIR, str(anchor)) if anchor else None
             adapter = self._resolve_adapter(root, qc.judge_provider)
         except Exception as exc:  # noqa: BLE001
             return ToolResult(success=False, error=f"sheet_judge preflight failed: {exc}")
@@ -332,6 +364,10 @@ class SheetJudge(BaseTool):
             "policy_version": policy.QC_POLICY_VERSION, "policy_bundle_sha256": pinned_bundle,
             "attempt_id": started["attempt_id"], "attempt_n": int(started["attempt_n"]), "judged_at": judged_at,
         }
+        if anchor is not None:
+            # R2#4: the anchor is part of the evaluation's identity, so an angle
+            # judged beside another plate is judged again, never reused.
+            base["establishing_asset_id"] = anchor
 
         # ---- deterministic pre-checks: a failure is a signed local verdict, never a provider call ----
         try:
@@ -354,10 +390,15 @@ class SheetJudge(BaseTool):
         images = [data]
         if needs_hero:
             images.append(local_checks.read_asset_bytes(objects_dir, hero_asset))
+        elif any(i.evidence == "establishing_image" for i in items) and anchor_bytes is not None:
+            images.append(anchor_bytes)  # image 2: the approved establishing plate of the same place
         pieces = list(((look.payload.get("default_wardrobe") or {}).get("pieces")) or []) if any(i.evidence == "wardrobe_pieces" for i in items) else None
-        look_fields = policy.look_evidence(role, look.payload) if is_hero else None
+        # D20/D21: the look_* evidence a role's checklist needs, substituted from the
+        # SIGNED active look — for a location that is where time_of_day_matches gets
+        # its time of day (the per-slot recipe override lands with generate mode).
+        look_fields = policy.look_evidence(role, look.payload) if (is_hero or is_location) else None
         user = policy.judge_prompt(role, wardrobe_pieces=pieces, has_hero=needs_hero, look_fields=look_fields)
-        system = policy.SYSTEM_PROMPT
+        system = policy.system_prompt_for(role)
         schema = policy.response_schema(role)
         prompt_sha = hashlib.sha256((system + "\n\n" + user).encode("utf-8")).hexdigest()
         evaluation = dict(base, provider=qc.judge_provider, model=qc.judge_model, prompt_sha256=prompt_sha)
