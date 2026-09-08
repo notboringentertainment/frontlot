@@ -129,3 +129,53 @@ def write_receipted_png(project: Path, rel: str, payload: bytes | None = None, *
         finished_at="2026-08-25T00:00:01+00:00", model_endpoint="vendor/image-model", prompt=f"image {rel}",
     )
     return {"path": path, "sha256": sha, "receipt": row}
+
+
+def write_scene_plan_checkpoint(
+    project: Path,
+    shots: list[dict],
+    *,
+    version: str = "1.6",
+    character_refs: tuple[str, ...] = (),
+) -> None:
+    """The on-disk ``scene_plan`` checkpoint the paid boundary reads a shot's
+    ``spend_allowance_usd`` / ``max_video_takes`` from (C2).
+
+    It carries the project's exact pipeline tuple, so ``read_checkpoint``
+    accepts it under the signed pin however often a test rewrites it.
+    """
+    import json
+
+    from lib.pipeline_loader import manifest_digest
+
+    checkpoint = {
+        "version": "1.0",
+        "project_id": project.name,
+        "pipeline_type": "authored-film",
+        "pipeline": {
+            "name": "authored-film",
+            "version": version,
+            "manifest_digest": manifest_digest(f"authored-film@{version}"),
+        },
+        "stage": "scene_plan",
+        "status": "completed",
+        "human_approved": True,
+        "timestamp": "2026-09-08T00:00:00+00:00",
+        "artifacts": {
+            "scene_plan": {
+                "version": "1.1",
+                "scenes": [{
+                    "id": "sc-1",
+                    "type": "generated",
+                    "description": "Two figures cross an empty hall.",
+                    "start_seconds": 0,
+                    "end_seconds": 5,
+                    "character_refs": list(character_refs),
+                    "location_ref": "loc-alpha",
+                    "model_endpoint": "fal-ai/kling-video/o3/pro/reference-to-video",
+                    "shots": shots,
+                }],
+            },
+        },
+    }
+    (project / "checkpoint_scene_plan.json").write_text(json.dumps(checkpoint, indent=2), encoding="utf-8")

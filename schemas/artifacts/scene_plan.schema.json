@@ -646,6 +646,16 @@
                     "description": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "spend_allowance_usd": {
+                      "type": "number",
+                      "minimum": 0,
+                      "description": "C2: one dollar allowance shared by EVERY paid call named for this shot (storyboard frames, video takes, any ancillary call). Optional; under a shot-ready pin (authored-film 1.6+) the paid boundary refuses a shot call whose record omits it, with no fallback to project-only accounting."
+                    },
+                    "max_video_takes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "C2: video generation attempts allowed for this shot. Storyboard calls consume dollars, never a take. Optional; required by the paid boundary under a shot-ready pin, exactly like spend_allowance_usd."
                     }
                   },
                   "additionalProperties": false

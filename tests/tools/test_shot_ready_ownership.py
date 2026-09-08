@@ -30,7 +30,7 @@ from tools.video import _shared
 from tools.video.kling_reference_video import KlingReferenceVideo
 
 from tests.lib.look_lock_helpers import character_look
-from tests.tools._authored_film_helpers import write_receipted_png
+from tests.tools._authored_film_helpers import write_receipted_png, write_scene_plan_checkpoint
 from tests.tools.test_kling_reference_video import (  # noqa: F401  (env fixture)
     _happy_path,
     _inputs,
@@ -90,11 +90,22 @@ def write_bible(project: Path, *, entity_id: str, hero: dict, status: str) -> No
 def shot(env):
     """A 1.6-pinned project with an active signed look and one shot take whose
     reference is a receipted hero image. The bible entry's status is what each
-    test varies."""
+    test varies.
+
+    The scene plan grants the shot room for this take: under 1.6 the per-shot
+    allowance (C2) is checked before the ownership check, so a shot with no
+    approved allowance never reaches the reference binding at all.
+    """
     inputs, expected, hero, frame = _shot_setup(env)
     look = character_look(ENTITY)
     activate_look(env, look)
     pin(env, "1.6")
+    write_scene_plan_checkpoint(
+        env,
+        [{"shot_id": "sh-1", "description": "Hall, slow push in.",
+          "spend_allowance_usd": 10.0, "max_video_takes": 3}],
+        character_refs=(ENTITY,),
+    )
     inputs["look_refs"] = [{"entity_kind": "character", "entity_id": ENTITY, "look_hash": _look_hash(look)}]
     return {"project": env, "inputs": inputs, "expected": expected, "hero": hero, "frame": frame}
 
