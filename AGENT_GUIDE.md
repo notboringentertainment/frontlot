@@ -61,7 +61,7 @@ pipeline migration is required. Existing full-pipeline contracts stay intact.
 **Full pipeline productions go through the pipeline system. Supervised Front Lot
 shots use the route above and do not claim completed pipeline stages.**
 
-When the user asks to make, create, produce, or generate any video content — a trailer, explainer, clip, animation, or any other video — the agent must:
+For video production outside the supervised Front Lot shot route above, the agent must:
 
 1. **Identify the pipeline.** Match the request to one of the pipelines in `pipeline_defs/`. If unclear, ask the user.
 2. **Read the pipeline manifest.** `pipeline_defs/<pipeline>.yaml` — know the stages, tools, and quality gates.

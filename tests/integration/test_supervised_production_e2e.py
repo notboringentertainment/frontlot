@@ -22,8 +22,8 @@ from tools.video.kling_reference_video import KlingReferenceVideo
 from tools.cost_tracker import load_reservations
 
 
-@pytest.mark.parametrize('case', ['valid', 'invalid_look', 'unreceipted', 'missing_brief', 'pipeline_shot'])
-def test_supervised_starting_image_keeps_governance(tmp_path, monkeypatch, case):
+@pytest.mark.parametrize('case', ['valid', 'cli', 'invalid_look', 'unreceipted', 'missing_brief', 'pipeline_shot'])
+def test_supervised_starting_image_keeps_governance(tmp_path, monkeypatch, capsys, case):
     from tests.lib.look_lock_helpers import png_bytes
     from tools.graphics.seedream_image import SeedreamImage
 
@@ -61,6 +61,33 @@ def test_supervised_starting_image_keeps_governance(tmp_path, monkeypatch, case)
                         {'images': [{'url': 'https://simulation.invalid/start.png'}]})
     monkeypatch.setattr(_shared, 'fal_download', lambda url, dest, **kw:
                         Path(dest).write_bytes(png_bytes('starting-image-output')))
+    if case == 'cli':
+        from scripts.supervised_shot import main
+        from tools.tool_registry import registry
+        tool = SeedreamImage()
+        monkeypatch.setattr(registry, 'discover', lambda: None)
+        monkeypatch.setattr(registry, 'get', lambda name: tool)
+        settings = root / 'settings.json'
+        settings.write_text(json.dumps({'prompt': spec['direction'], 'output_path': 'assets/start.png',
+                                        'operation': 'edit', 'num_images': 2}))
+        monkeypatch.setattr(_shared, 'fal_queue_wait', lambda *a, **kw: {'images': [
+            {'url': 'https://simulation.invalid/one.png'}, {'url': 'https://simulation.invalid/two.png'}]})
+        monkeypatch.setattr(_shared, 'fal_download', lambda url, dest, **kw:
+                            Path(dest).write_bytes(png_bytes(url)))
+        monkeypatch.setattr('sys.argv', ['supervised_shot', str(root), 'generate', spec['shot_id'],
+                                       str(settings), '--tool', 'seedream_image'])
+        main()
+        capsys.readouterr()
+        report = production.inspect_shot(root, spec['shot_id'])
+        assert len(report['takes']) == 2
+        assert len(submissions) == 1
+        for take in report['takes']:
+            assert take['provenance'] == 'reservation' and take['reservation_id']
+            assert take['provider_job_id'] == 'simulation-image-job'
+            assert take['references'] == spec['reference_manifest']
+            production.select(root, spec['shot_id'], take['take_id'], user_note='Keep this starting image.')
+        assert len(production.inspect_shot(root, spec['shot_id'])['selections']) == 2
+        return
     result = SeedreamImage().execute(inputs)
     if case != 'valid':
         assert not result.success

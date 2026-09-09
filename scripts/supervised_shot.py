@@ -67,8 +67,11 @@ def main():
             if not outcome.success:
                 raise RuntimeError(outcome.error)
             if kind == 'image':
-                # Image outputs already have generation receipts; inspect them directly.
-                result = outcome.data
+                result = {'takes': [production.attach(root, args.shot_id, path,
+                    user_note='Generated from the saved supervised shot request.',
+                    reservation_id=outcome.data['reservation_id'], prompt=inputs['prompt'],
+                    references=outcome.metadata.get('references_applied'))
+                    for path in outcome.data['output_paths']]}
             else:
                 result = production.attach(root, args.shot_id, outcome.data['output_path'],
                     user_note='Generated from the saved supervised shot request.',

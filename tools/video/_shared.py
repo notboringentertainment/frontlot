@@ -1705,7 +1705,7 @@ def receipt_governance_fields(governance: dict[str, Any] | None) -> dict[str, An
 SELECTOR_LOCAL_REFERENCE_KEYS = ("reference_image_path", "reference_image_paths", "image_path", "image_paths")
 
 
-def selector_governance(inputs: dict[str, Any], *, media: str = "image") -> dict[str, Any] | None:
+def selector_governance(inputs: dict[str, Any], *, media: str = "image", estimate_cost=None) -> dict[str, Any] | None:
     """Governance for the generic selectors, run BEFORE any upload or delegation.
 
     The project is inferred FIRST (round 2 #9) with ``lib.events.infer_project_dir``,
@@ -1737,7 +1737,12 @@ def selector_governance(inputs: dict[str, Any], *, media: str = "image") -> dict
     # bound to it explicitly so the boundary (and the delegated provider) can
     # never resolve a different project than the one that governed it.
     bound_inputs = inputs if inputs.get("project_dir") else {**inputs, "project_dir": str(root)}
-    project_root, _tracker, _config = paid_call_context(bound_inputs, governance=governance, media=media)
+    # Select/estimate a governance-bound provider only after this call is known
+    # to be governed, but before the paid boundary and any upload/delegation.
+    estimate = estimate_cost(bound_inputs) if estimate_cost is not None else None
+    project_root, _tracker, _config = paid_call_context(
+        bound_inputs, governance=governance, media=media, estimated_usd=estimate,
+    )
     local_refs: list[Path] = []
     for key in SELECTOR_LOCAL_REFERENCE_KEYS:
         value = inputs.get(key)

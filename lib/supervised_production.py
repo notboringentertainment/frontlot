@@ -168,7 +168,16 @@ def attach(root, shot_id, source, *, user_note, cost_usd=None, provider_job_id=N
                 or reservation.get('state') != 'completed'):
             raise ValueError('reservation_id must name a completed paid call for this shot')
         hint = reservation.get('output_hint') or {}
-        if not hint.get('output_path') or sha256_file(Path(hint['output_path'])) != digest:
+        if hint.get('kind') == 'image':
+            # A batch stores content-addressed outputs, not one output_path.
+            # Bind each image through its existing verified generation receipt.
+            from lib.receipts import find_generation
+            receipt = find_generation(root, digest)
+            if (not receipt or receipt.get('provider_request_id') != reservation.get('provider_request_id')
+                    or receipt.get('normalized_inputs_hash') != reservation.get('normalized_inputs_hash')
+                    or receipt.get('tool') != reservation.get('tool')):
+                raise ValueError('Image does not match the completed reservation receipt')
+        elif not hint.get('output_path') or sha256_file(Path(hint['output_path'])) != digest:
             raise ValueError('Take does not match the completed reservation output')
         cost_usd, provider_job_id = reservation.get('actual_usd'), reservation.get('provider_request_id')
     destination = shot_dir(root, shot_id) / 'takes' / (digest + source.suffix.lower())

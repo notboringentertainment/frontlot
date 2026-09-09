@@ -41,8 +41,8 @@ tools to assemble selected sections into a new output, retaining source takes.
 Use `request SHOT SETTINGS.json` to inspect exact tool inputs without submitting.
 Settings contain prompt, a new output_path, and supported provider parameters.
 `generate SHOT SETTINGS.json --tool kling_reference_video` executes one paid
-call and attaches the result. It does not retry. Image calls retain their existing
-generation receipts; use `attach` if the image should also appear in the notebook.
+call and attaches the result. It does not retry. Image calls also attach every
+returned image to the notebook, bound to its existing receipt and reservation.
 
 The helper uses `asset_class=supervised_shot`. This is a direct supervised call,
 not a completed authored-film stage. Do not write fake checkpoints, label it
