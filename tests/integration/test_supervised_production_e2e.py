@@ -22,6 +22,67 @@ from tools.video.kling_reference_video import KlingReferenceVideo
 from tools.cost_tracker import load_reservations
 
 
+@pytest.mark.parametrize('case', ['valid', 'invalid_look', 'unreceipted', 'missing_brief', 'pipeline_shot'])
+def test_supervised_starting_image_keeps_governance(tmp_path, monkeypatch, case):
+    from tests.lib.look_lock_helpers import png_bytes
+    from tools.graphics.seedream_image import SeedreamImage
+
+    monkeypatch.setenv('FAL_KEY', 'simulation-only')
+    root = make_verified_project(tmp_path, monkeypatch, PROJECT)
+    pin_project(root, '1.5')
+    look = character_look()
+    activate_look(root, look)
+    image = write_receipted_png(root, 'assets/reference.png')
+    (root / 'canon-note.md').write_text('Established identity; production performance may vary.')
+    spec = {'shot_id': 'starting-image', 'direction': 'Hold the established face, show a strained expression.',
+            'spend_allowance_usd': .50, 'max_video_takes': 0,
+            'allowed_tools': ['seedream_image'], 'look_refs': look_refs_for(look),
+            'reference_manifest': [{'path': 'assets/reference.png', 'asset_id': image['sha256'],
+                                   'role': 'hero', 'visual_bible_entity_id': CHAR}],
+            'source_paths': ['canon-note.md']}
+    if case == 'unreceipted':
+        unreceipted = root / 'assets/unreceipted.png'
+        unreceipted.write_bytes(png_bytes('unreceipted'))
+        spec['reference_manifest'][0].update(path='assets/unreceipted.png', asset_id=sha256_file(unreceipted))
+    production.prepare(root, spec, user_note='Make a starting image using this reference, up to 50 cents.')
+    inputs = production.request(root, spec['shot_id'], prompt=spec['direction'],
+                                output_path='assets/start.png', operation='edit')
+    if case == 'invalid_look':
+        inputs['look_refs'] = [{**inputs['look_refs'][0], 'look_hash': 'f' * 64}]
+    elif case == 'missing_brief':
+        inputs['shot_id'] = 'unprepared'
+    elif case == 'pipeline_shot':
+        inputs['asset_class'] = 'storyboard_frame'
+    uploads, submissions = [], []
+    monkeypatch.setattr(_shared, 'upload_image_fal', lambda path: uploads.append(path) or 'https://simulation.invalid/ref.png')
+    monkeypatch.setattr(_shared, 'fal_queue_submit', lambda model, payload, **kw:
+                        submissions.append(payload) or {'request_id': 'simulation-image-job'})
+    monkeypatch.setattr(_shared, 'fal_queue_wait', lambda *a, **kw:
+                        {'images': [{'url': 'https://simulation.invalid/start.png'}]})
+    monkeypatch.setattr(_shared, 'fal_download', lambda url, dest, **kw:
+                        Path(dest).write_bytes(png_bytes('starting-image-output')))
+    result = SeedreamImage().execute(inputs)
+    if case != 'valid':
+        assert not result.success
+        expected = {'invalid_look': 'active look', 'unreceipted': 'no verified generation receipt',
+                    'missing_brief': 'brief', 'pipeline_shot': 'prompt_recipe'}[case]
+        assert expected in result.error, result.error
+        assert not uploads and not submissions
+        assert not load_reservations(root)
+        return
+    assert result.success, result.error
+    assert len(uploads) == len(submissions) == 1
+    assert submissions[0]['prompt'] == spec['direction']
+    receipt = receipts.find_generation(root, result.data['asset_ids'][0])
+    assert receipt['look_refs'] == spec['look_refs']
+    assert receipt['references_applied'] == spec['reference_manifest']
+    assert receipt['prompt_recipe'] is None
+    reservation = next(iter(load_reservations(root).values()))
+    assert reservation['scope'] == 'shot:starting-image'
+    assert reservation['kind'] == 'image' and reservation['state'] == 'completed'
+    assert not (root / 'checkpoint_scene_plan.json').exists()
+
+
 def test_supervised_loop_without_stage_completion(tmp_path, monkeypatch):
     monkeypatch.setenv('FAL_KEY', 'simulation-only')
     root = make_verified_project(tmp_path, monkeypatch, PROJECT)

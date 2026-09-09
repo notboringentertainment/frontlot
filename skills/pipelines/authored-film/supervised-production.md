@@ -49,6 +49,12 @@ not a completed authored-film stage. Do not write fake checkpoints, label it
 `shot_visual`, forge a receipt, or migrate the project to 1.6. Existing signed
 stage contracts still apply when running the full pipeline.
 
+For a starting image from the selected references, use Seedream with
+`operation=edit`. Its supervised performance prompt need not be a prompt-builder
+recipe or belong to a scene plan. Active-look, lineage, exact-reference and
+allowance checks still run before upload. Selecting this image does not approve
+a new identity or visual-bible asset.
+
 The existing boundary verifies signed project configuration, egress, active looks,
 reference lineage, and project funds. Reused reservation locking checks shot funds
 and take count again at reservation. Unknown paid outcomes require reconciliation;

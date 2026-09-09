@@ -148,9 +148,9 @@ class SeedreamImage(BaseTool):
             "prompt_recipe": {"type": "object", "description": "tools.prompt_builder recipe; prompt must hash to rendered_sha256."},
             "asset_class": {
                 "type": "string",
-                "description": "'storyboard_frame' for the one frame per shot the asset director generates. Requires "
-                               "shot_id; under a shot-ready pin the call is charged to that shot's spend_allowance_usd "
-                               "(a storyboard frame never consumes a video take).",
+                "description": "'storyboard_frame' for a pipeline frame, or 'supervised_shot' for a saved supervised "
+                               "shot brief. A supervised shot requires shot_id and uses its cumulative dollar "
+                               "allowance; image calls never consume a video take.",
             },
             "shot_id": {"type": "string"},
         },

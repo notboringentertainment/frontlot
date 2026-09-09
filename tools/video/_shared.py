@@ -1504,7 +1504,8 @@ def _recipe_required(inputs: dict[str, Any], look_refs: list[dict[str, str]], me
     rendering, not only ``visual_bible``. Exempt: video calls (the builder
     has no motion roles), calls with no look_refs (entity-free shots), and
     receipt-bound scene renders that name a ``shot_id`` of the approved
-    scene plan (their prompt is the shot, not an appearance).
+    scene plan, and saved supervised shots (their prompt is the performance,
+    while active looks and selected references preserve identity).
     """
     if media != "image" or not look_refs:
         return False
@@ -1543,14 +1544,22 @@ def _verify_prompt_recipe(
     ``tools.prompt_builder.build_prompt`` on the active look's payload with
     the same builder version, ``asset_role`` and ``palette`` as the call, and
     requires ``rendered_sha256`` equality. A rendering of appearance B
-    submitted under look A's hash is refused before any upload. Omission is
-    allowed only for an attested ``origin: imported_synthetic`` candidate."""
+    submitted under look A's hash is refused before any upload. Planned shots
+    and supervised performance shots may omit the recipe; the latter still
+    require their saved brief at the paid boundary. Attested
+    ``origin: imported_synthetic`` candidates also omit it."""
     recipe = inputs.get("prompt_recipe")
     if _verify_imported_synthetic(inputs):
         return None
     if recipe is None and not _recipe_required(inputs, look_refs, media):
         shot_id = inputs.get("shot_id")
-        if media == "image" and look_refs and shot_id and str(shot_id) not in _scene_plan_shot_index(project_root):
+        # Supervised performance prompts use the saved brief and selected
+        # references. The paid boundary still verifies active looks, lineage,
+        # exact reference selection and allowance before uploading anything.
+        # This exemption neither approves an identity asset nor completes a stage.
+        if (media == "image" and look_refs and shot_id
+                and inputs.get("asset_class") != "supervised_shot"
+                and str(shot_id) not in _scene_plan_shot_index(project_root)):
             raise LookGovernanceError(
                 f"shot {shot_id!r} is not a shot of the scene_plan checkpoint; a rendering of look_refs that is "
                 "not a planned shot requires prompt_recipe from tools.prompt_builder"
