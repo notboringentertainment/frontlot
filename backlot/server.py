@@ -8,7 +8,11 @@ refetch state. The server never writes to project directories.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import os
+import secrets
+import stat
 import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -17,8 +21,17 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import MutableHeaders
 
-from backlot.state import PROJECTS_DIR, REPO_ROOT, list_projects, load_board_state, summarize_project
+from backlot import DEFAULT_PORT
+from backlot.state import (
+    PROJECTS_DIR,
+    REPO_ROOT,
+    list_projects,
+    load_board_state,
+    load_gate_detail,
+    summarize_project,
+)
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 THUMB_CACHE_DIR = REPO_ROOT / ".backlot" / "thumbs"
@@ -28,6 +41,118 @@ THUMB_WIDTHS = (320, 640, 960)
 _IGNORE_PARTS = {"node_modules", ".git", "__pycache__", ".cache"}
 
 SSE_HEARTBEAT_SECONDS = 15
+
+
+class BacklotApp(FastAPI):
+    """FastAPI application with security headers at the outer ASGI boundary.
+
+    FastAPI's user middleware is inside ``ServerErrorMiddleware``. Decorating
+    the outgoing ASGI ``http.response.start`` frame instead means even a
+    framework-generated 500 receives Backlot's mandatory browser policy.
+    """
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await super().__call__(scope, receive, send)
+            return
+
+        async def hardened_send(message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                port = self.state.server_port
+                headers.setdefault(
+                    "Content-Security-Policy",
+                    "default-src 'self'; img-src 'self'; "
+                    f"connect-src 'self' ws://127.0.0.1:{port} ws://localhost:{port}; "
+                    # xterm's DOM renderer creates per-instance <style> rules
+                    # for measured cell geometry, ANSI colors, and the cursor.
+                    # Keep scripts strict-self; allow only inline *styles* so
+                    # the pinned local runtime can render its required rules.
+                    "style-src 'self' 'unsafe-inline'; script-src 'self'",
+                )
+                headers.setdefault("Referrer-Policy", "no-referrer")
+            await send(message)
+
+        await super().__call__(scope, receive, hardened_send)
+
+
+def backlot_metadata_dir() -> Path:
+    """Return the private per-user directory for Backlot runtime metadata."""
+    directory = Path.home() / ".openmontage" / "backlot"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # mkdir's mode is filtered by umask and does not update an existing dir.
+    directory.chmod(0o700)
+    return directory
+
+
+def server_log_path() -> Path:
+    """The private lifecycle log shared by detached Backlot processes."""
+    return backlot_metadata_dir() / "server.log"
+
+
+def server_log(message: str) -> None:
+    """Append a lifecycle event.
+
+    This deliberately accepts only a pre-redacted message. Callers must never
+    include capability tokens, terminal keystrokes, or terminal output.
+    """
+    try:
+        with server_log_path().open("a", encoding="utf-8") as handle:
+            handle.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {message}\n")
+    except OSError:
+        # The board remains an observer: inability to log must not stop it.
+        pass
+
+
+def capability_token_path(port: int) -> Path:
+    """Return the capability-token location for one local Backlot port."""
+    return backlot_metadata_dir() / f"{port}.token"
+
+
+def write_capability_token(port: int) -> str:
+    """Atomically replace ``port``'s 32-byte, URL-safe capability token."""
+    if not isinstance(port, int) or not 1 <= port <= 65535:
+        raise ValueError(f"invalid Backlot port: {port!r}")
+    token = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
+    target = capability_token_path(port)
+    temporary = target.with_name(f".{target.name}.{secrets.token_hex(8)}.tmp")
+    descriptor: Optional[int] = None
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        payload = token.encode("ascii")
+        written = 0
+        while written < len(payload):
+            count = os.write(descriptor, payload[written:])
+            if count <= 0:
+                raise OSError("unable to write Backlot capability token")
+            written += count
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.replace(temporary, target)
+        target.chmod(0o600)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    return token
+
+
+def read_capability_token(port: int) -> Optional[str]:
+    """Read a previously-written local capability token without logging it."""
+    try:
+        token = capability_token_path(port).read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        return None
+    # A URL-safe encoding of exactly 32 random bytes is 43 characters without
+    # padding. Reject partial/corrupt files rather than opening an unprotected
+    # browser session.
+    if len(token) != 43 or any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for char in token):
+        return None
+    return token
 
 
 def _ui_html(name: str, assets: tuple[str, ...]) -> HTMLResponse:
@@ -110,14 +235,12 @@ def _cached_summaries() -> list[dict]:
 
 # Watch-loop hot path: pure string comparison, no per-path filesystem calls
 # (change batches can be thousands of paths during a render).
-import os as _os
-
-_PROJECTS_ROOT_STR = _os.path.normcase(str(PROJECTS_DIR.resolve()))
+_PROJECTS_ROOT_STR = os.path.normcase(str(PROJECTS_DIR.resolve()))
 
 
 def _project_of_change(path_str: str) -> Optional[str]:
     """Map a changed filesystem path to a project id (None = irrelevant)."""
-    norm = _os.path.normcase(_os.path.normpath(path_str))
+    norm = os.path.normcase(os.path.normpath(path_str))
     if not norm.startswith(_PROJECTS_ROOT_STR):
         return None
     rel = norm[len(_PROJECTS_ROOT_STR):].lstrip("\\/")
@@ -157,13 +280,32 @@ async def _lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # A relay is only a client of the detached signer broker. Shutdown
+        # closes those client sockets and reservations; it never touches the
+        # PTY, child process, or broker-owned project lease.
+        from backlot.tty import shutdown_tty
+
+        await shutdown_tty(app)
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
 
 
-def create_app() -> FastAPI:
-    app = FastAPI(title="Backlot", docs_url=None, redoc_url=None, lifespan=_lifespan)
+def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = None) -> FastAPI:
+    """Create Backlot's read-only HTTP application.
+
+    ``cmd_serve`` supplies the port and its freshly generated capability token.
+    They live in app state for Task 3's local WebSocket handshake, never in a
+    response, URL query string, or log line.
+    """
+    app = BacklotApp(title="Backlot", docs_url=None, redoc_url=None, lifespan=_lifespan)
+    app.state.server_port = port if port is not None else DEFAULT_PORT
+    app.state.capability_token = capability_token
+    app.state.worker_count = 1
+
+    from backlot.tty import install_tty
+
+    install_tty(app)
 
     # ---- API ----------------------------------------------------------
 
@@ -179,6 +321,31 @@ def create_app() -> FastAPI:
     async def project_state(project_id: str) -> dict:
         project_dir = _safe_project_dir(project_id)
         return await asyncio.to_thread(load_board_state, project_dir)
+
+    @app.get("/api/project/{project_id}/gate/{request_id}")
+    async def gate_detail(project_id: str, request_id: str) -> dict:
+        """Return Task 1's lazy, read-only detail packet for one gate request."""
+        from lib.run_common import RunError, validate_request_id
+
+        project_dir = _safe_project_dir(project_id)
+        try:
+            validate_request_id(request_id)
+        except RunError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        detail = await asyncio.to_thread(load_gate_detail, project_dir, request_id)
+        state_name = detail.get("state")
+        if state_name == "missing":
+            if _regular_gate_request_exists(project_dir, request_id):
+                raise HTTPException(status_code=409, detail="gate request state is invalid")
+            raise HTTPException(status_code=404, detail="gate request not found")
+        if state_name in {"conflict", "error"}:
+            raise HTTPException(status_code=409, detail="gate request state is invalid")
+        # The lazy builder only returns an error without a state for a bad
+        # governed project/request. The project and id were already validated
+        # above, so this is a corrupted request representation, not success.
+        if detail.get("error") == "invalid governed project or request":
+            raise HTTPException(status_code=409, detail="gate request state is invalid")
+        return detail
 
     @app.get("/api/project/{project_id}/events")
     async def project_events(project_id: str, request: Request) -> StreamingResponse:
@@ -297,7 +464,7 @@ def create_app() -> FastAPI:
     # conditional revalidation (cheap 304 via ETag) on every load so UI fixes
     # show up on a plain refresh. Media/thumb responses keep normal caching.
     @app.middleware("http")
-    async def ui_no_cache(request, call_next):
+    async def ui_no_cache(request: Request, call_next):
         response = await call_next(request)
         path = request.url.path
         if path == "/" or path.startswith("/ui") or path.startswith("/p/"):
@@ -308,14 +475,69 @@ def create_app() -> FastAPI:
 
 
 def _safe_project_dir(project_id: str) -> Path:
-    # ':' rejects Windows drive-relative ids like "C:" (PROJECTS_DIR / "C:"
-    # collapses back to PROJECTS_DIR itself).
-    if any(c in project_id for c in "/\\:") or project_id in (".", ".."):
+    """Resolve a registered, non-symlinked project with stable HTTP errors."""
+    from lib.run_common import ENTITY_ID_RE, RunError, resolve_project_root
+
+    if not isinstance(project_id, str) or not ENTITY_ID_RE.fullmatch(project_id):
         raise HTTPException(status_code=400, detail="invalid project id")
-    project_dir = PROJECTS_DIR / project_id
-    if not project_dir.is_dir():
-        raise HTTPException(status_code=404, detail=f"unknown project: {project_id}")
-    return project_dir
+    try:
+        return resolve_project_root(project_id, projects_dir=PROJECTS_DIR)
+    except RunError as exc:
+        # Phase 0 projects predate project.yaml. Their project.json marker is
+        # still the board's registration record, so retain that read-only
+        # compatibility path while applying the resolver's confinement and
+        # no-symlink rules. New governed projects always take the strict path.
+        project_dir = PROJECTS_DIR / project_id
+        marker = project_dir / "project.json"
+        try:
+            project_real = project_dir.resolve()
+            project_real.relative_to(PROJECTS_DIR.resolve())
+        except (OSError, ValueError):
+            project_real = None
+        if (
+            project_real is not None
+            and not project_dir.is_symlink()
+            and project_dir.is_dir()
+            and not marker.is_symlink()
+            and marker.is_file()
+        ):
+            return project_real
+        # A syntactically valid but missing, unregistered, or symlinked
+        # project is intentionally indistinguishable from an unknown project.
+        raise HTTPException(status_code=404, detail=f"unknown project: {project_id}") from exc
+
+
+def _regular_gate_request_exists(project_dir: Path, request_id: str) -> bool:
+    """Whether a safe, regular request file exists in any known gate state.
+
+    Task 1 intentionally omits malformed or identity-invalid request files
+    from its public rows. The route distinguishes those corrupt existing files
+    (409) from a genuinely absent request (404) without resolving or opening
+    any symlinked path. Unsafe tree components are reported by the Task 1
+    builder as ``state == 'error'`` before this helper is consulted.
+    """
+    root = project_dir / ".gate-requests"
+    try:
+        root_info = root.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISDIR(root_info.st_mode):
+        return False
+    for relative in (Path("."), Path("done"), Path("declined"), Path("abandoned")):
+        directory = root / relative
+        try:
+            directory_info = directory.lstat()
+        except OSError:
+            continue
+        if not stat.S_ISDIR(directory_info.st_mode):
+            continue
+        try:
+            request_info = (directory / f"{request_id}.json").lstat()
+        except OSError:
+            continue
+        if stat.S_ISREG(request_info.st_mode):
+            return True
+    return False
 
 
 def _sse(payload: dict) -> str:

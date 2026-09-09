@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openmontage/artifacts/look_packet",
+  "title": "Look Packet",
+  "description": "Output of the look_lock stage (authored-film 1.2): one ratified look per proposal cast entity (D18: an in_progress checkpoint may carry a partial packet, complete=false). Each entry carries the validated look_spec, its look_hash (sha256 of the canonical payload), the receipt_id of the active look_lock approval receipt, and the source ticket reference ({id} for new wayfinder tickets, {path, content_sha256} for legacy ones). (entity_kind, entity_id) is unique (enforced by validate_artifact).",
+  "type": "object",
+  "required": ["version", "looks"],
+  "properties": {
+    "version": { "type": "string", "const": "1.0" },
+    "looks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["entity_kind", "entity_id", "look_spec", "look_hash", "receipt_id", "source_ticket_ref"],
+        "properties": {
+          "entity_kind": { "type": "string", "enum": ["character", "location"] },
+          "entity_id": { "type": "string", "pattern": "^[a-z0-9-]+$", "minLength": 1 },
+          "look_spec": { "type": "object" },
+          "look_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "receipt_id": { "type": "string", "minLength": 1 },
+          "source_ticket_ref": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": ["id"],
+                "properties": { "id": { "type": "string", "pattern": "^wf-[0-9a-f]{8}$" } },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": ["path", "content_sha256"],
+                "properties": {
+                  "path": { "type": "string", "minLength": 1 },
+                  "content_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "complete": {
+      "type": "boolean",
+      "description": "D18: true when every proposal_packet.cast entity has an entry; a partial packet (false) may be checkpointed in_progress but never completed."
+    },
+    "metadata": { "type": "object" }
+  },
+  "additionalProperties": false
+}

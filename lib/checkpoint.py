@@ -2,6 +2,29 @@
 
 Each stage writes a checkpoint after completion. The orchestrator uses
 checkpoints to resume pipelines and to present state at human checkpoints.
+
+Durability: checkpoint and decision-log writes go through
+``lib.state_io`` (unique temp file + fsync + rename), so a crash mid-write
+never leaves a truncated file or a stale fixed-name temp behind.
+
+Run lease (authored-canon pipelines, PLAN §7): ``write_checkpoint`` does NOT
+acquire the per-project run lease — tests and repair tooling write
+checkpoints freely. The ORCHESTRATOR acquires it once at run start via
+``acquire_run_lease(pipeline_dir, project_id, wall_time_minutes)`` and holds
+it (heartbeating) for the whole run; a second live session on the same
+project fails with ``lib.run_lease.LeaseHeldError``.
+
+Paid-call resume safety: for pipelines with ``validation_profile:
+authored-canon``, every ``write_checkpoint`` first runs
+``tools.cost_tracker.resume_check`` on the project directory. A reservation
+left ``submitting`` with no provider request id means money may have been
+spent with no recorded outcome; the write is refused with a
+``CheckpointValidationError`` naming the reservations until a human
+reconciles them (never resubmit automatically).
+
+Human approval receipts are recorded through ``record_human_approval``
+(re-exported here from ``lib.receipts``); it consumes a one-use gate token
+and never changes checkpoint status.
 """
 
 from __future__ import annotations
@@ -14,12 +37,18 @@ from typing import Any, Optional
 
 import jsonschema
 
+from lib.receipts import record_human_approval  # noqa: F401  (re-export for callers)
+from lib.state_io import atomic_write_bytes, atomic_write_json
 from schemas.artifacts import ARTIFACT_NAMES, validate_artifact
+
+# Stage names of every manifest version (used only for artifact-name lookup
+# and the pipeline-less fallback); the pinned manifest is the real stage list.
 
 # All known stages across all pipelines (used only for artifact name lookup).
 ALL_KNOWN_STAGES = frozenset([
     "research", "proposal", "idea", "script", "scene_plan",
     "assets", "edit", "compose", "publish",
+    "canon_ingest", "look_lock", "headshots", "visual_bible",
 ])
 
 # Backward-compatible alias — existing code / tests that import STAGES still work.
@@ -73,6 +102,107 @@ def get_pipeline_stages(pipeline_type: str | None) -> list[str]:
     except (FileNotFoundError, Exception):
         # Graceful fallback: return all known stages in canonical order
         return list(STAGES)
+
+def _pin_for(pipeline_dir: Path, project_id: str, pipeline_type: Optional[str]):
+    """The project's pinned manifest tuple for ``pipeline_type`` (bare or
+    explicit ``name@version``), or None when no pipeline is named. A pin that
+    cannot be resolved unambiguously is a checkpoint error (fail closed)."""
+    if not pipeline_type or pipeline_type == "unknown":
+        return None
+    from lib.pipeline_loader import parse_pipeline_ref
+    from lib.pipeline_pin import PipelinePinError, pinned_pipeline
+
+    try:
+        return pinned_pipeline(pipeline_dir / project_id, pipeline_type)
+    except FileNotFoundError:
+        raise CheckpointValidationError(
+            f"Unknown pipeline_type {pipeline_type!r} — cannot resolve gate "
+            f"policy. Check the spelling against pipeline_defs/*.yaml."
+        )
+    except PipelinePinError as exc:
+        raise CheckpointValidationError(f"PIPELINE PIN VIOLATION: {exc}") from exc
+    except Exception as exc:
+        # Same fail-closed rule as _manifest_stage_spec: a manifest that
+        # exists but cannot load must not silently drop its contracts.
+        base, _ = parse_pipeline_ref(pipeline_type)
+        raise CheckpointValidationError(
+            f"Manifest for pipeline {base!r} failed to load, so its contracts "
+            f"cannot be enforced. Refusing (fail-closed). Underlying error: {exc}"
+        ) from exc
+
+
+def _effective_ref(pipeline_dir: Path, project_id: str, pipeline_type: Optional[str]) -> Optional[str]:
+    """``name@version`` for pipelines with versioned manifests, else the bare name."""
+    pin = _pin_for(pipeline_dir, project_id, pipeline_type)
+    if pin is None:
+        return None
+    from lib.pipeline_loader import manifest_versions
+
+    return pin.ref if manifest_versions(pin.name) else pin.name
+
+
+def _pin_mismatch(
+    pipeline_dir: Path, project_id: str, pipeline_type: Optional[str], stage: str, path: Path, checkpoint: dict[str, Any]
+) -> Optional[str]:
+    """Why an on-disk checkpoint does not belong to the project's signed pin
+    (None when it does). Slice A #10: under a receipted pin, a checkpoint
+    either carries the pin's exact ``pipeline`` tuple {name, version,
+    manifest_digest} or — a legacy checkpoint with no tuple / another tuple —
+    its file digest must be in the digest set the migration receipt bound."""
+    pin = _pin_for(pipeline_dir, project_id, pipeline_type)
+    if pin is None or pin.receipt_id is None:
+        return None
+    tuple_ = checkpoint.get("pipeline")
+    if isinstance(tuple_, dict) and tuple_ == pin.to_dict():
+        return None
+    digest = checkpoint_digest(path)
+    if pin.binds_checkpoint(stage, digest):
+        return None
+    if isinstance(tuple_, dict):
+        return (
+            f"checkpoint {stage!r} was written under pipeline tuple {tuple_} but the signed pin is "
+            f"{pin.to_dict()} (receipt {pin.receipt_id}) and the migration receipt did not bind this file"
+        )
+    return (
+        f"legacy checkpoint {stage!r} (no pipeline tuple; digest {digest[:12]}…) is not in the set bound by "
+        f"migration receipt {pin.receipt_id} — an edited or foreign legacy checkpoint never satisfies a 1.2 pin"
+    )
+
+
+def _ref_from_checkpoint(checkpoint: dict[str, Any]) -> Optional[str]:
+    """Standalone validation reads the tuple from the checkpoint itself."""
+    pipeline_type = checkpoint.get("pipeline_type")
+    if not pipeline_type or pipeline_type == "unknown":
+        return None
+    tuple_ = checkpoint.get("pipeline")
+    if isinstance(tuple_, dict) and tuple_.get("version"):
+        from lib.pipeline_loader import manifest_versions, parse_pipeline_ref
+
+        base, _ = parse_pipeline_ref(str(pipeline_type))
+        if str(tuple_["version"]) in manifest_versions(base):
+            return f"{base}@{tuple_['version']}"
+        return base
+    return str(pipeline_type)
+
+
+def checkpoint_digest(path: Path) -> str:
+    """sha256 of a checkpoint file's bytes — what predecessors[] and
+    headshot approval records bind."""
+    import hashlib
+
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def invalidated_stages(pipeline_dir: Path, project_id: str, pipeline_type: Optional[str]) -> dict[str, Any]:
+    """``stage -> lib.invalidation.Invalidation`` for this project, derived
+    from the approval ledger (never from the cache)."""
+    if not pipeline_type or pipeline_type == "unknown":
+        return {}
+    from lib.invalidation import invalidated_checkpoints
+
+    ref = _effective_ref(pipeline_dir, project_id, pipeline_type)
+    return invalidated_checkpoints(pipeline_dir, project_id, get_pipeline_stages(ref))
+
 
 CHECKPOINT_SCHEMA_PATH = (
     Path(__file__).resolve().parent.parent
@@ -168,10 +298,8 @@ def validate_checkpoint(checkpoint: dict[str, Any]) -> None:
     artifacts = checkpoint.get("artifacts")
     pipeline_type = checkpoint.get("pipeline_type")
 
-    valid_stages = (
-        set(get_pipeline_stages(pipeline_type)) if pipeline_type
-        else ALL_KNOWN_STAGES
-    )
+    ref = _ref_from_checkpoint(checkpoint) if isinstance(checkpoint, dict) else None
+    valid_stages = set(get_pipeline_stages(ref)) if ref else ALL_KNOWN_STAGES
 
     if not isinstance(stage, str) or stage not in valid_stages:
         raise CheckpointValidationError(
@@ -281,6 +409,125 @@ def _stage_requires_approval(pipeline_type: Optional[str], stage: str) -> Option
     return get_stage_human_approval_default(manifest, stage)
 
 
+def _manifest_stage_spec(
+    pipeline_type: Optional[str], stage: str
+) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+    """Return (manifest, stage_spec) for a stage, or (None, None) when the
+    manifest is unavailable. The manifest — not the hard-coded canonical map —
+    is the binding source of truth for what a stage produces and requires."""
+    if not pipeline_type or pipeline_type == "unknown":
+        return None, None
+    try:
+        from lib.pipeline_loader import load_pipeline_readonly
+
+        manifest = load_pipeline_readonly(pipeline_type)
+    except FileNotFoundError as exc:
+        raise CheckpointValidationError(
+            f"Unknown pipeline_type {pipeline_type!r} — cannot resolve the "
+            f"manifest artifact contract. Check the spelling against "
+            f"pipeline_defs/*.yaml."
+        ) from exc
+    except Exception as exc:
+        # Fail CLOSED: a manifest that exists but cannot load (YAML error,
+        # schema drift) must not silently turn a binding contract into no
+        # contract. Previously this returned (None, None) and every
+        # manifest-driven check — including the authored-canon profile —
+        # quietly skipped.
+        raise CheckpointValidationError(
+            f"Manifest for pipeline {pipeline_type!r} failed to load, so its "
+            f"artifact contracts cannot be enforced. Refusing to write the "
+            f"checkpoint (fail-closed). Underlying error: {exc}"
+        ) from exc
+    for spec in manifest.get("stages", []):
+        if spec.get("name") == stage:
+            return manifest, spec
+    return manifest, None
+
+
+def _enforce_manifest_artifact_contract(
+    pipeline_dir: Path,
+    project_id: str,
+    pipeline_type: Optional[str],
+    stage: str,
+    status: str,
+    artifacts: dict[str, Any],
+    stage_spec: Optional[dict[str, Any]],
+) -> None:
+    """Enforce the manifest's declared stage contract at write time.
+
+    - Every artifact in ``produces`` must be present on completed /
+      awaiting_human checkpoints (the canonical-map check in
+      _validate_artifacts_for_stage remains as the legacy fallback when no
+      manifest is available).
+    - Every artifact in ``required_artifacts_in`` must be available — carried
+      in this checkpoint or produced by a completed predecessor checkpoint.
+    """
+    if status not in {"completed", "awaiting_human"} or stage_spec is None:
+        return
+
+    missing_outputs = [
+        name for name in stage_spec.get("produces") or [] if name not in artifacts
+    ]
+    if missing_outputs:
+        raise CheckpointValidationError(
+            f"Stage {stage!r} with status {status!r} is missing manifest-"
+            f"declared output artifact(s) {missing_outputs} — the "
+            f"{pipeline_type!r} manifest's 'produces' list is a binding "
+            f"contract, not documentation."
+        )
+
+    required_in = stage_spec.get("required_artifacts_in") or []
+    if not required_in:
+        return
+    available = set(artifacts)
+    stages = get_pipeline_stages(pipeline_type)
+    invalidated = invalidated_stages(pipeline_dir, project_id, pipeline_type)
+    if stage in stages:
+        for predecessor in stages[: stages.index(stage)]:
+            path = _checkpoint_path(pipeline_dir, project_id, predecessor)
+            if not path.exists() or predecessor in invalidated:
+                continue
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    checkpoint = json.load(handle)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if _pin_mismatch(pipeline_dir, project_id, pipeline_type, predecessor, path, checkpoint):
+                continue
+            if _predecessor_satisfies(stage, predecessor, checkpoint.get("status")) and isinstance(
+                checkpoint.get("artifacts"), dict
+            ):
+                available.update(checkpoint["artifacts"])
+    missing_inputs = [name for name in required_in if name not in available]
+    if missing_inputs:
+        raise CheckpointValidationError(
+            f"Stage {stage!r} cannot advance: manifest-declared input "
+            f"artifact(s) {missing_inputs} were never produced by a completed "
+            f"predecessor checkpoint (and are not carried in this one)."
+        )
+
+
+# D18 per-entity flow: these predecessors may be PARTIAL (``in_progress`` /
+# ``awaiting_human``) when the named stage advances — one character's
+# ratified look feeds its headshot, one approved face feeds its sheet, while
+# other cast members are still unwritten. The per-entity checks live in
+# lib.canon_enforcement; every later stage (script onward) still needs these
+# stages ``completed``, which is what gates trailer assembly on the full cast.
+PARTIAL_PREDECESSORS: dict[str, frozenset[str]] = {
+    "headshots": frozenset({"look_lock"}),
+    "visual_bible": frozenset({"look_lock", "headshots"}),
+}
+PARTIAL_STATUSES = frozenset({"in_progress", "awaiting_human"})
+
+
+def _predecessor_satisfies(stage: str, predecessor: str, status: Any) -> bool:
+    """Whether a predecessor checkpoint in ``status`` counts as available for
+    ``stage``: completed always; partial only for PARTIAL_PREDECESSORS."""
+    if status == "completed":
+        return True
+    return status in PARTIAL_STATUSES and predecessor in PARTIAL_PREDECESSORS.get(stage, frozenset())
+
+
 def _enforce_stage_prerequisites(
     pipeline_dir: Path,
     project_id: str,
@@ -292,7 +539,9 @@ def _enforce_stage_prerequisites(
 
     ``in_progress`` and failure heartbeats remain writable so an operator can
     inspect or resume a broken run. Only lifecycle advancement
-    (``awaiting_human``/``completed``) is gated.
+    (``awaiting_human``/``completed``) is gated. D18: the predecessors in
+    PARTIAL_PREDECESSORS may be partial (their per-entity receipts are the
+    authority, so the checkpoint-level approval flag is not required).
     """
 
     if status not in {"awaiting_human", "completed"}:
@@ -303,9 +552,15 @@ def _enforce_stage_prerequisites(
     stages = get_pipeline_stages(pipeline_type)
     if stage not in stages:
         return
+    from lib.pipeline_loader import parse_pipeline_ref
+
+    base_type, _ = parse_pipeline_ref(pipeline_type)
+    invalidated = invalidated_stages(pipeline_dir, project_id, pipeline_type)
 
     incomplete: list[str] = []
     unapproved: list[str] = []
+    stale: list[str] = []
+    unpinned: list[str] = []
     for predecessor in stages[: stages.index(stage)]:
         path = _checkpoint_path(pipeline_dir, project_id, predecessor)
         if not path.exists():
@@ -320,25 +575,39 @@ def _enforce_stage_prerequisites(
             continue
         if (
             checkpoint.get("project_id") != project_id
-            or checkpoint.get("pipeline_type") != pipeline_type
+            or checkpoint.get("pipeline_type") != base_type
             or checkpoint.get("stage") != predecessor
         ):
             incomplete.append(predecessor)
             continue
-        if checkpoint.get("status") != "completed":
+        if not _predecessor_satisfies(stage, predecessor, checkpoint.get("status")):
             incomplete.append(predecessor)
             continue
-        if _stage_requires_approval(pipeline_type, predecessor) and not checkpoint.get(
+        partial = checkpoint.get("status") != "completed"
+        mismatch = _pin_mismatch(pipeline_dir, project_id, pipeline_type, predecessor, path, checkpoint)
+        if mismatch:
+            unpinned.append(mismatch)
+            continue
+        if predecessor in invalidated:
+            stale.append(f"{predecessor} (invalidated by receipt {invalidated[predecessor].receipt_id})")
+            continue
+        if not partial and _stage_requires_approval(pipeline_type, predecessor) and not checkpoint.get(
             "human_approved"
         ):
             unapproved.append(predecessor)
 
-    if incomplete or unapproved:
+    if incomplete or unapproved or stale or unpinned:
         details = []
         if incomplete:
             details.append(f"incomplete or missing: {incomplete}")
+        if unpinned:
+            details.append("PIPELINE PIN VIOLATION — not bound to the signed pin: " + "; ".join(unpinned))
         if unapproved:
             details.append(f"completed without required approval: {unapproved}")
+        if stale:
+            details.append(
+                f"invalidated by a retired/replaced look or headshot, re-approval required: {stale}"
+            )
         raise CheckpointValidationError(
             f"PREREQUISITE VIOLATION: stage {stage!r} cannot advance; "
             + "; ".join(details)
@@ -391,14 +660,19 @@ def _decision_log_path(pipeline_dir: Path, project_id: str) -> Path:
 
 def _merge_decision_log(
     pipeline_dir: Path, project_id: str, new_log: dict[str, Any]
-) -> None:
+) -> tuple[Path, Optional[bytes]]:
     """Append new decisions to the project-level decision log.
 
     Each stage may produce decisions. This function merges them into a
     single cumulative file so reviewers and the bench can inspect the
     full audit trail.
+
+    Returns (log_path, original_bytes_or_None) so the caller can roll the
+    log back if the checkpoint it belongs to fails to commit — the ruling
+    and its checkpoint move together or not at all.
     """
     path = _decision_log_path(pipeline_dir, project_id)
+    original: Optional[bytes] = path.read_bytes() if path.exists() else None
     if path.exists():
         with open(path, encoding="utf-8") as f:
             existing = json.load(f)
@@ -414,9 +688,27 @@ def _merge_decision_log(
         if decision.get("decision_id") not in existing_ids:
             existing["decisions"].append(decision)
 
+    # The cumulative log is audit state: validate the MERGED result before
+    # touching disk, and swap atomically so a failed write can never leave a
+    # truncated or invalid decision log behind.
+    try:
+        validate_artifact("decision_log", existing)
+    except Exception as exc:
+        raise CheckpointValidationError(
+            f"Merged decision log would be invalid — refusing to write: {exc}"
+        ) from exc
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(existing, f, indent=2)
+    atomic_write_json(path, existing)
+    return path, original
+
+
+def _restore_decision_log(path: Path, original: Optional[bytes]) -> None:
+    """Roll the cumulative decision log back to its pre-merge state."""
+    if original is None:
+        path.unlink(missing_ok=True)
+        return
+    atomic_write_bytes(path, original)
 
 
 def write_checkpoint(
@@ -454,8 +746,18 @@ def write_checkpoint(
             style_playbook = marker["style_playbook"]
     _validate_style_playbook(style_playbook)
 
+    # The manifest a project runs under is its signed pin (lib.pipeline_pin);
+    # ``pipeline_type`` stays the bare name in the checkpoint and the tuple
+    # {name, version, manifest_digest} rides alongside it.
+    pin = _pin_for(pipeline_dir, project_id, pipeline_type)
+    if pin is not None:
+        pipeline_type = pin.name
+        pipeline_ref = _effective_ref(pipeline_dir, project_id, pin.name)
+    else:
+        pipeline_ref = pipeline_type
+
     valid_stages = (
-        set(get_pipeline_stages(pipeline_type)) if pipeline_type
+        set(get_pipeline_stages(pipeline_ref)) if pipeline_ref
         else ALL_KNOWN_STAGES
     )
     if stage not in valid_stages:
@@ -474,7 +776,7 @@ def write_checkpoint(
     # Enforcement happens at write time only: pre-existing checkpoints written
     # before gating (or by hand) still read as completed — deliberate
     # back-compat so in-flight and legacy projects keep resuming.
-    manifest_gate = _stage_requires_approval(pipeline_type, stage)
+    manifest_gate = _stage_requires_approval(pipeline_ref, stage)
     gated = bool(manifest_gate) or human_approval_required
     if gated:
         human_approval_required = True
@@ -496,9 +798,20 @@ def write_checkpoint(
     _enforce_stage_prerequisites(
         pipeline_dir,
         project_id,
-        pipeline_type,
+        pipeline_ref,
         stage,
         status,
+    )
+
+    manifest, stage_spec = _manifest_stage_spec(pipeline_ref, stage)
+    _enforce_manifest_artifact_contract(
+        pipeline_dir,
+        project_id,
+        pipeline_ref,
+        stage,
+        status,
+        artifacts,
+        stage_spec,
     )
 
     checkpoint = {
@@ -513,6 +826,9 @@ def write_checkpoint(
         "human_approved": human_approved,
         "artifacts": artifacts,
     }
+    if pin is not None:
+        checkpoint["pipeline"] = pin.to_dict()
+        checkpoint["predecessors"] = _predecessor_digests(pipeline_dir, project_id, pipeline_ref, stage)
     if style_playbook is not None:
         checkpoint["style_playbook"] = style_playbook
     if review is not None:
@@ -524,15 +840,14 @@ def write_checkpoint(
     if metadata is not None:
         checkpoint["metadata"] = metadata
 
-    # Merge decision_log: if this checkpoint carries new decisions,
-    # append them to the project-level decision log file, then write the
-    # reference back into relevant artifacts so downstream consumers can find it.
-    if "decision_log" in artifacts and isinstance(artifacts["decision_log"], dict):
-        _merge_decision_log(pipeline_dir, project_id, artifacts["decision_log"])
-        log_ref = str(_decision_log_path(pipeline_dir, project_id))
-
+    carries_decisions = "decision_log" in artifacts and isinstance(
+        artifacts["decision_log"], dict
+    )
+    if carries_decisions:
         # Write decision_log_ref into proposal_packet and render_report
-        # artifacts if they are present in this checkpoint.
+        # artifacts if they are present in this checkpoint. The ref path is
+        # deterministic, so it can be injected BEFORE any validation runs.
+        log_ref = str(_decision_log_path(pipeline_dir, project_id))
         for artifact_key in ("proposal_packet", "render_report"):
             if artifact_key in artifacts and isinstance(artifacts[artifact_key], dict):
                 plan_or_top = artifacts[artifact_key]
@@ -544,24 +859,110 @@ def write_checkpoint(
                 else:
                     plan_or_top["decision_log_ref"] = log_ref
 
+    # ALL validation happens before ANY state is persisted. A rejected
+    # checkpoint must leave the project directory exactly as it found it —
+    # previously the cumulative decision log was merged before validation,
+    # so rejected checkpoints could still corrupt the audit trail.
     validate_checkpoint(checkpoint)
+
+    if manifest is not None and manifest.get("validation_profile") == "authored-canon":
+        from lib.canon_enforcement import enforce_authored_canon
+
+        _halt_on_indeterminate_paid_calls(pipeline_dir / project_id)
+        enforce_authored_canon(pipeline_dir, project_id, stage, status, artifacts, pin=pin)
 
     path = _checkpoint_path(pipeline_dir, project_id, stage)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Serialize to a temp file first so a mid-write failure (disk full,
-    # unserializable metadata) can never leave the stage with a truncated
-    # current checkpoint; then archive the superseded file and swap in the
-    # new one atomically.
-    tmp_path = path.with_suffix(".json.tmp")
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(checkpoint, f, indent=2)
-    # Preserve run history: a superseded completed/awaiting_human checkpoint
-    # is copied to history/ (stage versioning, gate audit trail, replay).
-    _archive_superseded_checkpoint(path, stage)
-    import os
-    os.replace(tmp_path, path)
+    # Serialize the checkpoint FIRST — an unserializable payload must fail
+    # before the decision log moves. Then commit the decision log, then swap
+    # the checkpoint in atomically. If the checkpoint swap fails after the
+    # log committed, roll the log back: a canon ruling must never exist in
+    # the audit trail without the checkpoint that carried it.
+    payload = (json.dumps(checkpoint, indent=2) + "\n").encode("utf-8")
+
+    log_rollback: Optional[tuple[Path, Optional[bytes]]] = None
+    if carries_decisions:
+        log_rollback = _merge_decision_log(
+            pipeline_dir, project_id, artifacts["decision_log"]
+        )
+
+    try:
+        # Preserve run history: a superseded completed/awaiting_human
+        # checkpoint is copied to history/ (stage versioning, gate audit
+        # trail, replay).
+        _archive_superseded_checkpoint(path, stage)
+        # Unique temp name + fsync + rename; the temp is removed on failure.
+        atomic_write_bytes(path, payload)
+    except BaseException:
+        if log_rollback is not None:
+            _restore_decision_log(*log_rollback)
+        raise
 
     return path
+
+
+def _predecessor_digests(
+    pipeline_dir: Path, project_id: str, pipeline_ref: Optional[str], stage: str
+) -> list[dict[str, str]]:
+    """{stage, checkpoint_digest} for every completed, non-invalidated
+    predecessor checkpoint on disk (bound into 1.2 checkpoints so a later
+    slice can narrow invalidation to exact descendants)."""
+    if not pipeline_ref:
+        return []
+    stages = get_pipeline_stages(pipeline_ref)
+    if stage not in stages:
+        return []
+    invalidated = invalidated_stages(pipeline_dir, project_id, pipeline_ref)
+    out: list[dict[str, str]] = []
+    for predecessor in stages[: stages.index(stage)]:
+        path = _checkpoint_path(pipeline_dir, project_id, predecessor)
+        if not path.exists() or predecessor in invalidated:
+            continue
+        try:
+            with open(path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if _pin_mismatch(pipeline_dir, project_id, pipeline_ref, predecessor, path, data):
+            continue
+        if data.get("status") == "completed":
+            out.append({"stage": predecessor, "checkpoint_digest": checkpoint_digest(path)})
+    return out
+
+
+def _halt_on_indeterminate_paid_calls(project_dir: Path) -> None:
+    """Refuse to touch project state while a paid call has an unknown outcome.
+
+    Thin hook over ``tools.cost_tracker.resume_check``: a reservation that is
+    still ``submitting`` with no provider request id may already have been
+    charged. The human reconciles it by hand; the pipeline never resubmits.
+    """
+    from tools.cost_tracker import IndeterminatePaidCallError, resume_check
+
+    try:
+        resume_check(project_dir)
+    except IndeterminatePaidCallError as exc:
+        ids = [r.get("reservation_id") for r in exc.reservations]
+        raise CheckpointValidationError(
+            f"PAID CALL INDETERMINATE: {len(ids)} reservation(s) were submitted "
+            f"with no recorded provider request id or outcome: {ids}. Halting "
+            f"— reconcile each with the provider by hand (mark completed or "
+            f"failed in {project_dir / 'cost-reservations.jsonl'}) before "
+            f"writing any further checkpoint. Never resubmit automatically."
+        ) from exc
+
+
+def acquire_run_lease(pipeline_dir: Path, project_id: str, wall_time_minutes: float):
+    """Acquire the single-writer run lease for ``pipeline_dir/project_id``.
+
+    Thin wrapper over ``lib.run_lease.acquire``. The orchestrator calls this
+    once at run start and holds the returned ``Lease`` (context manager;
+    call ``heartbeat()`` periodically) for the whole run. Raises
+    ``lib.run_lease.LeaseHeldError`` when another live session owns it.
+    """
+    from lib.run_lease import acquire
+
+    return acquire(Path(pipeline_dir) / project_id, wall_time_minutes)
 
 
 def read_checkpoint(
@@ -574,7 +975,20 @@ def read_checkpoint(
     with open(path, encoding="utf-8") as f:
         checkpoint = json.load(f)
     validate_checkpoint(checkpoint)
+    _require_pin_bound(pipeline_dir, project_id, stage, path, checkpoint)
     return checkpoint
+
+
+def _require_pin_bound(
+    pipeline_dir: Path, project_id: str, stage: str, path: Path, checkpoint: dict[str, Any]
+) -> None:
+    """Round 2 #8: every project-context checkpoint read applies
+    ``_pin_mismatch``. Under a receipted (1.2) pin an unbound legacy or
+    mismatched checkpoint fails closed here, before any resume or boundary
+    consumer can act on it; projects with no signed pin are unchanged."""
+    mismatch = _pin_mismatch(pipeline_dir, project_id, checkpoint.get("pipeline_type"), stage, path, checkpoint)
+    if mismatch:
+        raise CheckpointValidationError(f"PIPELINE PIN VIOLATION: {mismatch}")
 
 
 def get_latest_checkpoint(
@@ -596,6 +1010,25 @@ def get_latest_checkpoint(
     with open(checkpoints[0], encoding="utf-8") as f:
         checkpoint = json.load(f)
     validate_checkpoint(checkpoint)
+    stage = checkpoint.get("stage") or checkpoints[0].stem[len("checkpoint_"):]
+    _require_pin_bound(pipeline_dir, project_id, str(stage), checkpoints[0], checkpoint)
+    return _project_invalidation(pipeline_dir, project_id, checkpoint)
+
+
+def _project_invalidation(pipeline_dir: Path, project_id: str, checkpoint: dict[str, Any]) -> dict[str, Any]:
+    """Return the checkpoint as read, plus ``invalidated_by`` when a retired
+    or replaced look/headshot invalidates it. The file is never rewritten;
+    an invalidated checkpoint is not ``completed`` for resume purposes."""
+    if checkpoint.get("status") != "completed":
+        return checkpoint
+    try:
+        invalidated = invalidated_stages(pipeline_dir, project_id, checkpoint.get("pipeline_type"))
+    except CheckpointValidationError:
+        return checkpoint
+    hit = invalidated.get(checkpoint.get("stage"))
+    if hit is not None:
+        checkpoint = dict(checkpoint)
+        checkpoint["invalidated_by"] = hit.to_dict()
     return checkpoint
 
 
@@ -608,13 +1041,59 @@ def get_completed_stages(
     pipeline's manifest — preventing false positives from leftover
     checkpoints of a different pipeline type.
     """
-    stages_to_check = get_pipeline_stages(pipeline_type)
+    ref = _effective_ref(pipeline_dir, project_id, pipeline_type) if pipeline_type else None
+    stages_to_check = get_pipeline_stages(ref or pipeline_type)
+    invalidated = invalidated_stages(pipeline_dir, project_id, pipeline_type) if pipeline_type else {}
     completed = []
     for stage in stages_to_check:
         cp = read_checkpoint(pipeline_dir, project_id, stage)
-        if cp and cp.get("status") == "completed":
+        if cp and cp.get("status") == "completed" and stage not in invalidated:
             completed.append(stage)
     return completed
+
+
+def entity_free_scene_ids(project_dir: Path | str) -> set[str]:
+    """Scene ids a generation call may treat as ``entity_free`` (round 2 #7).
+
+    ``entity_free`` is never trusted from the checkpoint file alone (an
+    editable project-file boolean). Ids are returned only from a
+    ``scene_plan`` checkpoint that is completed and human-approved,
+    non-invalidated, pin-bound (``read_checkpoint`` fails closed on a pin
+    mismatch), AND bound by a gate-signed ``artifact_review`` receipt whose
+    ``{artifact_type: scene_plan, artifact_digest}`` names this exact
+    checkpoint file's digest. Anything else — including any failure to
+    compute the invalidation set or read the receipts — yields the empty
+    set; callers must never fall back to the file.
+    """
+    root = Path(project_dir)
+    pipeline_dir, project_id = root.parent, root.name
+    try:
+        checkpoint = read_checkpoint(pipeline_dir, project_id, "scene_plan")
+    except (CheckpointValidationError, ValueError, OSError):
+        return set()
+    if not checkpoint or checkpoint.get("status") != "completed" or checkpoint.get("human_approved") is not True:
+        return set()
+    try:
+        invalidated = invalidated_stages(pipeline_dir, project_id, checkpoint.get("pipeline_type"))
+    except Exception:  # noqa: BLE001 — unknown invalidation state is not authorization
+        return set()
+    if "scene_plan" in invalidated:
+        return set()
+    digest = checkpoint_digest(_checkpoint_path(pipeline_dir, project_id, "scene_plan"))
+    from lib.receipts import verified_approvals
+
+    try:
+        reviews = verified_approvals(root, "artifact_review")
+    except Exception:  # noqa: BLE001 — an unverifiable receipt file authorizes nothing
+        return set()
+    if not any(r.get("artifact_type") == "scene_plan" and r.get("artifact_digest") == digest for r in reviews):
+        return set()
+    plan = (checkpoint.get("artifacts") or {}).get("scene_plan") or {}
+    return {
+        str(scene["id"])
+        for scene in plan.get("scenes") or []
+        if isinstance(scene, dict) and scene.get("entity_free") is True and scene.get("id") is not None
+    }
 
 
 def get_next_stage(
@@ -625,7 +1104,8 @@ def get_next_stage(
     Uses pipeline-specific stage order so that pipelines with different
     stage sequences (e.g. cinematic vs explainer) progress correctly.
     """
-    stages = get_pipeline_stages(pipeline_type) if pipeline_type else STAGES
+    ref = _effective_ref(pipeline_dir, project_id, pipeline_type) if pipeline_type else None
+    stages = get_pipeline_stages(ref or pipeline_type) if pipeline_type else STAGES
     completed = set(get_completed_stages(pipeline_dir, project_id, pipeline_type))
     for stage in stages:
         if stage not in completed:

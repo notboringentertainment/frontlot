@@ -291,14 +291,41 @@ class VideoSelector(BaseTool):
                 },
             )
 
-        # Normal generation — use scored selection
+        # Governance runs BEFORE any upload or delegation (inspection #9): a
+        # governed call is verified here (project, resume, egress config, look
+        # refs, reference lineage) and may only be delegated to providers that
+        # run the same boundary and return governance-bound receipts.
+        from tools.video import _shared
+
         task_context = self._prepare_task_context(inputs)
-        tool, score = self._select_best_tool(inputs, candidates, task_context)
+        selection = None
+        def governed_estimate(bound_inputs):
+            nonlocal selection
+            bound = [t for t in candidates if getattr(t, "governance_bound", False) is True]
+            selection = self._select_best_tool(bound_inputs, bound, task_context)
+            if selection[0] is None:
+                raise ValueError("No governance-bound video provider available for a governed call.")
+            return selection[0].estimate_cost(bound_inputs)
+
+        try:
+            governance = _shared.selector_governance(inputs, media="video", estimate_cost=governed_estimate)
+        except Exception as exc:  # noqa: BLE001 — every refusal stops delegation
+            return ToolResult(success=False, error=f"video_selector refused before delegation: {exc}")
+        if governance is not None:
+            candidates = [t for t in candidates if getattr(t, "governance_bound", False) is True]
+            if not candidates:
+                return ToolResult(success=False, error="No governance-bound video provider available for a governed call.")
+
+        # Normal generation — use scored selection
+        tool, score = selection or self._select_best_tool(inputs, candidates, task_context)
         if tool is None:
             return ToolResult(success=False, error="No video generation provider available.")
 
         # Adapt input keys: stock tools use 'query' while generators use 'prompt'
         adapted = dict(inputs)
+        if governance is not None:
+            # Bind the delegated call to the project that governed it (round 2 #9).
+            adapted.setdefault("project_dir", str(governance["project_root"]))
         if hasattr(tool, 'input_schema'):
             required = tool.input_schema.get("properties", {})
             if "query" in required and "query" not in adapted:
@@ -309,6 +336,14 @@ class VideoSelector(BaseTool):
             tool_props = getattr(tool, "input_schema", {}).get("properties", {})
             # If the provider uses image_url (not reference_image_path), upload and convert
             if "image_url" in tool_props and "image_url" not in adapted:
+                if governance is not None:
+                    # The selector never uploads on a governed call; the
+                    # governance-bound provider resolves and uploads its own
+                    # project-local references after its own boundary checks.
+                    return ToolResult(
+                        success=False,
+                        error=f"{tool.name} needs a remote image_url; governed calls pass project-local references only",
+                    )
                 try:
                     from tools.video._shared import upload_image_fal
                     adapted["image_url"] = upload_image_fal(adapted["reference_image_path"])

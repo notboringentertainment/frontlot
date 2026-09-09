@@ -7,6 +7,7 @@ let currentTheme = localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark
 function applyTheme(theme) {
   currentTheme = theme === "light" ? "light" : "dark";
   document.documentElement.dataset.theme = currentTheme;
+  document.querySelector('meta[name="theme-color"]').content = currentTheme === "light" ? "#efe4c9" : "#0a0a0c";
   localStorage.setItem(THEME_KEY, currentTheme);
 }
 
@@ -43,7 +44,13 @@ function miniRail(states) {
 function card(p) {
   const poster = el("div", { class: "lib-poster" });
   if (p.poster) {
-    poster.append(el("img", { src: thumbURL(p.project_id, p.poster, 640), loading: "lazy", alt: "" }));
+    poster.append(el("img", {
+      src: thumbURL(p.project_id, p.poster, 640),
+      width: "640",
+      height: "360",
+      loading: "lazy",
+      alt: "",
+    }));
   } else {
     poster.append(el("span", { class: "lp-txt" }, "NO MEDIA YET"));
   }
@@ -81,7 +88,7 @@ async function render() {
   badge.classList.toggle("idle", liveCount === 0);
   document.getElementById("liveText").textContent = liveCount ? `${liveCount} LIVE` : "IDLE";
   grid.innerHTML = "";
-  document.getElementById("empty").style.display = projects.length ? "none" : "block";
+  document.getElementById("empty").hidden = Boolean(projects.length);
   for (const p of projects) grid.append(card(p));
 }
 

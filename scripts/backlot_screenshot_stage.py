@@ -185,17 +185,22 @@ def stage_project(pid: str, title: str, palette: str, scenes: list, *,
     cp("research", "completed", {"research_brief": brief})
 
     proposal = sample_artifact("proposal_packet")
-    cp("proposal", "awaiting_human", {"proposal_packet": proposal})
+    proposal_decisions = decision_log(pid)
+    proposal_artifacts = {
+        "proposal_packet": proposal,
+        "decision_log": proposal_decisions,
+    }
+    cp("proposal", "awaiting_human", proposal_artifacts)
     cp(
         "proposal",
         "completed",
-        {"proposal_packet": proposal},
+        proposal_artifacts,
         human_approved=True,
     )
 
     script = script_artifact(title, scenes)
     plan = scene_plan_artifact(scenes, hero)
-    (art_dir / "decision_log.json").write_text(json.dumps(decision_log(pid), indent=2))
+    (art_dir / "decision_log.json").write_text(json.dumps(proposal_decisions, indent=2))
 
     if state == "early":
         cp("script", "in_progress", {})

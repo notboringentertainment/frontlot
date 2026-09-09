@@ -1,0 +1,848 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openmontage/artifacts/headshot_packet",
+  "title": "Headshot Packet",
+  "description": "Output of the headshots stage (authored-film 1.2), scoped to proposal_packet.cast.character_ids. One discriminated artifact: state=pending carries per character up to 4 candidate ImageRefs (generated from the prompt_recipe, or the single imported_synthetic hero) and no hero; state=approved carries per character the approved hero, its origin, pixel hash and the headshot approval receipt minted by the selection gate. Completion requires state=approved. Versioned: 1.0 (authored-film 1.2/1.3) and 1.1 (authored-film 1.4, D20): 1.1 requires per-candidate qc_receipt_id (pending) and qc_receipt_id beside approval_receipt_id (approved) \u2014 the signed hero verdict every candidate carries; generated 1.1 entries must carry prompt_recipe (enforced by lib.headshot_verify). entity_id is unique per packet (enforced by validate_artifact). 1.2 (authored-film 1.5): candidates raised to the hero-attempt cap (schema bound 24), each candidate optionally carrying its full batch-override citation (qc_override_receipt_id + qc_override_record_sha256 + field_manifest_sha256, all-or-none) or a sealed legacy_citations list; citation fields are forbidden below 1.2.",
+  "type": "object",
+  "required": [
+    "version",
+    "state",
+    "characters"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "enum": [
+        "1.0",
+        "1.1",
+        "1.2"
+      ]
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "approved"
+      ]
+    },
+    "characters": {
+      "type": "array"
+    },
+    "metadata": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "$ref": "#/$defs/by_state"
+    },
+    {
+      "$ref": "#/$defs/v1_1_rules"
+    },
+    {
+      "$ref": "#/$defs/v1_2_rules"
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "entity_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$",
+      "minLength": 1
+    },
+    "look_ref": {
+      "type": "object",
+      "required": [
+        "entity_kind",
+        "entity_id",
+        "look_hash",
+        "receipt_id"
+      ],
+      "properties": {
+        "entity_kind": {
+          "const": "character"
+        },
+        "entity_id": {
+          "$ref": "#/$defs/entity_id"
+        },
+        "look_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "receipt_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "prompt_recipe": {
+      "type": "object",
+      "required": [
+        "look_hash",
+        "builder_version",
+        "fields_used",
+        "rendered_sha256"
+      ],
+      "properties": {
+        "look_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "builder_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "builder_policy_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "D19.6: hash of the builder policy (templates, negatives, rules) that rendered this prompt; absent on pre-1.3 recipes"
+        },
+        "fields_used": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "rendered_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "additionalProperties": false
+    },
+    "image_ref": {
+      "type": "object",
+      "required": [
+        "asset_id",
+        "path",
+        "role",
+        "provenance"
+      ],
+      "properties": {
+        "asset_id": {
+          "$ref": "#/$defs/sha256"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))\\S+$"
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provenance": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "generator_kind",
+                "model_endpoint",
+                "prompt",
+                "generation_receipt_id"
+              ],
+              "properties": {
+                "generator_kind": {
+                  "const": "model"
+                },
+                "model_endpoint": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "prompt": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "seed": {
+                  "type": "integer"
+                },
+                "generation_receipt_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "generator_kind",
+                "tool",
+                "tool_version",
+                "parameters_hash",
+                "input_asset_ids",
+                "generation_receipt_id"
+              ],
+              "properties": {
+                "generator_kind": {
+                  "const": "local"
+                },
+                "tool": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tool_version": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "parameters_hash": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "input_asset_ids": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/sha256"
+                  }
+                },
+                "generation_receipt_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "generator_kind",
+                "origin_tool",
+                "attestation_receipt_id",
+                "import_receipt_id",
+                "normalized_pixel_hash",
+                "generation_receipt_id"
+              ],
+              "properties": {
+                "generator_kind": {
+                  "const": "imported"
+                },
+                "origin_tool": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "attestation_receipt_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The reference_import approval receipt (origin_class imported_synthetic) binding origin, normalized pixel hash and attestation"
+                },
+                "import_receipt_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The generation receipt (generator_kind imported) that ledgered the normalized object; equals generation_receipt_id"
+                },
+                "normalized_pixel_hash": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "generation_receipt_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "qc_receipt_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "D20 (packet 1.1): the signed hero verdict (qc stream, role hero) for exactly this asset; required on every 1.1 candidate"
+        },
+        "qc_override_receipt_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "Packet 1.2: the record-1.1 batch override receipt this candidate's eligibility cites; null/absent for passing candidates"
+        },
+        "qc_override_record_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Packet 1.2: canonical hash of the cited batch record \u2014 exact_approval's binding; all-or-none with the receipt id and manifest"
+        },
+        "field_manifest_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Packet 1.2: digest of the reviewed field the citation binds"
+        },
+        "legacy_citations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "receipt_id",
+              "record_sha256"
+            ],
+            "properties": {
+              "receipt_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "record_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            },
+            "additionalProperties": false
+          },
+          "description": "Packet 1.2: deterministic sufficient set of verdict-bound 1.0 override citations sealed at packet creation; exclusive with the batch citation fields"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "allOf": [
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "required": [
+                          "qc_override_receipt_id"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "qc_override_receipt_id": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "qc_override_receipt_id"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "required": [
+                          "qc_override_record_sha256"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "qc_override_record_sha256": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "qc_override_record_sha256"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "required": [
+                          "field_manifest_sha256"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "field_manifest_sha256": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "field_manifest_sha256"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "not": {
+                    "required": [
+                      "legacy_citations"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "required": [
+                          "qc_override_receipt_id"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "qc_override_receipt_id": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "qc_override_receipt_id"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "required": [
+                          "qc_override_record_sha256"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "qc_override_record_sha256": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "qc_override_record_sha256"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "required": [
+                          "field_manifest_sha256"
+                        ]
+                      }
+                    },
+                    {
+                      "properties": {
+                        "field_manifest_sha256": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "field_manifest_sha256"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "required": [
+                    "legacy_citations"
+                  ],
+                  "properties": {
+                    "legacy_citations": {
+                      "minItems": 1
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "required": [
+                "qc_override_receipt_id",
+                "qc_override_record_sha256",
+                "field_manifest_sha256"
+              ],
+              "properties": {
+                "qc_override_receipt_id": {
+                  "type": "string"
+                },
+                "qc_override_record_sha256": {
+                  "type": "string"
+                },
+                "field_manifest_sha256": {
+                  "type": "string"
+                }
+              },
+              "not": {
+                "required": [
+                  "legacy_citations"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "pending_entry": {
+      "type": "object",
+      "required": [
+        "entity_kind",
+        "entity_id",
+        "look_ref",
+        "candidates"
+      ],
+      "properties": {
+        "entity_kind": {
+          "const": "character"
+        },
+        "entity_id": {
+          "$ref": "#/$defs/entity_id"
+        },
+        "look_ref": {
+          "$ref": "#/$defs/look_ref"
+        },
+        "prompt_recipe": {
+          "$ref": "#/$defs/prompt_recipe"
+        },
+        "candidates": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 24,
+          "items": {
+            "$ref": "#/$defs/image_ref"
+          }
+        },
+        "rejection_notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Logged notes from earlier reject-all rounds"
+        }
+      },
+      "additionalProperties": false
+    },
+    "approved_entry": {
+      "type": "object",
+      "required": [
+        "entity_kind",
+        "entity_id",
+        "look_ref",
+        "hero",
+        "origin",
+        "normalized_pixel_hash",
+        "approval_receipt_id",
+        "candidates_rejected"
+      ],
+      "properties": {
+        "entity_kind": {
+          "const": "character"
+        },
+        "entity_id": {
+          "$ref": "#/$defs/entity_id"
+        },
+        "look_ref": {
+          "$ref": "#/$defs/look_ref"
+        },
+        "prompt_recipe": {
+          "$ref": "#/$defs/prompt_recipe"
+        },
+        "hero": {
+          "$ref": "#/$defs/image_ref"
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "generated",
+            "imported_synthetic"
+          ]
+        },
+        "import_receipt_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "normalized_pixel_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "approval_receipt_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidates_checkpoint_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "candidates_rejected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sha256"
+          }
+        },
+        "rejection_notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "qc_receipt_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "D20 (packet 1.1): the hero verdict the selection gate relied on; sealed into the headshot record 1.1"
+        }
+      },
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "origin": {
+            "const": "imported_synthetic"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "import_receipt_id"
+        ]
+      }
+    },
+    "by_state": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "pending"
+            },
+            "characters": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/pending_entry"
+              }
+            }
+          },
+          "required": [
+            "state",
+            "characters"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "approved"
+            },
+            "characters": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/approved_entry"
+              }
+            }
+          },
+          "required": [
+            "state",
+            "characters"
+          ]
+        }
+      ]
+    },
+    "v1_1_rules": {
+      "if": {
+        "properties": {
+          "version": {
+            "const": "1.1"
+          }
+        }
+      },
+      "then": {
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "state": {
+                  "const": "pending"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "characters": {
+                  "items": {
+                    "properties": {
+                      "candidates": {
+                        "items": {
+                          "required": [
+                            "qc_receipt_id"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "state": {
+                  "const": "approved"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "characters": {
+                  "items": {
+                    "required": [
+                      "qc_receipt_id"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "v1_2_rules": {
+      "if": {
+        "properties": {
+          "version": {
+            "enum": [
+              "1.0",
+              "1.1"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "characters": {
+            "items": {
+              "allOf": [
+                {
+                  "properties": {
+                    "candidates": {
+                      "maxItems": 4,
+                      "items": {
+                        "not": {
+                          "anyOf": [
+                            {
+                              "required": [
+                                "qc_override_receipt_id"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "qc_override_record_sha256"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "field_manifest_sha256"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "legacy_citations"
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "hero": {
+                      "not": {
+                        "anyOf": [
+                          {
+                            "required": [
+                              "qc_override_receipt_id"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "qc_override_record_sha256"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "field_manifest_sha256"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "legacy_citations"
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "else": {
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "version": {
+                  "const": "1.2"
+                },
+                "state": {
+                  "const": "pending"
+                }
+              },
+              "required": [
+                "version"
+              ]
+            },
+            "then": {
+              "properties": {
+                "characters": {
+                  "items": {
+                    "properties": {
+                      "candidates": {
+                        "items": {
+                          "required": [
+                            "qc_receipt_id"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "version": {
+                  "const": "1.2"
+                },
+                "state": {
+                  "const": "approved"
+                }
+              },
+              "required": [
+                "version"
+              ]
+            },
+            "then": {
+              "properties": {
+                "characters": {
+                  "items": {
+                    "required": [
+                      "qc_receipt_id"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

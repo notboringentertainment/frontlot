@@ -1,7 +1,7 @@
 // Backlot project board — renders BoardState and stays live via SSE.
 
 import {
-  STAGE_ICONS, el, fmtAgo, fmtClock, fmtDuration, fmtMoney,
+  CAPABILITY_TOKEN_KEY, STAGE_ICONS, el, fmtAgo, fmtClock, fmtDuration, fmtMoney,
   getJSON, mediaURL, subscribe, thumbURL, waveBars,
 } from "/ui/lib.js";
 
@@ -11,6 +11,10 @@ const encodedProjectId = encodeURIComponent(projectId);
 const app = document.getElementById("app");
 const modal = document.getElementById("modal");
 const player = document.getElementById("player");
+const terminalShell = document.getElementById("gate-terminal-shell");
+const terminalMount = document.getElementById("gate-terminal");
+const terminalState = document.getElementById("gate-terminal-state");
+const terminalMessage = document.getElementById("gate-terminal-message");
 
 const THEME_KEY = "backlot.theme";
 let currentTheme = localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark";
@@ -19,10 +23,135 @@ let selectedStage = null;   // stage drawer open for this stage name
 let activeRender = 0;
 let replay = null;          // {t0, t1, t, playing} — replay mode when non-null
 let firstPaint = true;
+let selectedGateId = null;
+let gateDetail = null;
+let gateDetailState = "idle";
+let gateDetailError = "";
+let openGateSessions = [];
+let copyStatus = "";
+let refreshGeneration = 0;
+let refreshController = null;
+let gateSelectionGeneration = 0;
+let gateDetailController = null;
+
+const TERMINAL_THEME = {
+  background: "#09090b",
+  foreground: "#ececef",
+  cursor: "#f0a83c",
+  cursorAccent: "#09090b",
+  selectionBackground: "rgba(240, 168, 60, .32)",
+  black: "#09090b",
+  red: "#e5544b",
+  green: "#4fc283",
+  yellow: "#f0a83c",
+  blue: "#6aa1ff",
+  magenta: "#bd8cff",
+  cyan: "#66cbd1",
+  white: "#ececef",
+  brightBlack: "#5f5f68",
+  brightWhite: "#ffffff",
+};
+
+function makeGateSession() {
+  const TerminalClass = window.Terminal;
+  const FitClass = window.FitAddon && window.FitAddon.FitAddon;
+  const terminal = TerminalClass ? new TerminalClass({
+    convertEol: true,
+    cursorBlink: true,
+    cursorStyle: "block",
+    fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+    fontSize: 14,
+    lineHeight: 1.22,
+    minimumContrastRatio: 7,
+    screenReaderMode: true,
+    scrollback: 5000,
+    tabStopWidth: 4,
+    theme: TERMINAL_THEME,
+  }) : null;
+  const fitAddon = FitClass ? new FitClass() : null;
+  if (terminal && fitAddon) terminal.loadAddon(fitAddon);
+
+  const session = {
+    terminal,
+    fitAddon,
+    socket: null,
+    requestId: null,
+    inputReady: false,
+    receivedRefresh: false,
+    evidenceChanged: false,
+    fitFrame: null,
+  };
+
+  if (terminal) {
+    terminal.open(terminalMount);
+    const input = terminalMount.querySelector(".xterm-helper-textarea");
+    if (input) input.setAttribute("aria-label", "Gate signing terminal input");
+    terminal.onData((data) => {
+      if (!session.inputReady || !session.socket || session.socket.readyState !== WebSocket.OPEN) return;
+      session.socket.send(new TextEncoder().encode(data));
+    });
+  }
+
+  return session;
+}
+
+// One page-lifetime object owns exactly one Terminal, FitAddon, and WebSocket.
+// Re-importing this module under a cache-busted URL reuses the same singleton.
+// Neither render() nor the SSE refresh path replaces this object or its mount.
+export const gateSession = window.__backlotGateSession || makeGateSession();
+if (!window.__backlotGateSession) {
+  Object.defineProperty(window, "__backlotGateSession", {
+    value: gateSession,
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
+}
+
+function setTerminalStatus(label, message, tone = "") {
+  terminalState.textContent = label;
+  terminalState.className = `terminal-state${tone ? ` ${tone}` : ""}`;
+  terminalMessage.textContent = message;
+}
+
+function scheduleTerminalFit(sendResize = true) {
+  if (!gateSession.terminal || !gateSession.fitAddon || terminalShell.hidden) return;
+  cancelAnimationFrame(gateSession.fitFrame);
+  gateSession.fitFrame = requestAnimationFrame(() => {
+    try {
+      gateSession.fitAddon.fit();
+    } catch {
+      return;
+    }
+    if (!sendResize || !gateSession.socket || gateSession.socket.readyState !== WebSocket.OPEN) return;
+    const cols = Math.max(10, Math.min(500, gateSession.terminal.cols));
+    const rows = Math.max(3, Math.min(300, gateSession.terminal.rows));
+    gateSession.socket.send(JSON.stringify({ type: "resize", cols, rows }));
+  });
+}
+
+if (window.ResizeObserver) {
+  new ResizeObserver(() => scheduleTerminalFit()).observe(terminalShell);
+}
+
+function stableSerialize(value) {
+  if (Array.isArray(value)) return `[${value.map(stableSerialize).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function stablePacketContent(detail) {
+  if (!detail || typeof detail !== "object") return stableSerialize(detail);
+  const { snapshot_at: _snapshotAt, ...content } = detail;
+  return stableSerialize(content);
+}
 
 function applyTheme(theme) {
   currentTheme = theme === "light" ? "light" : "dark";
   document.documentElement.dataset.theme = currentTheme;
+  document.querySelector('meta[name="theme-color"]').content = currentTheme === "light" ? "#efe4c9" : "#0a0a0c";
   localStorage.setItem(THEME_KEY, currentTheme);
 }
 
@@ -96,6 +225,7 @@ function renderSlate(s) {
       el("h1", {}, s.title),
     ),
     ...chips,
+    hasAuthoredGates(s) ? gatesCTA("GATES") : null,
     el("div", { class: "spacer" }),
     renderThemeToggle(),
     liveEl,
@@ -108,7 +238,7 @@ function renderSlate(s) {
 // ---------------------------------------------------------------------------
 
 function stageSub(st) {
-  if (st.status === "awaiting_human") return "awaiting your approval\nreply in chat to continue";
+  if (st.status === "awaiting_human") return "awaiting your approval";
   if (st.status === "in_progress" && st.stalled) {
     return `stalled? no activity for ${st.stalled_minutes}m\nask the agent for status`;
   }
@@ -126,6 +256,10 @@ function stageSub(st) {
   return "";
 }
 
+function gatesCTA(label = "OPEN GATES") {
+  return el("a", { class: "gates-cta", href: "#gates" }, label);
+}
+
 function renderRail(s) {
   const rail = el("nav", { class: "rail" });
   let pendingIndex = 1;
@@ -139,13 +273,20 @@ function renderRail(s) {
     const node = el("div", {
       class: `stage ${cls}${selectedStage === st.name ? " selected" : ""}${st.undeclared ? " undeclared" : ""}`,
       title: st.undeclared ? `"${st.name}" ran but isn't declared by this pipeline's manifest` : null,
-      onclick: () => toggleDrawer(st.name),
     },
       el("span", { class: "line" }),
-      el("span", { class: "node" }, icon),
-      el("span", { class: "name" }, st.name),
-      el("span", { class: "sub", style: "white-space:pre-line" },
-        st.undeclared ? `${stageSub(st)}\nunlisted`.trim() : stageSub(st)),
+      el("button", {
+        class: "stage-select",
+        type: "button",
+        "aria-expanded": selectedStage === st.name ? "true" : "false",
+        "aria-label": `Open ${st.name} stage details: ${st.status}`,
+        onclick: () => toggleDrawer(st.name),
+      },
+        el("span", { class: "node" }, icon),
+        el("span", { class: "name" }, st.name),
+        el("span", { class: "sub", style: "white-space:pre-line" },
+          st.undeclared ? `${stageSub(st)}\nunlisted`.trim() : stageSub(st))),
+      st.status === "awaiting_human" && hasAuthoredGates(s) ? gatesCTA() : null,
     );
     rail.append(node);
   }
@@ -511,7 +652,9 @@ function renderApprovalReview(s) {
       el("div", {},
         el("div", { class: "approval-eyebrow" }, "REVIEW GATE"),
         el("h2", {}, `${humanize(awaiting.name)} is ready for your review`),
-        el("p", {}, "Review the artifact here, then reply in chat to approve it or request changes."),
+        el("p", {},
+          "Review the artifact here. ",
+          hasAuthoredGates(s) ? gatesCTA("GO TO GATES") : "Continue with your agent when the review is complete."),
       ),
       el("span", { class: "approval-status" }, "PENDING APPROVAL"),
     ),
@@ -884,7 +1027,595 @@ function renderAwaitingNotice(s) {
     el("span", { style: "font-size:calc(16px * var(--fs-scale))" }, "◈"),
     el("span", {},
       el("b", {}, `The ${awaiting.name} stage is waiting for your review. `),
-      "The agent is paused at this gate — reply ", el("b", {}, "in chat"), " to approve or request changes."));
+      "The agent is paused at this gate. ",
+      hasAuthoredGates(s) ? gatesCTA("OPEN GATES TO REVIEW AND SIGN") : "Continue the review with your agent."));
+}
+
+// ---------------------------------------------------------------------------
+// Authored-film gates workbench
+// ---------------------------------------------------------------------------
+
+function hasAuthoredGates(s) {
+  return s.pipeline.pipeline_type === "authored-film" && s.gates != null;
+}
+
+function fmtGateTime(value) {
+  if (value == null || value === "") return "—";
+  const date = typeof value === "number" ? new Date(value * 1000) : new Date(value);
+  if (!Number.isFinite(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function gateStateChip(value) {
+  const stateName = String(value || "unknown");
+  return el("span", { class: `gate-state-chip ${stateName}` }, humanize(stateName));
+}
+
+function gateRowById(s, requestId) {
+  return ((s.gates && s.gates.requests) || []).find((row) => row.request_id === requestId) || null;
+}
+
+function focusGateDetail(preferHeading = false) {
+  requestAnimationFrame(() => {
+    const target = preferHeading
+      ? document.getElementById("gate-detail-heading") || document.getElementById("gate-detail")
+      : document.getElementById("gate-detail");
+    if (target) target.focus();
+  });
+}
+
+async function selectGate(requestId, { background = false } = {}) {
+  const generation = ++gateSelectionGeneration;
+  if (gateDetailController) gateDetailController.abort();
+  const controller = new AbortController();
+  gateDetailController = controller;
+  selectedGateId = requestId;
+  if (!background) {
+    gateDetail = null;
+    gateDetailError = "";
+    gateDetailState = "loading";
+    copyStatus = "";
+    render();
+    focusGateDetail(false);
+  }
+  try {
+    const detail = await getJSON(
+      `/api/project/${encodedProjectId}/gate/${encodeURIComponent(requestId)}`,
+      { signal: controller.signal },
+    );
+    if (generation !== gateSelectionGeneration || selectedGateId !== requestId) return;
+    gateDetail = detail;
+    gateDetailState = "ready";
+  } catch (error) {
+    if (error && error.name === "AbortError") return;
+    if (generation !== gateSelectionGeneration || selectedGateId !== requestId) return;
+    gateDetailError = String(error);
+    gateDetailState = "error";
+  } finally {
+    if (gateDetailController === controller) gateDetailController = null;
+  }
+  render();
+  if (!background) focusGateDetail(true);
+}
+
+function renderGateRows(s) {
+  const requests = Array.isArray(s.gates.requests) ? s.gates.requests : [];
+  if (!requests.length) {
+    return el("div", { class: "gate-empty" },
+      el("b", {}, "No gate requests"),
+      el("p", {}, "When authored-film evidence reaches a governance checkpoint, it will appear here."));
+  }
+
+  const body = el("tbody");
+  for (const row of requests) {
+    const conflict = row.state === "conflict";
+    const archival = ["done", "declined", "abandoned"].includes(row.state);
+    const selected = selectedGateId === row.request_id;
+    const selector = conflict
+      ? el("span", { class: "gate-request-id" }, row.request_id)
+      : el("button", {
+        class: "gate-row-select",
+        type: "button",
+        "aria-label": `Inspect ${row.kind} gate ${row.request_id}`,
+        "aria-pressed": selected ? "true" : "false",
+        onclick: () => selectGate(row.request_id),
+      }, row.request_id);
+    const readOnly = archival
+      ? el("div", { class: "gate-row-archive" },
+        row.approval_receipt_id ? `Receipt ${row.approval_receipt_id}` : null,
+        row.declined_note ? `Note: ${row.declined_note}` : null,
+        row.state === "abandoned" ? "No decision was recorded." : null)
+      : null;
+    body.append(el("tr", {
+      class: `${selected ? "selected " : ""}${conflict ? "conflict" : ""}`.trim(),
+    },
+      el("td", {}, gateStateChip(row.state)),
+      el("td", {}, selector),
+      el("td", {},
+        el("b", {}, humanize(row.kind)),
+        el("span", {}, `${row.stage || "—"} · ${row.scope || "—"}`)),
+      el("td", {},
+        el("span", { class: "gate-summary" }, row.summary || "No summary supplied."),
+        el("span", { class: "gate-entity" }, row.entity_id || "—"),
+        readOnly),
+      el("td", { class: "gate-mtime" }, fmtGateTime(row.mtime)),
+    ));
+  }
+
+  return el("div", { class: "gate-table-scroll" },
+    el("table", { class: "gate-table" },
+      el("caption", { class: "sr-only" }, "Authored-film gate requests and their current states"),
+      el("thead", {}, el("tr", {},
+        el("th", { scope: "col" }, "State"),
+        el("th", { scope: "col" }, "Request"),
+        el("th", { scope: "col" }, "Kind / stage"),
+        el("th", { scope: "col" }, "Evidence scope"),
+        el("th", { scope: "col" }, "Modified"))),
+      body));
+}
+
+function visualFigure(s, visual, label, ordinal = null) {
+  const name = ordinal == null ? String(label || visual.label || "evidence") : `[${ordinal}]`;
+  const description = ordinal == null
+    ? `${humanize(label || visual.label || "evidence")} for ${selectedGateId}`
+    : `Candidate ${ordinal} for ${selectedGateId}`;
+  const meta = [visual.asset_id ? `asset ${String(visual.asset_id).slice(0, 12)}` : null, visual.error]
+    .filter(Boolean).join(" · ");
+  const frame = visual.path && !visual.error
+    ? el("a", {
+      class: "gate-evidence-link",
+      href: mediaURL(s.project_id, visual.path),
+      target: "_blank",
+      rel: "noreferrer",
+      "aria-label": `Open full-size ${description}`,
+    }, el("img", {
+      class: "gate-evidence-image",
+      src: thumbURL(s.project_id, visual.path, 640),
+      width: "640",
+      height: "480",
+      loading: "lazy",
+      alt: description,
+    }))
+    : el("div", { class: "gate-evidence-missing", role: visual.error ? "alert" : null },
+      visual.error || "Evidence image unavailable");
+  return el("figure", { class: `gate-evidence-card${visual.error ? " error" : ""}` },
+    frame,
+    el("figcaption", {},
+      el("b", {}, name),
+      label && name !== label ? el("span", {}, humanize(label)) : null,
+      meta ? el("span", {}, meta) : null));
+}
+
+function textEvidence(label, value) {
+  const rendered = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  return el("section", { class: "gate-text-evidence" },
+    el("h4", {}, humanize(label)),
+    el("pre", {}, rendered == null || rendered === "" ? "No value supplied." : rendered));
+}
+
+function renderPacketEvidence(s, packet) {
+  if (!packet || typeof packet !== "object") {
+    return el("div", { class: "gate-empty" }, "This request has no evidence packet.");
+  }
+  const output = el("div", { class: "gate-packet" });
+  if (packet.packet_error || packet.error) {
+    output.append(el("div", { class: "gate-packet-error", role: "alert" },
+      el("b", {}, "EVIDENCE PACKET ERROR"),
+      el("span", {}, packet.error || "One or more evidence records failed verification.")));
+  }
+
+  const visuals = [];
+  if (Array.isArray(packet.candidates)) {
+    for (const candidate of packet.candidates) {
+      if (!candidate || !candidate.visual) continue;
+      visuals.push(visualFigure(
+        s,
+        candidate.visual,
+        candidate.generator_kind || candidate.visual.label || "candidate",
+        candidate.number,
+      ));
+    }
+  }
+  if (Array.isArray(packet.visuals)) {
+    for (const visual of packet.visuals) {
+      if (visual) visuals.push(visualFigure(s, visual, visual.label));
+    }
+  }
+  if (packet.visual) visuals.push(visualFigure(s, packet.visual, packet.visual.label));
+  if (Array.isArray(packet.field_rows)) {
+    // Batch hero waiver (authored-film 1.5): the whole reviewed field —
+    // every failed candidate with its failing items. The board only shows;
+    // the signer reconstructs, previews the unlock, and binds the digest.
+    let n = 0;
+    for (const row of packet.field_rows) {
+      if (!row || !row.visual) continue;
+      n += 1;
+      const items = Array.isArray(row.failing_items) ? row.failing_items.join(", ") : "";
+      visuals.push(visualFigure(s, row.visual, `FAIL ${items || "(unknown items)"}`, n));
+    }
+  }
+  if (visuals.length) {
+    output.append(el("div", { class: "gate-contact-sheet" }, visuals));
+  }
+
+  if (Array.isArray(packet.qc_rows)) {
+    const qc = el("div", { class: "gate-qc-list" });
+    for (const row of packet.qc_rows) {
+      qc.append(el("section", { class: "gate-qc-row" },
+        el("div", { class: "gate-qc-head" },
+          el("b", {}, humanize(row.role || "sheet role")),
+          el("span", {}, row.label || "unverified")),
+        el("pre", {}, JSON.stringify(row.row, null, 2))));
+    }
+    output.append(qc);
+  }
+
+  const visualKeys = new Set(["candidates", "visuals", "visual", "qc_rows", "field_rows", "packet_error", "error"]);
+  // Short scalar fields (counts, hashes, flags) read as one quiet chip strip;
+  // anything long or structured keeps its own labelled block.
+  const chips = [];
+  const blocks = [];
+  for (const [key, value] of Object.entries(packet)) {
+    if (visualKeys.has(key)) continue;
+    const scalar = ["string", "number", "boolean"].includes(typeof value);
+    const text = scalar ? String(value) : null;
+    if (scalar && text.length <= 64 && !text.includes("\n")) {
+      chips.push(el("div", { class: "gate-meta-chip" },
+        el("dt", {}, humanize(key)), el("dd", {}, text === "" ? "—" : text)));
+    } else {
+      blocks.push(textEvidence(key, value));
+    }
+  }
+  if (chips.length) output.append(el("dl", { class: "gate-meta-strip" }, chips));
+  for (const block of blocks) output.append(block);
+  if (!output.childNodes.length) output.append(el("div", { class: "gate-empty" }, "The evidence packet is empty."));
+  return output;
+}
+
+function websocketCloseMessage(code, reason) {
+  if (code === 4401) return ["AUTH REQUIRED", "The signing capability is missing or expired. Reopen Backlot from the CLI.", "error"];
+  if (code === 4409 && /identity mismatch/i.test(reason || "")) return ["IDENTITY MISMATCH", "The live signer does not match this gate request.", "error"];
+  if (code === 4409) return ["SIGNER BUSY", "A signing terminal is already attached to this project. Use the open-session reconnect action when it becomes available.", "warn"];
+  if (code === 4423) return ["RUN LEASE HELD", "A live production run currently owns the project lease.", "warn"];
+  if (code === 4422) return ["EVIDENCE UNAVAILABLE", "The signer is still alive, but input remains locked until the evidence packet is complete.", "error"];
+  if (code === 4400) return ["REQUEST STALE", "The gate request changed before signing could begin.", "warn"];
+  if (code === 4403) return ["ORIGIN REFUSED", "Backlot refused this page origin.", "error"];
+  if (code === 4404) return ["REQUEST MISSING", "The project or gate request is no longer available.", "error"];
+  if (code === 1011) return ["SIGNER UNAVAILABLE", reason || "The signing broker is unavailable.", "error"];
+  if (code === 1000) return ["SESSION CLOSED", "The signing session closed.", ""];
+  return ["CONNECTION CLOSED", reason || `Terminal connection closed (${code}).`, "warn"];
+}
+
+function startSigning(requestId) {
+  if (gateSession.socket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(gateSession.socket.readyState)) return;
+  let token = null;
+  try {
+    token = sessionStorage.getItem(CAPABILITY_TOKEN_KEY);
+  } catch {
+    token = null;
+  }
+  terminalShell.hidden = false;
+  if (!token) {
+    setTerminalStatus("AUTH REQUIRED", "Reopen Backlot from the CLI to establish a signing capability.", "error");
+    terminalShell.scrollIntoView({ behavior: "auto", block: "start" });
+    return;
+  }
+  if (!gateSession.terminal) {
+    setTerminalStatus("TERMINAL UNAVAILABLE", "The vendored terminal runtime did not load.", "error");
+    return;
+  }
+
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(`${scheme}//${location.host}/api/project/${encodedProjectId}/gate/${encodeURIComponent(requestId)}/tty`);
+  socket.binaryType = "arraybuffer";
+  gateSession.socket = socket;
+  gateSession.requestId = requestId;
+  gateSession.inputReady = false;
+  gateSession.receivedRefresh = false;
+  gateSession.evidenceChanged = false;
+  setTerminalStatus("CONNECTING", `Opening signing session for ${requestId}…`, "warn");
+  terminalShell.scrollIntoView({ behavior: "auto", block: "start" });
+
+  socket.addEventListener("open", () => {
+    if (gateSession.socket !== socket) return;
+    socket.send(JSON.stringify({ k: token }));
+    setTerminalStatus("VERIFYING LEASE", "Terminal input is locked while Backlot refreshes the evidence packet.", "warn");
+    scheduleTerminalFit();
+  });
+  socket.addEventListener("message", async (event) => {
+    if (gateSession.socket !== socket) return;
+    if (event.data instanceof ArrayBuffer) {
+      gateSession.terminal.write(new Uint8Array(event.data));
+      return;
+    }
+    if (event.data instanceof Blob) {
+      gateSession.terminal.write(new Uint8Array(await event.data.arrayBuffer()));
+      return;
+    }
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (message.type === "packet_refreshed" && message.packet) {
+      const changed = gateDetail && stablePacketContent(gateDetail) !== stablePacketContent(message.packet);
+      gateDetail = message.packet;
+      gateDetailState = "ready";
+      gateDetailError = "";
+      selectedGateId = requestId;
+      gateSession.receivedRefresh = true;
+      gateSession.evidenceChanged = Boolean(changed);
+      gateSession.inputReady = false;
+      render();
+      const packetError = Boolean(
+        gateDetail.packet_error || gateDetail.error || gateDetail.packet?.packet_error,
+      );
+      setTerminalStatus(
+        packetError ? "EVIDENCE UNAVAILABLE" : changed ? "EVIDENCE CHANGED" : "EVIDENCE REFRESHED",
+        packetError
+          ? "The signer remains detached and alive, but terminal input is locked until a complete evidence packet can be shown."
+          : changed
+          ? "Evidence changed under the signing lease. Review the refreshed packet above before typing."
+          : "Evidence is refreshed under lease. Waiting for the relay to open the input channel.",
+        packetError ? "error" : "warn",
+      );
+      return;
+    }
+    if (message.type === "input_ready") {
+      const packetError = Boolean(
+        gateDetail?.packet_error || gateDetail?.error || gateDetail?.packet?.packet_error,
+      );
+      if (!gateSession.receivedRefresh || packetError) return;
+      setTerminalStatus(
+        gateSession.evidenceChanged ? "EVIDENCE CHANGED" : "INPUT READY",
+        gateSession.evidenceChanged
+          ? "Evidence changed under the signing lease. Review the refreshed packet above before typing."
+          : "Evidence is refreshed under lease. Terminal input is now enabled.",
+        gateSession.evidenceChanged ? "warn" : "ready",
+      );
+      requestAnimationFrame(() => {
+        if (gateSession.socket !== socket || !gateSession.receivedRefresh) return;
+        gateSession.inputReady = true;
+        scheduleTerminalFit();
+        gateSession.terminal.focus();
+      });
+      return;
+    }
+    if (message.type === "status") {
+      if (message.signer === "exited") gateSession.inputReady = false;
+      setTerminalStatus(
+        message.signer === "exited" ? "SIGNER EXITED" : "SIGNING IN PROGRESS",
+        message.exit_code == null ? `Signer status: ${message.signer || "active"}.` : `Signer exited with status ${message.exit_code}.`,
+        message.exit_code ? "error" : "ready",
+      );
+      return;
+    }
+    if (message.type === "lifecycle") {
+      setTerminalStatus("SIGNING IN PROGRESS", message.message || message.status || "Signer lifecycle updated.", "ready");
+      return;
+    }
+    if (message.type === "bye") {
+      gateSession.inputReady = false;
+      setTerminalStatus("SESSION COMPLETE", message.reason ? `Signer closed: ${message.reason}.` : "Signer session complete.", "");
+    }
+  });
+  socket.addEventListener("error", () => {
+    if (gateSession.socket === socket) setTerminalStatus("CONNECTION ERROR", "The terminal connection could not be completed.", "error");
+  });
+  socket.addEventListener("close", (event) => {
+    if (gateSession.socket !== socket) return;
+    gateSession.inputReady = false;
+    const [label, message, tone] = websocketCloseMessage(event.code, event.reason);
+    setTerminalStatus(label, message, tone);
+    gateSession.socket = null;
+    refresh().catch(() => {});
+  });
+}
+
+async function copyCommand(command) {
+  try {
+    await navigator.clipboard.writeText(command);
+    copyStatus = "Command copied.";
+  } catch {
+    copyStatus = "Copy failed. Select the command text manually.";
+  }
+  const status = document.querySelector("[data-gate-copy-status]");
+  if (status) status.textContent = copyStatus;
+}
+
+function renderCanonStrip(s) {
+  const canon = Array.isArray(s.gates.canon) ? [...s.gates.canon] : [];
+  canon.sort((a, b) => (a.entity || "").localeCompare(b.entity || "")
+    || ({ hero: 0, turnaround: 1, expressions: 2 }[a.role] ?? 9)
+      - ({ hero: 0, turnaround: 1, expressions: 2 }[b.role] ?? 9));
+  const strip = el("div", { class: "canon-strip" });
+  for (const entry of canon) {
+    strip.append(el("a", {
+      class: `canon-frame${entry.role === "hero" ? " hero" : ""}`,
+      href: mediaURL(s.project_id, entry.object_rel),
+      target: "_blank",
+      rel: "noreferrer",
+    },
+      el("img", {
+        src: thumbURL(s.project_id, entry.object_rel, entry.role === "hero" ? 640 : 320),
+        width: entry.role === "hero" ? "640" : "320",
+        height: entry.role === "hero" ? "480" : "240",
+        loading: "lazy",
+        alt: `${humanize(entry.role)} canon reference for ${entry.entity}`,
+      }),
+      el("span", {}, entry.entity, el("b", {}, humanize(entry.role)))));
+  }
+  if (!canon.length) strip.append(el("div", { class: "gate-empty" }, "No visual canon has been published yet."));
+  const looks = Array.isArray(s.gates.looks) ? s.gates.looks : [];
+  for (const look of looks) {
+    const ticket = typeof look.source_ticket_ref === "object"
+      ? look.source_ticket_ref.id || JSON.stringify(look.source_ticket_ref)
+      : look.source_ticket_ref;
+    strip.append(el("div", { class: "canon-look" },
+      el("span", {}, `${look.entity_kind || "entity"} · ${look.entity || "—"}`),
+      el("b", {}, `look ${String(look.look_hash || "—").slice(0, 12)}`),
+      el("small", {}, `ticket ${ticket || "—"}`)));
+  }
+  return strip;
+}
+
+function renderGateDetail(s) {
+  if (!selectedGateId) {
+    return el("section", { class: "gate-detail empty-detail", id: "gate-detail", tabindex: "-1" },
+      el("div", { class: "gate-empty" },
+        el("b", {}, "Select a request to inspect its evidence"),
+        el("p", {}, "Evidence is loaded only when requested and refreshed again under the signing lease.")));
+  }
+  const summary = gateRowById(s, selectedGateId);
+  if (gateDetailState === "loading") {
+    return el("section", {
+      class: "gate-detail",
+      id: "gate-detail",
+      tabindex: "-1",
+      role: "status",
+      "aria-live": "polite",
+      "aria-busy": "true",
+    }, el("h3", { class: "gate-loading" }, "Loading evidence…"));
+  }
+  if (gateDetailState === "error") {
+    return el("section", {
+      class: "gate-detail",
+      id: "gate-detail",
+      tabindex: "-1",
+      "aria-labelledby": "gate-detail-heading",
+    },
+      el("h3", { class: "sr-only", id: "gate-detail-heading", tabindex: "-1" }, "Evidence could not be loaded"),
+      el("div", { class: "gate-packet-error", role: "alert" },
+        el("b", {}, "EVIDENCE COULD NOT BE LOADED"), el("span", {}, gateDetailError)));
+  }
+  if (!gateDetail) {
+    return el("section", { class: "gate-detail", id: "gate-detail", tabindex: "-1" },
+      el("div", { class: "gate-empty", role: "status" }, "No detail packet returned."));
+  }
+
+  const stale = !summary || summary.state !== "pending" || gateDetail.state !== "pending";
+  const packetError = Boolean(gateDetail.error || (gateDetail.packet && gateDetail.packet.packet_error));
+  const lease = s.gates.run_lease || {};
+  const matchingOpen = openGateSessions.find((session) => session.request_id === selectedGateId);
+  const otherOpen = openGateSessions.find((session) => session.request_id !== selectedGateId);
+  const socketOpen = gateSession.socket
+    && [WebSocket.CONNECTING, WebSocket.OPEN].includes(gateSession.socket.readyState);
+  const actionablePacket = !stale && !packetError;
+  const actionable = actionablePacket && !lease.held && !otherOpen && !socketOpen;
+  const reconnectable = Boolean(matchingOpen && !socketOpen && actionablePacket && !otherOpen);
+  const headerSummary = summary || gateDetail.request || {};
+  const facts = [
+    ["kind", headerSummary.kind], ["stage", headerSummary.stage], ["scope", headerSummary.scope],
+    ["entity", headerSummary.entity_id], ["snapshot", fmtGateTime(gateDetail.snapshot_at)],
+  ];
+
+  const actions = el("div", { class: "gate-actions" });
+  if (reconnectable) {
+    actions.append(
+      el("span", { class: "gate-session-note" },
+        `Signing in progress · request ${matchingOpen.request_id} · pid ${matchingOpen.pid} · started ${fmtGateTime(matchingOpen.started)}`),
+      el("button", { type: "button", class: "gate-primary", onclick: () => startSigning(selectedGateId) }, "Reconnect terminal"));
+  } else {
+    actions.append(el("button", {
+      type: "button",
+      class: "gate-primary",
+      disabled: actionable ? null : "",
+      onclick: () => startSigning(selectedGateId),
+    }, socketOpen && gateSession.requestId === selectedGateId
+      ? "Signing in progress"
+      : matchingOpen ? "Reconnect unavailable" : "Start signing"));
+  }
+  if (otherOpen) {
+    actions.append(el("div", { class: "gate-blocker", role: "status" },
+      `Signing disabled: request ${otherOpen.request_id} already has an open signer (pid ${otherOpen.pid}).`));
+  } else if (lease.held && !matchingOpen) {
+    actions.append(el("div", { class: "gate-blocker", role: "status" },
+      `Signing disabled: live run lease held by pid ${lease.pid || "unknown"} since ${fmtGateTime(lease.started)}.`));
+  } else if (stale) {
+    actions.append(el("div", { class: "gate-blocker stale", role: "status" },
+      "This request is no longer pending. The displayed packet is read-only; an existing terminal session is left intact."));
+  } else if (packetError) {
+    actions.append(el("div", { class: "gate-blocker", role: "status" }, "Signing is disabled until the evidence packet is valid."));
+  } else if (socketOpen) {
+    actions.append(el("div", { class: "gate-session-note", role: "status" },
+      `Terminal session ${gateSession.requestId || "connecting"} is active and preserved across board refreshes.`));
+  }
+
+  const command = summary && summary.next_command;
+  const commandBox = command ? el("div", { class: "gate-command" },
+    el("div", {}, el("span", {}, "NEXT COMMAND"),
+      el("button", { type: "button", onclick: () => copyCommand(command) }, "Copy command")),
+    el("code", {}, command),
+    el("p", { "aria-live": "polite", "data-gate-copy-status": "" }, copyStatus)) : null;
+
+  return el("section", {
+    class: `gate-detail${stale ? " stale" : ""}`,
+    id: "gate-detail",
+    tabindex: "-1",
+    "aria-labelledby": "gate-detail-heading",
+  },
+    el("header", { class: "gate-detail-head" },
+      el("div", {},
+        el("span", { class: "gate-detail-kicker" }, `EVIDENCE PACKET · ${selectedGateId}`),
+        el("h3", { id: "gate-detail-heading", tabindex: "-1" },
+          headerSummary.summary || humanize(headerSummary.kind || "Gate request"))),
+      gateStateChip(summary ? summary.state : gateDetail.state)),
+    gateDetail.error ? el("div", { class: "gate-packet-error", role: "alert" },
+      el("b", {}, "EVIDENCE LOOKUP ERROR"), el("span", {}, gateDetail.error)) : null,
+    gateDetail.packet
+      ? renderPacketEvidence(s, gateDetail.packet)
+      : el("div", { class: "gate-archive-detail" },
+        textEvidence("request", gateDetail.request || {}),
+        gateDetail.approval_receipt_id ? textEvidence("approval receipt id", gateDetail.approval_receipt_id) : null,
+        gateDetail.declined_note ? textEvidence("declined note", gateDetail.declined_note) : null,
+        gateDetail.unverified_ledger_row
+          ? textEvidence(gateDetail.ledger_label || "unverified ledger row", gateDetail.unverified_ledger_row) : null),
+    el("dl", { class: "gate-detail-facts" }, facts.map(([label, value]) =>
+      el("div", {}, el("dt", {}, label), el("dd", {}, value || "—")))),
+    commandBox,
+    actions);
+}
+
+function renderGatesWorkbench(s) {
+  if (!hasAuthoredGates(s)) return null;
+  const cost = s.gates.cost || {};
+  const costUnknown = cost.total_spent_usd == null;
+  const costError = typeof cost.error === "string" && cost.error;
+  const shownRequests = (s.gates.requests || []).length;
+  const totalRequests = Number.isInteger(s.gates.total_requests) ? s.gates.total_requests : shownRequests;
+  return el("section", { class: "gates-workbench", id: "gates" },
+    el("header", { class: "gates-head" },
+      el("div", {},
+        el("span", { class: "gates-kicker" }, "AUTHORED-FILM GOVERNANCE"),
+        el("h2", {}, "Gates / Evidence desk"),
+        el("p", {}, "Proof first. Signing happens in the live terminal against a packet refreshed under lease.")),
+      el("div", { class: `gate-cost-tile${costError || costUnknown ? " unavailable" : ""}` },
+        el("span", {}, `${cost.label || "ledger"} cost`),
+        el("b", {}, costError ? "UNAVAILABLE" : costUnknown ? "UNKNOWN" : fmtMoney(cost.total_spent_usd)),
+        costError
+          ? el("small", { role: "alert" }, costError)
+          : cost.total_reserved_usd != null ? el("small", {}, `${fmtMoney(cost.total_reserved_usd)} reserved`) : null)),
+    s.gates.error ? el("div", { class: "gate-packet-error", role: "alert" },
+      el("b", {}, "GATE INDEX ERROR"), el("span", {}, s.gates.error)) : null,
+    el("div", { class: "canon-desk" },
+      el("h3", { class: "section-title" }, "Canon strip", el("span", { class: "meta" }, "published visual truth / active looks")),
+      renderCanonStrip(s)),
+    el("div", { class: "gate-ledger" },
+      el("h3", { class: "section-title" }, "Request ledger",
+        el("span", { class: "meta" }, s.gates.truncated
+          ? `${shownRequests} of ${totalRequests} requests · pending first`
+          : `${shownRequests} request${shownRequests === 1 ? "" : "s"}`)),
+      s.gates.truncated
+        ? el("div", { class: "gate-packet-error", role: "status" },
+          el("b", {}, "REQUEST LIST BOUNDED"),
+          el("span", {}, `${totalRequests - shownRequests} request${totalRequests - shownRequests === 1 ? "" : "s"} omitted; pending requests are prioritized.`))
+        : null,
+      renderGateRows(s)),
+    renderGateDetail(s));
 }
 
 // ---------------------------------------------------------------------------
@@ -1054,9 +1785,22 @@ function tickReplay() {
 function render() {
   if (!state) return;
   const s = replay ? stateAt(state, replay.t) : state;
+  const authoredGates = hasAuthoredGates(s);
+  if (hasAuthoredGates(state) && gateSession.socket && gateSession.requestId) {
+    const sessionRow = gateRowById(state, gateSession.requestId);
+    if (!sessionRow || sessionRow.state !== "pending") {
+      gateSession.inputReady = false;
+      setTerminalStatus(
+        "REQUEST NO LONGER PENDING",
+        "Board state changed while the terminal was open. Output is preserved; terminal input is disabled.",
+        "warn",
+      );
+    }
+  }
   document.title = `Backlot — ${s.title}`;
   document.body.classList.toggle("first", firstPaint);
   firstPaint = false;
+  terminalShell.hidden = !authoredGates;
   app.innerHTML = "";
   app.append(renderSlate(s));
   app.append(renderRail(s));
@@ -1097,6 +1841,10 @@ function render() {
       if (section) app.append(section);
     }
   }
+  if (authoredGates) {
+    app.append(renderGatesWorkbench(s));
+    scheduleTerminalFit(false);
+  }
 }
 
 // Defensive normalization (F-02): the server contract guarantees these
@@ -1126,8 +1874,35 @@ function normalize(s) {
 }
 
 async function refresh() {
-  state = normalize(await getJSON(`/api/project/${encodeURIComponent(projectId)}/state`));
-  render();
+  const generation = ++refreshGeneration;
+  if (refreshController) refreshController.abort();
+  const controller = new AbortController();
+  refreshController = controller;
+  try {
+    const [nextState, sessions] = await Promise.all([
+      getJSON(`/api/project/${encodeURIComponent(projectId)}/state`, { signal: controller.signal }),
+      getJSON(`/api/project/${encodeURIComponent(projectId)}/gate-sessions`, { signal: controller.signal })
+        .catch((error) => {
+          if (error && error.name === "AbortError") throw error;
+          return [];
+        }),
+    ]);
+    if (generation !== refreshGeneration || controller.signal.aborted) return;
+    state = normalize(nextState);
+    openGateSessions = Array.isArray(sessions) ? sessions : [];
+    render();
+    if (selectedGateId && gateRowById(state, selectedGateId)) {
+      await selectGate(selectedGateId, { background: true });
+    }
+    if (hasAuthoredGates(state) && !selectedGateId && openGateSessions.length) {
+      selectGate(openGateSessions[0].request_id);
+    }
+  } catch (error) {
+    if (error && error.name === "AbortError") return;
+    throw error;
+  } finally {
+    if (refreshController === controller) refreshController = null;
+  }
 }
 
 refresh().catch((err) => {

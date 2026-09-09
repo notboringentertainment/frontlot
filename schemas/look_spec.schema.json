@@ -1,0 +1,422 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openmontage/look_spec",
+  "title": "Look spec",
+  "description": "One strict, versioned shape for a character's or location's visual identity (plan D10/D11). Source of truth for every repo that carries looks; WriterOS vendors a copy with a hash test. The look KEY is (entity_kind, entity_id). There is deliberately NO status, hash, or supersedes field inside the block: look_hash is the sha256 of the RFC 8785 canonical JSON of the validated payload and lives only in the external look_lock receipt envelope (D12).",
+  "type": "object",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/character"
+    },
+    {
+      "$ref": "#/$defs/location"
+    }
+  ],
+  "$defs": {
+    "entity_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$",
+      "minLength": 1,
+      "maxLength": 96
+    },
+    "short_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "line": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "ticket_ref": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^wf-[0-9a-f]{8}$"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "path",
+            "content_sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "content_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "common_properties": {
+      "version": {
+        "type": "string",
+        "const": "1.0"
+      },
+      "entity_id": {
+        "$ref": "#/$defs/entity_id"
+      },
+      "source_ticket_ref": {
+        "$ref": "#/$defs/ticket_ref"
+      },
+      "fictional_subject_attestation": {
+        "type": "boolean",
+        "description": "The writer attests no real person is depicted or intended. Ingest refuses false."
+      },
+      "minor": {
+        "type": "boolean",
+        "description": "Looks for minors are refused for generation."
+      },
+      "prompt_safe_description": {
+        "type": "string",
+        "minLength": 60,
+        "maxLength": 800,
+        "description": "20-80 words, present tense (word count enforced by lib.look_spec)."
+      },
+      "continuity_risks": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 12,
+        "items": {
+          "$ref": "#/$defs/line"
+        }
+      },
+      "negative_lines": {
+        "type": "array",
+        "minItems": 0,
+        "maxItems": 12,
+        "items": {
+          "$ref": "#/$defs/line"
+        }
+      },
+      "spoiler": {
+        "type": "boolean"
+      },
+      "depends_on": {
+        "type": "array",
+        "maxItems": 24,
+        "items": {
+          "$ref": "#/$defs/resolved_ticket_ref"
+        }
+      },
+      "shape_only": {
+        "type": "boolean",
+        "description": "Direction locked, details open. Never sufficient for generation."
+      }
+    },
+    "character": {
+      "type": "object",
+      "required": [
+        "version",
+        "entity_kind",
+        "entity_id",
+        "fictional_subject_attestation",
+        "minor",
+        "prompt_safe_description",
+        "continuity_risks",
+        "negative_lines",
+        "spoiler",
+        "depends_on",
+        "shape_only",
+        "age_band",
+        "build",
+        "hair",
+        "distinguishing_marks",
+        "default_wardrobe",
+        "wardrobe_variants",
+        "props",
+        "era_and_class_signals"
+      ],
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/common_properties/version"
+        },
+        "entity_kind": {
+          "const": "character"
+        },
+        "entity_id": {
+          "$ref": "#/$defs/common_properties/entity_id"
+        },
+        "source_ticket_ref": {
+          "$ref": "#/$defs/common_properties/source_ticket_ref"
+        },
+        "fictional_subject_attestation": {
+          "$ref": "#/$defs/common_properties/fictional_subject_attestation"
+        },
+        "minor": {
+          "$ref": "#/$defs/common_properties/minor"
+        },
+        "prompt_safe_description": {
+          "$ref": "#/$defs/common_properties/prompt_safe_description"
+        },
+        "continuity_risks": {
+          "$ref": "#/$defs/common_properties/continuity_risks"
+        },
+        "negative_lines": {
+          "$ref": "#/$defs/common_properties/negative_lines"
+        },
+        "spoiler": {
+          "$ref": "#/$defs/common_properties/spoiler"
+        },
+        "depends_on": {
+          "$ref": "#/$defs/common_properties/depends_on"
+        },
+        "shape_only": {
+          "$ref": "#/$defs/common_properties/shape_only"
+        },
+        "age_band": {
+          "type": "string",
+          "enum": [
+            "child",
+            "teen",
+            "twenties",
+            "thirties",
+            "forties",
+            "fifties",
+            "sixties",
+            "seventies_plus",
+            "ageless"
+          ]
+        },
+        "build": {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "slight",
+                "lean",
+                "average",
+                "athletic",
+                "stocky",
+                "heavy",
+                "towering",
+                "diminutive"
+              ]
+            },
+            "note": {
+              "$ref": "#/$defs/short_text"
+            }
+          },
+          "additionalProperties": false
+        },
+        "hair": {
+          "$ref": "#/$defs/short_text"
+        },
+        "distinguishing_marks": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/line"
+          }
+        },
+        "default_wardrobe": {
+          "type": "object",
+          "required": [
+            "pieces"
+          ],
+          "properties": {
+            "pieces": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "$ref": "#/$defs/line"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "wardrobe_variants": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "when"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/short_text"
+              },
+              "when": {
+                "$ref": "#/$defs/line"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "props": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 6,
+          "items": {
+            "$ref": "#/$defs/line"
+          }
+        },
+        "era_and_class_signals": {
+          "$ref": "#/$defs/line"
+        },
+        "heritage_note": {
+          "$ref": "#/$defs/line",
+          "description": "Optional; writer-stated only. Agents never fill it."
+        }
+      },
+      "additionalProperties": false
+    },
+    "location": {
+      "type": "object",
+      "required": [
+        "version",
+        "entity_kind",
+        "entity_id",
+        "fictional_subject_attestation",
+        "minor",
+        "prompt_safe_description",
+        "continuity_risks",
+        "negative_lines",
+        "spoiler",
+        "depends_on",
+        "shape_only",
+        "establishing_view",
+        "time_of_day_default",
+        "palette_anchors",
+        "architecture_or_terrain",
+        "dressing",
+        "weather_or_light_rules"
+      ],
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/common_properties/version"
+        },
+        "entity_kind": {
+          "const": "location"
+        },
+        "entity_id": {
+          "$ref": "#/$defs/common_properties/entity_id"
+        },
+        "source_ticket_ref": {
+          "$ref": "#/$defs/common_properties/source_ticket_ref"
+        },
+        "fictional_subject_attestation": {
+          "$ref": "#/$defs/common_properties/fictional_subject_attestation"
+        },
+        "minor": {
+          "$ref": "#/$defs/common_properties/minor"
+        },
+        "prompt_safe_description": {
+          "$ref": "#/$defs/common_properties/prompt_safe_description"
+        },
+        "continuity_risks": {
+          "$ref": "#/$defs/common_properties/continuity_risks"
+        },
+        "negative_lines": {
+          "$ref": "#/$defs/common_properties/negative_lines"
+        },
+        "spoiler": {
+          "$ref": "#/$defs/common_properties/spoiler"
+        },
+        "depends_on": {
+          "$ref": "#/$defs/common_properties/depends_on"
+        },
+        "shape_only": {
+          "$ref": "#/$defs/common_properties/shape_only"
+        },
+        "establishing_view": {
+          "$ref": "#/$defs/line"
+        },
+        "time_of_day_default": {
+          "type": "string",
+          "enum": [
+            "dawn",
+            "morning",
+            "midday",
+            "afternoon",
+            "golden_hour",
+            "dusk",
+            "night",
+            "variable"
+          ]
+        },
+        "palette_anchors": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/short_text"
+          }
+        },
+        "architecture_or_terrain": {
+          "$ref": "#/$defs/line"
+        },
+        "dressing": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 10,
+          "items": {
+            "$ref": "#/$defs/line"
+          }
+        },
+        "weather_or_light_rules": {
+          "$ref": "#/$defs/line"
+        }
+      },
+      "additionalProperties": false
+    },
+    "resolved_ticket_ref": {
+      "description": "A depends_on entry. Ingestion derives the full form — the exact resolved ticket file (path relative to the wayfinder root + sha256) plus its immutable id when it carries one; the bare {id} form is the template's authored shorthand and is replaced by derivation before anything is signed.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ticket_ref"
+        },
+        {
+          "type": "object",
+          "required": [
+            "id",
+            "path",
+            "content_sha256"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^wf-[0-9a-f]{8}$"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "content_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

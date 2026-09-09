@@ -9,7 +9,11 @@ Implements the budget governance rules from the spec:
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
+import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -98,8 +102,40 @@ class CostTracker:
 
     # ---- Core operations ----
 
+    @contextlib.contextmanager
+    def transaction(self):
+        """D19 R2#15: every mutation is lock → reload → modify → atomic write.
+
+        Two processes sharing one cost_log.json (a generation run and a judge
+        call, or two runners) can no longer overwrite each other's entries
+        or both pass the budget check on the same remaining amount. Without a
+        cost_log_path (in-memory tracker) this is a no-op. Re-entrant."""
+        if self.cost_log_path is None or getattr(self, "_in_txn", False):
+            yield
+            return
+        self.cost_log_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.cost_log_path.with_name(self.cost_log_path.name + ".lock")
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            self._in_txn = True
+            try:
+                if self.cost_log_path.exists():
+                    self._load()
+                yield
+                self._save()
+            finally:
+                self._in_txn = False
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
     def estimate(self, tool: str, operation: str, estimated_usd: float) -> str:
         """Record an estimate. Returns entry ID."""
+        with self.transaction():
+            return self._estimate(tool, operation, estimated_usd)
+
+    def _estimate(self, tool: str, operation: str, estimated_usd: float) -> str:
         entry_id = self._new_id()
         self.entries.append({
             "id": entry_id,
@@ -120,6 +156,10 @@ class CostTracker:
         Raises BudgetExceededError in cap mode, or ApprovalRequiredError
         when the action exceeds the single-action approval threshold.
         """
+        with self.transaction():
+            self._reserve(entry_id)
+
+    def _reserve(self, entry_id: str) -> None:
         entry = self._find(entry_id)
         estimated = entry["estimated_usd"]
 
@@ -158,25 +198,28 @@ class CostTracker:
 
     def approve_tool(self, tool: str) -> None:
         """Mark a tool as approved for paid operations."""
-        self._approved_tools.add(tool)
-        self._save()
+        with self.transaction():
+            self._approved_tools.add(tool)
+            self._save()
 
     def reconcile(self, entry_id: str, actual_usd: float, success: bool = True) -> None:
         """Reconcile actual spend after tool execution."""
-        entry = self._find(entry_id)
-        entry["status"] = EntryStatus.COMPLETED.value if success else EntryStatus.FAILED.value
-        entry["actual_usd"] = round(actual_usd, 4)
-        entry["reserved_usd"] = 0.0
-        entry["timestamp"] = self._now()
-        self._save()
+        with self.transaction():
+            entry = self._find(entry_id)
+            entry["status"] = EntryStatus.COMPLETED.value if success else EntryStatus.FAILED.value
+            entry["actual_usd"] = round(actual_usd, 4)
+            entry["reserved_usd"] = 0.0
+            entry["timestamp"] = self._now()
+            self._save()
 
     def refund(self, entry_id: str) -> None:
         """Cancel a reservation without executing."""
-        entry = self._find(entry_id)
-        entry["status"] = EntryStatus.REFUNDED.value
-        entry["reserved_usd"] = 0.0
-        entry["timestamp"] = self._now()
-        self._save()
+        with self.transaction():
+            entry = self._find(entry_id)
+            entry["status"] = EntryStatus.REFUNDED.value
+            entry["reserved_usd"] = 0.0
+            entry["timestamp"] = self._now()
+            self._save()
 
     # ---- Reference-driven estimation ----
 
@@ -496,14 +539,21 @@ class CostTracker:
             "entries": self.entries,
         }
         self.cost_log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.cost_log_path, "w") as f:
+        tmp = self.cost_log_path.with_name(self.cost_log_path.name + ".tmp")
+        with open(tmp, "w") as f:
             json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self.cost_log_path)
 
     def _load(self) -> None:
         with open(self.cost_log_path) as f:  # type: ignore[arg-type]
             data = json.load(f)
+        # Only entries/spend state are loaded. The cap is NOT: the constructor's
+        # value comes from the receipt-bound project.yaml (or the caller), and a
+        # historical cap persisted in cost_log.json must never override a
+        # lowered, re-approved one (inspection #3).
         self.entries = data.get("entries", [])
-        self.budget_total_usd = data.get("budget_total_usd", self.budget_total_usd)
         self._approved_tools = set(data.get("approved_tools", []))
 
     # ---- Helpers ----
@@ -521,3 +571,294 @@ class CostTracker:
     @staticmethod
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
+
+
+# ---- Paid-call idempotency (PLAN §0) ----
+#
+# A reservation is persisted to <project_root>/cost-reservations.jsonl in state
+# "submitting" BEFORE any network call. The provider request id is attached when
+# it returns; reconciliation appends the terminal state. States:
+#
+#   submitting      — reserved; the request may or may not have reached the
+#                     provider. With no request id it is indeterminate; with a
+#                     request id the outcome is unknown (crash after attach).
+#   pending_billing — the provider ACCEPTED the request (id persisted) but the
+#                     tool failed afterwards (deadline, download, verification).
+#                     The provider may still have completed and billed the job,
+#                     so the reserved amount is retained, never refunded here.
+#   completed / failed — terminal.
+#
+# ``resume_check`` halts on ANY nonterminal reservation; only the human-run
+# scripts/reconcile_paid_calls.py (which polls the provider by request id and
+# never resubmits) moves them to a terminal state.
+
+RESERVATIONS_FILENAME = "cost-reservations.jsonl"
+NONTERMINAL_STATES = ("submitting", "pending_billing")
+TERMINAL_STATES = ("completed", "failed")
+RESERVATION_STATES = NONTERMINAL_STATES + TERMINAL_STATES
+
+
+class IndeterminatePaidCallError(Exception):
+    """Raised on resume when paid calls have no recorded terminal outcome."""
+
+    def __init__(self, reservations: list[dict[str, Any]]) -> None:
+        self.reservations = reservations
+        described = ", ".join(
+            f"{r['reservation_id']} ({r.get('state')}, request id "
+            f"{r.get('provider_request_id') or 'none'})"
+            for r in reservations
+        )
+        super().__init__(
+            f"{len(reservations)} paid call(s) have no terminal outcome: {described}. "
+            f"Halt; run scripts/reconcile_paid_calls.py --project <slug> to reconcile "
+            f"with the provider. Never resubmit."
+        )
+
+
+def reservations_path(project_root: Path) -> Path:
+    return Path(project_root) / RESERVATIONS_FILENAME
+
+
+_reservation_locks = threading.local()
+
+
+@contextlib.contextmanager
+def reservation_lock(project_root: Path):
+    """Exclusive interprocess lock over one project's reservation ledger (C2).
+
+    The house pattern is ``lib.gates.receipt_lock``: an ``fcntl.flock`` held
+    for a whole transaction, re-entrant within a thread, so a second thread or
+    process blocks instead of interleaving. Reservation appends had no lock,
+    which was harmless while the only balance was the project cap (the tracker
+    serializes that on ``cost_log.json``) but is not once a shot's dollars and
+    takes are counted from the ledger: two calls could both read "one take
+    left" and both write one. Every read-check-append on the ledger runs
+    under this lock.
+
+    Lock ordering, for deadlock freedom: this lock is the outermost one. The
+    tracker's ``cost_log.json`` lock is taken inside it and never the other
+    way round. The supervised brief and ledger are re-read under this lock;
+    their updates use the same lock.
+    """
+    path = reservations_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = path.with_name(path.name + ".lock")
+    held: dict = getattr(_reservation_locks, "held", None)
+    if held is None:
+        held = _reservation_locks.held = {}
+    key = str(lock_file)
+    if key in held:
+        held[key][1] += 1
+        try:
+            yield
+        finally:
+            held[key][1] -= 1
+        return
+    fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        held[key] = [fd, 1]
+        try:
+            yield
+        finally:
+            del held[key]
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _scope_fields(reservation: dict[str, Any] | None) -> dict[str, Any]:
+    """The C2 attribution an event carries forward: ``scope`` and ``kind``.
+
+    Stamped on every event of a scoped reservation — attach, settlement,
+    failure, reconciliation — so each row is self-describing and the fold
+    cannot lose the attribution to an out-of-order read.
+    """
+    if not reservation:
+        return {}
+    return {k: reservation[k] for k in ("scope", "kind") if reservation.get(k) is not None}
+
+
+def _append_reservation_event(project_root: Path, event: dict[str, Any]) -> None:
+    from lib.state_io import append_jsonl
+
+    event = dict(event)
+    event.setdefault("at", datetime.now(timezone.utc).isoformat())
+    append_jsonl(reservations_path(project_root), event)
+
+
+def load_reservations(project_root: Path) -> dict[str, dict[str, Any]]:
+    """Fold the reservation event log into the current state per reservation_id."""
+    from lib.state_io import read_jsonl
+
+    folded: dict[str, dict[str, Any]] = {}
+    for event in read_jsonl(reservations_path(project_root)):
+        rid = event.get("reservation_id")
+        if not rid:
+            continue
+        current = folded.setdefault(rid, {})
+        current.update({k: v for k, v in event.items() if k != "at"})
+        current["updated_at"] = event.get("at")
+    return folded
+
+
+def reserve_paid_call(
+    tracker: CostTracker,
+    project_root: Path,
+    *,
+    tool: str,
+    endpoint: str,
+    normalized_inputs_hash: str,
+    reserved_usd: float,
+    output_hint: Optional[dict[str, Any]] = None,
+    inputs: Optional[dict[str, Any]] = None,
+    kind: Optional[str] = None,
+) -> str:
+    """Reserve budget through ``tracker`` and persist a ``submitting`` reservation.
+
+    Raises the tracker's BudgetExceededError / ApprovalRequiredError before
+    anything is written to the reservation log. Returns the reservation id,
+    which doubles as the client idempotency key sent with the request.
+    ``output_hint`` (e.g. ``{"kind": "video", "output_path": ...}`` or
+    ``{"kind": "image", "objects_dir": ...}``) lets the offline reconciler
+    recover a completed output without resubmitting.
+
+    C2, the per-shot allowance: pass the tool's ``inputs`` and its ``kind``
+    (``"video"`` / ``"image"``) and this is the SECOND of the two checks the
+    plan requires. The first ran in ``paid_call_context`` before any upload;
+    this one re-reads the ledger and re-checks the shot's dollars and takes
+    together with the project cap under ``reservation_lock``, so two
+    concurrent calls that both passed the first check cannot both reserve.
+    The saved brief's limits are re-read under the lock. A call with
+    no ``inputs`` — the judge, the reconciler, a probe — is unchanged: no
+    scope is stamped and only the project cap applies.
+    """
+    from lib.shot_allowance import resolve
+
+    guard = resolve(project_root, inputs, kind=kind) if inputs is not None else None
+    with reservation_lock(project_root):
+        if guard is not None:
+            guard.check(project_root, reserved_usd, tool=tool)
+        entry_id = tracker.estimate(tool, endpoint, reserved_usd)
+        try:
+            tracker.reserve(entry_id)
+        except Exception:
+            tracker.refund(entry_id)
+            raise
+        reservation_id = str(uuid.uuid4())
+        _append_reservation_event(
+            project_root,
+            {
+                "reservation_id": reservation_id,
+                "idempotency_key": reservation_id,
+                "cost_entry_id": entry_id,
+                "tool": tool,
+                "endpoint": endpoint,
+                "normalized_inputs_hash": normalized_inputs_hash,
+                "reserved_usd": round(reserved_usd, 4),
+                "state": "submitting",
+                "provider_request_id": None,
+                "output_hint": dict(output_hint) if output_hint else None,
+                **({"scope": guard.scope, "kind": guard.kind} if guard is not None else {}),
+            },
+        )
+    return reservation_id
+
+
+def attach_request_id(project_root: Path, reservation_id: str, provider_request_id: str) -> None:
+    if not provider_request_id:
+        raise ValueError("provider_request_id must be non-empty")
+    with reservation_lock(project_root):
+        reservation = load_reservations(project_root).get(reservation_id)
+        if reservation is None:
+            raise KeyError(f"unknown reservation {reservation_id}")
+        _append_reservation_event(
+            project_root,
+            {
+                "reservation_id": reservation_id,
+                "provider_request_id": provider_request_id,
+                **_scope_fields(reservation),
+            },
+        )
+
+
+def reconcile_paid_call(
+    project_root: Path,
+    reservation_id: str,
+    actual_usd: float,
+    state: str = "completed",
+    tracker: Optional[CostTracker] = None,
+) -> None:
+    """Record the state of a paid call; also reconciles the tracker entry when given.
+
+    ``completed`` / ``failed`` are terminal. ``pending_billing`` keeps the
+    reserved amount charged against the budget (the tracker entry is settled
+    at ``actual_usd``, which callers pass as the reserved amount) until the
+    reconciler learns the provider's real outcome. A terminal reservation
+    cannot be reconciled again.
+
+    C2: ``failed`` is the ONE state that releases a shot's dollars and its
+    video attempt, because it is only ever written on confirmed
+    non-acceptance — the provider returned a definite rejection, or a human
+    recorded a submission that demonstrably never left the machine. No tool
+    writes it after a request id is attached (that settles
+    ``pending_billing``), so an accepted job is never released by a later
+    local failure.
+    """
+    if state not in ("completed", "failed", "pending_billing"):
+        raise ValueError("state must be 'completed', 'failed' or 'pending_billing'")
+    with reservation_lock(project_root):
+        reservation = load_reservations(project_root).get(reservation_id)
+        if reservation is None:
+            raise KeyError(f"unknown reservation {reservation_id}")
+        if reservation.get("state") in TERMINAL_STATES:
+            raise ValueError(
+                f"reservation {reservation_id} is already {reservation['state']}; refusing to re-reconcile"
+            )
+        if tracker is not None and reservation.get("cost_entry_id"):
+            tracker.reconcile(reservation["cost_entry_id"], actual_usd, success=(state != "failed"))
+        _append_reservation_event(
+            project_root,
+            {
+                "reservation_id": reservation_id,
+                "state": state,
+                "actual_usd": round(actual_usd, 4),
+                **_scope_fields(reservation),
+            },
+        )
+
+
+def nonterminal_reservations(project_root: Path) -> list[dict[str, Any]]:
+    """Every reservation not yet ``completed`` or ``failed`` (any ``submitting`` —
+    with or without a request id — and every ``pending_billing``)."""
+    return [
+        r for r in load_reservations(project_root).values() if r.get("state") in NONTERMINAL_STATES
+    ]
+
+
+def indeterminate_reservations(project_root: Path) -> list[dict[str, Any]]:
+    """Reservations still ``submitting`` with no provider request id: the only
+    ones the reconciler cannot resolve by polling. Kept for callers that need
+    to single these out; ``resume_check`` blocks on all nonterminal ones."""
+    return [
+        r
+        for r in load_reservations(project_root).values()
+        if r.get("state") == "submitting" and not r.get("provider_request_id")
+    ]
+
+
+def resume_check(project_root: Path) -> None:
+    """Raise if any paid call lacks a terminal outcome.
+
+    Incomplete generation WAL entries (a crash between staging an output and
+    its receipt/ledger/terminal state) are replayed first; one whose output
+    is missing raises ``lib.receipts.GenerationWalError`` and blocks new
+    spend until it is recovered. Then any nonterminal reservation raises
+    IndeterminatePaidCallError.
+    """
+    from lib.receipts import recover_generation_wal
+
+    recover_generation_wal(project_root)
+    pending = nonterminal_reservations(project_root)
+    if pending:
+        raise IndeterminatePaidCallError(pending)

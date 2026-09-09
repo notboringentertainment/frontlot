@@ -1,0 +1,363 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openmontage/project_config",
+  "title": "Project Config",
+  "description": "Per-project production limits and egress consent, loaded from projects/<slug>/project.yaml. Overrides the pipeline manifest's budget_default_usd / max_wall_time_minutes. The config is not self-attesting: its sha256 must be bound to an approval_policy decision_log entry written through the human-gate path; a run whose current digest has no matching approval is rejected. Loaded via schemas.artifacts.load_project_config_schema() / validate_project_config(). Versioned: 1.0 (single FAL egress object), 1.1 (egress list per provider + D19 qc block) and 1.2 (1.1 + D20 hero QC: qc.hero_policy_sha256 and qc.max_hero_attempts); lib.project_config normalises all three to one shape.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/v1_0"
+    },
+    {
+      "$ref": "#/$defs/v1_1"
+    },
+    {
+      "$ref": "#/$defs/v1_2"
+    }
+  ],
+  "$defs": {
+    "v1_0": {
+      "type": "object",
+      "required": [
+        "version",
+        "budget_usd_cap",
+        "wall_time_minutes",
+        "cast_cap",
+        "provider_egress",
+        "default_video_endpoint"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "const": "1.0"
+        },
+        "budget_usd_cap": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Hard cap on paid calls for the run; a reservation that would exceed it fails preflight"
+        },
+        "wall_time_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "default_video_endpoint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "D4: the approved video model for every scene (default fal-ai/kling-video/o3/pro/reference-to-video — Kling o3 pro accepts human-face references; bytedance/seedance-2.5/reference-to-video rejects any human face on FAL and is only for entity-free scenes via model_override). A scene using another endpoint must carry model_override with a reason."
+        },
+        "cast_cap": {
+          "type": "object",
+          "required": [
+            "characters",
+            "locations"
+          ],
+          "properties": {
+            "characters": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Max canon characters the visual bible may build sheets for"
+            },
+            "locations": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "provider_egress": {
+          "type": "object",
+          "description": "Explicit one-time human consent that the listed content classes may leave the machine for this provider. visual_bible cannot start without it.",
+          "required": [
+            "provider",
+            "content_classes"
+          ],
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": [
+                "fal"
+              ]
+            },
+            "content_classes": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "prompts",
+                  "reference_images"
+                ]
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "wayfinder_root": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path of the story-wayfinder project directory whose wayfinder/resolved/ tickets carry look canon. Required for authored-film 1.2 projects (look_lock ingestion confines every ticket under it; symlinks rejected)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "v1_1": {
+      "type": "object",
+      "required": [
+        "version",
+        "budget_usd_cap",
+        "wall_time_minutes",
+        "cast_cap",
+        "provider_egress",
+        "default_video_endpoint",
+        "qc"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "const": "1.1"
+        },
+        "budget_usd_cap": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Hard cap on paid calls for the run; a reservation that would exceed it fails preflight"
+        },
+        "wall_time_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "default_video_endpoint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "D4: the approved video model for every scene (default fal-ai/kling-video/o3/pro/reference-to-video — Kling o3 pro accepts human-face references; bytedance/seedance-2.5/reference-to-video rejects any human face on FAL and is only for entity-free scenes via model_override). A scene using another endpoint must carry model_override with a reason."
+        },
+        "cast_cap": {
+          "type": "object",
+          "required": [
+            "characters",
+            "locations"
+          ],
+          "properties": {
+            "characters": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Max canon characters the visual bible may build sheets for"
+            },
+            "locations": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "provider_egress": {
+          "type": "array",
+          "minItems": 1,
+          "description": "1.1: one consent entry per provider (uniqueness by provider is enforced by the loader). Each entry lists the content classes that may leave the machine for that provider.",
+          "items": {
+            "type": "object",
+            "required": [
+              "provider",
+              "content_classes"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "fal",
+                  "openai"
+                ]
+              },
+              "content_classes": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "prompts",
+                    "reference_images",
+                    "generated_sheet_images"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "wayfinder_root": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path of the story-wayfinder project directory whose wayfinder/resolved/ tickets carry look canon. Required for authored-film 1.2 projects (look_lock ingestion confines every ticket under it; symlinks rejected)."
+        },
+        "qc": {
+          "type": "object",
+          "required": [
+            "judge_provider",
+            "judge_model",
+            "policy_bundle_sha256",
+            "max_attempts_per_series"
+          ],
+          "additionalProperties": false,
+          "description": "D19 sheet QC: the judge every sheet verdict must come from. Verdicts from any other provider/model/policy bundle are not accepted. Changing any field is a config change with a new human signature.",
+          "properties": {
+            "judge_provider": {
+              "type": "string",
+              "enum": [
+                "openai"
+              ]
+            },
+            "judge_model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "policy_bundle_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "max_attempts_per_series": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "v1_2": {
+      "type": "object",
+      "required": [
+        "version",
+        "budget_usd_cap",
+        "wall_time_minutes",
+        "cast_cap",
+        "provider_egress",
+        "default_video_endpoint",
+        "qc"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "const": "1.2"
+        },
+        "budget_usd_cap": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Hard cap on paid calls for the run; a reservation that would exceed it fails preflight"
+        },
+        "wall_time_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "default_video_endpoint": {
+          "type": "string",
+          "minLength": 1,
+          "description": "D4: the approved video model for every scene (default fal-ai/kling-video/o3/pro/reference-to-video — Kling o3 pro accepts human-face references; bytedance/seedance-2.5/reference-to-video rejects any human face on FAL and is only for entity-free scenes via model_override). A scene using another endpoint must carry model_override with a reason."
+        },
+        "cast_cap": {
+          "type": "object",
+          "required": [
+            "characters",
+            "locations"
+          ],
+          "properties": {
+            "characters": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Max canon characters the visual bible may build sheets for"
+            },
+            "locations": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "provider_egress": {
+          "type": "array",
+          "minItems": 1,
+          "description": "1.1: one consent entry per provider (uniqueness by provider is enforced by the loader). Each entry lists the content classes that may leave the machine for that provider.",
+          "items": {
+            "type": "object",
+            "required": [
+              "provider",
+              "content_classes"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "provider": {
+                "type": "string",
+                "enum": [
+                  "fal",
+                  "openai"
+                ]
+              },
+              "content_classes": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "prompts",
+                    "reference_images",
+                    "generated_sheet_images"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "wayfinder_root": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path of the story-wayfinder project directory whose wayfinder/resolved/ tickets carry look canon. Required for authored-film 1.2 projects (look_lock ingestion confines every ticket under it; symlinks rejected)."
+        },
+        "qc": {
+          "type": "object",
+          "required": [
+            "judge_provider",
+            "judge_model",
+            "policy_bundle_sha256",
+            "max_attempts_per_series",
+            "hero_policy_sha256",
+            "max_hero_attempts"
+          ],
+          "additionalProperties": false,
+          "description": "D19 sheet QC + D20 hero QC: the judge every verdict must come from. policy_bundle_sha256 pins the SHEET bundle, hero_policy_sha256 pins the separate HERO bundle; max_attempts_per_series caps sheet attempts per series, max_hero_attempts is the total hero generation budget per entity per look. Verdicts from any other provider/model/policy bundle are not accepted. Changing any field is a config change with a new human signature.",
+          "properties": {
+            "judge_provider": {
+              "type": "string",
+              "enum": [
+                "openai"
+              ]
+            },
+            "judge_model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "policy_bundle_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "max_attempts_per_series": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "hero_policy_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "max_hero_attempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 24
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
