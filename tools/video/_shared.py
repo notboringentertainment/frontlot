@@ -984,7 +984,7 @@ class PaidCallContextError(RuntimeError):
 
 def paid_call_context(
     inputs: dict[str, Any], *, check_resume: bool = True, governance: dict[str, Any] | None = None,
-    media: str = "image",
+    media: str = "image", estimated_usd: float | None = None,
 ) -> tuple[Path, Any, Any]:
     """Resolve ``(project_root, tracker, config)`` for a paid FAL call (inspection #2).
     ``media`` (``"image"`` default / ``"video"``) is forwarded to
@@ -1007,11 +1007,21 @@ def paid_call_context(
     class before any upload. ``resume_check`` runs first: an unreconciled
     paid call blocks every new one before any upload or reservation
     (``check_resume=False`` is reserved for scripts/reconcile_paid_calls.py).
+
+    Supervised allowance: a call carrying a saved supervised ``shot_id``
+    (or declaring ``asset_class=supervised_shot``) is checked against its
+    ``spend_allowance_usd`` and ``max_video_takes`` HERE, because both paid
+    tools upload their references before reserving (constraint 16). Pass
+    ``estimated_usd`` (the tool's own ``estimate_cost``) so the dollar check
+    measures what this call would actually add; ``media`` doubles as the
+    call's kind, so only a video call consumes a take. The same check runs
+    again inside ``reserve_paid_call`` under the reservation lock.
     """
     from lib.config_model import BudgetMode
     from lib.events import infer_project_dir
     from lib.paths import PROJECTS_DIR
     from lib.project_config import load_verified_project_config
+    from lib.shot_allowance import check_call
     from tools.cost_tracker import CostTracker, resume_check
 
     if not isinstance(inputs, dict) or not inputs.get("project_dir"):
@@ -1041,6 +1051,10 @@ def paid_call_context(
     verified = verify_look_governance(inputs, project_root, media=media)
     if governance is not None:
         governance.update(verified)
+    # C2, first of two checks: before any upload, and before the tracker
+    # exists, a shot call must fit the shot's approved dollars and takes.
+    # Calls without a supervised brief retain their existing contract.
+    check_call(project_root, inputs, kind=media, estimated_usd=estimated_usd)
     tracker = CostTracker(
         budget_total_usd=float(config.budget_usd_cap),
         reserve_pct=0.0,
@@ -1373,7 +1387,7 @@ def _scene_plan_shot_index(project_root: Path) -> dict[str, str]:
     for scene in plan.get("scenes") or []:
         if not isinstance(scene, dict):
             continue
-        scene_id = scene.get("scene_id")
+        scene_id = scene.get("id")
         if not isinstance(scene_id, str) or not scene_id:
             continue
         for shot in scene.get("shots") or []:
@@ -1490,7 +1504,8 @@ def _recipe_required(inputs: dict[str, Any], look_refs: list[dict[str, str]], me
     rendering, not only ``visual_bible``. Exempt: video calls (the builder
     has no motion roles), calls with no look_refs (entity-free shots), and
     receipt-bound scene renders that name a ``shot_id`` of the approved
-    scene plan (their prompt is the shot, not an appearance).
+    scene plan, and saved supervised shots (their prompt is the performance,
+    while active looks and selected references preserve identity).
     """
     if media != "image" or not look_refs:
         return False
@@ -1529,14 +1544,22 @@ def _verify_prompt_recipe(
     ``tools.prompt_builder.build_prompt`` on the active look's payload with
     the same builder version, ``asset_role`` and ``palette`` as the call, and
     requires ``rendered_sha256`` equality. A rendering of appearance B
-    submitted under look A's hash is refused before any upload. Omission is
-    allowed only for an attested ``origin: imported_synthetic`` candidate."""
+    submitted under look A's hash is refused before any upload. Planned shots
+    and supervised performance shots may omit the recipe; the latter still
+    require their saved brief at the paid boundary. Attested
+    ``origin: imported_synthetic`` candidates also omit it."""
     recipe = inputs.get("prompt_recipe")
     if _verify_imported_synthetic(inputs):
         return None
     if recipe is None and not _recipe_required(inputs, look_refs, media):
         shot_id = inputs.get("shot_id")
-        if media == "image" and look_refs and shot_id and str(shot_id) not in _scene_plan_shot_index(project_root):
+        # Supervised performance prompts use the saved brief and selected
+        # references. The paid boundary still verifies active looks, lineage,
+        # exact reference selection and allowance before uploading anything.
+        # This exemption neither approves an identity asset nor completes a stage.
+        if (media == "image" and look_refs and shot_id
+                and inputs.get("asset_class") != "supervised_shot"
+                and str(shot_id) not in _scene_plan_shot_index(project_root)):
             raise LookGovernanceError(
                 f"shot {shot_id!r} is not a shot of the scene_plan checkpoint; a rendering of look_refs that is "
                 "not a planned shot requires prompt_recipe from tools.prompt_builder"
@@ -1682,7 +1705,7 @@ def receipt_governance_fields(governance: dict[str, Any] | None) -> dict[str, An
 SELECTOR_LOCAL_REFERENCE_KEYS = ("reference_image_path", "reference_image_paths", "image_path", "image_paths")
 
 
-def selector_governance(inputs: dict[str, Any], *, media: str = "image") -> dict[str, Any] | None:
+def selector_governance(inputs: dict[str, Any], *, media: str = "image", estimate_cost=None) -> dict[str, Any] | None:
     """Governance for the generic selectors, run BEFORE any upload or delegation.
 
     The project is inferred FIRST (round 2 #9) with ``lib.events.infer_project_dir``,
@@ -1714,7 +1737,12 @@ def selector_governance(inputs: dict[str, Any], *, media: str = "image") -> dict
     # bound to it explicitly so the boundary (and the delegated provider) can
     # never resolve a different project than the one that governed it.
     bound_inputs = inputs if inputs.get("project_dir") else {**inputs, "project_dir": str(root)}
-    project_root, _tracker, _config = paid_call_context(bound_inputs, governance=governance, media=media)
+    # Select/estimate a governance-bound provider only after this call is known
+    # to be governed, but before the paid boundary and any upload/delegation.
+    estimate = estimate_cost(bound_inputs) if estimate_cost is not None else None
+    project_root, _tracker, _config = paid_call_context(
+        bound_inputs, governance=governance, media=media, estimated_usd=estimate,
+    )
     local_refs: list[Path] = []
     for key in SELECTOR_LOCAL_REFERENCE_KEYS:
         value = inputs.get(key)

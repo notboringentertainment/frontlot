@@ -202,8 +202,8 @@ def _scene_plan_checkpoint(status="completed", approved=True, entity_free=True):
         "status": status,
         "human_approved": approved,
         "artifacts": {"scene_plan": {"scenes": [
-            {"scene_id": "sc-1", "entity_free": entity_free, "shots": [{"shot_id": "sh-title"}]},
-            {"scene_id": "sc-2", "entity_free": False, "character_refs": ["quill-marrow"], "shots": [{"shot_id": "sh-2"}]},
+            {"id": "sc-1", "entity_free": entity_free, "shots": [{"shot_id": "sh-title"}]},
+            {"id": "sc-2", "entity_free": False, "character_refs": ["quill-marrow"], "shots": [{"shot_id": "sh-2"}]},
         ]}},
     }
 
