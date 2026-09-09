@@ -13,6 +13,7 @@ import contextlib
 import fcntl
 import json
 import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -618,6 +619,66 @@ def reservations_path(project_root: Path) -> Path:
     return Path(project_root) / RESERVATIONS_FILENAME
 
 
+_reservation_locks = threading.local()
+
+
+@contextlib.contextmanager
+def reservation_lock(project_root: Path):
+    """Exclusive interprocess lock over one project's reservation ledger (C2).
+
+    The house pattern is ``lib.gates.receipt_lock``: an ``fcntl.flock`` held
+    for a whole transaction, re-entrant within a thread, so a second thread or
+    process blocks instead of interleaving. Reservation appends had no lock,
+    which was harmless while the only balance was the project cap (the tracker
+    serializes that on ``cost_log.json``) but is not once a shot's dollars and
+    takes are counted from the ledger: two calls could both read "one take
+    left" and both write one. Every read-check-append on the ledger runs
+    under this lock.
+
+    Lock ordering, for deadlock freedom: this lock is the outermost one. The
+    tracker's ``cost_log.json`` lock is taken inside it and never the other
+    way round. The supervised brief and ledger are re-read under this lock;
+    their updates use the same lock.
+    """
+    path = reservations_path(project_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = path.with_name(path.name + ".lock")
+    held: dict = getattr(_reservation_locks, "held", None)
+    if held is None:
+        held = _reservation_locks.held = {}
+    key = str(lock_file)
+    if key in held:
+        held[key][1] += 1
+        try:
+            yield
+        finally:
+            held[key][1] -= 1
+        return
+    fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        held[key] = [fd, 1]
+        try:
+            yield
+        finally:
+            del held[key]
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _scope_fields(reservation: dict[str, Any] | None) -> dict[str, Any]:
+    """The C2 attribution an event carries forward: ``scope`` and ``kind``.
+
+    Stamped on every event of a scoped reservation — attach, settlement,
+    failure, reconciliation — so each row is self-describing and the fold
+    cannot lose the attribution to an out-of-order read.
+    """
+    if not reservation:
+        return {}
+    return {k: reservation[k] for k in ("scope", "kind") if reservation.get(k) is not None}
+
+
 def _append_reservation_event(project_root: Path, event: dict[str, Any]) -> None:
     from lib.state_io import append_jsonl
 
@@ -650,6 +711,8 @@ def reserve_paid_call(
     normalized_inputs_hash: str,
     reserved_usd: float,
     output_hint: Optional[dict[str, Any]] = None,
+    inputs: Optional[dict[str, Any]] = None,
+    kind: Optional[str] = None,
 ) -> str:
     """Reserve budget through ``tracker`` and persist a ``submitting`` reservation.
 
@@ -659,41 +722,64 @@ def reserve_paid_call(
     ``output_hint`` (e.g. ``{"kind": "video", "output_path": ...}`` or
     ``{"kind": "image", "objects_dir": ...}``) lets the offline reconciler
     recover a completed output without resubmitting.
+
+    C2, the per-shot allowance: pass the tool's ``inputs`` and its ``kind``
+    (``"video"`` / ``"image"``) and this is the SECOND of the two checks the
+    plan requires. The first ran in ``paid_call_context`` before any upload;
+    this one re-reads the ledger and re-checks the shot's dollars and takes
+    together with the project cap under ``reservation_lock``, so two
+    concurrent calls that both passed the first check cannot both reserve.
+    The saved brief's limits are re-read under the lock. A call with
+    no ``inputs`` — the judge, the reconciler, a probe — is unchanged: no
+    scope is stamped and only the project cap applies.
     """
-    entry_id = tracker.estimate(tool, endpoint, reserved_usd)
-    try:
-        tracker.reserve(entry_id)
-    except Exception:
-        tracker.refund(entry_id)
-        raise
-    reservation_id = str(uuid.uuid4())
-    _append_reservation_event(
-        project_root,
-        {
-            "reservation_id": reservation_id,
-            "idempotency_key": reservation_id,
-            "cost_entry_id": entry_id,
-            "tool": tool,
-            "endpoint": endpoint,
-            "normalized_inputs_hash": normalized_inputs_hash,
-            "reserved_usd": round(reserved_usd, 4),
-            "state": "submitting",
-            "provider_request_id": None,
-            "output_hint": dict(output_hint) if output_hint else None,
-        },
-    )
+    from lib.shot_allowance import resolve
+
+    guard = resolve(project_root, inputs, kind=kind) if inputs is not None else None
+    with reservation_lock(project_root):
+        if guard is not None:
+            guard.check(project_root, reserved_usd, tool=tool)
+        entry_id = tracker.estimate(tool, endpoint, reserved_usd)
+        try:
+            tracker.reserve(entry_id)
+        except Exception:
+            tracker.refund(entry_id)
+            raise
+        reservation_id = str(uuid.uuid4())
+        _append_reservation_event(
+            project_root,
+            {
+                "reservation_id": reservation_id,
+                "idempotency_key": reservation_id,
+                "cost_entry_id": entry_id,
+                "tool": tool,
+                "endpoint": endpoint,
+                "normalized_inputs_hash": normalized_inputs_hash,
+                "reserved_usd": round(reserved_usd, 4),
+                "state": "submitting",
+                "provider_request_id": None,
+                "output_hint": dict(output_hint) if output_hint else None,
+                **({"scope": guard.scope, "kind": guard.kind} if guard is not None else {}),
+            },
+        )
     return reservation_id
 
 
 def attach_request_id(project_root: Path, reservation_id: str, provider_request_id: str) -> None:
     if not provider_request_id:
         raise ValueError("provider_request_id must be non-empty")
-    if reservation_id not in load_reservations(project_root):
-        raise KeyError(f"unknown reservation {reservation_id}")
-    _append_reservation_event(
-        project_root,
-        {"reservation_id": reservation_id, "provider_request_id": provider_request_id},
-    )
+    with reservation_lock(project_root):
+        reservation = load_reservations(project_root).get(reservation_id)
+        if reservation is None:
+            raise KeyError(f"unknown reservation {reservation_id}")
+        _append_reservation_event(
+            project_root,
+            {
+                "reservation_id": reservation_id,
+                "provider_request_id": provider_request_id,
+                **_scope_fields(reservation),
+            },
+        )
 
 
 def reconcile_paid_call(
@@ -710,22 +796,36 @@ def reconcile_paid_call(
     at ``actual_usd``, which callers pass as the reserved amount) until the
     reconciler learns the provider's real outcome. A terminal reservation
     cannot be reconciled again.
+
+    C2: ``failed`` is the ONE state that releases a shot's dollars and its
+    video attempt, because it is only ever written on confirmed
+    non-acceptance — the provider returned a definite rejection, or a human
+    recorded a submission that demonstrably never left the machine. No tool
+    writes it after a request id is attached (that settles
+    ``pending_billing``), so an accepted job is never released by a later
+    local failure.
     """
     if state not in ("completed", "failed", "pending_billing"):
         raise ValueError("state must be 'completed', 'failed' or 'pending_billing'")
-    reservation = load_reservations(project_root).get(reservation_id)
-    if reservation is None:
-        raise KeyError(f"unknown reservation {reservation_id}")
-    if reservation.get("state") in TERMINAL_STATES:
-        raise ValueError(
-            f"reservation {reservation_id} is already {reservation['state']}; refusing to re-reconcile"
+    with reservation_lock(project_root):
+        reservation = load_reservations(project_root).get(reservation_id)
+        if reservation is None:
+            raise KeyError(f"unknown reservation {reservation_id}")
+        if reservation.get("state") in TERMINAL_STATES:
+            raise ValueError(
+                f"reservation {reservation_id} is already {reservation['state']}; refusing to re-reconcile"
+            )
+        if tracker is not None and reservation.get("cost_entry_id"):
+            tracker.reconcile(reservation["cost_entry_id"], actual_usd, success=(state != "failed"))
+        _append_reservation_event(
+            project_root,
+            {
+                "reservation_id": reservation_id,
+                "state": state,
+                "actual_usd": round(actual_usd, 4),
+                **_scope_fields(reservation),
+            },
         )
-    if tracker is not None and reservation.get("cost_entry_id"):
-        tracker.reconcile(reservation["cost_entry_id"], actual_usd, success=(state != "failed"))
-    _append_reservation_event(
-        project_root,
-        {"reservation_id": reservation_id, "state": state, "actual_usd": round(actual_usd, 4)},
-    )
 
 
 def nonterminal_reservations(project_root: Path) -> list[dict[str, Any]]:

@@ -984,7 +984,7 @@ class PaidCallContextError(RuntimeError):
 
 def paid_call_context(
     inputs: dict[str, Any], *, check_resume: bool = True, governance: dict[str, Any] | None = None,
-    media: str = "image",
+    media: str = "image", estimated_usd: float | None = None,
 ) -> tuple[Path, Any, Any]:
     """Resolve ``(project_root, tracker, config)`` for a paid FAL call (inspection #2).
     ``media`` (``"image"`` default / ``"video"``) is forwarded to
@@ -1007,11 +1007,21 @@ def paid_call_context(
     class before any upload. ``resume_check`` runs first: an unreconciled
     paid call blocks every new one before any upload or reservation
     (``check_resume=False`` is reserved for scripts/reconcile_paid_calls.py).
+
+    Supervised allowance: a call carrying a saved supervised ``shot_id``
+    (or declaring ``asset_class=supervised_shot``) is checked against its
+    ``spend_allowance_usd`` and ``max_video_takes`` HERE, because both paid
+    tools upload their references before reserving (constraint 16). Pass
+    ``estimated_usd`` (the tool's own ``estimate_cost``) so the dollar check
+    measures what this call would actually add; ``media`` doubles as the
+    call's kind, so only a video call consumes a take. The same check runs
+    again inside ``reserve_paid_call`` under the reservation lock.
     """
     from lib.config_model import BudgetMode
     from lib.events import infer_project_dir
     from lib.paths import PROJECTS_DIR
     from lib.project_config import load_verified_project_config
+    from lib.shot_allowance import check_call
     from tools.cost_tracker import CostTracker, resume_check
 
     if not isinstance(inputs, dict) or not inputs.get("project_dir"):
@@ -1041,6 +1051,10 @@ def paid_call_context(
     verified = verify_look_governance(inputs, project_root, media=media)
     if governance is not None:
         governance.update(verified)
+    # C2, first of two checks: before any upload, and before the tracker
+    # exists, a shot call must fit the shot's approved dollars and takes.
+    # Calls without a supervised brief retain their existing contract.
+    check_call(project_root, inputs, kind=media, estimated_usd=estimated_usd)
     tracker = CostTracker(
         budget_total_usd=float(config.budget_usd_cap),
         reserve_pct=0.0,

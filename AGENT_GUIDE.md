@@ -46,9 +46,20 @@ This is a first-class workflow in OpenMontage.
 
 If a model misses this distinction, it will often fall back to plain search + guesswork. That is incorrect for OpenMontage.
 
-## Rule Zero — All Production Goes Through a Pipeline
+## Supervised Front Lot shots
 
-**Every video production request MUST go through the pipeline system. No exceptions.**
+For a supervised shot test or revision using established story and references,
+read `skills/pipelines/authored-film/supervised-production.md` and use its saved
+brief and direct paid-tool route. This is the default for this bounded work.
+Ben's conversational production decision is recorded once. Keep signed project
+settings, upstream canon and look activation, reference lineage, and spending
+stops. No full-library completion, mandatory storyboard signature, take gate or
+pipeline migration is required. Existing full-pipeline contracts stay intact.
+
+## Rule Zero — Pipeline production
+
+**Full pipeline productions go through the pipeline system. Supervised Front Lot
+shots use the route above and do not claim completed pipeline stages.**
 
 When the user asks to make, create, produce, or generate any video content — a trailer, explainer, clip, animation, or any other video — the agent must:
 

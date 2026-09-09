@@ -1,5 +1,10 @@
 # Authored-Film — The User Workflow
 
+For a supervised shot or revision from established references, start with
+[Supervised production](supervised-production.md). It records a conversational
+allowance and selection without requiring the full stage chain described below.
+The following workflow remains the contract for full pipeline production.
+
 What actually happens when you produce a film from your finished writing.
 Written from a live end-to-end shakedown run (2026-08-08, project
 `shakedown-last-signal`), not from theory.
