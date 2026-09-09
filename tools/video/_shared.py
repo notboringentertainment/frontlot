@@ -1373,7 +1373,7 @@ def _scene_plan_shot_index(project_root: Path) -> dict[str, str]:
     for scene in plan.get("scenes") or []:
         if not isinstance(scene, dict):
             continue
-        scene_id = scene.get("scene_id")
+        scene_id = scene.get("id")
         if not isinstance(scene_id, str) or not scene_id:
             continue
         for shot in scene.get("shots") or []:
