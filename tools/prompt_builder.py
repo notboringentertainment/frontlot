@@ -2,7 +2,7 @@
 
 Prompt text for hero / sheet / location generation is NEVER copied verbatim
 from a ticket or a director's notes. It is assembled here from the fields of a
-validated ``look_spec`` payload (version 1.0), a palette and a role, so that:
+validated ``look_spec`` payload (version 1.0 or 1.1), a palette and a role, so that:
 
 - the rendering is deterministic (same payload + palette + role -> same text),
 - every free-text field is normalized (whitespace collapsed, control
@@ -39,7 +39,9 @@ import unicodedata
 from typing import Any
 
 BUILDER_VERSION = "1.5"
-LOOK_SPEC_VERSION = "1.0"
+# 1.1 differs from 1.0 only in depends_on, which the builder never renders,
+# so BUILDER_VERSION is unchanged and a 1.0 look renders exactly as before.
+LOOK_SPEC_VERSIONS = ("1.0", "1.1")
 
 CHARACTER_ROLES = ("hero", "turnaround", "front", "three_quarter", "profile", "full_body", "expressions", "wardrobe")
 LOCATION_ROLES = ("establishing", "detail", "time_variant")
@@ -311,8 +313,8 @@ def build_prompt(
 
     if not isinstance(look_spec, dict):
         raise PromptBuildError("look_spec must be an object")
-    if str(look_spec.get("version")) != LOOK_SPEC_VERSION:
-        raise PromptBuildError(f"look_spec.version must be {LOOK_SPEC_VERSION!r}")
+    if str(look_spec.get("version")) not in LOOK_SPEC_VERSIONS:
+        raise PromptBuildError(f"look_spec.version must be one of {LOOK_SPEC_VERSIONS}")
     kind = look_spec.get("entity_kind")
     if kind not in ("character", "location"):
         raise PromptBuildError("look_spec.entity_kind must be character or location")

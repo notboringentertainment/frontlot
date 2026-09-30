@@ -68,7 +68,11 @@
     "common_properties": {
       "version": {
         "type": "string",
-        "const": "1.0"
+        "enum": [
+          "1.0",
+          "1.1"
+        ],
+        "description": "1.1 adds the WriterOS dependency reference form (look sessions, 2026-09-30); every other field is unchanged."
       },
       "entity_id": {
         "$ref": "#/$defs/entity_id"
@@ -415,8 +419,30 @@
             }
           },
           "additionalProperties": false
+        },
+        {
+          "$ref": "#/$defs/writeros_ref"
         }
       ]
+    },
+    "writeros_ref": {
+      "description": "A WriterOS canon record a look depends on (1.1): the memory record id and its content hash. Derived by WriterOS at promotion from the session's citations, never typed.",
+      "type": "object",
+      "required": [
+        "writeros_record_id",
+        "content_hash"
+      ],
+      "properties": {
+        "writeros_record_id": {
+          "type": "string",
+          "pattern": "^mem_[0-9a-f]{32}$"
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "additionalProperties": false
     }
   }
 }
