@@ -15,8 +15,9 @@ Written from a live end-to-end shakedown run (2026-08-08, project
    outline / story bible (with AI-production annexes if you have them),
    wayfinder MAP + resolved tickets, canon atoms, PitchStudio export.
    The pipeline adapts what exists; it never invents what doesn't. One
-   thing it will ask you to write during the run: a **look ticket** per cast
-   entity in your wayfinder map (see Gate 3). Nobody else decides what your
+   thing it will ask you to decide during the run: a **look** per cast
+   entity, promoted in WriterOS's Look panel (see Gate 3); looks you already
+   resolved as wayfinder tickets still count. Nobody else decides what your
    characters look like.
 2. **A voice source.** The canon pass requires protected lines AUDIBLE in
    the mix — a machine with zero TTS cannot pass the canon validation. Local
@@ -79,15 +80,24 @@ marked blocking is unanswered. Your answers are recorded as canon rulings
 and honored as locks from then on.
 
 **Gate 3 — Look lock.** For every character and location in the approved
-cast, the agent opens (or finds) a **look ticket** in your wayfinder map —
-`area: look`, one per entity, created through the wayfinder "cast for
-production" procedure. The agent may draft the Question; **you write the
-Answer**, as a structured `## Look spec` block (age band, build, hair,
+cast, you decide the look **in WriterOS** (since 2026-09-30): open the
+character's Story Bible card → **Look**, or a beat's Lookbook → **Start a
+look**. Zoe asks one question at a time and never fills anything in; **you
+type every field** and click **Promote**, which makes it canon in WriterOS and
+writes the export OpenMontage reads (`project.yaml: writeros_package`). Then
+`look_run.py --entity <id>` requests ratification and you sign it in a
+terminal, as before; Promote alone is not ratification. Looks you already
+resolved as wayfinder **look tickets** (`area: look`, a `## Look spec` block)
+stay valid and are ratified the same way. Either way the look is a structured
+block (age band, build, hair,
 marks, default wardrobe, era signals, continuity risks, negatives, a 20–80
 word description — or for a location, establishing view, palette anchors,
 terrain, dressing, weather). You also attest the subject is fictional, flag
-spoilers, and mark minors (refused for generation). While you draft, the
-ticket asks: *do you already have a reference image?* Three answers:
+spoilers, and mark minors (refused for generation). The first question is
+always: *do you already have a reference image?* Three answers (for a
+WriterOS look your answer is recorded as a word and shown at the gate;
+importing the image itself into OpenMontage is not yet available for WriterOS
+looks, only for wayfinder ones):
 
 - *No* — the look is words; faces are generated at Gate 4.
 - *Yes, generated elsewhere* — imported as **`imported_synthetic`** (JPEG,
@@ -201,7 +211,7 @@ writing session, not a gate.
 | Approve gates, answer blocking questions | Presents gates, asks questions in your [NEEDS DECISION] convention | No gate skip; no unanswered blocking question passes |
 | Rule on collisions | Escalates collisions, never resolves them | Unruled tensions cannot complete |
 | Watch the film | Runs the canon pass against the real render | No canon pass = no completed film; line must be audible; file must exist |
-| Write and resolve look tickets in wayfinder; attest fictional subjects | Drafts the Question at most; ingests the resolved ticket; writes the look_lock request | Look is canon only via a signed `look_lock` receipt bound to `look_hash`; no shape-only or minor looks reach generation |
+| Decide each look in WriterOS's Look panel (or an existing wayfinder look ticket); attest fictional subjects | Asks nothing it may answer itself; reads the WriterOS export (or the resolved ticket); writes the look_lock request | Look is canon only via a signed `look_lock` receipt bound to `look_hash`; no shape-only or minor looks reach generation |
 | Import a reference image, or not | Runs the import gate; never opens a casting-inspiration image | Two origin classes: `imported_synthetic` (attested lineage root) and `casting_inspiration` (your eyes only, tainted out of every lineage, hash-bound in the ledger) |
 | Pick a headshot in the terminal | Builds the prompt from the look, generates candidates | The gate handler verifies candidates and writes the record itself; no sheet without an approved `headshot_ref` |
 | Approve sheets, storyboards, poster | Derives sheets from the hero, packs references | Every approval is a signed receipt; every image has a generation receipt; every governed call names its `look_refs`; sheets are hashed canon |
