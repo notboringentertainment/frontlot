@@ -381,6 +381,12 @@ def _republish(root, project_id, entity_id, state, out) -> dict[str, Any]:
             what = "the WriterOS look" if state.get("source") == "writeros" else "the ticket"
             raise LookRunError(f"run state expects look_hash {str(state.get('look_hash'))[:12]}… but {what} now hashes to "
                                f"{look.look_hash[:12]}…; {what} changed mid-run — clear the state by declining, then rerun")
+        if state.get("source") == "writeros" and look.source_ref["record_id"] != state.get("promotion_id"):
+            # Same block, different promotion (e.g. re-promoted with another reference mode): the
+            # state's promotion, revision and reference no longer describe what would be signed.
+            raise LookRunError(f"run state names WriterOS promotion {state.get('promotion_id')} but the export now holds "
+                               f"{look.source_ref['record_id']} for {entity_id!r}; the promotion changed mid-run — "
+                               f"clear the state by declining, then rerun")
         digest = _write(root, _packet_on_disk(root), run_state={entity_id: state})
         look_lock_request(root, project_id, look, request_id=request_id, source_checkpoint_digest=digest, **request_kwargs)
         return _pending(root, entity_id, request_id, out, f"republished {request_id} (the request file was missing)")

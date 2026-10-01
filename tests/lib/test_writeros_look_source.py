@@ -375,6 +375,30 @@ class TestLookRunWriterOS:
         with pytest.raises(gate_approve.GateHandlerError, match="not an active look"):
             gate_approve.construct(w["project"], _req(w, r["request_id"]))
 
+    def test_republish_refuses_a_different_promotion_of_the_same_look(self, world):
+        w = world
+        w["pkg"].add(look_record(rid(1), w1(), reference="none"))
+        w["pkg"].export()
+        r = run_look(w["project"], CHAR, source="writeros", out=w["out"])
+        (w["project"] / ".gate-requests" / f"{r['request_id']}.json").unlink()  # the request file goes missing
+        # Same block (same hash), promoted again with a different reference mode: a new record.
+        w["pkg"].supersede(rid(1))
+        w["pkg"].add(look_record(rid(2), w1(), reference="casting-inspiration"))
+        w["pkg"].export()
+        with pytest.raises(LookRunError, match="promotion changed mid-run"):
+            run_look(w["project"], CHAR, out=w["out"])
+        assert not (w["project"] / ".gate-requests" / f"{r['request_id']}.json").exists()
+
+    def test_republish_restores_the_same_promotion(self, world):
+        w = world
+        rec = w["pkg"].add(look_record(rid(1), w1(), reference="none"))
+        w["pkg"].export()
+        r = run_look(w["project"], CHAR, source="writeros", out=w["out"])
+        (w["project"] / ".gate-requests" / f"{r['request_id']}.json").unlink()
+        again = run_look(w["project"], CHAR, out=w["out"])
+        assert again["status"] == "pending" and again["request_id"] == r["request_id"]
+        assert _req(w, r["request_id"])["source_promotion_id"] == rec["id"]
+
     def test_auto_prefers_writeros_when_the_export_names_the_entity(self, world):
         w = world
         w["pkg"].add(look_record(rid(1), w1()))
