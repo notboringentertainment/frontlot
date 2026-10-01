@@ -34,6 +34,7 @@ check governed visual tools call before any upload.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,15 +63,30 @@ class LookIngestError(RuntimeError):
 
 @dataclass(frozen=True)
 class IngestedLook:
+    """A validated look and its source: EXACTLY ONE of ``source_ticket_ref``
+    (a wayfinder ticket) or ``source_ref`` (a WriterOS promotion:
+    ``{system, record_id, memory_revision, reference}``)."""
+
     entity_kind: str
     entity_id: str
     payload: dict[str, Any]
     look_hash: str
-    source_ticket_ref: dict[str, Any]
+    source_ticket_ref: Optional[dict[str, Any]] = None
+    source_ref: Optional[dict[str, Any]] = None
+
+    def __post_init__(self) -> None:
+        if (self.source_ticket_ref is None) == (self.source_ref is None):
+            raise LookIngestError(
+                f"look {self.key} must carry exactly one source (a wayfinder ticket or a WriterOS promotion)"
+            )
 
     @property
     def key(self) -> tuple[str, str]:
         return (self.entity_kind, self.entity_id)
+
+    @property
+    def is_writeros(self) -> bool:
+        return self.source_ref is not None
 
 
 @dataclass(frozen=True)
@@ -561,6 +577,219 @@ def project_look_governed(project_root: Path | str, *, project_id: Optional[str]
     return LOOK_GOVERNED_STAGE in get_stage_order(manifest)
 
 
+# ---- WriterOS export (look sessions, 2026-09-30) ----
+#
+# WriterOS writes <package>/memory/exports/look-locks-<revision>.json on every
+# promotion (and on Re-export). OpenMontage only reads it. Each entry is
+# checked PER RECORD against the package's memory/snapshot.json: the named
+# promotion must still be the active canon look for its entity, with the same
+# block, hash and reference mode, and the export must list exactly the active
+# looks. Trust assumption: the package is local and owned by the writer;
+# snapshot.json is WriterOS's projection of its ledger and is trusted as such;
+# confinement stops reading another location but does not authenticate
+# contents. Ben's terminal approval remains the ratification.
+
+WRITEROS_PACKAGE_FIELD = "writeros_package"
+WRITEROS_EXPORTS_SUBDIR = Path("memory") / "exports"
+WRITEROS_REFERENCE_MODES = ("none", "generated-elsewhere", "casting-inspiration")
+WRITEROS_RECORD_ID_RE = re.compile(r"^mem_[0-9a-f]{32}$")
+_WRITEROS_EXPORT_RE = re.compile(r"^look-locks-(\d+)\.json$")
+_EXPORT_ENTRY_FIELDS = {"entity_kind", "entity_id", "look_spec", "look_hash", "promotion_id", "promoted_at", "reference"}
+_EXPORT_FIELDS = {"version", "project_id", "memory_revision", "written_at", "looks"}
+STALE_EXPORT = "export is stale; open the project in WriterOS and click Re-export in the Look panel"
+
+
+def writeros_package_for(project_dir: Path | str) -> Optional[Path]:
+    """The configured WriterOS package (``project.yaml: writeros_package``),
+    resolved strictly, or None when the project does not name one."""
+    config = Path(project_dir) / "project.yaml"
+    try:
+        data = yaml.safe_load(config.read_bytes())
+    except OSError as exc:
+        raise LookIngestError(f"{config} is required to locate the WriterOS package: {exc}") from exc
+    except yaml.YAMLError as exc:
+        raise LookIngestError(f"{config} is not YAML: {exc}") from exc
+    value = (data or {}).get(WRITEROS_PACKAGE_FIELD) if isinstance(data, dict) else None
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise LookIngestError(f"{config}: {WRITEROS_PACKAGE_FIELD} must be an absolute path to a .writeros package")
+    return _resolved_writeros_package(value)
+
+
+def _resolved_writeros_package(package: Path | str) -> Path:
+    path = Path(package).expanduser()
+    if not path.is_absolute():
+        raise LookIngestError(f"writeros_package must be an absolute path, got {package!r}")
+    if path.is_symlink():
+        raise LookIngestError(f"writeros_package {path} is a symlink — refused")
+    try:
+        resolved = path.resolve(strict=True)
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise LookIngestError(f"writeros_package {path} does not exist: {exc}") from exc
+    if resolved != path or not resolved.is_dir() or not resolved.name.endswith(".writeros"):
+        raise LookIngestError(f"writeros_package {path} must be an existing .writeros directory reached without symlinks")
+    return resolved
+
+
+def _read_package_json(package: Path, relative: Path) -> Any:
+    from lib.pathsafe import PathSafetyError, resolve_input
+
+    try:
+        path = resolve_input(package / relative, package)
+    except PathSafetyError as exc:
+        raise LookIngestError(f"WriterOS package file {relative} is not confined under {package}: {exc}") from exc
+    if not path.is_file():
+        raise LookIngestError(f"WriterOS package file {relative} is not a regular file")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise LookIngestError(f"WriterOS package file {relative} is unreadable: {exc}") from exc
+
+
+def latest_writeros_export(package: Path | str) -> Path:
+    """The newest ``look-locks-<revision>.json`` in the package (confined,
+    no symlinks). WriterOS removes older ones; if several exist the highest
+    revision is the current one."""
+    from lib.pathsafe import PathSafetyError, resolve_input
+
+    package = _resolved_writeros_package(package)
+    exports = package / WRITEROS_EXPORTS_SUBDIR
+    if exports.is_symlink() or not exports.is_dir():
+        raise LookIngestError(f"{package.name} has no look export; promote a look in WriterOS first")
+    found = sorted(
+        ((int(m.group(1)), entry) for entry in exports.iterdir() if (m := _WRITEROS_EXPORT_RE.match(entry.name))),
+        key=lambda pair: pair[0],
+    )
+    if not found:
+        raise LookIngestError(f"{package.name} has no look export; promote a look in WriterOS first")
+    try:
+        return resolve_input(found[-1][1], package)
+    except PathSafetyError as exc:
+        raise LookIngestError(f"look export {found[-1][1].name} is not confined under {package}: {exc}") from exc
+
+
+def parse_writeros_export(package: Path | str) -> dict[tuple[str, str], IngestedLook]:
+    """Read and verify the package's current look export. Every look is
+    validated as a look_spec, its hash recomputed, and checked per record
+    against memory/snapshot.json; the export must list exactly the snapshot's
+    active looks. Raises LookIngestError (``re-export`` wording for anything
+    a fresh WriterOS export would fix)."""
+    package = _resolved_writeros_package(package)
+    path = latest_writeros_export(package)
+    data = _read_package_json(package, path.relative_to(package))
+    if not isinstance(data, dict) or set(data) != _EXPORT_FIELDS or data.get("version") != 1:
+        raise LookIngestError(f"look export {path.name} does not have the version-1 export shape")
+    revision = data.get("memory_revision")
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+        raise LookIngestError(f"look export {path.name} has no valid memory_revision")
+    manifest = _read_package_json(package, Path("project.json"))
+    snapshot = _read_package_json(package, Path("memory") / "snapshot.json")
+    project_id = manifest.get("projectId") if isinstance(manifest, dict) else None
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("records"), list):
+        raise LookIngestError(f"{package.name}: memory/snapshot.json is not a WriterOS memory snapshot")
+    if not project_id or data.get("project_id") != project_id or snapshot.get("projectId") != project_id:
+        raise LookIngestError(
+            f"look export {path.name} names project {data.get('project_id')!r} but the package is {project_id!r}"
+        )
+    records = {r.get("id"): r for r in snapshot["records"] if isinstance(r, dict)}
+    active_look_ids = {
+        rid for rid, r in records.items()
+        if r.get("kind") == "canon" and r.get("status") == "active"
+        and isinstance(r.get("payload"), dict) and r["payload"].get("kind") == "look_spec"
+    }
+    entries = data.get("looks")
+    if not isinstance(entries, list):
+        raise LookIngestError(f"look export {path.name}: looks must be a list")
+    out: dict[tuple[str, str], IngestedLook] = {}
+    seen_ids: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != _EXPORT_ENTRY_FIELDS:
+            raise LookIngestError(f"look export {path.name}: an entry does not have the export entry shape")
+        promotion_id = entry["promotion_id"]
+        reference = entry["reference"]
+        if not isinstance(promotion_id, str) or not WRITEROS_RECORD_ID_RE.match(promotion_id):
+            raise LookIngestError(f"look export {path.name}: promotion_id {promotion_id!r} is not a WriterOS record id")
+        if reference not in WRITEROS_REFERENCE_MODES:
+            raise LookIngestError(f"look export {path.name}: reference {reference!r} must be one of {WRITEROS_REFERENCE_MODES}")
+        if promotion_id in seen_ids:
+            raise LookIngestError(f"look export {path.name} lists promotion {promotion_id} twice; {STALE_EXPORT}")
+        seen_ids.add(promotion_id)
+        payload = entry["look_spec"]
+        if not isinstance(payload, dict):
+            raise LookIngestError(f"look export {path.name}: look_spec for {promotion_id} must be a mapping")
+        payload = dict(payload)
+        try:
+            validate_look_spec(payload)
+        except LookSpecError as exc:
+            raise LookIngestError(f"look export {path.name}, promotion {promotion_id}: {exc}") from exc
+        key = (str(payload["entity_kind"]), str(payload["entity_id"]))
+        if (entry["entity_kind"], entry["entity_id"]) != key:
+            raise LookIngestError(f"look export {path.name}: entry key does not match its look_spec for {promotion_id}")
+        digest = _look_hash(payload)
+        if digest != entry["look_hash"]:
+            raise LookIngestError(f"look export {path.name}: export hash mismatch for {promotion_id}; re-export from WriterOS")
+        if key in out:
+            raise LookIngestError(f"look export {path.name} lists two looks for {key}; {STALE_EXPORT}")
+        record = records.get(promotion_id)
+        stored = (record or {}).get("payload") if isinstance(record, dict) else None
+        if (
+            promotion_id not in active_look_ids
+            or record.get("projectId") != project_id
+            or not isinstance(stored, dict)
+            or stored.get("spec") != payload
+            or stored.get("lookHash") != digest
+            or stored.get("reference") != reference
+        ):
+            raise LookIngestError(f"look {key} (promotion {promotion_id}): {STALE_EXPORT}")
+        out[key] = IngestedLook(
+            entity_kind=key[0], entity_id=key[1], payload=payload, look_hash=digest,
+            source_ref={"system": "writeros", "record_id": promotion_id, "memory_revision": revision, "reference": reference},
+        )
+    if seen_ids != active_look_ids:
+        raise LookIngestError(
+            f"look export {path.name} does not list exactly the active WriterOS looks "
+            f"({len(active_look_ids - seen_ids)} missing, {len(seen_ids - active_look_ids)} extra); {STALE_EXPORT}"
+        )
+    return out
+
+
+def ingest_writeros_looks(project_dir: Path | str) -> dict[tuple[str, str], IngestedLook]:
+    """Every look in the project's configured WriterOS package export."""
+    package = writeros_package_for(project_dir)
+    if package is None:
+        raise LookIngestError(
+            f"{Path(project_dir) / 'project.yaml'} has no {WRITEROS_PACKAGE_FIELD}; name the .writeros package "
+            f"whose promoted looks this project uses"
+        )
+    return parse_writeros_export(package)
+
+
+def writeros_look_for(project_dir: Path | str, promotion_id: str) -> IngestedLook:
+    """The look promoted as ``promotion_id`` in the current export."""
+    for look in ingest_writeros_looks(project_dir).values():
+        if look.source_ref and look.source_ref["record_id"] == promotion_id:
+            return look
+    raise LookIngestError(f"WriterOS promotion {promotion_id} is not an active look in the current export")
+
+
+def writeros_envelope_refs(look: IngestedLook) -> list[dict[str, Any]]:
+    """The signed ``promotion_refs`` for a WriterOS look: the permanent record
+    id only. The export's memory revision is informational (packet, evidence)
+    and is not signed, so another promotion rewriting the export while this
+    approval waits does not invalidate it."""
+    assert look.source_ref is not None
+    return [{"system": "writeros", "record_id": look.source_ref["record_id"]}]
+
+
+def writeros_evidence_line(look: IngestedLook) -> str:
+    ref = look.source_ref or {}
+    return (
+        f"Source: WriterOS promotion {ref.get('record_id')} (memory revision {ref.get('memory_revision')}) "
+        f"· Reference image: {ref.get('reference')}"
+    )
+
+
 # ---- look_packet ----
 
 
@@ -602,6 +831,18 @@ def look_lock_request(
     if current is not None and current.look_hash == look.look_hash:
         raise LookIngestError(f"look {look.key} with hash {look.look_hash} is already active")
     request_id = request_id or f"look-lock-{look.entity_kind}-{look.entity_id}"[:64]
+    if look.is_writeros:
+        if promotion_refs:
+            raise LookIngestError("a WriterOS look carries its own promotion_refs; none may be passed")
+        envelope_source: dict[str, Any] = {"promotion_refs": writeros_envelope_refs(look)}
+        request_source: dict[str, Any] = {"source_promotion_id": look.source_ref["record_id"]}
+        attestation = f"{writeros_evidence_line(look)}. "
+    else:
+        envelope_source = {"promotion_refs": list(promotion_refs or []), "source_ticket_ref": look.source_ticket_ref}
+        request_source = {
+            "source_ticket_path": str(ticket_path) if ticket_path is not None else look.source_ticket_ref.get("path"),
+        }
+        attestation = ""
     request = {
         "request_id": request_id,
         "project_id": project_id,
@@ -616,13 +857,13 @@ def look_lock_request(
             "entity_kind": look.entity_kind,
             "look_hash": look.look_hash,
             "supersedes_look_hash": current.look_hash if current else None,
-            "promotion_refs": list(promotion_refs or []),
-            "source_ticket_ref": look.source_ticket_ref,
+            **envelope_source,
         },
         "source_checkpoint_digest": source_checkpoint_digest,
-        "source_ticket_path": str(ticket_path) if ticket_path is not None else look.source_ticket_ref.get("path"),
+        **request_source,
         "summary": summary or (
             f"Ratify the look for {look.entity_kind} {look.entity_id!r} (look_hash {look.look_hash}). "
+            + attestation +
             f"The writer attested a fictional subject: {look.payload.get('fictional_subject_attestation')}. "
             f"Refusal rule: a reference with no receipted lineage, a real person, or a minor is refused."
             + (f" Supersedes active look {current.look_hash}." if current else "")
@@ -669,7 +910,7 @@ def build_look_packet(
             "look_spec": look.payload,
             "look_hash": look.look_hash,
             "receipt_id": current.receipt_id,
-            "source_ticket_ref": look.source_ticket_ref,
+            **({"source_ref": look.source_ref} if look.is_writeros else {"source_ticket_ref": look.source_ticket_ref}),
         })
     packet: dict[str, Any] = {"version": "1.0", "looks": entries}
     if proposal is not None:

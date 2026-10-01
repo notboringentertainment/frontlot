@@ -4,7 +4,14 @@ record the ratification in the checkpoint. No spend, no appearance decisions.
 
 Usage:
   scripts/look_run.py --project <slug> --entity <id> [--kind character|location]
+                      [--source auto|writeros|wayfinder]
                       [--casting <image>] [--supersede] [--dry-run]
+
+``--source`` (look sessions, 2026-09-30): where the look comes from. ``writeros``
+reads the promoted look from the project's WriterOS package export
+(``project.yaml: writeros_package``); ``wayfinder`` reads the resolved look
+ticket (``project.yaml: wayfinder_root``); ``auto`` (default) uses WriterOS
+when the package is configured and its export names the entity, else wayfinder.
 
 One entity per run, one gate per run. The command is idempotent: run it
 again after every gate. It keeps a durable RUN STATE in
@@ -154,14 +161,55 @@ def locate_ticket(wayfinder_root: Path, entity_kind: str, entity_id: str):
     return path.relative_to(wayfinder_root), look
 
 
+# ---- WriterOS location ----
+
+def locate_writeros_look(root: Path, entity_kind: str, entity_id: str):
+    """The look the WriterOS export currently holds for (kind, id)."""
+    from lib.look_ingest import LookIngestError, ingest_writeros_looks
+
+    try:
+        looks = ingest_writeros_looks(root)
+    except LookIngestError as exc:
+        raise LookRunError(str(exc)) from exc
+    look = looks.get((entity_kind, entity_id))
+    if look is None:
+        raise LookRunError(
+            f"the WriterOS export has no promoted look for ({entity_kind}, {entity_id}); "
+            f"promote it in WriterOS's Look panel first"
+        )
+    return look
+
+
+def _choose_source(root: Path, requested: str, entity_kind: str, entity_id: str) -> str:
+    from lib.look_ingest import LookIngestError, ingest_writeros_looks, writeros_package_for
+
+    if requested in ("writeros", "wayfinder"):
+        return requested
+    try:
+        if writeros_package_for(root) is None:
+            return "wayfinder"
+        return "writeros" if (entity_kind, entity_id) in ingest_writeros_looks(root) else "wayfinder"
+    except LookIngestError as exc:
+        raise LookRunError(f"--source auto could not read the WriterOS export: {exc}") from exc
+
+
+def _wayfinder_root(root: Path) -> Path:
+    from lib.look_ingest import LookIngestError, wayfinder_root_for
+
+    try:
+        return wayfinder_root_for(root)
+    except LookIngestError as exc:
+        raise LookRunError(str(exc)) from exc
+
+
 # ---- the command ----
 
 def run_look(
     project_root: Path | str, entity_id: str, *, entity_kind: str = "character", casting: Optional[Path | str] = None,
-    supersede: bool = False, dry_run: bool = False, out=None,
+    supersede: bool = False, dry_run: bool = False, source: str = "auto", out=None,
 ) -> dict[str, Any]:
     from lib.canon_enforcement import _is_look_lock_manifest
-    from lib.look_ingest import LookIngestError, active_look_for, wayfinder_root_for
+    from lib.look_ingest import LookIngestError, active_look_for
     from lib.pipeline_pin import PipelinePinError, _read_marker, pinned_pipeline
     from lib.project_config import ProjectConfigError, load_verified_project_config
 
@@ -170,11 +218,12 @@ def run_look(
     entity_id = require_entity_id(entity_id)
     if entity_kind not in ("character", "location"):
         raise LookRunError(f"--kind must be character|location, got {entity_kind!r}")
+    if source not in ("auto", "writeros", "wayfinder"):
+        raise LookRunError(f"--source must be auto|writeros|wayfinder, got {source!r}")
     try:
         config = load_verified_project_config(root)  # any verified version: no paid call here (R3#2)
         pin = pinned_pipeline(root, str(_read_marker(root).get("pipeline_type") or "authored-film"))
-        wf_root = wayfinder_root_for(root)
-    except (ProjectConfigError, PipelinePinError, LookIngestError) as exc:
+    except (ProjectConfigError, PipelinePinError) as exc:
         raise LookRunError(str(exc)) from exc
     if not _is_look_lock_manifest(pin):
         raise LookRunError(f"project is pinned to {pin.name}@{pin.version}; look_run needs authored-film 1.2 or later")
@@ -182,7 +231,7 @@ def run_look(
     with hold_lease(root, config):
         state = _run_state(root, entity_id)
         if state is not None:
-            return _resume(root, project_id, entity_id, state, wf_root, out)
+            return _resume(root, project_id, entity_id, state, out)
         try:
             current = active_look_for(root, entity_kind, entity_id)
         except LookIngestError as exc:
@@ -192,33 +241,49 @@ def run_look(
                 raise LookRunError("casting inspiration is for characters only")
             if current is not None:
                 raise LookRunError(f"the look for {entity_id!r} is ratified; casting inspiration is imported before ratification only")
+            if source == "writeros":
+                raise LookRunError("--casting imports an image for a wayfinder look; WriterOS records the reference mode as a word only")
+            _wayfinder_root(root)
             return _start_casting(root, project_id, entity_id, Path(casting), dry_run, out)
-        return _start_look(root, project_id, entity_kind, entity_id, wf_root, current, supersede, dry_run, out)
+        chosen = _choose_source(root, source, entity_kind, entity_id)
+        return _start_look(root, project_id, entity_kind, entity_id, chosen, current, supersede, dry_run, out)
 
 
-def _start_look(root, project_id, entity_kind, entity_id, wf_root, current, supersede, dry_run, out) -> dict[str, Any]:
+def _locate(root: Path, source: str, entity_kind: str, entity_id: str):
+    """(state fields naming the source, IngestedLook, request kwargs)."""
+    if source == "writeros":
+        look = locate_writeros_look(root, entity_kind, entity_id)
+        ref = look.source_ref
+        return ({"source": "writeros", "promotion_id": ref["record_id"], "memory_revision": ref["memory_revision"],
+                 "reference": ref["reference"]}, look, {}, f"WriterOS promotion {ref['record_id']}")
+    ticket_rel, look = locate_ticket(_wayfinder_root(root), entity_kind, entity_id)
+    return ({"source": "wayfinder", "ticket_path": str(ticket_rel)}, look, {"ticket_path": ticket_rel}, f"ticket {ticket_rel}")
+
+
+def _start_look(root, project_id, entity_kind, entity_id, source, current, supersede, dry_run, out) -> dict[str, Any]:
     from lib.look_ingest import look_lock_request
 
-    ticket_rel, look = locate_ticket(wf_root, entity_kind, entity_id)
+    source_fields, look, request_kwargs, origin = _locate(root, source, entity_kind, entity_id)
     if current is not None:
         if current.look_hash == look.look_hash:
             _log(out, f"look for {entity_id!r} is already ratified (look_hash {look.look_hash[:12]}…); nothing to do")
             return {"entity_id": entity_id, "status": "active", "look_hash": look.look_hash}
         if not supersede:
             raise LookRunError(
-                f"{entity_id!r} already has an active look ({current.look_hash[:12]}…) and the ticket now hashes to "
+                f"{entity_id!r} already has an active look ({current.look_hash[:12]}…) and the "
+                f"{'WriterOS look' if source == 'writeros' else 'ticket'} now hashes to "
                 f"{look.look_hash[:12]}…; re-run with --supersede to replace it (downstream headshot and sheets are invalidated)"
             )
     rev = _next_revision(root, entity_id)
     request_id = request_id_for("look", entity_id, rev)
     if dry_run:
         _log(out, f"[dry-run] would request {request_id}: ratify look {look.look_hash} for ({entity_kind}, {entity_id}) "
-                  f"from ticket {ticket_rel}" + (f", superseding {current.look_hash[:12]}…" if current else ""))
+                  f"from {origin}" + (f", superseding {current.look_hash[:12]}…" if current else ""))
         return {"entity_id": entity_id, "status": "dry_run", "request_id": request_id, "look_hash": look.look_hash}
     state = {"mode": "look_lock", "revision": rev, "request_id": request_id, "look_hash": look.look_hash,
-             "entity_kind": entity_kind, "ticket_path": str(ticket_rel), "expected_kind": "look_lock"}
+             "entity_kind": entity_kind, "expected_kind": "look_lock", **source_fields}
     digest = _write(root, _packet_on_disk(root), run_state={entity_id: state})  # state BEFORE the request (R5#1)
-    look_lock_request(root, project_id, look, request_id=request_id, ticket_path=ticket_rel, source_checkpoint_digest=digest)
+    look_lock_request(root, project_id, look, request_id=request_id, source_checkpoint_digest=digest, **request_kwargs)
     return _pending(root, entity_id, request_id, out, f"look_lock request written for {entity_id!r} (revision {rev}, look_hash {look.look_hash[:12]}…)")
 
 
@@ -258,7 +323,7 @@ def _pending(root, entity_id, request_id, out, headline: str) -> dict[str, Any]:
 
 # ---- resume (the five states) ----
 
-def _resume(root, project_id, entity_id, state, wf_root, out) -> dict[str, Any]:
+def _resume(root, project_id, entity_id, state, out) -> dict[str, Any]:
     request_id = str(state.get("request_id") or "")
     mode = state.get("mode")
     if mode not in ("look_lock", "casting") or not request_id:
@@ -271,10 +336,11 @@ def _resume(root, project_id, entity_id, state, wf_root, out) -> dict[str, Any]:
         write_decision(root, stage=STAGE, category="revision", subject=f"{mode} request {request_id} declined for {entity_id}",
                        reason=note, selected="declined", user_approved=True)
         _write(root, _packet_on_disk(root), run_state={entity_id: None})
-        _log(out, f"declined: {note}\nEdit the ticket in story-wayfinder and rerun.")
+        _log(out, f"declined: {note}\n" + ("Change the look in WriterOS's Look panel, promote it, and rerun."
+                                           if state.get("source") == "writeros" else "Edit the ticket in story-wayfinder and rerun."))
         raise Declined(note)
     if where == "missing":
-        return _republish(root, project_id, entity_id, state, wf_root, out)
+        return _republish(root, project_id, entity_id, state, out)
     # done: verify the receipt is the one this state expects, then finish
     if req is None or req.get("kind") != state.get("expected_kind") or req.get("entity_id") not in (entity_id, f"reference-{str(state.get('normalized_pixel_hash', ''))[:12]}"):
         raise LookRunError(f"run state names request {request_id} ({state.get('expected_kind')}); the done request has another shape — refusing to guess")
@@ -282,8 +348,8 @@ def _resume(root, project_id, entity_id, state, wf_root, out) -> dict[str, Any]:
     if not isinstance(bound, str) or len(bound) != 64:
         raise LookRunError(f"done request {request_id} carries no source_checkpoint_digest; it was not published by look_run — refusing")
     if mode == "look_lock":
-        return _finish_look(root, project_id, entity_id, state, wf_root, out, bound)
-    return _finish_casting(root, project_id, entity_id, state, wf_root, out, bound)
+        return _finish_look(root, project_id, entity_id, state, out, bound)
+    return _finish_casting(root, project_id, entity_id, state, _wayfinder_root(root), out, bound)
 
 
 def _receipt_bound_to(rows: list, receipt_id: str, bound: str) -> dict:
@@ -301,7 +367,7 @@ def _receipt_bound_to(rows: list, receipt_id: str, bound: str) -> dict:
     return row
 
 
-def _republish(root, project_id, entity_id, state, wf_root, out) -> dict[str, Any]:
+def _republish(root, project_id, entity_id, state, out) -> dict[str, Any]:
     from lib.look_ingest import look_lock_request
     from lib.reference_import import (
         ORIGIN_CASTING, NormalizedImport, ReferenceImportError, STAGING_DIR, import_record, publish_import_request,
@@ -309,12 +375,14 @@ def _republish(root, project_id, entity_id, state, wf_root, out) -> dict[str, An
 
     request_id = state["request_id"]
     if state["mode"] == "look_lock":
-        ticket_rel, look = locate_ticket(wf_root, str(state.get("entity_kind") or "character"), entity_id)
+        _fields, look, request_kwargs, _origin = _locate(root, str(state.get("source") or "wayfinder"),
+                                                         str(state.get("entity_kind") or "character"), entity_id)
         if look.look_hash != state.get("look_hash"):
-            raise LookRunError(f"run state expects look_hash {str(state.get('look_hash'))[:12]}… but the ticket now hashes to "
-                               f"{look.look_hash[:12]}…; the ticket changed mid-run — clear the state by declining, then rerun")
+            what = "the WriterOS look" if state.get("source") == "writeros" else "the ticket"
+            raise LookRunError(f"run state expects look_hash {str(state.get('look_hash'))[:12]}… but {what} now hashes to "
+                               f"{look.look_hash[:12]}…; {what} changed mid-run — clear the state by declining, then rerun")
         digest = _write(root, _packet_on_disk(root), run_state={entity_id: state})
-        look_lock_request(root, project_id, look, request_id=request_id, ticket_path=ticket_rel, source_checkpoint_digest=digest)
+        look_lock_request(root, project_id, look, request_id=request_id, source_checkpoint_digest=digest, **request_kwargs)
         return _pending(root, entity_id, request_id, out, f"republished {request_id} (the request file was missing)")
     pixel_hash = str(state.get("normalized_pixel_hash") or "")
     staged = root / STAGING_DIR / f"reference-{pixel_hash}.png"
@@ -332,7 +400,7 @@ def _republish(root, project_id, entity_id, state, wf_root, out) -> dict[str, An
     return _pending(root, entity_id, request_id, out, f"republished {request_id} (the request file was missing)")
 
 
-def _finish_look(root, project_id, entity_id, state, wf_root, out, bound: str) -> dict[str, Any]:
+def _finish_look(root, project_id, entity_id, state, out, bound: str) -> dict[str, Any]:
     from lib.look_ingest import LookIngestError, active_look_for, look_lock_receipts
 
     kind = str(state.get("entity_kind") or "character")
@@ -349,7 +417,16 @@ def _finish_look(root, project_id, entity_id, state, wf_root, out, bound: str) -
     # ratification cannot trap this run; the next run sees the change and
     # asks for --supersede.
     entry = {"entity_kind": kind, "entity_id": entity_id, "look_spec": current.payload, "look_hash": current.look_hash,
-             "receipt_id": current.receipt_id, "source_ticket_ref": row.get("source_ticket_ref") or {"id": "unknown"}}
+             "receipt_id": current.receipt_id}
+    signed_refs = row.get("promotion_refs") or []
+    if signed_refs:
+        # WriterOS: the record id is signed; the export revision and reference
+        # mode were display evidence, carried here from the run state.
+        entry["source_ref"] = {"system": "writeros", "record_id": signed_refs[0]["record_id"],
+                               "memory_revision": int(state.get("memory_revision") or 0),
+                               "reference": str(state.get("reference") or "none")}
+    else:
+        entry["source_ticket_ref"] = row.get("source_ticket_ref") or {"id": "unknown"}
     packet = _packet_on_disk(root)
     packet["looks"] = [e for e in packet.get("looks") or [] if (e.get("entity_kind"), e.get("entity_id")) != (kind, entity_id)] + [entry]
     proposal = _proposal(root)
@@ -361,9 +438,10 @@ def _finish_look(root, project_id, entity_id, state, wf_root, out, bound: str) -
               f"look_packet now carries {len(packet['looks'])} look(s), complete={packet['complete']}\n"
               f"Next: cd {REPO} && .venv/bin/python scripts/headshot_run.py --project {project_id} --entity {entity_id}")
     try:
-        _, look = locate_ticket(wf_root, kind, entity_id)
+        _f, look, _k, _o = _locate(root, str(state.get("source") or "wayfinder"), kind, entity_id)
         if look.look_hash != current.look_hash:
-            _log(out, "note: the ticket changed after ratification; run look_run --supersede when the writer wants the new answer")
+            what = "a newer look was promoted in WriterOS" if state.get("source") == "writeros" else "the ticket changed"
+            _log(out, f"note: {what} after ratification; run look_run --supersede when the writer wants the new answer")
     except LookRunError:
         pass
     return {"entity_id": entity_id, "status": "ratified", "look_hash": current.look_hash, "receipt_id": current.receipt_id}
@@ -410,12 +488,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--entity", required=True)
     ap.add_argument("--kind", default="character", choices=("character", "location"))
     ap.add_argument("--casting", help="a casting-inspiration image (real person) for the writer's eyes only")
+    ap.add_argument("--source", default="auto", choices=("auto", "writeros", "wayfinder"),
+                    help="where the look comes from (default auto: WriterOS when its export names the entity)")
     ap.add_argument("--supersede", action="store_true", help="replace an already ratified look with the ticket's current answer")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
     try:
         root = resolve_project_root(a.project)
-        run_look(root, a.entity, entity_kind=a.kind, casting=a.casting, supersede=a.supersede, dry_run=a.dry_run)
+        run_look(root, a.entity, entity_kind=a.kind, casting=a.casting, supersede=a.supersede, dry_run=a.dry_run, source=a.source)
     except Declined:
         return EXIT_DECLINED
     except RunError as exc:

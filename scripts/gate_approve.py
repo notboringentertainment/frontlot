@@ -359,6 +359,8 @@ def _construct_look_lock(root: Path, req: dict) -> Constructed:
         ))
     if action != "activate":
         raise GateHandlerError(f"look_lock action must be activate|retire, got {action!r}")
+    if req.get("source_promotion_id") is not None:
+        return _construct_writeros_look_lock(root, req, entity_kind, entity_id, current)
     ticket_rel = req.get("source_ticket_path")
     if not isinstance(ticket_rel, str) or not ticket_rel:
         raise GateHandlerError("look_lock request needs source_ticket_path (relative to the wayfinder root)")
@@ -386,6 +388,53 @@ def _construct_look_lock(root: Path, req: dict) -> Constructed:
     evidence = (
         f"ticket {ticket} (wayfinder root {wf_root})",
         f"source_ticket_ref {json.dumps(look.source_ticket_ref, sort_keys=True)}",
+        f"look_hash {look.look_hash}" + (f" supersedes {current.look_hash}" if current else " (first activation)"),
+    )
+    return Constructed(look.payload, envelope, entity_id, evidence=evidence)
+
+
+def _construct_writeros_look_lock(root: Path, req: dict, entity_kind: str, entity_id: str, current) -> Constructed:
+    """A WriterOS-promoted look (look sessions, 2026-09-30): re-read the
+    package's CURRENT export, verify it per record against WriterOS memory,
+    and select the look by its promotion (record) id. The signed envelope
+    carries promotion_refs and no source_ticket_ref; the reference-image mode
+    is shown as evidence and never signed."""
+    from lib.look_ingest import (
+        LookIngestError,
+        latest_writeros_export,
+        writeros_envelope_refs,
+        writeros_evidence_line,
+        writeros_look_for,
+        writeros_package_for,
+    )
+
+    promotion_id = req.get("source_promotion_id")
+    if not isinstance(promotion_id, str) or not promotion_id:
+        raise GateHandlerError("look_lock request source_promotion_id must name a WriterOS record id")
+    if req.get("source_ticket_path") is not None:
+        raise GateHandlerError("look_lock request names both a wayfinder ticket and a WriterOS promotion — refused")
+    try:
+        package = writeros_package_for(root)
+        if package is None:
+            raise LookIngestError("project.yaml has no writeros_package")
+        export = latest_writeros_export(package)
+        look = writeros_look_for(root, promotion_id)
+    except LookIngestError as exc:
+        raise GateHandlerError(f"WriterOS look refused: {exc}") from exc
+    if look.key != (entity_kind, entity_id):
+        raise GateHandlerError(f"WriterOS promotion {promotion_id} describes {look.key}, not ({entity_kind}, {entity_id})")
+    if current is not None and current.look_hash == look.look_hash:
+        raise GateHandlerError(f"look {look.look_hash} is already the active look for ({entity_kind}, {entity_id})")
+    envelope = {
+        "action": "activate",
+        "entity_kind": entity_kind,
+        "look_hash": look.look_hash,
+        "supersedes_look_hash": current.look_hash if current else None,
+        "promotion_refs": writeros_envelope_refs(look),
+    }
+    evidence = (
+        writeros_evidence_line(look),
+        f"export {export} (WriterOS package {package})",
         f"look_hash {look.look_hash}" + (f" supersedes {current.look_hash}" if current else " (first activation)"),
     )
     return Constructed(look.payload, envelope, entity_id, evidence=evidence)

@@ -815,6 +815,7 @@ def _looks_summary(root: Path) -> list[dict[str, Any]]:
                 "entity_kind": entry.get("entity_kind"),
                 "look_hash": entry.get("look_hash"),
                 "source_ticket_ref": entry.get("source_ticket_ref"),
+                **({"source_ref": entry["source_ref"]} if entry.get("source_ref") else {}),
             })
     return out
 
@@ -1246,6 +1247,8 @@ def _render_look_lock(root: Path, req: dict[str, Any]) -> dict[str, Any]:
             return {"packet_error": True, "error": "active look unavailable"}
         return {"action": "retire", "source_ticket_ref": current.get("source_ticket_ref"),
                 "look_hash": current.get("look_hash"), "supersedes": current.get("look_hash")}
+    if req.get("source_promotion_id") is not None:
+        return _render_writeros_look_lock(root, req, entity_kind, entity_id, current)
     ticket = req.get("source_ticket_path")
     if not isinstance(ticket, str) or not ticket:
         return {"packet_error": True, "error": "look ticket unavailable"}
@@ -1275,6 +1278,24 @@ def _render_look_lock(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     old = current
     return {"source_ticket_ref": look.source_ticket_ref, "look_hash": look.look_hash,
             "supersedes": (old or {}).get("look_hash")}
+
+
+def _render_writeros_look_lock(root: Path, req: dict[str, Any], entity_kind: str, entity_id: str,
+                               current: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Authoritative source: the WriterOS package's current look export,
+    verified per record against its memory (text only)."""
+    try:
+        from lib.look_ingest import LookIngestError, writeros_look_for
+
+        look = writeros_look_for(root, str(req.get("source_promotion_id")))
+    except LookIngestError:
+        return {"packet_error": True, "error": "WriterOS look unavailable; re-export from WriterOS"}
+    except Exception:
+        return {"packet_error": True, "error": "WriterOS look unavailable"}
+    if (look.entity_kind, look.entity_id) != (entity_kind, entity_id):
+        return {"packet_error": True, "error": "WriterOS look names another entity"}
+    return {"source_ref": look.source_ref, "look_hash": look.look_hash,
+            "supersedes": (current or {}).get("look_hash")}
 
 
 def _render_config(root: Path, req: dict[str, Any]) -> dict[str, Any]:

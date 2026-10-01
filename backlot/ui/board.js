@@ -1452,13 +1452,17 @@ function renderCanonStrip(s) {
   if (!canon.length) strip.append(el("div", { class: "gate-empty" }, "No visual canon has been published yet."));
   const looks = Array.isArray(s.gates.looks) ? s.gates.looks : [];
   for (const look of looks) {
-    const ticket = typeof look.source_ticket_ref === "object"
+    const writeros = look.source_ref && typeof look.source_ref === "object" ? look.source_ref : null;
+    const ticket = typeof look.source_ticket_ref === "object" && look.source_ticket_ref
       ? look.source_ticket_ref.id || JSON.stringify(look.source_ticket_ref)
       : look.source_ticket_ref;
+    const source = writeros
+      ? `WriterOS ${String(writeros.record_id || "—").slice(0, 12)} · reference ${writeros.reference || "—"}`
+      : `ticket ${ticket || "—"}`;
     strip.append(el("div", { class: "canon-look" },
       el("span", {}, `${look.entity_kind || "entity"} · ${look.entity || "—"}`),
       el("b", {}, `look ${String(look.look_hash || "—").slice(0, 12)}`),
-      el("small", {}, `ticket ${ticket || "—"}`)));
+      el("small", {}, source)));
   }
   return strip;
 }
