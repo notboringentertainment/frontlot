@@ -40,3 +40,42 @@ The plan has material security and lifecycle gaps. No files were modified.
 The smallest useful next step is a free-only prototype proving signing isolation, delayed permission handling, and restart recovery. The boundary fixes are required by Ben’s explicit constraints; additional UI work should wait for that evidence.
 
 VERDICT: REVISE
+### Claude's response (round 1)
+Accepted all 11. Structural change: Claude works inside Claude Code's OS sandbox (no read of ~/.openmontage, .env, credentials; localhost-only network; no unsandboxed escape; strict MCP config) and Front Lot executes every pipeline script via a new add-on MCP tool `frontlot_run` with an allowlist; paid scripts need Ben's Go. This removes blocking permission hooks (#4), the one-shot-allow fallback (#7), and makes spend/sign enforcement OS-level (#1-3). Broker owns PTY + live endpoint + journal for restart survival (#6). Controller lease across both sockets (#8). Env allowlist + pinned executable (#9). Process-group shutdown, replacement refused until reaped, paid jobs detached (#10). Spend state machine + full transition log incl. uncertain (#5, #11). Probes P1-P3 gate the build.
+
+## Round 2 — Codex
+Revision 2 resolves the blocking-hook problem and improves server-restart handling. It still has material gaps in the new execution boundary. No files were modified.
+
+1. **Critical — Claude can alter code that Front Lot executes with Ben’s privileges (§4.1–4.2).** The write denies protect project records but leave `scripts/`, `lib/`, `tools/`, the vendored add-on, and Python dependencies writable. Claude could modify an allowlisted free script or its imports, then request execution outside the sandbox. An argv hash would remain unchanged.  
+   **Fix:** execute an immutable trusted checkout and interpreter, with Claude allowed to write only a separate work area.
+
+2. **Critical — the Bash sandbox does not isolate the whole Claude process (§3.1, §4.1).** Hooks, plugin helpers, and MCP processes run outside it; `--strict-mcp-config` does not disable inherited hooks or installed plugins. `allowUnsandboxedCommands: false` alone also does not establish that excluded commands or unavailable sandbox support fail closed. These distinctions are explicit in [Anthropic’s sandbox documentation](https://code.claude.com/docs/en/sandboxing).  
+   **Fix:** isolate the whole Claude process, or define and test a complete restricted configuration that excludes every unsandboxed execution path and refuses startup without enforcement.
+
+3. **High — approvals bind filenames, not the inputs used (§4.3).** [supervised_shot.py](/Users/ben/Projects/OpenMontage-worktrees/front-lot-redesign/scripts/supervised_shot.py:57) loads settings JSON when execution begins. Claude can change that file after the spend card appears while preserving the exact argv hash, changing prompt, provider settings, or cost.  
+   **Fix:** freeze execution inputs before presenting the card and execute those snapshots; reject changed authoritative dependencies.
+
+4. **High — film binding is asserted but not enforced against arguments (§3.2, §4.2).** `frontlot_run` accepts arbitrary argument strings, while existing scripts accept `--project` or project paths. A request associated with film A could target film B; path arguments also let the privileged executor read files Claude cannot read directly.  
+   **Fix:** have the executor supply the current project itself and validate every input/output path against operation-specific permitted roots.
+
+5. **High — an atomic write does not guarantee one execution (§4.3).** Two wrappers can both read `approved`, both replace it with `running`, and both execute. Crash windows between claim, child spawn, and recording child identity are also undefined. A crash before the wrapper starts leaves `approved` stranded outside the specified `uncertain` case.  
+   **Fix:** use an exclusive execution claim and durable launch states; reconcile incomplete launches without automatically retrying possible paid submissions.
+
+6. **High — `frontlot_run` acknowledges requests before reliable acceptance (§3.2).** It “reports” a request and immediately returns `running` or `waiting-for-ben`. Story Drive’s [ReportQueue](/Users/ben/Projects/story-drive/mod/story-drive-live/hooks/queue.ts:34) silently drops events after failure or overflow. Claude could receive a request ID for work the broker never received.  
+   **Fix:** return success only after a short, idempotent broker acknowledgment that the request is durably accepted; use the event queue for display updates.
+
+7. **High — Stop and epoch changes leave actionable spend cards (§4.3, §5).** Stop only aborts the turn, while pending cards remain valid for thirty minutes. Plugin reload changes the reporting epoch, but no cancellation or rebinding rule is specified. A later Go can therefore launch work from an abandoned turn or obsolete epoch.  
+   **Fix:** cancel unstarted requests on Stop and define explicit cancellation or safe rebinding on epoch changes, while preserving already-running jobs.
+
+8. **High — broker death does not prove Claude has ended (§3.1, §5).** A killed broker cannot perform its shutdown sequence or unlink sidecars. Its separate Claude process group may survive. Conversely, deleting a stale sidecar could permit a replacement while that group remains alive. Revision 2 also omits an explicit durable session-UUID persistence rule.  
+   **Fix:** persist session and process identity before publication, then reconcile orphaned groups and stale sidecars under the film lock before resume or replacement.
+
+9. **Medium — bounded replay lacks a gap-recovery contract (§3.1).** After enough events are evicted, `resume_from` may precede the journal’s retained range. Replaying only surviving events cannot reconstruct pending cards or session state, despite “nothing lost.”  
+   **Fix:** return an authoritative state snapshot and new cursor whenever the requested replay range is unavailable.
+
+The simpler boundary is a read-only trusted runtime plus narrowly validated run requests and frozen inputs. Probes should include code replacement, settings mutation after card creation, inherited unsandboxed helpers, duplicate wrapper claims, and broker death—not just direct key reads.
+
+VERDICT: REVISE
+### Claude's response (round 2)
+Accepted #1 (as write-deny on the trusted runtime rather than a separate immutable checkout: same protection, less machinery), #2 (setting sources exclude user/project so Ben's hooks/plugins don't load; fail-closed sandbox self-check; residual: the vendored add-on runs unsandboxed but is write-protected Front Lot code), #3 (frozen input hashes re-checked on Go), #4 (executor supplies --project; path roots), #5 (O_EXCL claim + launch states + no auto-retry), #6 (direct durable POST /run), #7 (Stop/epoch cancel unstarted), #8 (identity persisted before publication; reconcile under film lock), #9 (snapshot on journal gap). Added an explicit threat model: capable cooperative agent that errs or improvises, not a hostile same-user program with exploit capability, matching lib/gates.py's stated scope. Review should judge against that model.
+
