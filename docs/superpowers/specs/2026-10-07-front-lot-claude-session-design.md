@@ -1,7 +1,7 @@
 # Front Lot: a Claude session in the log column
 
 Date: 2026-10-07
-Status: design approved by Ben in conversation, section by section; awaiting Codex review
+Status: design approved by Ben in conversation, section by section; revision 2 after Codex round 1 (see REVIEW-LOG)
 Branch: `front-lot-redesign` (worktree `~/Projects/OpenMontage-worktrees/front-lot-redesign`)
 
 ## 1. Intent
@@ -23,7 +23,7 @@ Top to bottom:
 
 1. **Needs you**: pending approvals, unchanged from the current redesign.
 2. **Conversation**: Claude's replies as readable text in the Cutting Room style. Tool activity collapses to one quiet line per step in plain words; clicking a line expands the detail. When pictures land, they appear in the viewer and the conversation links to them.
-3. **Spend cards**: inline, when Claude asks to run something paid: what, for whom, cost estimate (or "cost unknown"), yellow **Go**, quiet **Not now**.
+3. **Spend cards**: inline, when Claude asks Front Lot to run something paid: what, for whom, cost estimate (or "cost unknown"), yellow **Go**, quiet **Not now**.
 4. **Composer** at the bottom, with **Stop** while Claude is working.
 5. **Show terminal** switch: flips the column to the raw Claude terminal. Flips automatically when Claude needs something the column can't draw (permission prompts other than spend, its own question dialogs, slash commands, version too old, add-on silent), and back when resolved.
 6. **History** drawer: the current "The log" (decided approvals) and "Production decisions" move here.
@@ -33,94 +33,129 @@ Session states shown in plain words: Starting, Ready, Working, Waiting for you (
 
 ## 3. Architecture
 
-### 3.1 Session keeper (one per film)
+Revision 2 rests on one rule: **Claude talks and plans; Front Lot runs the pipeline.** The embedded Claude works inside Claude Code's OS sandbox with no access to signing material and no route to paid services. Every pipeline run script (free or paid) is executed by Front Lot on Claude's request; paid ones only after Ben's Go. This replaces the revision-1 idea of steering Claude's own Bash with permission prefixes, which Codex showed cannot enforce "nothing paid without Go" or "never signs".
 
-A detached broker process per film, modelled on the existing signing broker (`scripts/gate_sign.py --broker`, `backlot/tty.py`):
+Baseline, stated honestly: Ben's current separate Claude terminal runs as Ben with full access to the signing key (`~/.openmontage/gates/key`, see `lib/gates.py` trust note) and provider keys. This design is strictly stronger than today's workflow, not merely equal.
 
-- New script `scripts/claude_session.py --broker --project <slug>`; spawned by the Front Lot server with `start_new_session=True`, stdio to DEVNULL.
-- Owns a PTY running `claude` with cwd = repo root, login-shell PATH, `TERM=xterm-256color`.
-- Unix socket + lock + sidecar under `~/.openmontage/backlot/claude/<slug>.{sock,lock,session.json}`, mode 0600. Reuses the existing framing (`HELLO/IN/OUT/RESIZE/STATUS/BYE`), the single-client rule, and the 64 KB replay buffer.
-- Differences from the signing broker: does **not** take the run lease (run scripts take it themselves; holding it would deadlock them); no gate-request precondition; output relayed with full xterm passthrough (not `AnsiSanitizer`, which strips cursor/OSC and breaks Claude's TUI).
-- Lifetime: survives page reloads, window close, and Front Lot server restarts. Ends only on **End session**, **New conversation**, or Claude exiting. On end it sends `STATUS/BYE`, unlinks socket and sidecar.
-- Launch: `claude --plugin-dir <mod> --session-id <uuid> --settings <generated settings file> --append-system-prompt-file <brief> "<check-in prompt>"`; resume: `claude --plugin-dir <mod> --resume <uuid> --settings … --append-system-prompt-file …` with a short "picking back up" prompt.
-- Session id per film stored in `~/.openmontage/backlot/claude/<slug>.json` (not in the film folder).
-- Preflight before spawn: `claude --version` ≥ 2.1.288 (installed: 2.1.293), `claude auth status --json` signed in. Failures become the Unavailable state with the specific fix.
+### 3.1 Session broker (one per film)
 
-### 3.2 Add-on (Story-drive's live mod, reused)
+A detached Python process per film, `scripts/claude_session.py --broker --project <slug>`, spawned by the Front Lot server (`start_new_session=True`, stdio DEVNULL). It owns **everything that must survive a Front Lot server restart**:
 
-- Vendor a copy of `~/Projects/story-drive/mod/story-drive-live/` into `backlot/claude_mod/` (renamed env vars `FRONTLOT_LIVE_SOCKET` / `FRONTLOT_LIVE_TOKEN`). Story-drive's copy is not modified.
-- Protocol unchanged: HTTP over a per-session unix socket (0600), token header, routes `/hello`, `/report` (seq-contiguous batches, `{acceptedThrough}`), `/ping` (5 s), `/inbox` (25 s long-poll), `/inbox-ack`.
-- Events used: `row`, `delta`, `turn`, `tool`, `waiting-for-input`, `input-done`, `session-end`, `queue-overflow`. `mark` is unused at first.
-- Composer submit via `$.prompt.submit({text, asUser:true})` (acked `queued` then `submitted`); Stop via `$.turn.abort({turnId})`. Slash commands are refused and routed to the terminal view.
-- **New in Front Lot's copy: spend decisions.** The `classic.PermissionRequest` handler, when the tool call matches a paid command (§4.1), reports a `spend-request` event (`requestId`, command summary, entity, cost estimate if known) and awaits a `spend-decision` from the inbox, then returns allow or deny for that one call. Any other permission request keeps Story-drive behaviour (report `waiting-for-input`, defer to the TUI → terminal view).
+- the PTY running `claude` (raw terminal, 64 KB replay buffer, existing `HELLO/IN/OUT/RESIZE/STATUS/BYE` framing),
+- the add-on's live endpoint (§3.2) and its state: epoch, last accepted seq, the inbox queue, pending spend requests,
+- a bounded event journal `~/.openmontage/backlot/claude/<slug>.events.jsonl` with monotonically increasing broker sequence numbers.
+
+The Front Lot server attaches to the broker over the broker's 0600 unix socket and subscribes with `resume_from=<broker seq>`; after a server restart it re-attaches and receives everything after the last seq it delivered. The add-on's `/hello` epoch is unaffected because its endpoint lives in the broker, not the server.
+
+Launch details:
+
+- Executable pinned: resolve `claude` once (saved path, `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`), record its absolute path and version in the sidecar; preflight `--version` ≥ 2.1.288 and `auth status --json`.
+- Environment built from an allowlist (HOME, USER, LANG, login-shell PATH, TERM=xterm-256color, the two FRONTLOT_LIVE_* vars), never `os.environ.copy()`: no `CLAUDECODE` / `CLAUDE_CODE_*` (Story-drive spike: these break transcripts and resume), no provider API keys.
+- Command: `<claude> --plugin-dir backlot/claude_mod --strict-mcp-config --mcp-config <empty-but-for-mod> --settings <generated> --append-system-prompt-file <brief> --session-id <uuid> "<check-in prompt>"`; resume uses `--resume <uuid>` with a short pick-back-up prompt. `--strict-mcp-config` keeps Ben's other MCP servers (several can spend, e.g. image generators) out of this session.
+- cwd: repo root.
+
+Process ownership and shutdown:
+
+- `claude` runs in its own process group led by the broker's child. **End** / **New conversation**: SIGHUP, wait 5 s, SIGTERM the group, wait 5 s, SIGKILL the group; reap the exact child pid; then unlink socket and sidecar. A replacement session for the film is refused until the previous broker has exited and its sidecar is gone.
+- Paid jobs are **not** children of Claude or the broker (§4.2); ending a conversation never kills a paid job. End/New while a paid job runs is allowed; the job continues, its record stays, and the next conversation's check-in reports it.
+
+### 3.2 Add-on (Story-drive's live mod, vendored)
+
+- Copy `~/Projects/story-drive/mod/story-drive-live/` into `backlot/claude_mod/`; env vars renamed `FRONTLOT_LIVE_SOCKET` / `FRONTLOT_LIVE_TOKEN`; Story-drive untouched.
+- Unchanged: `/hello`, `/report` (seq-contiguous, `{acceptedThrough}`), `/ping`, `/inbox` long-poll, `/inbox-ack`; events `row`, `delta`, `turn`, `tool`, `waiting-for-input`, `input-done`, `session-end`, `queue-overflow`; submit via `$.prompt.submit`, stop via `$.turn.abort`; slash commands routed to the terminal view.
+- **New MCP tool `frontlot_run`** registered by the add-on (Story-drive's `mark` tool shows the registration pattern). Input: `{script, args[], entity?, why}`. The tool reports a `run-request` to the broker and returns immediately with `{requestId, status}`:
+  - free script → `status: "running"`; the outcome arrives later as a submitted message,
+  - paid script → `status: "waiting-for-ben"`; Claude is told Ben will see a spend card and must wait,
+  - not on the allowlist → `status: "refused"` with the reason.
+  No hook ever blocks waiting for Ben, so the 10-second function-hook budget (Codex round 1, #4) does not apply.
+- Outcomes return to Claude as a submitted user-role message from Front Lot (`"[Front Lot] Run r-12 finished: 3 headshot candidates for Ivy are on the board."` / `"Ben said Not now to r-12."`), queued through the existing inbox so delivery and acks follow Story-drive's proven path.
+- The add-on's `classic.PermissionRequest` handler keeps Story-drive behaviour (report a wait, let the TUI handle it → terminal view). It is not used for money.
 
 ### 3.3 Front Lot server
 
 New module `backlot/claude_live.py`:
 
-- Hosts the add-on's endpoint (asyncio unix-socket HTTP server per session, token-checked, POST-only) on behalf of each film's session; socket path + token passed to the broker as env at spawn.
-- Keeps an in-memory and on-disk transcript cache per film (`~/.openmontage/backlot/claude/<slug>.events.jsonl`, bounded) so a reload redraws instantly; on resume, history replays via the add-on's `$.session.messages()` path.
-- Exposes to the page:
-  - `GET /api/project/{p}/claude` → state (none / starting / ready / working / waiting / ended / unavailable + reason) and recent events.
-  - `WS /api/project/{p}/claude/live` → event stream to the page; page → server messages `submit`, `stop`, `spend-decision`, `start`, `resume`, `new`, `end`. Same origin check and capability token handshake as the signing WebSocket.
-  - `WS /api/project/{p}/claude/tty` → raw terminal relay to the broker (xterm passthrough), used by Show terminal.
-- Writes every spend decision to `~/.openmontage/backlot/claude/<slug>.spend.jsonl`: time, command summary, entity, cost estimate shown, decision.
+- Spawns/attaches brokers; relays broker events to pages; no live-channel state of its own beyond delivery cursors.
+- Page endpoints (same origin check + capability token handshake as the signing WebSocket):
+  - `GET /api/project/{p}/claude` → session state + recent events.
+  - `WS /api/project/{p}/claude/live` → events; page actions `submit`, `stop`, `spend-decision`, `start`, `resume`, `new`, `end`, `take-control`.
+  - `WS /api/project/{p}/claude/tty` → raw terminal (xterm passthrough, not `AnsiSanitizer`).
+- **Controller lease** (Codex #8): one controlling page per film across both sockets. Every mutating action and every keystroke from a non-controller is rejected server-side. Another tab sees the conversation read-only with a "Take control" button that transfers the lease (the previous controller is told and becomes read-only). A lease with no live socket expires after 30 s.
 
 ### 3.4 Page
 
-- `backlot/ui/session.js` (new module): connects the live WebSocket, reduces events into a view model (port of Story-drive's pure reducer `src/live/model.ts` to plain JS), renders the conversation, spend cards, composer, Stop, Show terminal, states.
-- Raw terminal reuses the existing xterm instance pattern (one page-lifetime Terminal per surface; render/SSE never replace it).
-- Picture links: when a `tool` event finishes a run script for an entity, the page selects that entity in the bin so new frames appear in the viewer.
-- Styling follows `backlot/DESIGN.md` (Cutting Room): yellow only on spend cards' Go and Needs you; tape colours for states; no monospace outside the terminal and expanded tool detail.
+- `backlot/ui/session.js`: live socket, a plain-JS port of Story-drive's pure reducer (`src/live/model.ts`), conversation rendering, spend cards, composer, Stop, Show terminal, states, read-only mode.
+- Raw terminal: one page-lifetime xterm, never replaced by render/SSE (existing pattern).
+- When a run finishes for an entity, the bin selects it so new frames land in the viewer.
+- Styling per `backlot/DESIGN.md`.
 
-## 4. Money and signing
+## 4. Signing and money
 
-### 4.1 Generated settings (per session)
+### 4.1 Claude's sandbox (enforced, not advisory)
 
-Front Lot writes a settings file passed with `--settings`:
+Front Lot writes a per-session settings file (`--settings`) that:
 
-- `permissions.ask` for paid commands, by Bash prefix: `scripts/headshot_run.py`, `scripts/sheet_run.py`, `scripts.supervised_shot … generate` and any other generator entry point that spends (list confirmed during build from `lib/shot_allowance.py` callers and run scripts); both `python …` and `.venv/bin/python …` and `-m` forms.
-- `permissions.deny` for signing: `scripts/gate_sign.py`, `scripts/gate_approve.py`, `-m scripts.gate_*`, and direct writes under `.gate-requests/`.
-- `permissions.allow` for free work so Claude is not interrupted: reading the repo and projects, `look_run.py` (no spend), `--dry-run` forms, status/inspect commands, `python -m backlot` commands.
-- Everything else follows Claude Code's default permission behaviour (prompts appear in the terminal view).
+- enables Claude Code's sandbox for Bash with `allowUnsandboxedCommands: false` (no escape hatch);
+- **denies reading**: `~/.openmontage/**` (signing key, ledgers, WALs, consumed tokens, signer sockets under `backlot/sessions`, the session brokers' sockets), the repo's `.env*`, credential files (`tools/google_credentials.py` sources, `~/.config/gcloud`, any provider key files found during build);
+- **denies writing**: `~/.openmontage/**`, `projects/*/.gate-requests/**`, `projects/*/canon/**`, ledgers, checkpoints;
+- **network**: localhost only (WriterOS reads on 5177, Front Lot); no provider domains;
+- the same denies as permission rules for Claude's own Read/Edit/Write tools;
+- MCP: only the add-on's `frontlot_run` (strict MCP config).
 
-Cost estimate on the card: taken from the run script's own estimate where it prints one (dry-run or allowance record); otherwise "cost unknown". No invented numbers.
+What the limit protects (Ben's "don't cripple agents" rule): signing authority and money. Claude can still read every film file, the canon packet, look specs, and pipeline docs, plan, write its replies, and get any pipeline step run through `frontlot_run`.
 
-### 4.2 Trust boundary (test before building)
+### 4.2 Run executor (Front Lot runs the pipeline)
 
-Two layers keep signing with Ben:
+- Allowlist of scripts and argument shapes, each tagged **free** or **paid**, built from the repo during step 1 of the build: e.g. `look_run.py` (free), any `--dry-run` form (free), status/inspect commands (free), `headshot_run.py` candidates (paid), `sheet_run.py` (paid), `supervised_shot generate` (paid), QC/judge steps that call paid models (paid). Unknown → refused.
+- Free requests run at once. Paid requests become a **spend card**. The card's estimate comes from the script's own dry-run/estimate where available; otherwise "cost unknown".
+- Execution: a detached wrapper `scripts/frontlot_run.py` runs the exact argv recorded in the request (outside the sandbox, as Ben, with the normal environment and keys), with the repo's existing run lease taken by the run script itself. The wrapper writes a run record and outcome file, so outcomes survive server and broker restarts.
+- Jobs are never children of Claude; Stop does not kill them; their own existing stop paths apply (e.g. `supervised_shot stop`).
 
-1. Deny rules above.
-2. `gate_approve.py` refuses non-TTY stdin (`require_tty`). **Build gate:** prove, with the real broker + real `claude` + the generated settings, that a Bash command run by the embedded Claude sees `stdin` as not-a-TTY and that `gate_approve.py` refuses. If Claude's Bash children do see a TTY, fix that (e.g. force stdin to `/dev/null` for tool commands, or an additional check in `gate_approve.py` that its controlling terminal is the signing broker's) before any other work proceeds.
+### 4.3 Spend request state machine (Codex #5, #7, #11)
 
-### 4.3 Brief given to Claude
+States: `waiting-for-ben` → (`approved` → `running` → `done` | `failed` | `uncertain`) | `declined` | `cancelled` | `expired`.
 
-`--append-system-prompt-file` with: what Front Lot is; which film; the check-in task (WriterOS promotes, pending approvals, what is ready to make, in a few lines, then wait); that paid runs will be shown to Ben as spend cards and a "Not now" is a decision to respect; that signing is Ben's and Claude must never attempt it; plain-language rules (no hashes, IDs, machine lines in replies). No story content is placed in the brief.
+- Bound to `{film, session uuid, broker epoch, requestId, sha256 of the exact argv}`; the card shows what that argv will do in plain words.
+- Exactly one decision accepted, from the controller, and only while `waiting-for-ben`; duplicates and stale decisions are rejected and logged.
+- New conversation / End / broker exit → open requests become `cancelled`. Requests expire after 30 minutes unanswered.
+- Approval is consumed atomically when the wrapper starts (`approved` → `running` in one write); a request can never run twice.
+- `uncertain`: the wrapper started but no outcome file exists after its process is gone; shown to Ben plainly, never as success.
+- Spend log `~/.openmontage/backlot/claude/<slug>.spend.jsonl`: every transition with time, request identity, argv hash, plain summary, cost shown, decision, outcome.
+
+### 4.4 Brief given to Claude
+
+`--append-system-prompt-file`: what Front Lot is; which film; the check-in task; that pipeline steps go through `frontlot_run`; that paid steps wait for Ben's Go and a Not now is a decision; that signing is Ben's; plain-language replies (no hashes, IDs, machine lines). No story content in the brief.
 
 ## 5. Failure handling
 
 | Situation | What Ben sees | Mechanism |
 |---|---|---|
-| Claude exits / crashes | "The session ended" + Pick back up | broker STATUS exited; resume with stored uuid |
-| Add-on silent > 15 s, or never says hello within 8 s | Terminal view + note | Story-drive timeouts; `view = raw` |
+| Claude exits / crashes | "The session ended" + Pick back up | broker STATUS; resume with stored uuid; open requests cancelled |
+| Add-on silent > 15 s / no hello in 8 s | Terminal view + note | Story-drive timeouts |
 | Claude Code too old / signed out | Unavailable + the one fix | preflight |
-| Run lease held by a production run | Claude still talks; run scripts refuse to overlap and Claude says so | existing `hold_lease` |
-| Stop pressed | Current turn aborted | `$.turn.abort`; paid work already started behaves exactly as today |
-| Front Lot server restarts | Page reconnects; session still running | detached broker + sidecar discovery |
-| Second browser tab | Second tab gets read-only view of the conversation; composer disabled | single-client rule on the live socket |
+| Front Lot server restarts | Page reconnects, nothing lost | broker owns live state; server resumes from broker seq |
+| Broker dies | "The session ended"; paid jobs unaffected | jobs are detached with their own records |
+| Run lease held by a production run | Executor reports "busy" to Claude in plain words | existing `hold_lease` refusal |
+| Stop | Current turn aborted; running jobs continue | `$.turn.abort`; jobs detached |
+| Two tabs | Second is read-only with Take control | controller lease |
+| Go and Not now race / double click | First valid decision wins; the other is rejected | state machine |
 
 ## 6. Build order and tests
 
-1. **Trust-boundary test (§4.2).** Nothing else proceeds until it passes.
-2. **Session keeper** with tests: spawn, attach, replay, single client, survive server restart, clean end.
-3. **Add-on endpoint** in `claude_live.py` with tests: hello/report/inbox/ack, token and POST-only refusal, seq gaps, timeouts.
-4. **Early real run** (Ben's "run it before reviewing it"): real Claude in the column on a film, free work only: check-in, reading the film, a `look_run --dry-run`. Fix what it shows before continuing.
-5. **Page**: conversation, composer, Stop, Show terminal, states, History drawer.
-6. **Spend card**: add-on `spend-request` / `spend-decision`, settings rules, spend log; then one real paid run Ben approves with Go (one item, per the one-at-a-time rule).
-7. Existing suite stays green (263 passing; the one pre-existing failure is a missing Playwright browser).
+1. **Probes (free, no product code):**
+   - P1 sandbox: with real `claude` 2.1.293 + generated settings in a throwaway session, prove that Bash and Read cannot read `~/.openmontage/gates/key`, cannot connect to a signer socket under `~/.openmontage/backlot/sessions/`, cannot read `.env`, cannot reach a provider domain, and that `dangerouslyDisableSandbox` is refused. Any failure stops the build and returns to design.
+   - P2 add-on: the vendored mod registers `frontlot_run`, the call returns immediately, and a later inbox `submit` delivers an outcome message into the conversation.
+   - P3 resume + env: a session launched from a Claude Code shell with the allowlisted env writes a transcript and resumes.
+2. Run executor + allowlist + state machine, with tests (double decisions, stale epoch, cancellation, uncertain outcome, never runs twice).
+3. Broker (PTY + live endpoint + journal), with tests (server restart re-attach from seq, single client, bounded shutdown, replacement refused until reaped).
+4. **Early real run** (free work only): check-in, reading the film, a `look_run --dry-run` via `frontlot_run`.
+5. Page: conversation, composer, Stop, Show terminal, states, controller lease, History drawer.
+6. Spend card end to end, then one real paid run Ben approves with Go (one item).
+7. Existing suite stays green (263 passing; one pre-existing failure from a missing Playwright browser).
 
-## 7. Open questions for review
+## 7. Open questions
 
-- Q1. Can a function-hook `classic.PermissionRequest` handler await an external answer and return allow/deny for that call in Claude Code 2.1.293? If not, spend cards fall back to: deny-by-rule + Claude asks in chat + Go sends an inbox message that adds a one-shot allow (needs design).
-- Q2. Is `claude --bg` / `claude attach` a better session keeper than a custom broker? Current choice: custom broker, because it matches the proven signing pattern and gives the replay buffer and single-client semantics Front Lot already relies on.
-- Q3. Exact list of paid entry points for §4.1.
+- Q1 (was: hook waits for Ben): resolved by `frontlot_run` returning immediately; no blocking hook.
+- Q2 `claude --bg`/`attach` vs custom broker: custom broker, because the broker must also own the live endpoint and journal for restart survival (Codex #6).
+- Q3 exact allowlist and free/paid tags: built and reviewed in build step 2, from the repo's run scripts and every caller of paid providers.
+- Q4 whether the Claude Code sandbox on 2.1.293 supports every deny listed in §4.1 (read denies, unix-socket denies, network allowlist, no-escape setting): answered by probe P1 before anything else.
