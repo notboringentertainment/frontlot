@@ -79,3 +79,27 @@ VERDICT: REVISE
 ### Claude's response (round 2)
 Accepted #1 (as write-deny on the trusted runtime rather than a separate immutable checkout: same protection, less machinery), #2 (setting sources exclude user/project so Ben's hooks/plugins don't load; fail-closed sandbox self-check; residual: the vendored add-on runs unsandboxed but is write-protected Front Lot code), #3 (frozen input hashes re-checked on Go), #4 (executor supplies --project; path roots), #5 (O_EXCL claim + launch states + no auto-retry), #6 (direct durable POST /run), #7 (Stop/epoch cancel unstarted), #8 (identity persisted before publication; reconcile under film lock), #9 (snapshot on journal gap). Added an explicit threat model: capable cooperative agent that errs or improvises, not a hostile same-user program with exploit capability, matching lib/gates.py's stated scope. Review should judge against that model.
 
+## Round 3 — Codex
+Revision 3 is substantially better under the stated cooperative-agent threat model. I’m not requiring protection against hostile same-user programs or OS exploits. Five concrete problems remain; no files were modified.
+
+1. **High — timeout does not mean “not received” (§3.2).** The broker can durably accept `/run`, start a free operation, and lose its acknowledgment. Returning `not-received` encourages a cooperative Claude to submit again, duplicating work or spend cards. Calling the POST “idempotent” does not define how that later submission finds the original request.  
+   **Fix:** return `uncertain` with a client-generated idempotency key and reconcile that key before permitting a new submission.
+
+2. **High — “Frozen inputs” are only checked, not frozen (§4.2).** Go re-hashes inputs, but the wrapper subsequently opens the original paths. A work-area edit, another free operation, or an external promotion can change inputs between those steps. [supervised_shot.py](/Users/ben/Projects/OpenMontage-worktrees/front-lot-redesign/scripts/supervised_shot.py:57) reads settings at execution time. This requires ordinary concurrency, not malicious behavior.  
+   **Fix:** execute immutable snapshots of explicit inputs and validate mutable project dependencies under the operation’s lease immediately before use.
+
+3. **High — cancellation can race launch (§4.3).** Go creates a claim, writes `launching`, then spawns the wrapper. Stop or an epoch change can cancel the not-yet-started request between those steps, while the launcher still proceeds. Exclusive claim creation prevents duplicate launchers; it does not serialize cancellation against launch.  
+   **Fix:** define one atomic launch-versus-cancel commitment, reject launch after cancellation, and test Stop/End/epoch changes between claim creation and spawn.
+
+4. **High — process reconciliation can kill an unrelated process group (§3.1).** Persistent PID/PGID numbers can be reused after Claude exits or the machine restarts. The proposed reconciliation treats a live group with the recorded number as orphaned Claude and terminates it. Session UUID in a JSON file does not establish the current process’s identity.  
+   **Fix:** record and verify boot and process-start identity before signaling; treat mismatches as stale metadata.
+
+5. **Medium — build probes depend on components scheduled later (§6).** P4 requires an approved request, card, executor, and claim mechanism; P5 requires the new broker and server reconciliation. Neither can run in step 1’s “no product code” phase. This makes the required build order unexecutable as written.  
+   **Fix:** keep sandbox/API feasibility probes first, then place P4 and P5 after their executor and broker implementations, before any paid run.
+
+The remaining fixes are bounded: accurate uncertain-delivery handling, actual input freezing, serialized cancellation, and safe process identification. They do not require another isolation platform.
+
+VERDICT: REVISE
+### Claude's response (round 3)
+Accepted all 5: idempotency key + `uncertain` with check-by-key (#1); snapshots where scripts take paths, and `--expect-input-sha` verified by the script after its lease, immediately before the paid call (#2); per-request flock serializing launch vs cancel (#3); boot time + process start time verified before any signal (#4); P4 after the executor and P5 after the broker, both before any paid run (#5).
+

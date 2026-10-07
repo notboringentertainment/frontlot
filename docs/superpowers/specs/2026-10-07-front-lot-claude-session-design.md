@@ -1,7 +1,7 @@
 # Front Lot: a Claude session in the log column
 
 Date: 2026-10-07
-Status: design approved by Ben in conversation, section by section; revision 3 after Codex rounds 1-2 (see REVIEW-LOG)
+Status: design approved by Ben in conversation, section by section; revision 4 after Codex rounds 1-3 (see REVIEW-LOG)
 Branch: `front-lot-redesign` (worktree `~/Projects/OpenMontage-worktrees/front-lot-redesign`)
 
 ## 1. Intent
@@ -61,14 +61,14 @@ Launch details:
 Process ownership and shutdown:
 
 - `claude` runs in its own process group led by the broker's child. **End** / **New conversation**: SIGHUP, wait 5 s, SIGTERM the group, wait 5 s, SIGKILL the group; reap the exact child pid; then unlink socket and sidecar. A replacement session for the film is refused until the previous broker has exited and its sidecar is gone.
-- **Identity before publication**: the session uuid, broker pid, Claude pid and process-group id are written to `~/.openmontage/backlot/claude/<slug>.json` under the film's lock *before* the sidecar is published. Before any resume or replacement, the server reconciles under the same lock: a recorded process group still alive with no broker is terminated with the same escalation, stale sidecars are removed only after that group is confirmed gone.
+- **Identity before publication**: the session uuid, broker pid, Claude pid and process-group id, each process's start time, and the machine's boot time (`kern.boottime`) are written to `~/.openmontage/backlot/claude/<slug>.json` under the film's lock *before* the sidecar is published. Before any resume or replacement, the server reconciles under the same lock: a recorded process group is signalled only if the boot time matches and the live process's start time equals the recorded one (otherwise the record is stale metadata and is discarded); a verified orphan group is terminated with the same escalation, stale sidecars are removed only after that group is confirmed gone.
 - Paid jobs are **not** children of Claude or the broker (§4.2); ending a conversation never kills a paid job. End/New while a paid job runs is allowed; the job continues, its record stays, and the next conversation's check-in reports it.
 
 ### 3.2 Add-on (Story-drive's live mod, vendored)
 
 - Copy `~/Projects/story-drive/mod/story-drive-live/` into `backlot/claude_mod/`; env vars renamed `FRONTLOT_LIVE_SOCKET` / `FRONTLOT_LIVE_TOKEN`; Story-drive untouched.
 - Unchanged: `/hello`, `/report` (seq-contiguous, `{acceptedThrough}`), `/ping`, `/inbox` long-poll, `/inbox-ack`; events `row`, `delta`, `turn`, `tool`, `waiting-for-input`, `input-done`, `session-end`, `queue-overflow`; submit via `$.prompt.submit`, stop via `$.turn.abort`; slash commands routed to the terminal view.
-- **New MCP tool `frontlot_run`** registered by the add-on (Story-drive's `mark` tool shows the registration pattern). Input: `{script, args[], entity?, why}`. The tool makes a direct, idempotent `POST /run` to the broker (not through the display event queue, which may drop events) and returns only after the broker has durably written the request, with `{requestId, status}`; if the broker does not acknowledge within 5 s the tool returns `status: "not-received"` and Claude is told plainly:
+- **New MCP tool `frontlot_run`** registered by the add-on (Story-drive's `mark` tool shows the registration pattern). Input: `{script, args[], entity?, why}`. The tool makes a direct, idempotent `POST /run` to the broker (not through the display event queue, which may drop events) and returns only after the broker has durably written the request, with `{requestId, status}`; every call carries a client-generated idempotency key (the tool-use id); a repeated key returns the original request instead of creating a new one. If the broker does not acknowledge within 5 s the tool returns `status: "uncertain"` with the key, and the brief tells Claude to check that key (`frontlot_run` with `{check: key}`) rather than resubmit. Statuses:
   - free script → `status: "running"`; the outcome arrives later as a submitted message,
   - paid script → `status: "waiting-for-ben"`; Claude is told Ben will see a spend card and must wait,
   - not on the allowlist → `status: "refused"` with the reason.
@@ -115,7 +115,7 @@ What the limit protects (Ben's "don't cripple agents" rule): signing authority a
 
 - Allowlist of scripts and argument shapes, each tagged **free** or **paid**, built from the repo during step 1 of the build: e.g. `look_run.py` (free), any `--dry-run` form (free), status/inspect commands (free), `headshot_run.py` candidates (paid), `sheet_run.py` (paid), `supervised_shot generate` (paid), QC/judge steps that call paid models (paid). Unknown → refused.
 - **Film bound by Front Lot**: the executor inserts `--project <film>` itself and rejects any project argument from Claude. Every path argument is resolved and checked against the operation's permitted roots (the film's folder, the work area); anything else is refused. Protects: one film's approval spending on another, and the executor reading what Claude itself cannot.
-- **Frozen inputs**: when a request is created, the executor resolves every input the operation reads (argv plus declared input files such as a shot's settings JSON) and records their sha256. The card describes those inputs. On Go, the executor re-hashes them; any change refuses the run and asks Ben again. Protects: a card approving one thing while another runs.
+- **Frozen inputs**: when a request is created, the executor resolves every input the operation reads (argv plus declared input files such as a shot's settings JSON) and records their sha256; the card describes those inputs. Where a script accepts an input path, the executor copies the input into the run's snapshot dir and passes the snapshot path. Where a script reads a fixed project path (e.g. `supervised_shot.py` settings), the executor passes `--expect-input-sha <path>=<sha>`; the script verifies it **after taking its own run lease and immediately before the paid call**, and aborts without spending on mismatch (small addition to the run scripts via a shared `run_common` helper). Protects: a card approving one thing while another runs, including ordinary concurrent edits.
 - Free requests run at once. Paid requests become a **spend card**. The card's estimate comes from the script's own dry-run/estimate where available; otherwise "cost unknown".
 - Execution: a detached wrapper `scripts/frontlot_run.py` runs the exact argv recorded in the request (outside the sandbox, as Ben, with the normal environment and keys), with the repo's existing run lease taken by the run script itself. The wrapper writes a run record and outcome file, so outcomes survive server and broker restarts.
 - Jobs are never children of Claude; Stop does not kill them; their own existing stop paths apply (e.g. `supervised_shot stop`).
@@ -127,7 +127,7 @@ States: `waiting-for-ben` → (`approved` → `running` → `done` | `failed` | 
 - Bound to `{film, session uuid, broker epoch, requestId, sha256 of the exact argv}`; the card shows what that argv will do in plain words.
 - Exactly one decision accepted, from the controller, and only while `waiting-for-ben`; duplicates and stale decisions are rejected and logged.
 - **Stop**, a new add-on epoch (plugin reload), New conversation, End, or broker exit → every request not yet started becomes `cancelled`; already running jobs continue. Requests expire after 30 minutes unanswered.
-- **Exactly once**: on Go the executor creates `runs/<requestId>.claim` with `O_CREAT|O_EXCL` (a second claimant fails), writes `launching`, spawns the wrapper, then records the wrapper pid and `running`. Reconciliation after any crash: claim without pid → `uncertain (may not have started)`; pid gone without outcome → `uncertain`. Uncertain is shown to Ben plainly, never retried automatically, never shown as success.
+- **Exactly once, and serialized with cancel**: each request has one state file guarded by a per-request `flock`. Launch: take the lock, require state `approved`, create `runs/<requestId>.claim` with `O_CREAT|O_EXCL`, write `launching`, spawn the wrapper, record its pid and `running`, release. Cancel: take the same lock, and only `waiting-for-ben` or `approved` (never `launching`/`running`) may become `cancelled`. Tests cover Stop/End/epoch change at each step between claim and spawn. Reconciliation after any crash: claim without pid → `uncertain (may not have started)`; pid gone without outcome → `uncertain`. Uncertain is shown to Ben plainly, never retried automatically, never shown as success.
 - Spend log `~/.openmontage/backlot/claude/<slug>.spend.jsonl`: every transition with time, request identity, argv hash, plain summary, cost shown, decision, outcome.
 
 ### 4.4 Brief given to Claude
@@ -154,10 +154,9 @@ States: `waiting-for-ben` → (`approved` → `running` → `done` | `failed` | 
    - P1 sandbox: with real `claude` 2.1.293 + generated settings in a throwaway session, prove that Bash and Read cannot read `~/.openmontage/gates/key`, cannot connect to a signer socket under `~/.openmontage/backlot/sessions/`, cannot read `.env`, cannot reach a provider domain, and that `dangerouslyDisableSandbox` is refused. Any failure stops the build and returns to design.
    - P2 add-on: the vendored mod registers `frontlot_run`, the call returns immediately, and a later inbox `submit` delivers an outcome message into the conversation.
    - P3 resume + env: a session launched from a Claude Code shell with the allowlisted env writes a transcript and resumes.
-   - P4 improvisation: inside the sandboxed session, attempts to edit an allowlisted script, edit a shot settings file after a card exists, target another film, run a paid provider call from Python, and start a second claim on an approved request all fail as specified.
-   - P5 broker death: kill -9 the broker mid-session; the server reconciles the orphaned Claude group before allowing resume.
-2. Run executor + allowlist + state machine, with tests (double decisions, stale epoch, cancellation, uncertain outcome, never runs twice).
-3. Broker (PTY + live endpoint + journal), with tests (server restart re-attach from seq, single client, bounded shutdown, replacement refused until reaped).
+   - P1 also covers: editing an allowlisted script and running a paid provider call from Python inside the sandbox both fail.
+2. Run executor + allowlist + state machine, with tests (double decisions, stale epoch, cancellation at every launch step, uncertain outcome, never runs twice, idempotency key). Then **P4**: a request for another film is refused; editing a shot's settings after its card exists makes the script abort before spending; a second claim on an approved request fails.
+3. Broker (PTY + live endpoint + journal), with tests (server restart re-attach from seq, snapshot on gap, single client, bounded shutdown, replacement refused until reaped). Then **P5**: kill -9 the broker mid-session; the server verifies identity and reconciles the orphaned Claude group before allowing resume; a stale record with a reused pid is not signalled.
 4. **Early real run** (free work only): check-in, reading the film, a `look_run --dry-run` via `frontlot_run`.
 5. Page: conversation, composer, Stop, Show terminal, states, controller lease, History drawer.
 6. Spend card end to end, then one real paid run Ben approves with Go (one item).
