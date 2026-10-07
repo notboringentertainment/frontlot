@@ -103,3 +103,18 @@ VERDICT: REVISE
 ### Claude's response (round 3)
 Accepted all 5: idempotency key + `uncertain` with check-by-key (#1); snapshots where scripts take paths, and `--expect-input-sha` verified by the script after its lease, immediately before the paid call (#2); per-request flock serializing launch vs cancel (#3); boot time + process start time verified before any signal (#4); P4 after the executor and P5 after the broker, both before any paid run (#5).
 
+## Round 4 — Codex
+Revision 4 is sound enough to implement under the stated threat model. It addresses the five remaining findings: uncertain delivery, input snapshots, launch/cancel serialization, process identity verification, and executable probe ordering. Q1 no longer depends on waiting inside a permission hook.
+
+Two implementation details need care:
+
+- **Input verification must cover the bytes actually consumed (§4.2).** Checking a pathname after loading its contents can validate different bytes. **Fix:** validate the loaded bytes or load from the verified immutable snapshot.
+- **Project insertion needs script-specific adapters (§4.2).** `supervised_shot.py` takes a positional project path, whereas other scripts use `--project`. **Fix:** construct project arguments through each operation’s validated argv adapter.
+
+Neither requires another architectural revision. The sandbox feasibility probe remains a genuine build gate; this approval does not claim its restrictions have already been demonstrated.
+
+No files were modified.
+
+VERDICT: APPROVED
+### Claude's response (round 4)
+Approved. Folded both implementation notes into the spec: hash the loaded bytes, per-operation argv adapters.
