@@ -1,4 +1,4 @@
-# Front Lot Claude Session Implementation Plan (rev 4)
+# Front Lot Claude Session Implementation Plan (rev 5)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10 (FastAPI/Starlette, asyncio, `pty`, `fcntl`), Claude Code CLI ≥ 2.1.288 (installed 2.1.294) with a mod plugin (TypeScript, Claude Code mods API, `claude plugin test` / `claude-code/testing`), vanilla JS + xterm 5.5 in the browser, pytest, `node --test`.
 
-**Spec:** `docs/superpowers/specs/2026-10-07-front-lot-claude-session-design.md` (rev 4, Codex-approved; review log beside it). Pre-flight scan: `.superpowers/sdd/2026-10-07-front-lot-claude-session/preflight.md` (P1–P43, resolved in rev 2). Plan review: `docs/superpowers/plans/2026-10-07-front-lot-claude-session-REVIEW-LOG.md` (Codex round 1, 22 findings, resolved in rev 3; round 2, 8 findings, resolved in rev 4).
+**Spec:** `docs/superpowers/specs/2026-10-07-front-lot-claude-session-design.md` (rev 4, Codex-approved; review log beside it). Pre-flight scan: `.superpowers/sdd/2026-10-07-front-lot-claude-session/preflight.md` (P1–P43, resolved in rev 2). Plan review: `docs/superpowers/plans/2026-10-07-front-lot-claude-session-REVIEW-LOG.md` (Codex round 1, 22 findings, resolved in rev 3; round 2, 8 findings, resolved in rev 4; round 3, 4 findings, resolved in rev 5).
 
 ## Global Constraints
 
@@ -38,6 +38,15 @@
 3. Front Lot restarted while a paid job is running: the job continues, and the card shows its real outcome afterwards (not "waiting" and not "done" by guess) — owned by Tasks 6, 8 and 11.
 4. Claude writes or edits a file the paid run depends on between card and Go: the run refuses before spending — owned by Tasks 3 and 4.
 5. Claude Code missing, signed out, too old, or its sandbox unconfirmed: the column says so with the one fix instead of a blank panel — owned by Tasks 8, 9 and 11.
+
+## Changes in rev 5
+
+Codex round 3 (4 findings on Stop, all accepted after verification; details in the review log under "Claude's response (round 3)").
+
+- **#1** An unanswered Stop never expires: `/run` stays refused until the add-on's final ack for that Stop, a new add-on epoch, or a replaced conversation. After 15 s the page gets one plain notice: "Claude hasn't confirmed it stopped — start a new conversation to be sure." Test (Task 8).
+- **#2** Every enqueue/requeue goes through `enqueue()`, which always sets `outbox_ready`, so Stop wakes a poll that is already waiting. Test: Stop while a poll waits (Task 8).
+- **#3** The add-on caches each final ack (`finalAcks`) and replays it on redelivery, so a repeated Stop still reports `aborted:<turn>`. Tests: the mod replays its ack; the broker handles a lost first ack (Tasks 7, 8).
+- **#4** The watcher's `cancelled` branch marks the request notified and `continue`s; only branches that call `tell_claude` record `notice_actions` (Task 8).
 
 ## Changes in rev 4
 
@@ -2707,7 +2716,7 @@ async function registerRun($: any): Promise<void> {
 
 (The 5 s race keeps the handler inside the 10-second hook budget; `$.clock.sleep` is the budget-exempt wait. A late broker answer is not lost: the request is durable, and Claude's `{check}` call finds it.)
 
-6. Turn-agnostic Stop (the broker cannot know the current turn reliably: `turn.start` only queues its report). In `act()`, replace the stop branch's first line `if (action.stop.turnId !== mainTurnId) return sendAck(...)` and the abort with:
+6. Turn-agnostic Stop (the broker cannot know the current turn reliably: `turn.start` only queues its report). Add a module-level `const finalAcks = new Map<string, InboxAck>()` (cleared with `handled` in `openEpoch`), and change the redelivery shortcut at the top of `act()` from `if (handled.has(action.id)) return sendAck($, { id: action.id, status: 'submitted' })` to `if (handled.has(action.id)) return sendAck($, finalAcks.get(action.id) ?? { id: action.id, status: 'submitted' })`, so a redelivered Stop replays the same final ack, aborted turn included. Then replace the stop branch's first line `if (action.stop.turnId !== mainTurnId) return sendAck(...)` and the abort with:
 
 ```ts
   const target = action.stop.turnId === '*' ? mainTurnId : action.stop.turnId
@@ -2717,6 +2726,7 @@ async function registerRun($: any): Promise<void> {
     await $.turn.abort({ turnId: target })
     ack = action.stop.turnId === '*' ? { id: action.id, status: 'submitted', reason: `aborted:${target}` } : { id: action.id, status: 'submitted' }
   } catch { ack = { id: action.id, status: 'rejected', reason: 'turn already ended' } }
+  finalAcks.set(action.id, ack)
   await sendAck($, ack)
 ```
 
@@ -2734,12 +2744,26 @@ test("a Stop for the current turn aborts it and names it in the ack", async ($, 
   expect(aborted).toEqual(['t7'])
   expect(reqs.filter((r) => r.route === '/inbox-ack').map((r) => r.body)).toEqual([{ id: 's1', status: 'submitted', reason: 'aborted:t7' }])
 })
+
+test('a redelivered Stop replays its first final ack, aborted turn included', async ($, on) => {
+  const clock = mock.clock(on)
+  const aborted: string[] = []
+  on('turn.abort', ($: any, e: any) => { aborted.push(e.turnId); return { value: undefined } })
+  const stop = { id: 's1', epoch: 'E', stop: { turnId: '*' } }
+  const reqs = wire(on, { inbox: [stop, stop] })               // the broker never saw the first ack
+  await launch($)
+  await $.turn.start({ text: 'go', turnId: 't7' })
+  await settle(clock)
+  expect(aborted).toEqual(['t7'])                              // aborted once
+  expect(reqs.filter((r) => r.route === '/inbox-ack').map((r) => r.body))
+    .toEqual([{ id: 's1', status: 'submitted', reason: 'aborted:t7' }, { id: 's1', status: 'submitted', reason: 'aborted:t7' }])
+})
 ```
 
 - [ ] **Step 5: Run tests and validate**
 
 Run: `claude plugin test backlot/claude_mod && claude plugin validate --strict backlot/claude_mod`
-Expected: every suite passes (copied ones plus the six new tests); validate clean.
+Expected: every suite passes (copied ones plus the seven new tests); validate clean.
 
 - [ ] **Step 6: Commit**
 
@@ -2775,8 +2799,8 @@ git commit -m "feat(front-lot): frontlot_run tool in the vendored live add-on"
   - `session-state {state, reason?}`;
   - `notice {plain}` (client-only, `seq: null`);
   - `snapshot {state, hello, rows, cards, cursor}` (sent instead of events on a gap): `hello` = last add-on hello or null, `rows` = the last 50 add-on events of kind `row` (with `epoch`), `cards` = every request of this conversation as `{requestId, summary, entity, estimate_usd, paid, state}` (record states, `approved`/`launching` shown as `running`).
-- Live endpoint `<slug>.live.sock` (0600; header `x-frontlot-token`): Story-drive routes `/hello`, `/report`, `/ping`, `/inbox`, `/inbox-ack`, plus `/run {key, op, params, epoch, turnId}` and `/run-check {key}` → `{requestId?, status, plain}`. `/run` is refused (nothing stored) when `epoch` is not the current add-on epoch, when a Stop is still waiting for the add-on's answer, or when `turnId` is a turn the add-on reported as aborted by a Stop ("That request came from a part of the conversation that was stopped or restarted, so it was not run."). Stop is turn-agnostic: the broker sends the inbox action `stop {turnId: "*"}`, the add-on aborts its current main turn and acks `{status: "submitted", reason: "aborted:<turnId>"}` (or `rejected` when no turn runs); until that ack (or 15 s), every `/run` is refused. So a `/run` racing a Stop is refused whether or not the turn-start report has arrived.
-- Inbox (Claude's messages from Front Lot and Stops): an ordered `outbox` (deque + `asyncio.Event`), stamped with the epoch only at delivery. A long-poll from an epoch that ended while it waited puts the action back at the front and answers `{}`; an `/inbox-ack` `rejected` with reason `epoch ended` puts it back too. Outcome messages to Claude count as delivered only when acked `submitted` (or rejected for another reason, which is shown to Ben as a notice); only then is the request marked `notified`, so a broker restart re-sends anything not yet acked (at least once). Record states mapped: `waiting-for-ben`→`waiting-for-ben`; `approved`/`launching`/`running`→`running`; `uncertain`→`unknown-outcome`; terminal states unchanged; unknown key on `/run-check` → `not-received`; refused → `refused`.
+- Live endpoint `<slug>.live.sock` (0600; header `x-frontlot-token`): Story-drive routes `/hello`, `/report`, `/ping`, `/inbox`, `/inbox-ack`, plus `/run {key, op, params, epoch, turnId}` and `/run-check {key}` → `{requestId?, status, plain}`. `/run` is refused (nothing stored) when `epoch` is not the current add-on epoch, when a Stop is still waiting for the add-on's answer, or when `turnId` is a turn the add-on reported as aborted by a Stop ("That request came from a part of the conversation that was stopped or restarted, so it was not run."). Stop is turn-agnostic: the broker sends the inbox action `stop {turnId: "*"}`, the add-on aborts its current main turn and acks `{status: "submitted", reason: "aborted:<turnId>"}` (or `rejected` when no turn runs); until that ack, every `/run` is refused — with no time limit: only the add-on's final ack for that Stop, a new add-on epoch (`/hello`, which retires the old turns), or a replaced conversation lifts the block. After `STOP_NOTICE_SECONDS` (15; `FRONTLOT_STOP_NOTICE_SECONDS` in tests) without an ack, the broker journals one notice for the page: "Claude hasn't confirmed it stopped — start a new conversation to be sure." So a `/run` racing a Stop is refused whether or not the turn-start report has arrived.
+- Inbox (Claude's messages from Front Lot and Stops): an ordered `outbox` (deque + `asyncio.Event`), stamped with the epoch only at delivery. Every enqueue and requeue goes through one helper that also sets the event, so a poll already waiting wakes at once. Unacked actions are redelivered after `REDELIVER_SECONDS` (10; `FRONTLOT_REDELIVER_SECONDS` in tests). A long-poll from an epoch that ended while it waited puts the action back at the front and answers `{}`; an `/inbox-ack` `rejected` with reason `epoch ended` puts it back too. Outcome messages to Claude count as delivered only when acked `submitted` (or rejected for another reason, which is shown to Ben as a notice); only then is the request marked `notified`, so a broker restart re-sends anything not yet acked (at least once). Record states mapped: `waiting-for-ben`→`waiting-for-ben`; `approved`/`launching`/`running`→`running`; `uncertain`→`unknown-outcome`; terminal states unchanged; unknown key on `/run-check` → `not-received`; refused → `refused`.
 - Controller lease: one controlling **page** per film. A connection is authorized exactly when its `page` equals `lease["page"]`, so a page's live and tty connections are authorized together and a transfer revokes both at once. HELLO with `controller: true` takes the lease when no page holds it, when the same page holds it, or when the holding page has had no connection at all for `LEASE_SECONDS` (30; `FRONTLOT_LEASE_SECONDS` overrides in tests); expiry starts only when that page's last connection closes. `take-control` always transfers it (every connection of the previous page gets `STATUS controller:false`, one of them a notice). Every mutating `ACTION` (`submit`, `stop`, `spend-decision`, `end`, `new`) and every `IN`/`RESIZE` from an unauthorized connection is refused; actions get the notice "This window is read-only. Use Take control to act here."
 - Request binding: requests are created with `session = session_id`, `epoch = current add-on epoch`; decisions are checked against the same pair.
 
@@ -3084,7 +3108,7 @@ def world(tmp_path):
     (film / "project.json").write_text(json.dumps({"title": "Film"}))
     env = dict(os.environ, OPENMONTAGE_GATES_DIR=str(gates), OPENMONTAGE_PROJECTS_DIR=str(projects),
                FRONTLOT_CLAUDE=str(write_fake_claude(tmp_path)), FRONTLOT_SKIP_PREFLIGHT="1",
-               FRONTLOT_LEASE_SECONDS="1", **stub_ops_env(tmp_path))
+               FRONTLOT_LEASE_SECONDS="1", FRONTLOT_STOP_NOTICE_SECONDS="1", FRONTLOT_REDELIVER_SECONDS="1", **stub_ops_env(tmp_path))
     procs: list[subprocess.Popen] = []
     yield {"env": env, "gates": gates, "film": film, "procs": procs, "dir": gates / "claude"}
     for p in procs:
@@ -3235,6 +3259,49 @@ def test_requests_from_an_old_epoch_or_a_stopped_turn_are_refused(world):
     assert run(sock, token, "k3", turn="t2")["status"] == "waiting-for-ben"  # a new turn
 
 
+def test_stop_wakes_a_waiting_poll(world):
+    import threading
+    start(world)
+    s = connect(world)
+    sock, token = live_endpoint(world["film"])
+    hello(sock, token, "e1")
+    got = {}
+    th = threading.Thread(target=lambda: got.update(post_live(sock, token, "/inbox", {"epoch": "e1"}, timeout=40)))
+    th.start(); time.sleep(0.5)                                              # the add-on's poll is already waiting
+    t0 = time.time()
+    s.sendall(cf.encode_json(cf.ACTION, {"type": "stop"}))
+    th.join(40)
+    assert got.get("stop") == {"turnId": "*"} and time.time() - t0 < 3
+
+
+def test_an_unconfirmed_stop_keeps_runs_blocked_and_tells_ben(world):
+    start(world)                                                             # FRONTLOT_STOP_NOTICE_SECONDS=1
+    s = connect(world)
+    sock, token = live_endpoint(world["film"])
+    hello(sock, token, "e1")
+    s.sendall(cf.encode_json(cf.ACTION, {"type": "stop"}))
+    n = next_of(s, cf.EVENT, lambda d: "confirmed it stopped" in d["event"].get("plain", ""))
+    assert "new conversation" in n["event"]["plain"]
+    time.sleep(1.5)
+    assert run(sock, token, "k1", turn="t1")["status"] == "refused"          # never unblocked by time alone
+
+
+def test_a_lost_stop_ack_is_replayed_with_the_aborted_turn(world):
+    start(world)                                                             # FRONTLOT_REDELIVER_SECONDS=1
+    s = connect(world)
+    sock, token = live_endpoint(world["film"])
+    hello(sock, token, "e1")
+    s.sendall(cf.encode_json(cf.ACTION, {"type": "stop"}))
+    first = post_live(sock, token, "/inbox", {"epoch": "e1"})                # the add-on aborts t1; its ack is lost
+    time.sleep(1.2)
+    again = post_live(sock, token, "/inbox", {"epoch": "e1"})                # redelivered
+    assert again["id"] == first["id"]
+    # the add-on replays its cached final ack, including the aborted turn (Task 7)
+    post_live(sock, token, "/inbox-ack", {"id": again["id"], "status": "submitted", "reason": "aborted:t1"})
+    assert run(sock, token, "k1", turn="t1")["status"] == "refused"
+    assert run(sock, token, "k2", turn="t2")["status"] == "waiting-for-ben"
+
+
 def test_a_poll_from_an_ended_epoch_never_eats_a_message(world):
     import threading
     start(world)
@@ -3357,6 +3424,8 @@ from scripts.gate_sign import _login_environment, _safe_replay_tail  # noqa: E40
 REPLAY_BYTES = 64 * 1024
 LEASE_SECONDS = float(os.environ.get("FRONTLOT_LEASE_SECONDS", "30"))
 NO_HELLO_SECONDS, SILENT_SECONDS = 8, 15          # Story-drive's add-on timeouts (spec §5)
+STOP_NOTICE_SECONDS = float(os.environ.get("FRONTLOT_STOP_NOTICE_SECONDS", "15"))
+REDELIVER_SECONDS = float(os.environ.get("FRONTLOT_REDELIVER_SECONDS", "10"))
 KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 READ_ONLY = "This window is read-only. Use Take control to act here."
 STALE = "That request came from a part of the conversation that was stopped or restarted, so it was not run."
@@ -3488,7 +3557,7 @@ def card(rec: dict) -> dict:
 
 Then, in the same file, `class Broker` with:
 
-1. `__init__(slug, resume)`: `film = PROJECTS_DIR / slug` (must be a directory, else `Unavailable("missing-film")`); title from `project.json` `"title"` if present, else the slug; `work = cs.work_dir(film)`; `store = RequestStore(claude_dir(), slug)`; `journal = Journal(paths["events"])`; session id = `json.loads(paths["session"].read_text())["session_id"]` when `resume` and that file exists, else `str(uuid.uuid4())` and `resume = False` (the identity file is never a resume source); `token = secrets.token_hex(32)`; `addon_epoch = None`; `last_seq = 0`; `rows = collections.deque(maxlen=50)`; `last_hello = None`; `state = "starting"`; `turn_id = None`; `stopped_turns = set()`; `clients = {}` (writer → `{"page", "kind"}`); `lease = {"page": None, "until": None}`; `outbox = collections.deque()` + `outbox_ready = asyncio.Event()`; `unacked = {}` (delivered, not yet finally acked: id → (action, time)); `notice_actions = {}` (action id → (request id, state)); `queued_notices = set()` ((request id, state) pairs already in the outbox this broker life); `stop_pending = {}` (stop action id → deadline); timestamps `spawned_at`, `last_heard`, flags `missing_sent`, `silent_sent`.
+1. `__init__(slug, resume)`: `film = PROJECTS_DIR / slug` (must be a directory, else `Unavailable("missing-film")`); title from `project.json` `"title"` if present, else the slug; `work = cs.work_dir(film)`; `store = RequestStore(claude_dir(), slug)`; `journal = Journal(paths["events"])`; session id = `json.loads(paths["session"].read_text())["session_id"]` when `resume` and that file exists, else `str(uuid.uuid4())` and `resume = False` (the identity file is never a resume source); `token = secrets.token_hex(32)`; `addon_epoch = None`; `last_seq = 0`; `rows = collections.deque(maxlen=50)`; `last_hello = None`; `state = "starting"`; `turn_id = None`; `stopped_turns = set()`; `clients = {}` (writer → `{"page", "kind"}`); `lease = {"page": None, "until": None}`; `outbox = collections.deque()` + `outbox_ready = asyncio.Event()`; `unacked = {}` (delivered, not yet finally acked: id → (action, time)); `notice_actions = {}` (action id → (request id, state)); `queued_notices = set()` ((request id, state) pairs already in the outbox this broker life); `stop_pending = {}` (stop action id → time sent; an entry leaves only via its final ack, a new epoch, or shutdown); `stop_noticed = set()`; timestamps `spawned_at`, `last_heard`, flags `missing_sent`, `silent_sent`.
 2. `async run()`, in this order (every step after the gated spawn is inside `try: … except BaseException: await shutdown("start-failed"); raise`, so a failure never leaves a Claude, a socket or an identity behind):
    1. Lifetime lock: open `paths["lock"]` and try `fcntl.flock(fd, LOCK_EX | LOCK_NB)` every 0.1 s for up to 3 s (a server may hold it for a moment while it checks); still busy → another broker is alive → exit 0.
    2. `paths["unavailable"].unlink(missing_ok=True)`; remove leftover `sock`/`live` files (no broker owns them: we hold the lock).
@@ -3503,25 +3572,25 @@ Then, in the same file, `class Broker` with:
    `main()` wraps `run()`: on `Unavailable as u` write `paths["unavailable"]` = `{"reason": u.reason, "version": u.version}` (omit null), release the lock, exit 3.
 3. Gated spawn (recoverable at every instant): `master, slave = pty.openpty()`; `r, w = os.pipe()`; `self.claude = subprocess.Popen(["/bin/sh", "-c", f'IFS= read -r go <&{r} && [ "$go" = go ] && exec "$@"; exit 70', "frontlot-claude", *cs.launch_argv(claude=..., mod_dir=REPO / "backlot" / "claude_mod", settings_file=paths["settings"], brief_file=paths["brief"], session_id=session_id, resume=resume, prompt=...)], cwd=work, env=env, stdin=slave, stdout=slave, stderr=slave, start_new_session=True, pass_fds=(r,))` (new session ⇒ own process group whose id is the child's pid; `exec` keeps that pid, its group and its start time); close `slave` and `r` in the broker. The child waits on the pipe: if the broker dies before step 10 the write end closes, `read` fails, and the child exits without ever running Claude. After `write_identity()`: `os.write(w, b"go\n"); os.close(w)`. Prompt `"Give Ben the short check-in now."` or, on resume, `"Picking back up. Give Ben the short check-in now."`; `spawned_at = time.time()`.
 4. Live endpoint: `asyncio.start_unix_server(handle_live, path=paths["live"])`, chmod 0600. `handle_live`: `route, headers, body = await read_http(reader)` (any error → close); `x-frontlot-token` must equal `token` (`secrets.compare_digest`) else `http_reply(writer, "401 Unauthorized", {})`; then route:
-   - `/hello`: if `addon_epoch is not None` (a reload, `/clear`, or resume inside Claude): `cancel_and_journal("addon-reload")`. Set `addon_epoch = body["epoch"]`, `last_seq = 0`, `last_hello = body`, `last_heard = now`; journal `{"kind": "addon-hello", "hello": body}`; `set_state("ready")`; reply `{}`.
+   - `/hello`: if `addon_epoch is not None` (a reload, `/clear`, or resume inside Claude): `cancel_and_journal("addon-reload")` and `stop_pending.clear()` (the new epoch retires every old turn: `/run` from the old epoch is refused by the epoch check). Set `addon_epoch = body["epoch"]`, `last_seq = 0`, `last_hello = body`, `last_heard = now`; journal `{"kind": "addon-hello", "hello": body}`; `set_state("ready")`; reply `{}`.
    - `/report`: if `body["epoch"] != addon_epoch` reply `{"acceptedThrough": 0}`; else for each event with `seq == last_seq + 1`: `last_seq = seq`, journal `{**event, "epoch": addon_epoch}` (fan-out happens in `journal_event`), keep `row` events in `rows`, track `turn` events (`phase == "start"` and no `agentId` → `turn_id = turnId`, `set_state("working")`; `complete` of that turn → `turn_id = None`, `set_state("ready")`); `last_heard = now`; reply `{"acceptedThrough": last_seq}`.
    - `/ping`: `last_heard = now`; reply `{}`.
-   - `/inbox`: `poll_epoch = body.get("epoch")`; if it is not `addon_epoch` reply `{}`. Else take an `unacked` action older than 10 s (redelivery), otherwise wait up to 25 s for `outbox` (`outbox_ready`), timeout → `{}`. **After the wait** re-check: if `poll_epoch != addon_epoch` (a `/hello` arrived meanwhile), `outbox.appendleft(action)` and reply `{}`. Else stamp `epoch = addon_epoch` on a copy, remember `unacked[id] = (action, now)`, reply it.
-   - `/inbox-ack`: `queued` keeps `unacked[id]`. `rejected` with reason `epoch ended` → drop from `unacked` and `outbox.appendleft(action)` (it belongs to the conversation, not to the dead epoch). Any other final status drops it from `unacked`, then: if `id in notice_actions` → `store.mark_notified(rid, state)` (on a non-`epoch ended` rejection also journal a notice: "Claude couldn't be told that {summary} {word}."); if `id in stop_pending` → remove it, and on `submitted` with reason `aborted:<T>` add `T` to `stopped_turns`. Reply `{}`.
-   - `/run`: `key = body.get("key")`; not matching `KEY_RE` → `{"status": "refused", "plain": "missing request key"}`. `existing = store.by_key(key)` → reply `reply_for(existing)` **without preparing again**. Stale origin → `{"status": "refused", "plain": STALE}` when `body.get("epoch") != addon_epoch`, or any `stop_pending` deadline has not passed, or `body.get("turnId") in stopped_turns` (nothing stored, nothing journaled). Else `prep = prepare(body.get("op"), body.get("params") or {}, repo=REPO, film_slug=slug, film_root=film, snapshot_dir=claude_dir() / slug / "snap" / key)`; `OpError as e` → `{"status": "refused", "plain": str(e)}` (nothing stored). `rec = store.create(prep, key=key, session=session_id, epoch=addon_epoch, film_root=film)` (durable before the reply). Free → `launch_and_journal(rec)` then reply `reply_for(store.get(rec["id"]))`; paid → journal `{"kind": "spend-request", **card(rec)}`, reply `reply_for(rec)`. No tool discovery happens here (Task 3), so the reply returns well inside the add-on's 5 s.
+   - `/inbox`: `poll_epoch = body.get("epoch")`; if it is not `addon_epoch` reply `{}`. Else take an `unacked` action older than `REDELIVER_SECONDS` (redelivery), otherwise wait up to 25 s for `outbox` (`outbox_ready`), timeout → `{}`. **After the wait** re-check: if `poll_epoch != addon_epoch` (a `/hello` arrived meanwhile), `enqueue(action, front=True)` and reply `{}`. Else stamp `epoch = addon_epoch` on a copy, remember `unacked[id] = (action, now)`, reply it.
+   - `/inbox-ack`: `queued` keeps `unacked[id]`. `rejected` with reason `epoch ended` → drop from `unacked` and `enqueue(action, front=True)` (it belongs to the conversation, not to the dead epoch). Any other final status drops it from `unacked`, then: if `id in notice_actions` → `store.mark_notified(rid, state)` (on a non-`epoch ended` rejection also journal a notice: "Claude couldn't be told that {summary} {word}."); if `id in stop_pending` → remove it, and on `submitted` with reason `aborted:<T>` add `T` to `stopped_turns`. Reply `{}`.
+   - `/run`: `key = body.get("key")`; not matching `KEY_RE` → `{"status": "refused", "plain": "missing request key"}`. `existing = store.by_key(key)` → reply `reply_for(existing)` **without preparing again**. Stale origin → `{"status": "refused", "plain": STALE}` when `body.get("epoch") != addon_epoch`, or `stop_pending` is not empty, or `body.get("turnId") in stopped_turns` (nothing stored, nothing journaled). Else `prep = prepare(body.get("op"), body.get("params") or {}, repo=REPO, film_slug=slug, film_root=film, snapshot_dir=claude_dir() / slug / "snap" / key)`; `OpError as e` → `{"status": "refused", "plain": str(e)}` (nothing stored). `rec = store.create(prep, key=key, session=session_id, epoch=addon_epoch, film_root=film)` (durable before the reply). Free → `launch_and_journal(rec)` then reply `reply_for(store.get(rec["id"]))`; paid → journal `{"kind": "spend-request", **card(rec)}`, reply `reply_for(rec)`. No tool discovery happens here (Task 3), so the reply returns well inside the add-on's 5 s.
    - `/run-check`: `rec = store.by_key(body.get("key", ""))` → `reply_for(rec)`, else `{"status": "not-received", "plain": "Front Lot has no request with that key."}`.
    - anything else → `404`.
-5. Helpers: `authorized(writer)` → `clients[writer]["page"] == lease["page"]`; `send_status_all()` → each connection its own `STATUS` with `controller = authorized(it)`; `journal_event(ev)` → `seq = journal.append(ev)` and send `EVENT {"seq": seq, "event": ev}` to every client (an event too big for a frame is replaced by `{"kind": "notice", "plain": "Part of the conversation is too long to show here; it is in the terminal view."}`); `notice(writer, plain)` → `EVENT {"seq": None, "event": {"kind": "notice", "plain": plain}}` to that client only; `set_state(s)` → if changed, journal `{"kind": "session-state", "state": s}` and `send_status_all()`; `cancel_and_journal(reason)` → for each id from `store.cancel_unstarted(reason=reason)`: journal `{"kind": "spend-decided", "requestId": id, "state": "cancelled", "reason": reason}`; `launch_and_journal(rec)` → `store.launch(rec["id"], repo=REPO, env=run_env())`, journal `{"kind": "run-started", **card(store.get(id))}`; `Rejected as e` → journal `{"kind": "notice", "plain": e.plain}`; `tell_claude(text) -> id` → append `{"id": uuid4().hex, "submit": text}` to `outbox`, set `outbox_ready`, return the id; `snapshot()` → `{"state": state, "hello": last_hello, "rows": list(rows), "cards": [card(r) for r in store.all_requests() if r["session"] == session_id]}`.
+5. Helpers: `authorized(writer)` → `clients[writer]["page"] == lease["page"]`; `send_status_all()` → each connection its own `STATUS` with `controller = authorized(it)`; `journal_event(ev)` → `seq = journal.append(ev)` and send `EVENT {"seq": seq, "event": ev}` to every client (an event too big for a frame is replaced by `{"kind": "notice", "plain": "Part of the conversation is too long to show here; it is in the terminal view."}`); `notice(writer, plain)` → `EVENT {"seq": None, "event": {"kind": "notice", "plain": plain}}` to that client only; `set_state(s)` → if changed, journal `{"kind": "session-state", "state": s}` and `send_status_all()`; `cancel_and_journal(reason)` → for each id from `store.cancel_unstarted(reason=reason)`: journal `{"kind": "spend-decided", "requestId": id, "state": "cancelled", "reason": reason}`; `launch_and_journal(rec)` → `store.launch(rec["id"], repo=REPO, env=run_env())`, journal `{"kind": "run-started", **card(store.get(id))}`; `Rejected as e` → journal `{"kind": "notice", "plain": e.plain}`; `enqueue(action, front=False)` → `outbox.appendleft(action)` if `front` else `outbox.append(action)`, then **always** `outbox_ready.set()` (the only way anything enters the outbox); `tell_claude(text) -> id` → `enqueue({"id": uuid4().hex, "submit": text})`, return the id; `snapshot()` → `{"state": state, "hello": last_hello, "rows": list(rows), "cards": [card(r) for r in store.all_requests() if r["session"] == session_id]}`.
 6. Client socket `handle_client`: the first frame must be `HELLO {"subscribe_from", "controller", "page"}` (anything else → close). Register `clients[writer] = {"page": page}`. If `controller` is true and (`lease["page"] in (None, page)` or (no connection of `lease["page"]` remains and `lease["until"]` has passed)): `lease = {"page": page, "until": None}` and `send_status_all()`; else send this connection its `STATUS`. Then `OUT` with `_safe_replay_tail(replay)`, then `journal.since(subscribe_from, snapshot)` as `EVENT` frames (or one `EVENT {"seq": None, "event": snapshot}`). Loop on `cf.read_frame`:
    - `IN`/`RESIZE`: only when `authorized(writer)` (others ignored); `IN` → `os.write(master, payload)`; `RESIZE` → `fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))` with the same bounds as `tty.valid_resize`.
    - `ACTION` from an unauthorized connection with type in `{submit, stop, spend-decision, end, new}` → `notice(writer, READ_ONLY)`.
    - `submit {text}` → `tell_claude(text)`.
-   - `stop` → `sid = uuid4().hex`; `stop_pending[sid] = now + 15`; `outbox.appendleft({"id": sid, "stop": {"turnId": "*"}})` (ahead of queued messages); `cancel_and_journal("stop")`. (`turn_id` from reports is only used for the state line, never for authorization.)
+   - `stop` → `sid = uuid4().hex`; `stop_pending[sid] = now`; `enqueue({"id": sid, "stop": {"turnId": "*"}}, front=True)` (ahead of queued messages, and it wakes a waiting poll); `cancel_and_journal("stop")`. (`turn_id` from reports is only used for the state line, never for authorization.)
    - `spend-decision {requestId, go}` → `rec = store.decide(requestId, go=bool(go), session=session_id, epoch=addon_epoch or "", controller=True)` (durable); journal `{"kind": "spend-decided", "requestId": requestId, "state": rec["state"]}`; Go → `launch_and_journal(rec)`; Not now → `tell_claude(f"[Front Lot] Ben said Not now to: {rec['summary']}.")`. `Rejected as e` → `notice(writer, e.plain)`; if the record is now `expired`/`cancelled`, also journal its `spend-decided`.
    - `take-control` → `old = lease["page"]`; `lease = {"page": page, "until": None}`; `send_status_all()` (every connection of the old page now gets `controller: false`); `notice` one connection of `old`: "Another window took control."
    - `end` → `await shutdown("ended")`; `new` → `await shutdown("new", page=page)` (the BYE names the page; only that page's relay spawns the replacement, Task 9).
    On disconnect: drop `clients[writer]`; if it was the lease page's last connection, `lease["until"] = time.time() + LEASE_SECONDS`.
-7. Watcher, every 2 s: (a) `store.reconcile()`; then for each `rec` in `store.pending_notices()` whose `(id, state)` is not in `queued_notices` (so each pending notice is queued once per broker life, and again after a restart until acked): for `done`/`failed`/`uncertain` journal `{"kind": "run-finished", **card(rec)}` and `aid = tell_claude(f"[Front Lot] {rec['summary']}: {word}. {tail}")` with `word` = finished / failed / "not sure it ran — it will not be retried" and `tail` = last lines of `rec["result"]["tail"]` trimmed to 600 chars (empty for uncertain); for `expired` journal `spend-decided {state: "expired"}` and `aid = tell_claude(f"[Front Lot] The card for {summary} expired unanswered.")`; for `cancelled` journal `spend-decided {state: "cancelled", reason: rec["note"]}` and mark it notified at once (no message to Claude); record `notice_actions[aid] = (rec["id"], rec["state"])` and add to `queued_notices`. `store.mark_notified` happens only in `/inbox-ack` (step 4). Also drop `stop_pending` entries past their deadline (add-on silent). (b) `store.expire_stale()` (its records reach Claude through (a) on the next pass). (c) Add-on health: no hello and `now - spawned_at > NO_HELLO_SECONDS` → journal `{"kind": "addon-missing"}` once; after a hello, `now - last_heard > SILENT_SECONDS` → `addon-silent` once, and `addon-back` when heard again. (d) Lease expiry: when `lease["until"]` has passed and the lease page has no connection, clear `lease`. (e) `claude.poll() is not None` → `await shutdown("claude-exited")`.
+7. Watcher, every 2 s: (a) `store.reconcile()`; then for each `rec` in `store.pending_notices()` whose `(id, state)` is not in `queued_notices` (so each pending notice is queued once per broker life, and again after a restart until acked): for `done`/`failed`/`uncertain` journal `{"kind": "run-finished", **card(rec)}` and `aid = tell_claude(f"[Front Lot] {rec['summary']}: {word}. {tail}")` with `word` = finished / failed / "not sure it ran — it will not be retried" and `tail` = last lines of `rec["result"]["tail"]` trimmed to 600 chars (empty for uncertain); for `expired` journal `spend-decided {state: "expired"}` and `aid = tell_claude(f"[Front Lot] The card for {summary} expired unanswered.")`; for `cancelled` journal `spend-decided {state: "cancelled", reason: rec["note"]}`, call `store.mark_notified(rec["id"], "cancelled")` and `continue` (no message to Claude, so no `aid` and no `notice_actions` entry). Only the two branches that called `tell_claude` record `notice_actions[aid] = (rec["id"], rec["state"])` and add to `queued_notices`. For messages, `store.mark_notified` happens only in `/inbox-ack` (step 4). Stop watch: for each `stop_pending` entry older than `STOP_NOTICE_SECONDS` and not in `stop_noticed`, journal `{"kind": "notice", "plain": "Claude hasn't confirmed it stopped — start a new conversation to be sure."}` once and add it to `stop_noticed`; the entry itself stays, so `/run` stays refused. (b) `store.expire_stale()` (its records reach Claude through (a) on the next pass). (c) Add-on health: no hello and `now - spawned_at > NO_HELLO_SECONDS` → journal `{"kind": "addon-missing"}` once; after a hello, `now - last_heard > SILENT_SECONDS` → `addon-silent` once, and `addon-back` when heard again. (d) Lease expiry: when `lease["until"]` has passed and the lease page has no connection, clear `lease`. (e) `claude.poll() is not None` → `await shutdown("claude-exited")`.
    (`cancel_and_journal` calls `store.mark_notified(id, "cancelled")` for each id it journals and tells Claude nothing: the reason is the Stop/End/New/reload itself.)
 8. PTY reader: `loop.add_reader(master, ...)` → `os.read(master, 65536)`; append to `replay` (trim to `REPLAY_BYTES`); send `OUT` to all clients; `OSError`/empty read → schedule `shutdown("claude-exited")`.
 9. `shutdown(reason, page=None)` (idempotent; safe at any point of `run()`): `cancel_and_journal(reason)`; journal `{"kind": "session-state", "state": "ended", "reason": reason}`; if a Claude child exists: close the gate's write end if it is still open (a child still waiting at the gate then exits without running Claude), `os.killpg(pgid, SIGHUP)`, poll `os.waitpid(pid, WNOHANG)` up to 5 s, then `SIGTERM` the group, 5 s, then `SIGKILL` the group; reap the exact child, then confirm the group is gone (`os.killpg(pgid, 0)` raises `ProcessLookupError`), polling up to 5 s more; send `BYE {"reason", "page"}` to clients; close both servers; unlink `sock` and `live`; unlink `ident` **only if the group is confirmed gone** (otherwise leave it, so the server's reconcile finishes the job and refuses replacement until then); keep `session`; release the lifetime lock; `os._exit(0)` after flushing. Paid jobs are not in Claude's group and keep running (spec §3.1).
@@ -3530,7 +3599,7 @@ Then, in the same file, `class Broker` with:
 - [ ] **Step 5: Run broker tests**
 
 Run: `.venv/bin/python -m pytest tests/backlot/test_claude_session.py tests/backlot/test_claude_journal.py tests/backlot/test_claude_frames.py -v`
-Expected: 25 passed (17 + 4 + 4), no broker processes left (`pgrep -f "claude_session.py --broker --project film"` prints nothing).
+Expected: 28 passed (20 + 4 + 4), no broker processes left (`pgrep -f "claude_session.py --broker --project film"` prints nothing).
 
 - [ ] **Step 6: Commit**
 

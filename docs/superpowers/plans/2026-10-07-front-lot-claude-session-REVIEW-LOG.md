@@ -142,3 +142,28 @@ All 8 accepted after verification; none rejected. Plan bumped to rev 4 ("Changes
 6. Accepted, using the controller's allowance. Verified that `production.request` swaps in the saved brief's references (`lib/supervised_production.py:124-137`). `shot_generate` now shows "cost unknown" and still needs Go; the registry warm-up is gone; headshot and sheet upper bounds round up (`_up`).
 7. Accepted. Verified that `load_reservations` raises `ValueError` on malformed JSONL. The wrapper now records `["paid-call ledger unreadable"]` when it cannot read the ledger before or after a paid run, so a failed exit is classified `uncertain`. A test feeds a malformed ledger.
 8. Accepted. Confirmed that `RequestStore.create` iterates `prep.inputs.items()`; the stub now passes `{}`.
+
+## Round 3 — Codex
+Rev 4 resolves the cost, ledger, and fixture findings, but four material problems remain:
+
+1. **Task 8 — Stop expires without proving the turn stopped.** `/run` blocks only while a `stop_pending` deadline remains unexpired; the watcher deletes it after 15 seconds. If the add-on is delayed or silent, the same unstopped turn can then submit requests that escape Stop’s cancellation sweep.
+   **Fix:** Keep authorization blocked until Stop is acknowledged or a confirmed epoch/session replacement retires the old turn; use the timeout only to show a notice.
+
+2. **Task 8 — Stop does not wake an outstanding inbox poll.** The Stop branch calls `outbox.appendleft(...)` without setting `outbox_ready`. A poll already waiting on that event can remain asleep for 25 seconds—longer than the 15-second authorization block. The test polls *after* Stop, so it misses this.
+   **Fix:** Set `outbox_ready` on every enqueue/requeue path and test Stop while an inbox poll is already waiting.
+
+3. **Tasks 7/8 — Redelivering Stop loses the aborted turn identity.** The retained `act()` shortcut for `handled.has(action.id)` returns `{status: "submitted"}` without `reason: "aborted:<turn>"`. If the first acknowledgment never reaches the broker, redelivery clears `stop_pending` without adding the aborted turn to `stopped_turns`; a delayed request from that turn is accepted.
+   **Fix:** Cache and replay the complete final acknowledgment, including its aborted turn ID, and test loss of the first acknowledgment.
+
+4. **Task 8 — The cancellation watcher branch has no `aid`.** Step 7 marks a cancelled request notified without calling `tell_claude`, then instructs the implementer to record `notice_actions[aid]`. A cancellation caused by changed input at Go reaches this branch: `aid` is either undefined or left over from another request.
+   **Fix:** End the cancelled branch with `continue`; create `notice_actions` entries only for branches that actually enqueue a message.
+
+VERDICT: REVISE
+### Claude's response (round 3)
+
+All 4 accepted after verification; none rejected. Plan bumped to rev 5 ("Changes in rev 5"). The Task 7 add-on changes (including the two Stop tests), applied verbatim to a renamed copy of the Story-drive mod, pass `claude plugin test` (35) and `validate --strict`.
+
+1. Accepted. Confirmed that rev 4's watcher dropped `stop_pending` after 15 s. Entries now leave only through their final ack, a new add-on epoch (`/hello` clears them, and the epoch check refuses the old turns), or shutdown. After `STOP_NOTICE_SECONDS` the broker journals one notice: "Claude hasn't confirmed it stopped — start a new conversation to be sure." The test checks that the notice arrives and that `/run` is still refused afterwards.
+2. Accepted. Confirmed that rev 4's Stop branch used `outbox.appendleft` without setting the event. A single `enqueue()` helper now always sets `outbox_ready`, and every path uses it: Stop, requeue after an ended epoch, the `epoch ended` ack, and `tell_claude`. The test starts a poll first, then sends Stop, and expects the Stop action within 3 s.
+3. Accepted. Verified the shortcut at `register.ts:186`: `if (handled.has(action.id)) return sendAck(... { status: 'submitted' })` loses the reason. Final acks are now cached in `finalAcks` (cleared with `handled`) and replayed on redelivery. The mod test delivers the same Stop twice and expects one abort and two identical `aborted:t7` acks. The broker test loses the first ack and gets a redelivery after `FRONTLOT_REDELIVER_SECONDS`; the replayed ack then blocks t1 and allows t2.
+4. Accepted. The `cancelled` branch now calls `mark_notified` and `continue`s. `notice_actions` and `queued_notices` are recorded only by the two branches that call `tell_claude`.
