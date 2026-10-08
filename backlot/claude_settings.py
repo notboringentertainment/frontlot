@@ -20,8 +20,19 @@ WRITEROS_HOST = "127.0.0.1:5177"
 EMPTY_MCP = '{"mcpServers":{}}'
 _ENV_KEEP = ("HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL", "TMPDIR")
 # protects: signing key, ledgers, signer and broker sockets, provider and cloud keys
-HOME_SECRET_DIRS = ("~/.openmontage", "~/.config/gcloud", "~/.codex", "~/.aws", "~/.ssh")
-HOME_SECRET_FILES = ("~/.netrc",)
+HOME_SECRET_DIRS = (
+    "~/.openmontage", "~/.config/gcloud", "~/.codex", "~/.aws", "~/.ssh",
+    "~/.claude",        # protects: Claude Code's own auth/session state and settings, which Bash must not read or alter
+    "~/.config/gh",     # protects: GitHub CLI tokens
+    "~/.docker",        # protects: container registry credentials
+)
+HOME_SECRET_FILES = (
+    "~/.netrc",
+    "~/.claude.json",      # protects: Claude Code account and MCP configuration
+    "~/.git-credentials",  # protects: stored git passwords and tokens
+    "~/.npmrc",            # protects: npm registry auth tokens
+)
+SKIP_DIRS = {".venv", "node_modules", ".git"}
 # protects: later launches/resumes trusting files Claude wrote (settings, hooks, MCP servers, memory)
 WORK_PROTECTED = (".claude/**", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md", ".git/**")
 CREDENTIAL_VAR = re.compile(r"(_CREDENTIALS|_KEY_FILE|_KEY_PATH)$")
@@ -52,7 +63,11 @@ def _dotenv_pairs(path: Path) -> dict[str, str]:
 
 def secret_paths(repo_root: Path, environ: Mapping[str, str]) -> list[Path]:
     repo = repo_root.resolve()
-    env_files = sorted(p.resolve() for p in repo.glob(".env*") if p.is_file())
+    env_files = []
+    for root, dirs, files in os.walk(repo):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        env_files += [(Path(root) / f).resolve() for f in files if f.startswith(".env")]
+    env_files.sort()
     found = set(env_files)
     for source in [dict(environ)] + [_dotenv_pairs(p) for p in env_files]:
         for key, value in source.items():
@@ -76,7 +91,11 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
             "autoAllowBashIfSandboxed": True,
             "allowUnsandboxedCommands": False,   # protects: no dangerouslyDisableSandbox escape
             "excludedCommands": [],
-            "filesystem": {"denyRead": [*HOME_SECRET_DIRS, *HOME_SECRET_FILES, str(meta), *map(str, secrets)]},
+            "filesystem": {
+                "denyRead": [*HOME_SECRET_DIRS, *HOME_SECRET_FILES, str(meta), *map(str, secrets)],
+                # protects: Bash writing files that later launches or resumes would trust
+                "denyWrite": [str(work / n.removesuffix("/**")) for n in WORK_PROTECTED],
+            },
             "network": {
                 "allowedDomains": [WRITEROS_HOST],  # protects: no route to paid services
                 "strictAllowlist": True,
@@ -88,7 +107,7 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
             "defaultMode": "dontAsk",             # protects: anything not allowed below is refused, never prompted
             "allow": [TOOL_NAME, f"Read(/{film}/**)", f"Read(/{repo}/**)", f"Edit(/{work}/**)"],
             "deny": ([f"Read({d}/**)" for d in HOME_SECRET_DIRS] + [f"Read({f})" for f in HOME_SECRET_FILES]
-                     + [f"Read(/{meta}/**)", f"Read(/{repo}/.env*)"] + [f"Read(/{p})" for p in secrets]
+                     + [f"Read(/{meta}/**)", f"Read(/{repo}/**/.env*)"] + [f"Read(/{p})" for p in secrets]
                      + [f"Edit(/{work}/{name})" for name in WORK_PROTECTED]),
         },
         "enableAllProjectMcpServers": False,

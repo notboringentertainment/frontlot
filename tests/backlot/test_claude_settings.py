@@ -20,7 +20,30 @@ def test_native_tools_are_allow_listed_and_never_prompt(tmp_path):
     for name in (".claude/**", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md", ".git/**"):
         assert f"Edit(/{work}/{name})" in p["deny"]
     assert "Read(~/.openmontage/**)" in p["deny"] and f"Read(/{meta.resolve()}/**)" in p["deny"]
-    assert f"Read(/{r}/.env*)" in p["deny"]
+    assert f"Read(/{r}/**/.env*)" in p["deny"]
+    for h in ("~/.claude", "~/.config/gh", "~/.docker"):
+        assert f"Read({h}/**)" in p["deny"]
+    for h in ("~/.claude.json", "~/.git-credentials", "~/.npmrc"):
+        assert f"Read({h})" in p["deny"]
+
+
+def test_bash_cannot_write_protected_work_files(tmp_path):
+    repo, film, meta = world(tmp_path)
+    fs = cs.build_settings(repo_root=repo, film_root=film, meta_root=meta, environ={})["sandbox"]["filesystem"]
+    work = film.resolve() / "frontlot-work"
+    for name in (".claude", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md", ".git"):
+        assert str(work / name) in fs["denyWrite"], name
+    for h in ("~/.claude", "~/.claude.json", "~/.config/gh", "~/.git-credentials", "~/.npmrc", "~/.docker"):
+        assert h in fs["denyRead"], h
+
+
+def test_nested_env_files_are_found_but_skipped_dirs_are_not_walked(tmp_path):
+    repo, film, meta = world(tmp_path)
+    (repo / "a" / "b").mkdir(parents=True); (repo / "a" / "b" / ".env.local").write_text("X=1\n")
+    (repo / "node_modules").mkdir(); (repo / "node_modules" / ".env").write_text("X=1\n")
+    found = cs.secret_paths(repo, {})
+    assert (repo.resolve() / "a" / "b" / ".env.local") in found
+    assert not any("node_modules" in str(p) for p in found)
 
 
 def test_sandbox_is_enforced_and_fail_closed(tmp_path):
