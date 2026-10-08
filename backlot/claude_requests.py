@@ -192,6 +192,30 @@ class RequestStore:
         self._write(rec, durable=True)              # also fsyncs the directory holding the claim file
         return rec
 
+    def launch(self, rid: str, *, repo: Path, env: dict[str, str], _between=None) -> int:
+        """Claim, spawn, and record the pid in one locked section (spec §4.3), so a
+        Stop/End/reload cancel either wins before the claim or waits and loses."""
+        import subprocess, sys
+        step = _between or (lambda _stage: None)
+        with self._locked(rid):
+            rec = self._claim(rid)                      # approved -> launching, O_EXCL, durable
+            step("claimed")
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, str(Path(repo) / "scripts" / "frontlot_run.py"),
+                     "--store", str(self.base), "--request", rid, "--repo", str(repo)],
+                    cwd=repo, env=env, start_new_session=True,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError as exc:
+                rec["state"] = "failed"; rec["note"] = f"could not start: {exc}"; self._write(rec)
+                raise Rejected("Front Lot couldn't start this run.") from None
+            step("spawned")
+            self._children[rid] = proc
+            rec["state"] = "running"; rec["pid"] = proc.pid
+            rec["pid_started"] = process_start_time(proc.pid); rec["started"] = time.time()
+            self._write(rec)
+            return proc.pid
+
     def claim_for_launch(self, rid: str) -> dict:
         with self._locked(rid):
             return self._claim(rid)

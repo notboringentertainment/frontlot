@@ -249,3 +249,18 @@ claude: /Users/ben/.local/bin/claude
 ` |
 | (f) signed in with the allowlisted env | PASS | `` |
 
+
+## P4 — safety of the request path (never paid)
+
+Run 2026-10-08 against scratch dirs (`tempfile.mkdtemp(prefix="p4-", dir="/tmp")`); no generation script was run against a film.
+Driver: `.venv/bin/python <scratchpad>/p4.py`.
+
+| # | Item | Verdict | Evidence |
+|---|---|---|---|
+| 1 | Claude cannot name another film: `prepare("look", {"entity": "hero-a", "project": "other"}, ...)` | PASS | `OpError: not allowed for look: project` |
+| 2 | An input changed after the card appeared, then Go | PASS | `Rejected.plain: Something this run depends on changed since the card appeared. Ask Claude to set it up again. \| state: cancelled` |
+| 3 | Two processes race `claim_for_launch(rid)` on one approved request | PASS | outputs `['success', "Rejected: This run can't start now."]` (exactly one wins) |
+| 4 | Frozen inputs at the scripts: `.venv/bin/python -m pytest tests/lib/test_headshot_run.py tests/lib/test_sheet_run.py tests/tools/test_supervised_production.py -k "frozen or changed" -v` | PASS | `17 passed, 53 deselected in 7.09s` (includes the shot test refusing at the paid boundary after a brief change) |
+| 4b | `~/.openmontage/gates/generation-ledger.jsonl` unchanged | PASS | before and after: sha1 `7d14f11cd1789f0cb93a1c3661b9a0d3dcfe9791`, mtime `1788244700`, size `19639` |
+
+Item 2 note: the brief's wording ("`decide(go=True)` -> `Rejected` whose `.plain` mentions 'changed'") holds; the request settles `cancelled` with note `input changed`.
