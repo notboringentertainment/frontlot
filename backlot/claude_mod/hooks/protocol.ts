@@ -32,7 +32,6 @@ export type LiveEvent =
   | { kind: 'delta'; turnId: string; text: string }
   | { kind: 'turn'; phase: 'start' | 'complete'; turnId: string; agentId?: string; isAborted?: boolean; durationMs?: number }
   | { kind: 'tool'; toolUseId: string; tool: string; agentId?: string; phase: 'start' | 'end'; summary: string; isError?: boolean }
-  | { kind: 'mark'; toolUseId: string; markKind: 'question' | 'draft' | 'check-start' | 'check-done'; text?: string; items?: string[]; results?: { item: string; ok: boolean; note?: string }[] }
   | { kind: 'waiting-for-input'; requestId: string; reason: 'permission' | 'question' | 'elicitation' | 'notification'; detail: string }
   | { kind: 'input-done'; requestId: string }
   | { kind: 'session-end'; reason: string }
@@ -53,5 +52,4 @@ export type InboxReply = InboxAction | Record<string, never>
 export interface InboxAck { id: string; status: 'queued' | 'submitted' | 'rejected'; reason?: string }
 
 export const TOKEN_HEADER = 'x-frontlot-token'
-export const MARK_TOOL = 'mcp__frontlot-live__mark'
 export const PLUGIN_NAME = 'frontlot-live'

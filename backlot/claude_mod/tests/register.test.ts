@@ -38,7 +38,7 @@ function wire(on: any, opts: { env?: boolean; inbox?: any[]; sessionId?: () => s
   on('tool.register', () => {
     if (opts.registerThrows) throw new Error('tool registry unavailable')
     if (opts.probe) opts.probe.registers = (opts.probe.registers ?? 0) + 1
-    return { value: { tool: 'mcp__frontlot-live__mark' } }
+    return { value: { tool: 'mcp__frontlot-live__frontlot_run' } }
   })
   on('session.start', () => ({ cwd: '/work' }))
   on('classic.SessionStart', () => ({}))
@@ -183,39 +183,6 @@ test('a --resume launch whose first main turn starts before the switch sends his
   expect(hellos(reqs).length).toBe(1)
 })
 
-test('the mark tool is described upfront, not deferred behind tool search', async ($, on) => {
-  mock.clock(on)
-  wire(on)
-  await launch($)
-  const d = await $.tool.describe({ tool: 'mcp__frontlot-live__mark', description: 'engine text', isDeferred: true, provider: { plugin: 'frontlot-live', tier: 'user' } } as any)
-  expect(d.isDeferred).toBe(false)
-  expect(d.description).toContain('Story-drive only.')
-})
-
-test('the mark tool is answered without next and reports a mark event', async ($, on) => {
-  const clock = mock.clock(on)
-  let reachedEngine = false
-  on('tool.call', () => { reachedEngine = true; return { result: 'engine' } })
-  const reqs = wire(on)
-  await launch($)
-  const r = await $.tool.call({ tool: 'mcp__frontlot-live__mark', tool_use_id: 'tu1', kind: 'question', text: 'Why now?' } as any)
-  expect(r).toMatchObject({ result: 'noted' })
-  expect(reachedEngine).toBe(false)
-  await settle(clock)
-  expect(events(reqs)).toContainEqual(expect.objectContaining({ kind: 'mark', markKind: 'question', text: 'Why now?', toolUseId: 'tu1' }))
-})
-
-test('mark still answers noted when reporting fails', async ($, on) => {
-  const clock = mock.clock(on)
-  wire(on, { fetchDenied: true })
-  await launch($)
-  const r = await $.tool.call({ tool: 'mcp__frontlot-live__mark', tool_use_id: 'tu1', kind: 'draft', text: 'x' } as any)
-  expect(r).toMatchObject({ result: 'noted' })
-  // Let the queue's retry sleeps (250 ms, 1 s) run out: the test kit does not finish while a
-  // `$.clock.sleep` is still held on the mocked clock.
-  await clock.advance(2000)
-})
-
 test('ordinary tool calls report start and end and pass through', async ($, on) => {
   const clock = mock.clock(on)
   on('tool.call', () => ({ result: 'file text' }))
@@ -353,11 +320,3 @@ test('an inbox action that arrives after the epoch changed is rejected, not subm
   expect(reqs.filter((r) => r.route === '/inbox').map((r) => r.body.epoch).at(-1)).toBe(hs[1].epoch)
 })
 
-test('a failing mark-tool registration still opens the epoch (M10)', async ($, on) => {
-  const clock = mock.clock(on)
-  const reqs = wire(on, { registerThrows: true })
-  await launch($)
-  await settle(clock)
-  expect(hellos(reqs).map((h) => h.source)).toEqual(['launch'])
-  expect(reqs.some((r) => r.route === '/inbox')).toBe(true)
-})

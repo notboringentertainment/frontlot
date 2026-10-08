@@ -840,7 +840,7 @@ PROBE_DIR=$(mktemp -d); PROBE_MOD="$PROBE_DIR/frontlot-live"
 cp -R backlot/claude_mod/. "$PROBE_MOD"/
 ```
 
-In `$PROBE_MOD/hooks/register.ts` only: in `session.start`, after the `registerMark` try/catch, add
+In `$PROBE_MOD/hooks/register.ts` only: in `session.start`, right after `const isReload = await read($, opened)`, add
 `try { await $.tool.register({ name: 'frontlot_run', description: 'Probe.', inputSchema: { type: 'object', properties: { op: { type: 'string' } } } }) } catch {}`;
 and at the top of the `tool.call` handler add
 `if (e.tool === 'mcp__frontlot-live__frontlot_run') { const r = await call($, '/run', { key: String((e as any).tool_use_id), op: String((e as any).op ?? ''), params: {} }); return { result: JSON.stringify(r) } }`.
@@ -2680,7 +2680,7 @@ export function runResultText(r: RunReply, key: string): string {
 
 In `register.ts`:
 1. Imports: add `RUN_TOOL, type RunReply` to the `./protocol` import, and `import { RUN_DESCRIPTION, runCall, runResultText } from './run'`.
-2. Add a top-level function next to `registerMark` (validate rule: helpers that receive `$` are top-level `function` declarations):
+2. Add a top-level function next to `sendAck` (validate rule: helpers that receive `$` are top-level `function` declarations):
 
 ```ts
 async function registerRun($: any): Promise<void> {
@@ -2692,18 +2692,17 @@ async function registerRun($: any): Promise<void> {
 }
 ```
 
-3. In `session.start`, after the `registerMark` try/catch: `try { await registerRun($) } catch { /* no pipeline steps this session; Claude tells Ben */ }`.
-4. Replace the existing literal `on('tool.describe', { tool: 'mcp__frontlot-live__mark' }, …)` with exactly one unmatched handler (validate rule: one literal `on('<event>')` per event):
+3. In `session.start`, right after `const isReload = await read($, opened)`: `try { await registerRun($) } catch { /* no pipeline steps this session; Claude tells Ben */ }`. A failed registration must never keep the epoch closed; add a test (wire `registerThrows`) that the hello and `/inbox` still happen.
+4. Add exactly one `tool.describe` handler (validate rule: one literal `on('<event>')` per event). `mark` was removed after probe P2 (add-on tools bypass the allow list), so `frontlot_run` must stay the add-on's only tool:
 
 ```ts
   on('tool.describe', async ($, e, next) => {
-    if (e.tool === MARK_TOOL) return { description: MARK_DESCRIPTION, isDeferred: false }
     if (e.tool === RUN_TOOL) return { description: RUN_DESCRIPTION, isDeferred: false }
     return next(e)
   }).catch(($, e, next) => next(e))
 ```
 
-5. In the `tool.call` handler, before the `MARK_TOOL` branch:
+5. At the top of the `tool.call` handler, right after `const id = …`:
 
 ```ts
     if (e.tool === RUN_TOOL) {

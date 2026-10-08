@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 import { ReportQueue } from './queue'
 import { Waits } from './waits'
-import { MARK_TOOL, TOKEN_HEADER, type Hello, type HelloSource, type HistoryMessage, type InboxAck, type InboxAction, type InboxReply, type LiveEvent, type ReportBatch, type RowBlock, type RowToolRef } from './protocol'
+import { TOKEN_HEADER, type Hello, type HelloSource, type HistoryMessage, type InboxAck, type InboxAction, type InboxReply, type LiveEvent, type ReportBatch, type RowBlock, type RowToolRef } from './protocol'
 
 // `claude plugin validate` rules (spike R5): one literal on('<event>', …) per event, and every helper
 // that receives `$` is a top-level `function` declaration in this file.
@@ -17,8 +17,6 @@ const POLL_WAIT_FOR_HELLO_MS = 250
 // reply that comes back empty at once can never spin the loop. After an action it re-polls at once.
 const POLL_IDLE_MS = 100
 const PING_MS = 5000
-
-const MARK_DESCRIPTION = 'Story-drive only. Labels what you have just written so the live session screen can present it (a question card, the draft, the contradiction checklist). It records nothing and decides nothing. Follow the story-wayfinder skill\'s "Running in Story-drive" section.'
 
 // Spike check e: the only notification types seen were `permission_prompt` (already covered by
 // classic.PermissionRequest) and `idle_prompt` (ordinary idle). None means "waiting for input" on
@@ -155,14 +153,6 @@ function schedulePoll($: any, ms: number): void {
   pollTimer = $.clock.after(ms, () => void poll($))
 }
 
-async function registerMark($: any): Promise<void> {
-  await $.tool.register({
-    name: 'mark',
-    description: MARK_DESCRIPTION,
-    inputSchema: { type: 'object', properties: { kind: { enum: ['question', 'draft', 'check-start', 'check-done'] }, text: { type: 'string' }, items: { type: 'array', items: { type: 'string' } }, results: { type: 'array', items: { type: 'object', properties: { item: { type: 'string' }, ok: { type: 'boolean' }, note: { type: 'string' } }, required: ['item', 'ok'] } } }, required: ['kind'] },
-  })
-}
-
 function sendAck($: any, ack: InboxAck): Promise<void> {
   return call($, '/inbox-ack', ack).then(() => {}, () => {})   // Story-drive redelivers; the id is remembered
 }
@@ -215,8 +205,6 @@ export const register: Register = (on) => {
     token = (await $.env.get('FRONTLOT_LIVE_TOKEN')) || undefined
     if (!isActive()) return next(e)
     const isReload = await read($, opened)   // $.state survives a hot reload; module variables do not
-    // The screen works without marks (M10): a failed registration must never keep the epoch closed.
-    try { await registerMark($) } catch { /* no question cards, draft or checklist this session */ }
     // A fresh or --resume launch is sent as `launch` (R4.5); its history follows the classic source.
     const mode: HistoryMode = isReload ? 'none'
       : lastSource === 'startup' ? 'empty'
@@ -243,9 +231,6 @@ export const register: Register = (on) => {
     }
     return next(e)
   }).catch(($, e, next) => next(e))
-
-  on('tool.describe', { tool: 'mcp__frontlot-live__mark' }, async () => ({ description: MARK_DESCRIPTION, isDeferred: false }))
-    .catch(($, e, next) => next(e))
 
   on('session.end', async ($, e, next) => { report({ kind: 'session-end', reason: e.reason }); return next(e) }).catch(($, e, next) => next(e))
 
@@ -291,11 +276,6 @@ export const register: Register = (on) => {
 
   on('tool.call', async ($, e, next) => {
     const id = String((e as any).tool_use_id ?? '')
-    if (e.tool === MARK_TOOL) {
-      const m = e as any
-      report({ kind: 'mark', toolUseId: id, markKind: m.kind, text: m.text, items: m.items, results: m.results })
-      return { result: 'noted' }
-    }
     if (!queue) return next(e)
     running.add(id)
     report({ kind: 'tool', toolUseId: id, tool: e.tool, agentId: e.agentId, phase: 'start', summary: summary(e.tool, e as any) })

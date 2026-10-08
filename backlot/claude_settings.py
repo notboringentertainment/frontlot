@@ -18,6 +18,7 @@ PLUGIN_NAME = "frontlot-live"
 TOOL_NAME = f"mcp__{PLUGIN_NAME}__frontlot_run"
 WRITEROS_HOST = "127.0.0.1:5177"
 EMPTY_MCP = '{"mcpServers":{}}'
+CHROME_TOOLS = "mcp__claude-in-chrome"
 _ENV_KEEP = ("HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL", "TMPDIR")
 # protects: signing key, ledgers, signer and broker sockets, provider and cloud keys
 HOME_SECRET_DIRS = (
@@ -25,6 +26,7 @@ HOME_SECRET_DIRS = (
     "~/.claude",        # protects: Claude Code's own auth/session state and settings, which Bash must not read or alter
     "~/.config/gh",     # protects: GitHub CLI tokens
     "~/.docker",        # protects: container registry credentials
+    "~/Library/Keychains",  # protects: saved passwords and API keys (probe P1 (d): `security` read them)
 )
 HOME_SECRET_FILES = (
     "~/.netrc",
@@ -106,7 +108,8 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
         "permissions": {
             "defaultMode": "dontAsk",             # protects: anything not allowed below is refused, never prompted
             "allow": [TOOL_NAME, f"Read(/{film}/**)", f"Read(/{repo}/**)", f"Edit(/{work}/**)"],
-            "deny": ([f"Read({d}/**)" for d in HOME_SECRET_DIRS] + [f"Read({f})" for f in HOME_SECRET_FILES]
+            # protects: Ben's Chrome; backs up --no-chrome (probe P2: the allowlist did not stop it)
+            "deny": [CHROME_TOOLS] + ([f"Read({d}/**)" for d in HOME_SECRET_DIRS] + [f"Read({f})" for f in HOME_SECRET_FILES]
                      + [f"Read(/{meta}/**)", f"Read(/{repo}/**/.env*)"] + [f"Read(/{p})" for p in secrets]
                      + [f"Edit(/{work}/{name})" for name in WORK_PROTECTED]),
         },
@@ -120,6 +123,7 @@ Film: "{film_title}" (project id: {film_slug}). Your working folder is this film
 
 How you work here:
 - You can read the film (../ is the film folder) and the OpenMontage repo, and think, plan, and talk with Ben. You can write only in your work area.
+- WriterOS (looks Ben promoted, the film's canon) answers at http://{WRITEROS_HOST}/. Reach it only with curl --noproxy '' http://{WRITEROS_HOST}/...; a plain curl or any other client is refused.
 - You never run pipeline scripts yourself. Every pipeline step goes through the frontlot_run tool with an operation name and parameters. Front Lot runs it.
 - Free steps run right away. Paid steps show Ben a spend card; wait for his answer. "Not now" is a decision: do not ask again unless he brings it up.
 - If frontlot_run says it didn't confirm receipt, check it with frontlot_run {{"check": "<key>"}}. Never resubmit. If Front Lot says it can't tell whether something ran, tell Ben plainly and do not retry.
@@ -140,7 +144,7 @@ def allowed_env(base: Mapping[str, str], *, login_path: str, live_socket: str, l
 def launch_argv(*, claude: str, mod_dir: Path, settings_file: Path, brief_file: Path,
                 session_id: str, resume: bool, prompt: str) -> list[str]:
     # --mcp-config is variadic: it must be followed by an option, never by the prompt.
-    argv = [claude, "--plugin-dir", str(mod_dir), "--strict-mcp-config", "--mcp-config", EMPTY_MCP,
+    argv = [claude, "--no-chrome", "--plugin-dir", str(mod_dir), "--strict-mcp-config", "--mcp-config", EMPTY_MCP,
             "--settings", str(settings_file), "--setting-sources", "",
             "--append-system-prompt-file", str(brief_file)]
     argv += ["--resume", session_id] if resume else ["--session-id", session_id]
@@ -165,7 +169,8 @@ def tool_events(stream: str) -> list[ToolEvent]:
             d = json.loads(line)
         except ValueError:
             continue
-        content = (d.get("message") or {}).get("content") if isinstance(d, dict) else None
+        msg = d.get("message") if isinstance(d, dict) else None
+        content = msg.get("content") if isinstance(msg, dict) else None
         if not isinstance(content, list):
             continue
         for b in content:
@@ -194,7 +199,7 @@ def selfcheck_prompt(deny_file: Path, allow_file: Path, outside_file: Path) -> s
 
 
 def selfcheck_argv(*, claude: str, settings_file: Path, prompt: str) -> list[str]:
-    return [claude, "-p", "--output-format", "stream-json", "--verbose", "--permission-prompts", "none",
+    return [claude, "-p", "--no-chrome", "--output-format", "stream-json", "--verbose", "--permission-prompts", "none",
             "--strict-mcp-config", "--mcp-config", EMPTY_MCP, "--settings", str(settings_file),
             "--setting-sources", "", prompt]
 

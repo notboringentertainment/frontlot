@@ -123,3 +123,26 @@ def test_selfcheck_needs_tool_level_evidence(tmp_path):
     argv = cs.selfcheck_argv(claude="/c", settings_file=Path("/s.json"), prompt="p")
     assert argv[-1] == "p" and argv[argv.index("--mcp-config") + 2].startswith("--")
     assert argv[argv.index("--output-format") + 1] == "stream-json" and "--verbose" in argv
+
+
+def test_keychain_and_chrome_are_closed(tmp_path):
+    repo, film, meta = world(tmp_path)
+    s = cs.build_settings(repo_root=repo, film_root=film, meta_root=meta, environ={})
+    assert "~/Library/Keychains" in s["sandbox"]["filesystem"]["denyRead"]
+    assert "Read(~/Library/Keychains/**)" in s["permissions"]["deny"]
+    assert "mcp__claude-in-chrome" in s["permissions"]["deny"]
+    common = dict(claude="/c", mod_dir=Path("/m"), settings_file=Path("/s.json"),
+                  brief_file=Path("/b.md"), session_id="u-1", prompt="hi")
+    for argv in (cs.launch_argv(resume=False, **common), cs.launch_argv(resume=True, **common),
+                 cs.selfcheck_argv(claude="/c", settings_file=Path("/s.json"), prompt="p")):
+        assert "--no-chrome" in argv
+
+
+def test_brief_tells_claude_how_to_reach_writeros():
+    b = cs.build_brief(film_title="Film", film_slug="film")
+    assert f"curl --noproxy '' http://{cs.WRITEROS_HOST}/" in b
+
+
+def test_tool_events_skip_lines_whose_message_is_text():
+    line = json.dumps({"type": "system", "message": "plain text"})
+    assert cs.tool_events(line + "\n" + stream(("Bash", {"command": "ls"}, "ok", False)))[0].name == "Bash"

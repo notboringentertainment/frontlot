@@ -54,7 +54,7 @@ def write_settings() -> Path:
 
 
 def ask(prompt: str, settings: Path, cwd: Path, env: dict, sources: str = "") -> str:
-    argv = [CLAUDE, "-p", "--output-format", "stream-json", "--verbose", "--permission-prompts", "none",
+    argv = [CLAUDE, "-p", "--no-chrome", "--output-format", "stream-json", "--verbose", "--permission-prompts", "none",
             "--strict-mcp-config", "--mcp-config", cs.EMPTY_MCP, "--settings", str(settings),
             "--setting-sources", sources, prompt]
     out = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
@@ -168,8 +168,9 @@ def rows(work: Path, tokens: dict, local_port: int):
         ("control: environment has no provider keys", "Bash tool: env", "Bash", "env", None, False, env_clean),
         ("(c) WriterOS 127.0.0.1:5177 reachable through the sandbox proxy (curl --noproxy '')",
          "Bash tool: curl --noproxy '' -s -o /dev/null -D - --max-time 8 http://127.0.0.1:5177/", "Bash", "5177", None, False, http_ok),
-        ("(c) WriterOS 127.0.0.1:5177 reachable with a default client (curl; sandbox NO_PROXY applies)",
-         "Bash tool: curl -s -o /dev/null -D - --max-time 8 http://127.0.0.1:5177/", "Bash", "5177", None, False, http_ok),
+        ("(c) WriterOS with a default client fails closed (sandbox NO_PROXY; the brief names curl --noproxy '')",
+         "Bash tool: curl -s -o /dev/null -D - --max-time 8 http://127.0.0.1:5177/", "Bash", "5177", None, True,
+         lambda ev: not http_ok(ev)),
     ]
     for p in env_files:   # real credential files: stdout to /dev/null, the refusal shows on stderr
         out.append((f"read {p.name} (Bash, stdout to /dev/null)", f"Bash tool: cat {p} >/dev/null", "Bash", str(p), None, True, None))
@@ -311,7 +312,7 @@ def probe_mod() -> Path:
     shutil.copytree(REPO / "backlot/claude_mod", mod)
     reg = mod / "hooks/register.ts"
     src = reg.read_text()
-    anchor = "    try { await registerMark($) } catch { /* no question cards, draft or checklist this session */ }\n"
+    anchor = "    const isReload = await read($, opened)   // $.state survives a hot reload; module variables do not\n"
     tool_anchor = "  on('tool.call', async ($, e, next) => {\n"
     assert src.count(anchor) == 1 and src.count(tool_anchor) == 1, "register.ts anchors moved"
     src = src.replace(anchor, anchor + "    try { await $.tool.register({ name: 'frontlot_run', description: 'Probe.', "
@@ -381,16 +382,18 @@ def p2_auto() -> int:
         results.append(("(b) print mode: MCP servers in the session are only the add-on (strict MCP)",
                         all(s.get("name") == cs.PLUGIN_NAME for s in init.get("mcp_servers", [])),
                         json.dumps(init.get("mcp_servers", []))[:160]))
-        # an add-on tool that is NOT on the allow list (the inherited `mark`) must be refused by dontAsk
-        argv = live.argv("Do exactly this one step with exactly one tool call, then stop: call the frontlot-live "
-                         "mark tool with kind question and text probe.", str(uuid.uuid4()),
+        # add-on tools bypass the allow list (first probe run), so the add-on must offer frontlot_run and nothing else
+        addon = [t for t in init.get("tools", []) if t.startswith(f"mcp__{cs.PLUGIN_NAME}__")]
+        results.append(("the add-on offers exactly one tool, frontlot_run", addon == [cs.TOOL_NAME], ", ".join(addon) or "none"))
+        # (c) with the brief loaded, Claude reaches WriterOS the way the brief says
+        argv = live.argv("Check whether WriterOS answers, using exactly one Bash tool call with curl as your "
+                         "instructions describe and -s -o /dev/null -D - --max-time 8, then stop.", str(uuid.uuid4()),
                          ("-p", "--output-format", "stream-json", "--verbose"))
         out = subprocess.run(argv, cwd=work, env=env_for(str(live.sock), live.token), capture_output=True, text=True,
                              timeout=300, stdin=subprocess.DEVNULL)
-        evs = [e for e in cs.tool_events(clean(out.stdout)) if e.name == f"mcp__{cs.PLUGIN_NAME}__mark"]
-        results.append(("an add-on tool not on the allow list (mark) is refused",
-                        bool(evs) and all(cs.refused(e) for e in evs),
-                        evs[-1].result[:160] if evs else "no mark tool call"))
+        evs = [e for e in cs.tool_events(clean(out.stdout)) if e.name == "Bash" and "5177" in json.dumps(e.input)]
+        results.append(("(c) following the brief, Claude reaches WriterOS (HTTP 200)", bool(evs) and http_ok(evs[-1]),
+                        (evs[-1].input.get("command", "") + " -> " + evs[-1].result.splitlines()[0])[:160] if evs and evs[-1].result else "no WriterOS call"))
     write_report("P2 (automated part) — add-on tool under strict MCP", results)
     return 0 if all(ok for _, ok, _ in results) else 1
 
@@ -461,7 +464,7 @@ def _pty_session(live: LiveStandIn, extra: tuple[str, ...], follow_up: str) -> d
 
 
 def p2_pty() -> int:
-    """P2 by keyboard: tool, inbox delivery, /mcp listing; then the same with --no-chrome (candidate fix)."""
+    """P2 by keyboard: tool, inbox delivery, /mcp listing, and no Chrome tool (launch_argv carries --no-chrome)."""
     results = []
     chrome_ask = "Call the claude-in-chrome tabs_context_mcp tool exactly once, then stop."
     with LiveStandIn() as live:
@@ -482,18 +485,12 @@ def p2_pty() -> int:
                         all(x in [r["route"] for r in log] for x in ("/hello", "/run", "/inbox")) and "submitted" in acks,
                         "acks: " + ",".join(acks)))
         listed = s["mcp"]
-        results.append(("interactive /mcp lists only frontlot-live (strict MCP)",
-                        "claude-in-chrome" not in listed and "computer-use" not in listed,
+        results.append(("interactive /mcp: no claude-in-chrome, computer-use disabled, frontlot-live with one tool",
+                        "claude-in-chrome" not in listed and "\u2714computer-use" not in listed and "\u2714frontlot-live1tool" in listed,
                         listed[:140]))
         chrome = [t for _, t in turns if t.startswith("tool_use mcp__claude-in-chrome")]
-        chrome_res = [t for _, t in turns if t.startswith("tool_result") and "tab group" in t.lower()]
-        results.append(("a built-in claude-in-chrome tool call is refused (not on the allow list)",
-                        not chrome or not chrome_res, (chrome_res or chrome or ["no call"])[0][:140]))
-        s = _pty_session(live, ("--no-chrome",), chrome_ask)
-        listed = s["mcp"]
-        chrome = [t for _, t in s["turns"] if t.startswith("tool_use mcp__claude-in-chrome")]
-        results.append(("candidate fix --no-chrome: /mcp has no claude-in-chrome and no chrome tool call happens",
-                        "claude-in-chrome" not in listed and not chrome, listed[:140]))
+        results.append(("asked to use claude-in-chrome, no chrome tool call happens", not chrome,
+                        (chrome or ["no call"])[0][:140]))
     write_report("P2 (interactive, driven in a pseudo-terminal) — inbox delivery and /mcp", results)
     return 0 if all(ok for _, ok, _ in results) else 1
 
