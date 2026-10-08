@@ -107,3 +107,61 @@ def test_exit_5_settles_as_failed_with_the_nothing_spent_note(tmp_path):
     store.launch(r["id"], repo=REPO, env=dict(os.environ))
     wait_state(store, r["id"], "failed")
     assert "Nothing was spent" in store.get(r["id"])["note"]
+
+
+def test_spawn_failure_records_failed_and_raises(tmp_path):
+    store = RequestStore(tmp_path / "meta", "film")
+    p = Prepared("look", False, [sys.executable, "-c", "print(1)"], {}, summary="Look")
+    r = store.create(p, key="k", session="s", epoch="e")
+    with pytest.raises(Rejected):
+        store.launch(r["id"], repo=tmp_path / "no-such-dir", env=dict(os.environ))
+    cur = store.get(r["id"])
+    assert cur["state"] == "failed" and "couldn't start" in cur["note"]
+    with pytest.raises(Rejected):
+        store.launch(r["id"], repo=REPO, env=dict(os.environ))
+
+
+def test_bad_env_value_is_a_spawn_failure_too(tmp_path):
+    store = RequestStore(tmp_path / "meta", "film")
+    p = Prepared("look", False, [sys.executable, "-c", "print(1)"], {}, summary="Look")
+    r = store.create(p, key="k", session="s", epoch="e")
+    with pytest.raises(Rejected):
+        store.launch(r["id"], repo=REPO, env={"BAD": 1})
+    assert store.get(r["id"])["state"] == "failed"
+
+
+def _claimed(store, tmp_path):
+    p = Prepared("look", False, [sys.executable, "-c", "print(1)"], {}, summary="Look")
+    r = store.create(p, key="k", session="s", epoch="e")
+    return store.claim_for_launch(r["id"])
+
+
+def _run_wrapper(store, rid):
+    from scripts import frontlot_run
+    return frontlot_run.main(["--store", str(store.base), "--request", rid, "--repo", str(REPO)])
+
+
+def test_tampered_argv_does_not_run_and_settles_failed(tmp_path):
+    store = RequestStore(tmp_path / "meta", "film")
+    marker = tmp_path / "ran"
+    rec = _claimed(store, tmp_path)
+    rec["argv"] = [sys.executable, "-c", f"open({str(marker)!r}, 'w')"]   # changed after Go, hash left as approved
+    store._write(rec)
+    assert _run_wrapper(store, rec["id"]) == 0
+    assert not marker.exists()
+    out = store.outcome(rec["id"])
+    assert out["exit"] != 0 and "Nothing was spent" in out["tail"]
+    store.reconcile()
+    assert store.get(rec["id"])["state"] == "failed"
+
+
+def test_wrapper_crash_before_the_run_is_uncertain_with_a_trace(tmp_path):
+    store = RequestStore(tmp_path / "meta", "film")
+    rec = _claimed(store, tmp_path)
+    rec.pop("argv")
+    store._write(rec)
+    assert _run_wrapper(store, rec["id"]) == 1
+    assert store.outcome(rec["id"])["exit"] is None
+    assert "KeyError" in (store.dir / f"{rec['id']}.log").read_text()
+    store.reconcile()
+    assert store.get(rec["id"])["state"] == "uncertain"

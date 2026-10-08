@@ -206,8 +206,8 @@ class RequestStore:
                      "--store", str(self.base), "--request", rid, "--repo", str(repo)],
                     cwd=repo, env=env, start_new_session=True,
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except OSError as exc:
-                rec["state"] = "failed"; rec["note"] = f"could not start: {exc}"; self._write(rec)
+            except (OSError, ValueError, TypeError) as exc:
+                rec["state"] = "failed"; rec["note"] = f"couldn't start: {exc}"; self._write(rec)
                 raise Rejected("Front Lot couldn't start this run.") from None
             step("spawned")
             self._children[rid] = proc
@@ -243,7 +243,9 @@ class RequestStore:
                 out = self.outcome(cur["id"])
                 if cur["state"] in ("launching", "running", "uncertain") and out is not None:
                     unresolved = out.get("unresolved") or []
-                    if out.get("exit") == 0:
+                    if out.get("exit") is None:           # wrapper crashed before the command's exit was known
+                        new, note = "uncertain", "the run's wrapper crashed; see its log" + (": " + ", ".join(unresolved) if unresolved else "")
+                    elif out.get("exit") == 0:
                         new, note = "done", None
                     elif out.get("exit") == EXIT_INPUT_CHANGED:   # refused before any submission: nothing was spent
                         new, note = "failed", "Something it depended on changed after Go, so it didn't run. Nothing was spent."
