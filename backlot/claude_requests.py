@@ -49,6 +49,8 @@ class RequestStore:
         self.base = Path(root) / film
         self.dir = self.base / "requests"
         self.dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for d in (self.dir, self.base, Path(root)):   # make the new directories' entries durable
+            _fsync_dir(d)
         self.spend_log = Path(root) / f"{film}.spend.jsonl"
         self._children: dict[str, object] = {}  # wrappers this process started (Task 6), reaped in reconcile
 
@@ -65,6 +67,16 @@ class RequestStore:
             finally:
                 fcntl.flock(fh, fcntl.LOCK_UN)
 
+    @contextmanager
+    def _key_locked(self, key: str):
+        name = "key-" + hashlib.sha256(key.encode()).hexdigest()[:16] + ".lock"
+        with open(self.dir / name, "a+") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
     def _write(self, rec: dict, *, durable: bool = False, log: bool = True) -> None:
         line = {"at": time.time(), "request": rec["id"], "state": rec["state"], "op": rec["op"], "paid": rec["paid"],
                 "summary": rec["summary"], "entity": rec.get("entity"), "estimate_usd": rec.get("estimate_usd"),
@@ -75,6 +87,8 @@ class RequestStore:
                 fh.write(json.dumps(line) + "\n")
                 if durable:
                     fh.flush(); os.fsync(fh.fileno())
+            if durable:
+                _fsync_dir(self.spend_log.parent)       # the log's own directory entry
         tmp = self._path(rec["id"]).with_suffix(".tmp")
         with open(tmp, "w") as fh:
             fh.write(json.dumps(rec, sort_keys=True))
@@ -100,9 +114,13 @@ class RequestStore:
 
     # -- lifecycle ----------------------------------------------------------
     def create(self, prep: Prepared, *, key: str, session: str, epoch: str, film_root: Path | None = None) -> dict:
-        existing = self.by_key(key)
-        if existing:
-            return existing
+        with self._key_locked(key):                    # lookup and write under one lock: idempotent by key
+            existing = self.by_key(key)
+            if existing:
+                return existing
+            return self._create(prep, key=key, session=session, epoch=epoch, film_root=film_root)
+
+    def _create(self, prep: Prepared, *, key: str, session: str, epoch: str, film_root: Path | None) -> dict:
         rid = "r-" + uuid.uuid4().hex[:10]
         rec = {"id": rid, "key": key, "op": prep.op, "paid": prep.paid, "argv": prep.argv,
                "argv_sha256": hashlib.sha256(json.dumps(prep.argv).encode()).hexdigest(),
@@ -204,7 +222,7 @@ class RequestStore:
                     if out.get("exit") == 0:
                         new, note = "done", None
                     elif out.get("exit") == EXIT_INPUT_CHANGED:   # refused before any submission: nothing was spent
-                        new, note = "failed", None
+                        new, note = "failed", "Something it depended on changed after Go, so it didn't run. Nothing was spent."
                     elif unresolved:                      # a provider may still bill or deliver
                         new, note = "uncertain", "paid submission unresolved: " + ", ".join(unresolved)
                     else:
@@ -212,6 +230,9 @@ class RequestStore:
                     if (new, note) != (cur["state"], cur.get("note")):
                         cur["state"] = new; cur["result"] = out; cur["note"] = note
                         self._write(cur); changed.append(cur["id"])
+                elif cur["state"] == "approved" and (self.dir / f"{cur['id']}.claim").exists():
+                    cur["state"] = "uncertain"; cur["note"] = "may not have started"   # crashed between claim and state write
+                    self._write(cur); changed.append(cur["id"])
                 elif cur["state"] == "launching" and "pid" not in cur:
                     cur["state"] = "uncertain"; cur["note"] = "may not have started"
                     self._write(cur); changed.append(cur["id"])

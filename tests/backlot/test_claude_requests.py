@@ -1,9 +1,10 @@
-import hashlib, json, os
+import fcntl, hashlib, json, os, threading
 
 import pytest
 
 from backlot.claude_ops import Prepared
 from backlot.claude_requests import Rejected, RequestStore
+from lib.run_common import EXIT_INPUT_CHANGED
 from lib.run_lease import process_start_time
 
 
@@ -160,11 +161,39 @@ def test_every_transition_is_in_the_spend_log(store, tmp_path):
 def test_money_writes_are_fsynced_before_they_return(store, tmp_path, monkeypatch):
     calls = []
     real = os.fsync
-    monkeypatch.setattr(os, "fsync", lambda fd: (calls.append(fd), real(fd))[1])
+    def spy(fd):
+        calls.append(fcntl.fcntl(fd, fcntl.F_GETPATH, b"\0" * 1024).split(b"\0")[0].decode())  # macOS
+        return real(fd)
+    monkeypatch.setattr(os, "fsync", spy)
+    def names(seq):
+        return [c.rsplit("/", 1)[-1] for c in seq]
     r = store.create(paid(tmp_path), key="k", session="s", epoch="e"); n_create = len(calls)
     store.decide(r["id"], go=True, session="s", epoch="e", controller=True); n_go = len(calls) - n_create
     store.claim_for_launch(r["id"]); n_claim = len(calls) - n_create - n_go
     assert n_create >= 3 and n_go >= 3 and n_claim >= 4   # log, state, dir (+ claim file)
+    first = names(calls[:n_create])
+    log_i = first.index("film.spend.jsonl")
+    state_i = next(i for i, n in enumerate(first) if n.endswith(".tmp") or n == f"{r['id']}.json")
+    meta_i = first.index("meta", log_i)                    # the log's parent directory
+    assert log_i < state_i and log_i < meta_i
+    assert first.index("requests", state_i) > state_i      # directory after the state file
+
+
+def test_concurrent_creates_with_one_key_make_one_record(store, tmp_path):
+    p = paid(tmp_path)
+    out, barrier = [], threading.Barrier(8)
+    def go():
+        barrier.wait(); out.append(RequestStore(tmp_path / "meta", "film").create(p, key="same", session="s", epoch="e")["id"])
+    ts = [threading.Thread(target=go) for _ in range(8)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    assert len(set(out)) == 1 and len(store.all_requests()) == 1
+
+
+def test_a_claim_file_without_the_state_write_settles_uncertain(store, tmp_path):
+    r = approved(store, tmp_path)
+    (store.dir / f"{r['id']}.claim").touch()               # crash after O_EXCL claim, before the state write
+    assert store.reconcile() == [r["id"]]
+    assert store.get(r["id"])["state"] == "uncertain"
 
 
 def test_expiry_on_decide(store, tmp_path, monkeypatch):
@@ -197,11 +226,11 @@ def test_outcome_notices_wait_until_marked(store, tmp_path):
 def test_input_changed_refusal_settles_failed_even_with_unresolved_ids(store, tmp_path):
     # exit 5 = refused before anything reached a provider: never uncertain, never done
     r = launched(store, tmp_path)
-    (store.dir / f"{r['id']}.outcome.json").write_text(json.dumps({"exit": 5, "unresolved": ["res-1"]}))
+    (store.dir / f"{r['id']}.outcome.json").write_text(json.dumps({"exit": EXIT_INPUT_CHANGED, "unresolved": ["res-1"]}))
     store.reconcile()
     rec = store.get(r["id"])
-    assert rec["state"] == "failed" and rec["note"] is None
+    assert rec["state"] == "failed" and rec["note"] == "Something it depended on changed after Go, so it didn't run. Nothing was spent."
     r2 = launched(store, tmp_path, key="k2", pid=999_998)
-    (store.dir / f"{r2['id']}.outcome.json").write_text(json.dumps({"exit": 5}))
+    (store.dir / f"{r2['id']}.outcome.json").write_text(json.dumps({"exit": EXIT_INPUT_CHANGED}))
     store.reconcile()
     assert store.get(r2["id"])["state"] == "failed"
