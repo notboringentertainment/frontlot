@@ -2,7 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 import { ReportQueue } from './queue'
 import { Waits } from './waits'
-import { TOKEN_HEADER, type Hello, type HelloSource, type HistoryMessage, type InboxAck, type InboxAction, type InboxReply, type LiveEvent, type ReportBatch, type RowBlock, type RowToolRef } from './protocol'
+import { TOKEN_HEADER, type Hello, type HelloSource, type HistoryMessage, type InboxAck, type InboxAction, type InboxReply, type LiveEvent, type ReportBatch, type RowBlock, type RowToolRef, RUN_TOOL, type RunReply } from './protocol'
+import { RUN_DESCRIPTION, runCall, runResultText } from './run'
 
 // `claude plugin validate` rules (spike R5): one literal on('<event>', …) per event, and every helper
 // that receives `$` is a top-level `function` declaration in this file.
@@ -48,9 +49,14 @@ let expectedSessionId: string | undefined
 let current: EpochCtx | null = null
 let queue: ReportQueue | null = null
 let mainTurnId: string | null = null
+// Start order of main turns: turnSeq counts every turn.start; mainTurnSeq is the current main turn's number.
+let turnSeq = 0
+let mainTurnSeq = 0
 const running = new Set<string>()
 const waits = new Waits()
 const handled = new Set<string>()
+// A Stop's first final ack, replayed exactly if the broker redelivers it.
+const finalAcks = new Map<string, InboxAck>()
 // Submits handed to Claude and not yet settled; a redelivery of one is acked `queued` again, never re-run.
 const inProgress = new Set<string>()
 let pollTimer: Timer | null = null
@@ -101,6 +107,7 @@ async function openEpoch($: any, source: HelloSource, mode: HistoryMode): Promis
   current = ctx
   queue = new ReportQueue(ctx.id, (b) => postReport($, ctx, b), (ms) => $.clock.sleep(ms), () => Date.now())
   handled.clear()
+  finalAcks.clear()
   if (mode === 'deferred') { ctx.timer = $.clock.after(SNAPSHOT_STEP_MS, () => void snapshotTick($, ctx)); return }
   await sendHello($, ctx, mode === 'empty' ? { history: [] } : mode === 'unavailable' ? { historyUnavailable: true } : {})
 }
@@ -159,6 +166,14 @@ function sendAck($: any, ack: InboxAck): Promise<void> {
 
 // $.prompt.submit resolves only once Claude is idle (I1), so a submit never blocks the inbox loop (I2):
 // it is handed over, acked `queued` at once, and its final ack is sent when it settles (after the queued one).
+async function registerRun($: any): Promise<void> {
+  await $.tool.register({
+    name: 'frontlot_run',
+    description: RUN_DESCRIPTION,
+    inputSchema: { type: 'object', properties: { op: { type: 'string' }, params: { type: 'object' }, check: { type: 'string' } } },
+  })
+}
+
 async function startSubmit($: any, id: string, text: string): Promise<void> {
   let pending: Promise<any>
   try { pending = Promise.resolve($.prompt.submit({ text, asUser: true })) }
@@ -173,9 +188,20 @@ async function startSubmit($: any, id: string, text: string): Promise<void> {
 
 async function act($: any, action: InboxAction): Promise<void> {
   if (inProgress.has(action.id)) return sendAck($, { id: action.id, status: 'queued' })
-  if (handled.has(action.id)) return sendAck($, { id: action.id, status: 'submitted' })
+  if (handled.has(action.id)) return sendAck($, finalAcks.get(action.id) ?? { id: action.id, status: 'submitted' })
   handled.add(action.id)
   if ('submit' in action) return startSubmit($, action.id, action.submit)
+  if (action.stop.turnId === '*') {
+    const reason = `stopped-through:${turnSeq}`   // every turn started so far began before this Stop arrived
+    let ack: InboxAck
+    if (mainTurnId === null) ack = { id: action.id, status: 'rejected', reason }   // nothing running to abort
+    else {
+      try { await $.turn.abort({ turnId: mainTurnId }); ack = { id: action.id, status: 'submitted', reason } }
+      catch { ack = { id: action.id, status: 'rejected', reason } }
+    }
+    finalAcks.set(action.id, ack)
+    return sendAck($, ack)
+  }
   if (action.stop.turnId !== mainTurnId) return sendAck($, { id: action.id, status: 'rejected', reason: 'turn already ended' })
   let ack: InboxAck
   try { await $.turn.abort({ turnId: action.stop.turnId }); ack = { id: action.id, status: 'submitted' } }
@@ -205,6 +231,7 @@ export const register: Register = (on) => {
     token = (await $.env.get('FRONTLOT_LIVE_TOKEN')) || undefined
     if (!isActive()) return next(e)
     const isReload = await read($, opened)   // $.state survives a hot reload; module variables do not
+    try { await registerRun($) } catch { /* no pipeline steps this session; Claude tells Ben */ }
     // A fresh or --resume launch is sent as `launch` (R4.5); its history follows the classic source.
     const mode: HistoryMode = isReload ? 'none'
       : lastSource === 'startup' ? 'empty'
@@ -259,6 +286,7 @@ export const register: Register = (on) => {
 
   // A main-loop turn starting before a deferred snapshot matched ends the wait (R4.2).
   on('turn.start', async ($, e, next) => {
+    turnSeq += 1; mainTurnSeq = turnSeq   // synchronous, so every tool call of this turn carries its order
     mainTurnId = e.turnId
     report({ kind: 'turn', phase: 'start', turnId: e.turnId })
     void giveUpSnapshot($).catch(() => {})   // never await the hello in a hook (see session.start)
@@ -274,8 +302,26 @@ export const register: Register = (on) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  on('tool.describe', async ($, e, next) => {
+    if (e.tool === RUN_TOOL) return { description: RUN_DESCRIPTION, isDeferred: false }
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on('tool.call', async ($, e, next) => {
     const id = String((e as any).tool_use_id ?? '')
+    if (e.tool === RUN_TOOL) {
+      const { route, key, body } = runCall(e as any, current?.id ?? '', mainTurnId ?? '', mainTurnSeq)
+      let reply: RunReply
+      try {
+        reply = await Promise.race([
+          call($, route, body) as Promise<RunReply>,
+          $.clock.sleep(5000).then((): RunReply => ({ status: 'uncertain', plain: 'no answer in 5 s' })),
+        ])
+      } catch {
+        reply = { status: 'uncertain', plain: 'Front Lot did not answer' }
+      }
+      return { result: runResultText(reply, key) }
+    }
     if (!queue) return next(e)
     running.add(id)
     report({ kind: 'tool', toolUseId: id, tool: e.tool, agentId: e.agentId, phase: 'start', summary: summary(e.tool, e as any) })

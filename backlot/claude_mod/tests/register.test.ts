@@ -320,3 +320,67 @@ test('an inbox action that arrives after the epoch changed is rejected, not subm
   expect(reqs.filter((r) => r.route === '/inbox').map((r) => r.body.epoch).at(-1)).toBe(hs[1].epoch)
 })
 
+
+test('frontlot_run posts /run keyed by the tool-use id and never reaches the engine', async ($, on) => {
+  const clock = mock.clock(on)
+  const reqs = wire(on)
+  let reachedEngine = false
+  on('tool.call', () => { reachedEngine = true; return { result: 'engine' } })
+  await launch($)
+  await settle(clock)
+  const r: any = await $.tool.call({ tool: 'mcp__frontlot-live__frontlot_run', tool_use_id: 'tu-7', op: 'look', params: { entity: 'hero-a' } } as any)
+  const body = reqs.find((q) => q.route === '/run')!.body
+  expect(body).toMatchObject({ key: 'tu-7', op: 'look', params: { entity: 'hero-a' }, turnId: '', turnSeq: 0 })
+  expect(body.epoch).toBe(hellos(reqs)[0].epoch)   // bound to the epoch the add-on announced
+  expect(reachedEngine).toBe(false)
+  expect(typeof r.result).toBe('string')
+})
+
+test('a failed tool registration never keeps the epoch closed: hello and inbox still happen', async ($, on) => {
+  const clock = mock.clock(on)
+  const reqs = wire(on, { registerThrows: true })
+  await launch($)
+  await settle(clock)
+  expect(hellos(reqs).length).toBe(1)
+  expect(reqs.some((r) => r.route === '/inbox')).toBe(true)
+})
+
+test("a Stop for the current turn aborts it and names the newest turn in the ack", async ($, on) => {
+  const clock = mock.clock(on)
+  const aborted: string[] = []
+  on('turn.abort', ($: any, e: any) => { aborted.push(e.turnId); return { value: undefined } })
+  const reqs = wire(on, { inbox: [{ id: 's1', epoch: 'E', stop: { turnId: '*' } }] })
+  await launch($)
+  await $.turn.start({ text: 'go', turnId: 't7' })
+  await settle(clock)
+  expect(aborted).toEqual(['t7'])
+  expect(reqs.filter((r) => r.route === '/inbox-ack').map((r) => r.body)).toEqual([{ id: 's1', status: 'submitted', reason: 'stopped-through:1' }])
+})
+
+test('a turn that ended before the Stop arrived is still retired by the ack', async ($, on) => {
+  const clock = mock.clock(on)
+  let aborted = false
+  on('turn.abort', () => { aborted = true; return { value: undefined } })
+  on('turn.complete', () => ({ text: 'done' }))
+  const reqs = wire(on, { inbox: [{ id: 's1', epoch: 'E', stop: { turnId: '*' } }] })
+  await launch($)
+  await $.turn.start({ text: 'go', turnId: 't7' })
+  await $.turn.complete({ turnId: 't7', answer: 'done', durationMs: 1, isAborted: false, reason: 'answer' } as any)
+  await settle(clock)
+  expect(aborted).toBe(false)
+  expect(reqs.filter((r) => r.route === '/inbox-ack').map((r) => r.body)).toEqual([{ id: 's1', status: 'rejected', reason: 'stopped-through:1' }])
+})
+
+test('a redelivered Stop replays its first final ack', async ($, on) => {
+  const clock = mock.clock(on)
+  const aborted: string[] = []
+  on('turn.abort', ($: any, e: any) => { aborted.push(e.turnId); return { value: undefined } })
+  const stop = { id: 's1', epoch: 'E', stop: { turnId: '*' } }
+  const reqs = wire(on, { inbox: [stop, stop] })               // the broker never saw the first ack
+  await launch($)
+  await $.turn.start({ text: 'go', turnId: 't7' })
+  await settle(clock)
+  expect(aborted).toEqual(['t7'])                              // aborted once
+  expect(reqs.filter((r) => r.route === '/inbox-ack').map((r) => r.body))
+    .toEqual([{ id: 's1', status: 'submitted', reason: 'stopped-through:1' }, { id: 's1', status: 'submitted', reason: 'stopped-through:1' }])
+})

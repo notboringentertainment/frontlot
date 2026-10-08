@@ -53,3 +53,12 @@ export interface InboxAck { id: string; status: 'queued' | 'submitted' | 'reject
 
 export const TOKEN_HEADER = 'x-frontlot-token'
 export const PLUGIN_NAME = 'frontlot-live'
+
+export const RUN_TOOL = 'mcp__frontlot-live__frontlot_run'
+export interface RunRequest { key: string; op: string; params: Record<string, unknown>; epoch: string; turnId: string; turnSeq: number }
+export interface RunCheck { key: string }
+export type RunStatus =
+  | 'running' | 'waiting-for-ben' | 'refused' | 'not-received' | 'unknown-outcome'
+  | 'done' | 'failed' | 'declined' | 'cancelled' | 'expired'
+  | 'uncertain'   // add-on only: the broker did not answer within 5 s
+export interface RunReply { requestId?: string; status: RunStatus; plain: string }
