@@ -36,6 +36,8 @@ STOPPED_THROUGH = re.compile(r"^stopped-through:(\d+)$")
 READ_ONLY = "This window is read-only. Use Take control to act here."
 STALE = "That request came from a part of the conversation that was stopped or restarted, so it was not run."
 TOO_LONG = "Part of the conversation is too long to show here; it is in the terminal view."
+LAUNCH_BROKE = "Front Lot couldn't start this run. Ask Claude to set it up again."
+DECIDE_BROKE = "Front Lot couldn't record that answer. Try again."
 NO_STOP_CONFIRM = "Claude hasn't confirmed it stopped — start a new conversation to be sure."
 REPLY_STATUS = {"waiting-for-ben": "waiting-for-ben", "approved": "running", "launching": "running",
                 "running": "running", "uncertain": "unknown-outcome", "done": "done", "failed": "failed",
@@ -110,7 +112,13 @@ def resolve_claude() -> tuple[str, str]:
     raise Unavailable("missing")
 
 
-def sandbox_selfcheck(slug: str, claude: str, version: str, settings_file: Path, work: Path, env: dict) -> bool:
+def canary_paths(slug: str, work: Path) -> tuple[Path, Path, Path]:
+    """The self-check's deny canary (metadata root), allow canary (work area), and must-not-exist write target."""
+    return paths(slug)["canary"], work / ".frontlot-canary", work.parent / ".frontlot-canary-write"
+
+
+def sandbox_selfcheck(slug: str, claude: str, version: str, settings_file: Path, work: Path, env: dict,
+                      on_spawn=None) -> bool:
     """Fail closed (spec §4.1): the session starts only if, by tool-level evidence, sandboxed Bash can read an
     allowed canary, is refused the one under the denied metadata root, and the Write tool is refused outside the
     work area (and nothing was written). One short Claude turn, cached per Claude version + settings."""
@@ -122,16 +130,29 @@ def sandbox_selfcheck(slug: str, claude: str, version: str, settings_file: Path,
     except (OSError, ValueError):
         pass
     deny_secret, allow_secret = secrets.token_hex(8), secrets.token_hex(8)
-    allow_file, outside = work / ".frontlot-canary", work.parent / ".frontlot-canary-write"
+    _, allow_file, outside = canary_paths(slug, work)
     p["canary"].write_text(deny_secret); allow_file.write_text(allow_secret); outside.unlink(missing_ok=True)
+    proc = None
     try:
-        out = subprocess.run(cs.selfcheck_argv(claude=claude, settings_file=settings_file,
-                                               prompt=cs.selfcheck_prompt(p["canary"], allow_file, outside)),
-                             cwd=work, env=env, capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL)
-        passed = cs.selfcheck_passed(out.stdout, deny_file=p["canary"], allow_file=allow_file, outside_file=outside,
-                                     deny_secret=deny_secret, allow_secret=allow_secret)
-    except (OSError, subprocess.TimeoutExpired):
+        # Its own process group, and the handle goes to the broker (on_spawn), so a shutdown mid-check can kill
+        # the whole check and remove the canaries even though this runs in an executor thread.
+        proc = subprocess.Popen(cs.selfcheck_argv(claude=claude, settings_file=settings_file,
+                                                  prompt=cs.selfcheck_prompt(p["canary"], allow_file, outside)),
+                                cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+        if on_spawn is not None:
+            on_spawn(proc)
+        stdout, _ = proc.communicate(timeout=180)
+        passed = proc.returncode is not None and cs.selfcheck_passed(
+            stdout, deny_file=p["canary"], allow_file=allow_file, outside_file=outside,
+            deny_secret=deny_secret, allow_secret=allow_secret)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         passed = False
+        if proc is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            with contextlib.suppress(Exception):
+                proc.wait(5)
     finally:
         p["canary"].unlink(missing_ok=True); allow_file.unlink(missing_ok=True); outside.unlink(missing_ok=True)
     if passed:
@@ -248,6 +269,7 @@ class Broker:
         self.shutting = False
         self.loop: asyncio.AbstractEventLoop | None = None
         self.tasks: list[asyncio.Task] = []
+        self.selfcheck_proc: subprocess.Popen | None = None
 
     # -- lifecycle -----------------------------------------------------------------------------------
     def _check(self) -> None:
@@ -272,23 +294,16 @@ class Broker:
         # Ignore SIGHUP with a no-op handler, not SIG_IGN: an ignored disposition is inherited through exec,
         # so Claude (and its group) would then ignore the SIGHUP that shutdown sends it first.
         loop.add_signal_handler(signal.SIGHUP, lambda: None)
-        # 2. leftovers no live broker owns (we hold the lock)
-        self.p["unavailable"].unlink(missing_ok=True)
-        self.p["sock"].unlink(missing_ok=True); self.p["live"].unlink(missing_ok=True)
-        # 3. a predecessor that died without its own shutdown
-        self.cancel_and_journal("previous-session-ended")
-        # 4. Claude, settings, brief, env
-        claude, version = resolve_claude()
-        self.claude_path, self.claude_version = claude, version
-        write_private(self.p["settings"], json.dumps(cs.build_settings(
-            repo_root=REPO, film_root=self.film, meta_root=metadata_root(), environ=os.environ), indent=2))
-        write_private(self.p["brief"], cs.build_brief(film_title=self.title, film_slug=self.slug))
-        env = cs.allowed_env(os.environ, login_path=_login_environment()["PATH"],
-                             live_socket=str(self.p["live"]), live_token=self.token)
-        # 5. fail-closed sandbox self-check
-        if not os.environ.get("FRONTLOT_SKIP_PREFLIGHT"):
-            if not sandbox_selfcheck(self.slug, claude, version, self.p["settings"], self.work, env):
-                raise Unavailable("sandbox", version)
+        try:
+            claude, env = await self._prepare(loop)
+        except _Aborted:
+            await asyncio.Future()                              # the shutdown under way ends the process
+        except Unavailable:
+            raise
+        except Exception as exc:
+            _log(f"start failed before Claude: {exc!r}")
+            self._shutting_without_claude()
+            raise
         fail_at = os.environ.get("FRONTLOT_TEST_FAIL_AT")
         try:
             self._check()
@@ -321,6 +336,55 @@ class Broker:
             raise
         await asyncio.Future()                                  # runs until shutdown() exits the process
         return 0
+
+    async def _prepare(self, loop) -> tuple[str, dict]:
+        """Steps 2-5. The slow calls (Claude's version and sign-in, the login PATH, the self-check) run in an
+        executor so a SIGTERM is acted on at once; after each one a shutdown already under way wins."""
+        # 2. leftovers no live broker owns (we hold the lock)
+        self.p["unavailable"].unlink(missing_ok=True)
+        self.p["sock"].unlink(missing_ok=True); self.p["live"].unlink(missing_ok=True)
+        # 3. a predecessor that died without its own shutdown
+        self.cancel_and_journal("previous-session-ended")
+        # 4. Claude, settings, brief, env
+        claude, version = await loop.run_in_executor(None, resolve_claude)
+        self._check()
+        self.claude_path, self.claude_version = claude, version
+        write_private(self.p["settings"], json.dumps(cs.build_settings(
+            repo_root=REPO, film_root=self.film, meta_root=metadata_root(), environ=os.environ), indent=2))
+        write_private(self.p["brief"], cs.build_brief(film_title=self.title, film_slug=self.slug))
+        login_path = (await loop.run_in_executor(None, _login_environment))["PATH"]
+        self._check()
+        env = cs.allowed_env(os.environ, login_path=login_path, live_socket=str(self.p["live"]), live_token=self.token)
+        # 5. fail-closed sandbox self-check
+        if not os.environ.get("FRONTLOT_SKIP_PREFLIGHT"):
+            def remember(proc):                                 # runs in the executor thread
+                self.selfcheck_proc = proc
+                if self.shutting:                               # shutdown may have looked before this was set
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.killpg(proc.pid, signal.SIGKILL)
+            passed = await loop.run_in_executor(None, lambda: sandbox_selfcheck(
+                self.slug, claude, version, self.p["settings"], self.work, env, on_spawn=remember))
+            self._check()                                       # a killed check reads as failed: never report it
+            if not passed:
+                raise Unavailable("sandbox", version)
+        return claude, env
+
+    def _shutting_without_claude(self) -> None:
+        """A startup failure before anything ran: tell the server plainly, keep exit 1 (main)."""
+        with contextlib.suppress(Exception):
+            write_private(self.p["unavailable"], json.dumps({"reason": "start-failed"}))
+
+    def _end_selfcheck(self) -> None:
+        proc = self.selfcheck_proc
+        if proc is not None and proc.poll() is None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            end = time.monotonic() + 5
+            while proc.poll() is None and time.monotonic() < end:
+                time.sleep(0.02)
+        for f in canary_paths(self.slug, self.work):
+            with contextlib.suppress(OSError):
+                f.unlink(missing_ok=True)
 
     def spawn_gated(self, claude: str, env: dict) -> None:
         """Recoverable at every instant: the child waits on a pipe and runs Claude only after `go`."""
@@ -394,6 +458,10 @@ class Broker:
             with contextlib.suppress(Exception):
                 self.loop.remove_reader(self.master)
                 self.loop.remove_writer(self.master)
+        with contextlib.suppress(Exception):
+            self._end_selfcheck()                       # the check's group and its canaries, if one ran
+        if reason == "start-failed":
+            self._shutting_without_claude()
         if self.gate_w is not None:                     # spawn may have failed after the pipe was made
             with contextlib.suppress(OSError):
                 os.close(self.gate_w)
@@ -485,6 +553,9 @@ class Broker:
             self.journal_event({"kind": "run-started", **card(self.store.get(rec["id"]))})
         except Rejected as e:
             self.journal_event({"kind": "notice", "plain": e.plain})
+        except Exception as exc:                        # never let a failed launch drop Ben's connection
+            _log(f"launch of {rec['id']} failed: {exc!r}")
+            self.journal_event({"kind": "notice", "plain": LAUNCH_BROKE})
 
     def enqueue(self, action: dict, front: bool = False) -> None:
         """The only way anything enters the outbox; always wakes a waiting poll."""
@@ -750,15 +821,23 @@ class Broker:
             with contextlib.suppress(Exception):
                 writer.close()
 
-    def _snapshot_frame(self, snap: dict) -> bytes:
+    @staticmethod
+    def _snapshot_frame(snap: dict) -> bytes:
+        """Fit a snapshot in one frame, giving things up in this order: the hello (its history can be huge), then
+        the oldest rows, and the spend cards only last, since a hidden card is a decision Ben can't see."""
         snap = dict(snap)
         while True:
             try:
                 return cf.encode_json(cf.EVENT, {"seq": None, "event": snap})
             except cf.FrameError:
-                if not snap["rows"]:
-                    return cf.encode_json(cf.EVENT, {"seq": None, "event": {**snap, "cards": [], "hello": None}})
-                snap["rows"] = snap["rows"][len(snap["rows"]) // 2 + 1:]   # keep the newest rows that fit
+                if snap.get("hello") is not None:
+                    snap["hello"] = None
+                elif snap.get("rows"):
+                    snap["rows"] = snap["rows"][len(snap["rows"]) // 2 + 1:]   # keep the newest rows that fit
+                elif snap.get("cards"):
+                    snap["cards"] = snap["cards"][len(snap["cards"]) // 2 + 1:]
+                else:
+                    return cf.encode_json(cf.EVENT, {"seq": None, "event": {"kind": "notice", "plain": TOO_LONG}})
 
     async def on_action(self, writer, page: str, action: dict) -> None:
         kind = action.get("type")
@@ -790,6 +869,10 @@ class Broker:
                                         **({"reason": cur["note"]} if cur.get("note") else {})})
                     if cur["state"] == "cancelled":
                         self.store.mark_notified(rid, "cancelled")   # journaled here; the watcher need not repeat it
+                return
+            except Exception as exc:                    # never let a failed write drop Ben's connection
+                _log(f"decision on {rid} failed: {exc!r}")
+                self.notice(writer, DECIDE_BROKE)
                 return
             self.journal_event({"kind": "spend-decided", "requestId": rid, "state": rec["state"]})
             if rec["state"] == "approved":
@@ -942,6 +1025,11 @@ def main(argv=None) -> int:
             with contextlib.suppress(OSError):
                 fcntl.flock(broker.lock_fd, fcntl.LOCK_UN); os.close(broker.lock_fd)
         return 3
+    except Exception:
+        if broker is not None and broker.lock_fd is not None:
+            with contextlib.suppress(OSError):
+                fcntl.flock(broker.lock_fd, fcntl.LOCK_UN); os.close(broker.lock_fd)
+        raise                                            # exit 1; the start-failed file is already written
 
 
 if __name__ == "__main__":

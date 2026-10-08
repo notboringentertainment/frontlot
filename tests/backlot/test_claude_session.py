@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 
 from backlot import claude_frames as cf
-from tests.backlot.claude_fakes import REPO, hello, live_endpoint, post_live, stub_ops_env, write_fake_claude
+from tests.backlot.claude_fakes import (REPO, hello, live_endpoint, post_live, stub_ops_env, write_fake_claude,
+                                       write_slow_selfcheck_claude)
 from tests.backlot.tty_helpers import recv_frame, wait_until
 
 
@@ -282,8 +283,9 @@ def test_outcome_messages_are_resent_after_a_crash_until_acked(world):
     post_live(sock, token, "/inbox-ack", {"id": again["id"], "status": "submitted"})
     time.sleep(2.5)                                                          # a watcher pass
     store_dir = world["gates"] / "claude" / "film" / "requests"
-    assert all(json.loads(f.read_text()).get("notified") == "done" for f in store_dir.glob("r-*.json")
-               if not f.name.endswith(".outcome.json"))
+    files = [f for f in store_dir.glob("r-*.json") if not f.name.endswith(".outcome.json")]
+    assert files
+    assert all(json.loads(f.read_text()).get("notified") == "done" for f in files)
 
 
 def test_a_new_broker_cancels_what_a_killed_broker_left_waiting(world):
@@ -326,12 +328,127 @@ def test_only_the_controlling_page_can_replace_the_conversation(world):
 @pytest.mark.parametrize("stage", ["before-gate", "after-gate"])
 def test_a_failed_start_leaves_nothing_behind(world, stage):
     p = start(world, env=dict(world["env"], FRONTLOT_TEST_FAIL_AT=stage))
-    p.wait(timeout=30)
+    assert p.wait(timeout=30) == 1
     for name in ("film.sock", "film.live.sock", "film.json"):
         assert not (world["dir"] / name).exists(), name
+    assert json.loads((world["dir"] / "film.unavailable.json").read_text()) == {"reason": "start-failed"}
     live = world["film"] / "frontlot-work" / "live.json"
     if stage == "before-gate":
         assert not live.exists()                           # the gate never opened: Claude never ran
     elif live.exists():                                    # it ran briefly: its whole group must be gone
         with pytest.raises(ProcessLookupError):
             os.killpg(json.loads(live.read_text())["pgid"], 0)
+
+
+# -- fix round 1 ----------------------------------------------------------------------------------------------
+def _gone(pid):
+    out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return out == "" or out.startswith("Z")
+
+
+def test_sigterm_during_the_selfcheck_leaves_no_child_and_no_canary(world, tmp_path):
+    env = dict(world["env"], FRONTLOT_CLAUDE=str(write_slow_selfcheck_claude(tmp_path / "slow")))
+    env.pop("FRONTLOT_SKIP_PREFLIGHT")
+    p = start(world, env=env)
+    pid_file = world["film"] / "frontlot-work" / "selfcheck.pid"
+    wait_until(lambda: pid_file.exists() and pid_file.read_text().strip(), timeout=30, description="self-check running")
+    pid = int(pid_file.read_text())
+    canaries = [world["dir"] / "film.canary", world["film"] / "frontlot-work" / ".frontlot-canary",
+                world["film"] / ".frontlot-canary-write"]
+    assert canaries[0].exists() and canaries[1].exists()
+    t0 = time.time()
+    p.terminate()
+    p.wait(timeout=15)                                       # acted on at once, not after the 120 s check
+    assert time.time() - t0 < 10
+    wait_until(lambda: _gone(pid), timeout=5, description="self-check child gone")
+    for f in canaries:
+        assert not f.exists(), f
+    for name in ("film.sock", "film.live.sock", "film.json"):
+        assert not (world["dir"] / name).exists(), name
+
+
+def test_an_oversized_snapshot_keeps_its_cards():
+    from scripts.claude_session import Broker
+    cards = [{"requestId": f"r-00000000{i:02d}", "summary": "Make one test picture for hero-a", "entity": "hero-a",
+              "estimate_usd": 0.12, "paid": True, "state": "waiting-for-ben"} for i in range(3)]
+    snap = {"kind": "snapshot", "state": "ready", "cursor": 5, "cards": cards,
+            "hello": {"epoch": "e1", "history": [{"role": "user", "text": "x" * 300_000, "toolUses": []}]},
+            "rows": [{"kind": "row", "text": "y" * 1000}] * 10}
+    frame = Broker._snapshot_frame(snap)
+    ev = cf.decode_json(cf.EVENT, frame[5:])["event"]
+    assert ev["cards"] == cards and ev["hello"] is None and len(ev["rows"]) == 10
+
+
+def decide(s, rid, go):
+    s.sendall(cf.encode_json(cf.ACTION, {"type": "spend-decision", "requestId": rid, "go": go}))
+
+
+def event_of(s, kind, rid=None):
+    return next_of(s, cf.EVENT, lambda d: d["event"].get("kind") == kind
+                   and (rid is None or d["event"].get("requestId") == rid))
+
+
+def test_go_launches_and_journals_the_decision_and_the_run(world):
+    start(world)
+    s = connect(world); status(s)
+    sock, token = live_endpoint(world["film"])
+    hello(sock, token, "e1")
+    rid = run(sock, token, "k1")["requestId"]
+    decide(s, rid, True)
+    d = event_of(s, "spend-decided", rid)
+    assert d["event"]["state"] == "approved" and isinstance(d["seq"], int)
+    r = event_of(s, "run-started", rid)
+    assert r["event"]["state"] == "running" and r["event"]["paid"] is True
+
+
+def test_not_now_is_journaled_and_claude_is_told(world):
+    start(world)
+    s = connect(world); status(s)
+    sock, token = live_endpoint(world["film"])
+    hello(sock, token, "e1")
+    rid = run(sock, token, "k1")["requestId"]
+    decide(s, rid, False)
+    assert event_of(s, "spend-decided", rid)["event"]["state"] == "declined"
+    msg = post_live(sock, token, "/inbox", {"epoch": "e1"})
+    assert msg["submit"] == "[Front Lot] Ben said Not now to: Make one test picture for hero-a."
+    assert post_live(sock, token, "/run-check", {"key": "k1"})["status"] == "declined"
+
+
+def test_a_decision_from_a_window_without_control_changes_nothing(world):
+    start(world)
+    a = connect(world, page="pa"); status(a)
+    b = connect(world, page="pb"); assert status(b)["controller"] is False
+    sock, token = live_endpoint(world["film"])
+    hello(sock, token, "e1")
+    rid = run(sock, token, "k1")["requestId"]
+    decide(b, rid, True)
+    n = event_of(b, "notice")
+    assert n["seq"] is None and "read-only" in n["event"]["plain"]
+    assert post_live(sock, token, "/run-check", {"key": "k1"})["status"] == "waiting-for-ben"
+
+
+def test_a_decision_after_an_addon_reload_is_refused_and_the_card_is_cancelled(world):
+    start(world)
+    s = connect(world); status(s)
+    sock, token = live_endpoint(world["film"])
+    hello(sock, token, "e1")
+    rid = run(sock, token, "k1")["requestId"]
+    hello(sock, token, "e2")                                 # Claude's add-on reloaded: a new epoch
+    assert event_of(s, "spend-decided", rid)["event"]["state"] == "cancelled"
+    decide(s, rid, True)
+    n = event_of(s, "notice")
+    assert n["seq"] is None and n["event"]["plain"]
+    assert post_live(sock, token, "/run-check", {"key": "k1"})["status"] == "cancelled"
+    assert not (world["gates"] / "claude" / "film" / "requests" / f"{rid}.claim").exists()
+
+
+def test_a_go_whose_launch_breaks_keeps_the_connection(world):
+    start(world, env=dict(world["env"], FRONTLOT_TEST_LAUNCH_OSERROR="1"))
+    s = connect(world); status(s)
+    sock, token = live_endpoint(world["film"])
+    hello(sock, token, "e1")
+    rid = run(sock, token, "k1")["requestId"]
+    decide(s, rid, True)
+    assert "couldn't start" in event_of(s, "notice")["event"]["plain"]
+    s.sendall(cf.encode_json(cf.ACTION, {"type": "submit", "text": "still here"}))   # the connection still works
+    assert post_live(sock, token, "/inbox", {"epoch": "e1"})["submit"] == "still here"

@@ -34,12 +34,41 @@ def _build(paid):
 
 _ops.OPERATIONS["test_paid"] = _ops.Operation(True, frozenset(), _build(True))
 _ops.OPERATIONS["test_free"] = _ops.Operation(False, frozenset(), _build(False))
+
+if os.environ.get("FRONTLOT_TEST_LAUNCH_OSERROR"):   # a launch that breaks with something other than Rejected
+    from backlot import claude_requests as _req
+
+    def _broken_launch(self, rid, **kw):
+        raise OSError("no space left on device")
+    _req.RequestStore.launch = _broken_launch
+"""
+
+# A `claude` that passes the version and sign-in checks, then hangs in the sandbox self-check (`-p`), recording
+# its pid in the work area so a test can confirm a shutdown killed it.
+SLOW_SELFCHECK_CLAUDE = """#!/usr/bin/env python3
+import json, os, sys, time
+if "--version" in sys.argv:
+    print("2.1.300 (Claude Code)"); sys.exit(0)
+if sys.argv[1:3] == ["auth", "status"]:
+    print(json.dumps({"loggedIn": True})); sys.exit(0)
+if "-p" in sys.argv:
+    with open("selfcheck.pid", "w") as fh:
+        fh.write(str(os.getpid()))
+    time.sleep(120)
+sys.exit(0)
 """
 
 
 def write_fake_claude(directory: Path) -> Path:
     fake = directory / "claude"
     fake.write_text(FAKE_CLAUDE); fake.chmod(0o755)
+    return fake
+
+
+def write_slow_selfcheck_claude(directory: Path) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    fake = directory / "claude"
+    fake.write_text(SLOW_SELFCHECK_CLAUDE); fake.chmod(0o755)
     return fake
 
 
