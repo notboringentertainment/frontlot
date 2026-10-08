@@ -178,6 +178,17 @@ class RequestStore:
                     done.append(cur["id"])
         return done
 
+    def cancel_if_unclaimed(self, rid: str, *, reason: str) -> bool:
+        """Cancel one approved request that certainly never started (no claim file). A claimed request is
+        never cancelled here: reconcile settles it. Returns whether it was cancelled."""
+        with self._locked(rid):
+            rec = self.get(rid)
+            if rec is None or rec["state"] != "approved" or (self.dir / f"{rid}.claim").exists():
+                return False
+            rec["state"] = "cancelled"; rec["note"] = reason
+            self._write(rec)
+            return True
+
     def _claim(self, rid: str) -> dict:
         """Caller holds the request lock."""
         rec = self.get(rid)

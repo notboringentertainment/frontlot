@@ -449,6 +449,29 @@ def test_a_go_whose_launch_breaks_keeps_the_connection(world):
     hello(sock, token, "e1")
     rid = run(sock, token, "k1")["requestId"]
     decide(s, rid, True)
-    assert "couldn't start" in event_of(s, "notice")["event"]["plain"]
+    cancelled = next_of(s, cf.EVENT, lambda d: d["event"].get("kind") == "spend-decided"   # it certainly never
+                        and d["event"].get("state") == "cancelled")["event"]                  # started: no claim
+    assert cancelled["requestId"] == rid and cancelled["reason"] == "launch-failed"
+    assert event_of(s, "notice")["event"]["plain"] == "Front Lot couldn't start that run. Nothing was spent."
+    assert post_live(sock, token, "/run-check", {"key": "k1"})["status"] == "cancelled"   # Claude isn't left waiting
     s.sendall(cf.encode_json(cf.ACTION, {"type": "submit", "text": "still here"}))   # the connection still works
     assert post_live(sock, token, "/inbox", {"epoch": "e1"})["submit"] == "still here"
+
+
+def test_a_started_run_is_never_reported_as_not_started(world):
+    start(world, env=dict(world["env"], FRONTLOT_TEST_RUN_STARTED_JOURNAL_FAILS="1"))
+    s = connect(world); status(s)
+    sock, token = live_endpoint(world["film"])
+    hello(sock, token, "e1")
+    rid = run(sock, token, "k1")["requestId"]
+    decide(s, rid, True)
+    seen = []
+    while True:
+        n = event_of(s, "notice")
+        seen.append(n["event"]["plain"])
+        if "started" in n["event"]["plain"]:
+            break
+    assert not any("couldn't start" in p for p in seen), seen
+    assert seen[-1] == "That run started, but this window couldn't be updated."
+    rec = json.loads((world["gates"] / "claude" / "film" / "requests" / f"{rid}.json").read_text())
+    assert rec.get("pid") and rec["state"] in ("running", "done")   # the stub run may already have finished

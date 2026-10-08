@@ -41,6 +41,16 @@ if os.environ.get("FRONTLOT_TEST_LAUNCH_OSERROR"):   # a launch that breaks with
     def _broken_launch(self, rid, **kw):
         raise OSError("no space left on device")
     _req.RequestStore.launch = _broken_launch
+
+if os.environ.get("FRONTLOT_TEST_RUN_STARTED_JOURNAL_FAILS"):   # the run starts, then its journal write breaks
+    from backlot import claude_journal as _jr
+    _append = _jr.Journal.append
+
+    def _append_unless_started(self, event):
+        if event.get("kind") == "run-started":
+            raise OSError("journal disk full")
+        return _append(self, event)
+    _jr.Journal.append = _append_unless_started
 """
 
 # A `claude` that passes the version and sign-in checks, then hangs in the sandbox self-check (`-p`), recording

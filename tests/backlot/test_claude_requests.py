@@ -234,3 +234,24 @@ def test_input_changed_refusal_settles_failed_even_with_unresolved_ids(store, tm
     (store.dir / f"{r2['id']}.outcome.json").write_text(json.dumps({"exit": EXIT_INPUT_CHANGED}))
     store.reconcile()
     assert store.get(r2["id"])["state"] == "failed"
+
+
+def test_cancel_if_unclaimed_cancels_only_an_approved_request_without_a_claim(store, tmp_path):
+    r = approved(store, tmp_path, key="k1")
+    assert store.cancel_if_unclaimed(r["id"], reason="launch-failed") is True
+    rec = store.get(r["id"])
+    assert rec["state"] == "cancelled" and rec["note"] == "launch-failed"
+    w = store.create(paid(tmp_path), key="k2", session="s", epoch="e")          # waiting-for-ben: not ours to cancel
+    assert store.cancel_if_unclaimed(w["id"], reason="launch-failed") is False
+    assert store.get(w["id"])["state"] == "waiting-for-ben"
+    assert store.cancel_if_unclaimed("r-0000000000", reason="launch-failed") is False
+
+
+def test_cancel_if_unclaimed_never_cancels_a_claimed_request(store, tmp_path):
+    r = approved(store, tmp_path, key="k1")
+    (store.dir / f"{r['id']}.claim").touch()                                     # claimed, state write lost
+    assert store.cancel_if_unclaimed(r["id"], reason="launch-failed") is False
+    assert store.get(r["id"])["state"] == "approved"
+    s = launched(store, tmp_path, key="k2")
+    assert store.cancel_if_unclaimed(s["id"], reason="launch-failed") is False
+    assert store.get(s["id"])["state"] == "running"

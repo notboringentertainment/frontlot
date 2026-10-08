@@ -36,7 +36,9 @@ STOPPED_THROUGH = re.compile(r"^stopped-through:(\d+)$")
 READ_ONLY = "This window is read-only. Use Take control to act here."
 STALE = "That request came from a part of the conversation that was stopped or restarted, so it was not run."
 TOO_LONG = "Part of the conversation is too long to show here; it is in the terminal view."
-LAUNCH_BROKE = "Front Lot couldn't start this run. Ask Claude to set it up again."
+LAUNCH_BROKE = "Front Lot couldn't start that run. Nothing was spent."
+LAUNCH_UNSURE = "Front Lot isn't sure that run started. It will not be retried; Claude will be told what happened."
+STARTED_UNSHOWN = "That run started, but this window couldn't be updated."
 DECIDE_BROKE = "Front Lot couldn't record that answer. Try again."
 NO_STOP_CONFIRM = "Claude hasn't confirmed it stopped — start a new conversation to be sure."
 REPLY_STATUS = {"waiting-for-ben": "waiting-for-ben", "approved": "running", "launching": "running",
@@ -548,14 +550,36 @@ class Broker:
             self.store.mark_notified(rid, "cancelled")
 
     def launch_and_journal(self, rec: dict) -> None:
+        rid = rec["id"]
         try:
-            self.store.launch(rec["id"], repo=REPO, env=run_env())
-            self.journal_event({"kind": "run-started", **card(self.store.get(rec["id"]))})
+            self.store.launch(rid, repo=REPO, env=run_env())
         except Rejected as e:
             self.journal_event({"kind": "notice", "plain": e.plain})
+            return
         except Exception as exc:                        # never let a failed launch drop Ben's connection
-            _log(f"launch of {rec['id']} failed: {exc!r}")
-            self.journal_event({"kind": "notice", "plain": LAUNCH_BROKE})
+            _log(f"launch of {rid} failed: {exc!r}")
+            try:
+                if self.store.cancel_if_unclaimed(rid, reason="launch-failed"):   # certainly never started
+                    self.journal_event({"kind": "spend-decided", "requestId": rid, "state": "cancelled",
+                                        "reason": "launch-failed"})
+                    self.store.mark_notified(rid, "cancelled")
+                    self.journal_event({"kind": "notice", "plain": LAUNCH_BROKE})
+                else:                                   # claimed: reconcile settles it (uncertain), Claude is told
+                    self.journal_event({"kind": "notice", "plain": LAUNCH_UNSURE})
+            except Exception as exc2:
+                _log(f"settling the failed launch of {rid} failed: {exc2!r}")
+                self._notice_all(LAUNCH_UNSURE)
+            return
+        try:                                            # it started: never say otherwise from here on
+            self.journal_event({"kind": "run-started", **card(self.store.get(rid))})
+        except Exception as exc:
+            _log(f"run-started for {rid} could not be journaled: {exc!r}")
+            self._notice_all(STARTED_UNSHOWN)
+
+    def _notice_all(self, plain: str) -> None:
+        for w in list(self.clients):
+            with contextlib.suppress(Exception):
+                self.notice(w, plain)
 
     def enqueue(self, action: dict, front: bool = False) -> None:
         """The only way anything enters the outbox; always wakes a waiting poll."""
