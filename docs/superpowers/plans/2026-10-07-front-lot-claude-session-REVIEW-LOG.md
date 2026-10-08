@@ -167,3 +167,20 @@ All 4 accepted after verification; none rejected. Plan bumped to rev 5 ("Changes
 2. Accepted. Confirmed that rev 4's Stop branch used `outbox.appendleft` without setting the event. A single `enqueue()` helper now always sets `outbox_ready`, and every path uses it: Stop, requeue after an ended epoch, the `epoch ended` ack, and `tell_claude`. The test starts a poll first, then sends Stop, and expects the Stop action within 3 s.
 3. Accepted. Verified the shortcut at `register.ts:186`: `if (handled.has(action.id)) return sendAck(... { status: 'submitted' })` loses the reason. Final acks are now cached in `finalAcks` (cleared with `handled`) and replayed on redelivery. The mod test delivers the same Stop twice and expects one abort and two identical `aborted:t7` acks. The broker test loses the first ack and gets a redelivery after `FRONTLOT_REDELIVER_SECONDS`; the replayed ack then blocks t1 and allows t2.
 4. Accepted. The `cancelled` branch now calls `mark_notified` and `continue`s. `notice_actions` and `queued_notices` are recorded only by the two branches that call `tell_claude`.
+
+## Round 4 — Codex
+The four round-3 fixes are present, but two Stop interactions remain material:
+
+1. **Task 8 — Retired Stops can abort a new epoch’s turn.** `/hello` clears `stop_pending` but leaves Stop actions in `outbox` and `unacked`. A queued or redelivered `stop {turnId:"*"}` is then stamped with the new epoch and aborts its current turn. Because its pending entry was cleared, the acknowledgment does not register that aborted turn in `stopped_turns`.
+   **Fix:** Bind Stops to their originating epoch and discard retired Stops from queued, unacked, and requeue paths while preserving outcome messages.
+
+2. **Tasks 7/8 — A turn completing before Stop delivery bypasses cancellation.** Stop blocks `/run`, but if the issuing turn completes before the add-on processes the action, `mainTurnId` is null and the add-on replies `rejected: "turn already ended"`. The broker removes the block without retiring that turn. A delayed `/run` from it is consequently accepted after Stop’s cancellation sweep.
+   **Fix:** Have the Stop acknowledgment identify and retire pre-Stop turns even when abort is unnecessary, and test completion between Stop issuance and delivery followed by a delayed request.
+
+VERDICT: REVISE
+### Claude's response (round 4)
+
+Both accepted after verification; none rejected. Plan bumped to rev 6 ("Changes in rev 6"). The Task 7 add-on changes, applied verbatim to a renamed copy of the Story-drive mod, pass `claude plugin test` (36 tests, including the new "turn ended before the Stop arrived" case) and `validate --strict`. Running that case showed that a `turn.complete` call needs its full input (`answer`, `durationMs`, `isAborted`, `reason`) plus an engine stub; the plan's test now supplies both.
+
+1. Accepted. Confirmed: rev 5's `/hello` cleared `stop_pending` but left Stop actions in `outbox`/`unacked`, and delivery stamps them with the current epoch. Stops now carry `origin_epoch`. `/hello` drops them from both places; delivery and the requeue paths drop any Stop whose epoch has ended, while messages to Claude are requeued as before. Test: a delivered-but-unacked Stop and a queued Stop survive neither a reload nor redelivery, and the new epoch's `/run` and messages go through.
+2. Accepted, using the controller's rule. Confirmed: with `mainTurnId === null`, the add-on rejected with "turn already ended" (`register.ts:189`), and the broker lifted the block without retiring anything. The broker cannot see turn starts in time (`turn.start` only queues its report, `register.ts:276-281`), so the order comes from the add-on. `turnSeq` is incremented synchronously in `turn.start`, and every `/run` carries its turn's number. The `*` Stop ack always reports `stopped-through:<turnSeq>`, aborted or not, and the broker sets `stop_floor` from it whatever the status. It then refuses `/run` with `turnSeq ≤ stop_floor`; any turn that began before the Stop has a number at or below the floor. Tests (mod and broker): the turn completes between the Stop being issued and being delivered, and its delayed `/run` is refused.
