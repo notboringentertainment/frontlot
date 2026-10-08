@@ -184,3 +184,8 @@ Both accepted after verification; none rejected. Plan bumped to rev 6 ("Changes 
 
 1. Accepted. Confirmed: rev 5's `/hello` cleared `stop_pending` but left Stop actions in `outbox`/`unacked`, and delivery stamps them with the current epoch. Stops now carry `origin_epoch`. `/hello` drops them from both places; delivery and the requeue paths drop any Stop whose epoch has ended, while messages to Claude are requeued as before. Test: a delivered-but-unacked Stop and a queued Stop survive neither a reload nor redelivery, and the new epoch's `/run` and messages go through.
 2. Accepted, using the controller's rule. Confirmed: with `mainTurnId === null`, the add-on rejected with "turn already ended" (`register.ts:189`), and the broker lifted the block without retiring anything. The broker cannot see turn starts in time (`turn.start` only queues its report, `register.ts:276-281`), so the order comes from the add-on. `turnSeq` is incremented synchronously in `turn.start`, and every `/run` carries its turn's number. The `*` Stop ack always reports `stopped-through:<turnSeq>`, aborted or not, and the broker sets `stop_floor` from it whatever the status. It then refuses `/run` with `turnSeq ≤ stop_floor`; any turn that began before the Stop has a number at or below the floor. Tests (mod and broker): the turn completes between the Stop being issued and being delivered, and its delayed `/run` is refused.
+
+## Round 5 — Codex
+Rev 6 resolves both round-4 findings. I found no remaining material blockers against the approved spec and repository code. The plan is sound enough to implement.
+
+VERDICT: APPROVED
