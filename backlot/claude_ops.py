@@ -18,9 +18,9 @@ from lib.run_common import ENTITY_ID_RE
 from scripts.headshot_run import GENERATION_PRICE_USD as HEADSHOT_PRICE_USD, MAX_CANDIDATES
 from scripts.sheet_run import GENERATION_PRICE_USD as SHEET_PRICE_USD
 from tools.qa.sheet_judge import DEFAULT_RESERVE_USD
+from lib.run_common import ABSENT
 
 PY = ".venv/bin/python"
-ABSENT = "absent"  # same value as lib.run_common.ABSENT (Task 4); kept here so this task stands alone
 SHEET_ROLES = ("turnaround", "expressions", "wardrobe")      # lib.sheet_qc.policy.SHEET_ROLES
 SHOT_TOOLS = ("seedream_image", "seedance_video", "kling_reference_video")  # supervised_production.SUPPORTED_TOOLS
 ORIGIN_TOOL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")

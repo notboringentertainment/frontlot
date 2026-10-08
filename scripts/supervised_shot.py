@@ -33,6 +33,7 @@ def main():
         if command in ('request', 'generate'):
             p.add_argument('settings', type=Path, help='JSON with prompt, output_path and provider settings')
         if command == 'generate':
+            p.add_argument('--expect-brief-revision')
             p.add_argument('--tool', required=True, choices=sorted(production.SUPPORTED_TOOLS))
     args = parser.parse_args()
     root = args.project.resolve()
@@ -53,7 +54,9 @@ def main():
         result = production.propose_change(root, args.shot_id, args.note)
     else:
         settings = json.loads(args.settings.read_text())
-        inputs = production.request(root, args.shot_id, **settings)
+        if 'expect_revision' in settings or 'brief_revision_id' in settings:
+            parser.error('settings may not set the brief revision')
+        inputs = production.request(root, args.shot_id, expect_revision=getattr(args, 'expect_brief_revision', None), **settings)
         if args.command == 'request':
             result = inputs
         else:

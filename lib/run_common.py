@@ -9,6 +9,7 @@ whether a run may start.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shlex
@@ -175,3 +176,53 @@ def write_decision(
     }
     _merge_decision_log(root.parent, root.name, {"decisions": [decision]})
     return decision
+
+
+# --- frozen inputs (Front Lot spend cards, spec §4.2) ---
+ABSENT = "absent"
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_VALUE_LABELS = {"look": "look", "config": "signed project settings", "headshot": "approved headshot"}
+
+
+class InputChanged(RunError):
+    """A frozen input changed between Ben's Go and its use; nothing was spent."""
+
+
+def parse_expectations(values: Optional[list[str]]) -> dict[Path, str]:
+    out: dict[Path, str] = {}
+    for v in values or []:
+        path, sep, digest = str(v).rpartition("=")
+        if not sep or not path or not (digest == ABSENT or _SHA256_RE.match(digest)):
+            raise ValueError(f"bad --expect-input-sha value: {v!r}")
+        out[Path(path).resolve()] = digest
+    return out
+
+
+class Expectations:
+    """What one paid run was approved against. Each frozen file is verified once,
+    on the bytes actually loaded; the caller uses exactly those bytes."""
+
+    def __init__(self, files: Optional[dict[Path, str]] = None, values: Optional[dict[str, str]] = None):
+        self.files = {Path(k).resolve(): v for k, v in (files or {}).items()}
+        self.values = {k: v for k, v in (values or {}).items() if v}
+        self._verified: set[Path] = set()
+
+    def read(self, path: Path | str) -> Optional[bytes]:
+        p = Path(path)
+        key = p.resolve()
+        try:
+            data: Optional[bytes] = p.read_bytes()
+        except FileNotFoundError:
+            data = None
+        want = self.files.get(key)
+        if want is not None and key not in self._verified:
+            got = ABSENT if data is None else hashlib.sha256(data).hexdigest()
+            if got != want:
+                raise InputChanged(f"{p.name} changed after it was approved; nothing was spent")
+            self._verified.add(key)
+        return data
+
+    def check(self, kind: str, actual: str) -> None:
+        want = self.values.get(kind)
+        if want is not None and actual != want:
+            raise InputChanged(f"the {_VALUE_LABELS.get(kind, kind)} changed after it was approved; nothing was spent")

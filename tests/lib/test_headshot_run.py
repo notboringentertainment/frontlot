@@ -499,3 +499,41 @@ class TestInspectionRound2:
         assert gen.n == 0 and r2["status"] == "pending"
         entry = _cp(w)["artifacts"]["headshot_packet"]["characters"][0]
         assert entry["candidates"][0]["asset_id"] == st["asset_id"] and entry["candidates"][0]["qc_receipt_id"] == st["qc_receipt_id"]
+
+
+class TestFrozenInputs:
+    """Front Lot freezes what a paid run reads; a change after Go spends nothing."""
+
+    def test_changed_checkpoint_refuses_before_any_generation(self, world):
+        from lib.run_common import Expectations, InputChanged
+        cp = world["project"] / "checkpoint_headshots.json"
+        gen = FakeGen()
+        with pytest.raises(InputChanged, match="changed after it was approved"):
+            _run(world, candidates=1, generate=gen, expectations=Expectations({cp.resolve(): "0" * 64}))
+        assert gen.n == 0
+
+    def test_changed_look_or_config_refuses_before_any_generation(self, world):
+        from lib.run_common import Expectations, InputChanged
+        for values in ({"look": "0" * 64}, {"config": "0" * 64}):
+            gen = FakeGen()
+            with pytest.raises(InputChanged, match="changed after it was approved"):
+                _run(world, candidates=1, generate=gen, expectations=Expectations(values=values))
+            assert gen.n == 0
+
+    def test_matching_expectations_run_as_before(self, world):
+        from lib.look_ingest import active_look_for
+        from lib.project_config import load_verified_project_config
+        from lib.run_common import ABSENT, Expectations
+        cp = world["project"] / "checkpoint_headshots.json"
+        digest = hashlib.sha256(cp.read_bytes()).hexdigest() if cp.is_file() else ABSENT
+        values = {"look": active_look_for(world["project"], "character", CHAR).look_hash,
+                  "config": load_verified_project_config(world["project"]).digest}
+        gen = FakeGen()
+        _run(world, candidates=1, generate=gen, expectations=Expectations({cp.resolve(): digest}, values))
+        assert gen.n >= 1
+
+    def test_cli_has_the_flags(self):
+        import subprocess, sys
+        out = subprocess.run([sys.executable, "scripts/headshot_run.py", "--help"], capture_output=True, text=True)
+        for flag in ("--expect-input-sha", "--expect-look-hash", "--expect-config-sha"):
+            assert flag in out.stdout

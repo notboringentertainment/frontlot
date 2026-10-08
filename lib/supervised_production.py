@@ -121,18 +121,22 @@ def stop(root, shot_id, *, user_note):
     return _append(root, shot_id, {'kind': 'stop', 'user_note': _note(user_note)})
 
 
-def request(root, shot_id, *, prompt, output_path, **settings):
+def request(root, shot_id, *, prompt, output_path, expect_revision=None, **settings):
     """Build inputs with the exact saved references. No provider call occurs."""
     brief = read_brief(root, shot_id)
     if brief is None or brief['stopped']:
         raise ValueError('Shot is missing or stopped')
+    if expect_revision is not None and brief['revision_id'] != expect_revision:
+        from lib.run_common import InputChanged
+        raise InputChanged('the shot brief changed after it was approved; nothing was spent')
     output = Path(output_path)
     if not output.is_absolute():
         output = Path(root) / output
     output.resolve().relative_to(Path(root).resolve())
     if output.exists():
         raise ValueError('Choose a new output_path; preserve the existing take')
-    return {**settings, 'project_dir': str(Path(root).resolve()), 'shot_id': shot_id,
+    return {**settings, **({'brief_revision_id': expect_revision} if expect_revision is not None else {}),
+            'project_dir': str(Path(root).resolve()), 'shot_id': shot_id,
             'asset_class': 'supervised_shot', 'prompt': prompt, 'output_path': str(output),
             'look_refs': brief['look_refs'], 'reference_manifest': brief['reference_manifest'],
             'reference_image_paths': [str(Path(root) / ref['path']) for ref in brief['reference_manifest']]}

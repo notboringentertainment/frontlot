@@ -32,6 +32,9 @@ class ShotGuard:
         brief = read_brief(project_root, self.shot_id)
         if brief is None or brief["stopped"]:
             raise ShotAllowanceError("Supervised shot is missing or stopped")
+        expected = self.inputs.get("brief_revision_id")
+        if expected is not None and expected != brief["revision_id"]:
+            raise ShotAllowanceError("the shot brief changed after it was approved; nothing was spent")
         if self.inputs.get('output_path'):
             output = Path(self.inputs['output_path'])
             output = output if output.is_absolute() else Path(project_root) / output

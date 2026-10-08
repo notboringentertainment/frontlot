@@ -156,3 +156,23 @@ def test_invalid_allowance_cannot_authorize_spending(shot, limit):
     root, spec = shot
     with pytest.raises(ValueError):
         prepare(root, {**spec, 'spend_allowance_usd': limit}, user_note='Invalid limit.')
+
+
+def test_a_changed_brief_is_refused_early_and_at_the_paid_boundary(shot):
+    from lib.run_common import InputChanged
+    from lib.shot_allowance import ShotAllowanceError
+    from lib.supervised_production import prepare, read_brief, request
+    root, spec = shot
+    rev = read_brief(root, spec['shot_id'])['revision_id']
+    inputs = request(root, spec['shot_id'], prompt='p', output_path='renders/t-new.mp4', expect_revision=rev)
+    assert inputs['brief_revision_id'] == rev
+    with pytest.raises(InputChanged, match='changed after it was approved'):
+        request(root, spec['shot_id'], prompt='p', output_path='renders/t-new.mp4', expect_revision='another-revision')
+    from tools.cost_tracker import load_reservations
+    prepare(root, dict(spec, direction='Hold four seconds.'), user_note='Ben revised the shot.')  # revised after Go
+    before = len(load_reservations(root))
+    with pytest.raises(ShotAllowanceError, match='changed after it was approved'):
+        reserve_paid_call(make_tracker(root), root, tool='kling_reference_video', endpoint='test/video',
+                          normalized_inputs_hash='b' * 64, reserved_usd=1.0, kind='video',
+                          inputs=dict(call(spec), brief_revision_id=rev))   # the paid boundary, under reservation_lock
+    assert len(load_reservations(root)) == before                          # nothing reserved, nothing submitted

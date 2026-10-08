@@ -320,3 +320,27 @@ def test_generator_without_hook_records_no_attempt(world):
     with pytest.raises(sheet_run.SheetRunError, match="did not run the pre-submit hook"):
         sheet_run.run_sheet(w["project"], CHAR, palette=PALETTE, generate=rogue, judge_adapter=FakeAdapter(_all("turnaround")))
     assert qr.rows_of_kind(w["project"], "attempt_started") == []
+
+
+def _frozen_sheet(world, exp, gen):
+    judge = SeqJudge({"turnaround": [_all("turnaround")], "expressions": [_all("expressions")]})
+    return sheet_run.run_sheet(world["project"], CHAR, palette=PALETTE, generate=gen, judge_adapter=judge,
+                               out=io.StringIO(), expectations=exp)
+
+
+def test_changed_visual_bible_refuses_before_any_generation(world):
+    from lib.run_common import Expectations, InputChanged
+    cp = world["project"] / "checkpoint_visual_bible.json"
+    gen = FakeGen()
+    with pytest.raises(InputChanged, match="changed after it was approved"):
+        _frozen_sheet(world, Expectations({cp.resolve(): "0" * 64}), gen)
+    assert gen.n == 0
+
+
+@pytest.mark.parametrize("kind", ["look", "config", "headshot"])
+def test_changed_authority_refuses_sheet_before_any_generation(world, kind):
+    from lib.run_common import Expectations, InputChanged
+    gen = FakeGen()
+    with pytest.raises(InputChanged):
+        _frozen_sheet(world, Expectations(values={kind: "0" * 64}), gen)
+    assert gen.n == 0
