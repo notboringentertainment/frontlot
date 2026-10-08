@@ -166,14 +166,6 @@ function sendAck($: any, ack: InboxAck): Promise<void> {
 
 // $.prompt.submit resolves only once Claude is idle (I1), so a submit never blocks the inbox loop (I2):
 // it is handed over, acked `queued` at once, and its final ack is sent when it settles (after the queued one).
-async function registerRun($: any): Promise<void> {
-  await $.tool.register({
-    name: 'frontlot_run',
-    description: RUN_DESCRIPTION,
-    inputSchema: { type: 'object', properties: { op: { type: 'string' }, params: { type: 'object' }, check: { type: 'string' } } },
-  })
-}
-
 async function startSubmit($: any, id: string, text: string): Promise<void> {
   let pending: Promise<any>
   try { pending = Promise.resolve($.prompt.submit({ text, asUser: true })) }
@@ -184,6 +176,19 @@ async function startSubmit($: any, id: string, text: string): Promise<void> {
     .then((r: any): InboxAck => (r?.drop ? { id, status: 'rejected', reason: r.drop } : { id, status: 'submitted' }), (err: unknown): InboxAck => ({ id, status: 'rejected', reason: String(err) }))
     .then(async (ack) => { await queued; await sendAck($, ack); inProgress.delete(id) })
   await queued
+}
+
+const RUN_STATUSES = new Set<string>(['running', 'waiting-for-ben', 'refused', 'not-received', 'unknown-outcome', 'done', 'failed', 'declined', 'cancelled', 'expired', 'uncertain'])
+function isRunReply(r: unknown): r is RunReply {
+  return !!r && typeof r === 'object' && RUN_STATUSES.has((r as any).status)
+}
+
+async function registerRun($: any): Promise<void> {
+  await $.tool.register({
+    name: 'frontlot_run',
+    description: RUN_DESCRIPTION,
+    inputSchema: { type: 'object', properties: { op: { type: 'string' }, params: { type: 'object' }, check: { type: 'string' } } },
+  })
 }
 
 async function act($: any, action: InboxAction): Promise<void> {
@@ -311,16 +316,18 @@ export const register: Register = (on) => {
     const id = String((e as any).tool_use_id ?? '')
     if (e.tool === RUN_TOOL) {
       const { route, key, body } = runCall(e as any, current?.id ?? '', mainTurnId ?? '', mainTurnSeq)
-      let reply: RunReply
+      if (!key) return { result: "Front Lot couldn't send this request because it had no id. Nothing was started. Tell Ben plainly." }
+      let text: string
       try {
-        reply = await Promise.race([
-          call($, route, body) as Promise<RunReply>,
-          $.clock.sleep(5000).then((): RunReply => ({ status: 'uncertain', plain: 'no answer in 5 s' })),
+        const reply = await Promise.race([
+          call($, route, body) as Promise<unknown>,
+          $.clock.sleep(5000, { signal: next.signal }).then((): RunReply => ({ status: 'uncertain', plain: 'no answer in 5 s' })),
         ])
+        text = runResultText(isRunReply(reply) ? reply : { status: 'uncertain', plain: 'Front Lot sent an unreadable answer' }, key)
       } catch {
-        reply = { status: 'uncertain', plain: 'Front Lot did not answer' }
+        text = runResultText({ status: 'uncertain', plain: 'Front Lot did not answer' }, key)
       }
-      return { result: runResultText(reply, key) }
+      return { result: text }
     }
     if (!queue) return next(e)
     running.add(id)

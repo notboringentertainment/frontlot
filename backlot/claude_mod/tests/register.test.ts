@@ -9,7 +9,7 @@ type Probe = { messages: number; registers?: number }
 // `probe` counts `$.session.messages()` and `$.tool.register` calls; `fetchDenied` makes every request fail;
 // `helloGate` holds every /hello answer, `inboxGate` the first /inbox answer, until the test settles them.
 // (A test may register each event once, so variations go through these options.)
-function wire(on: any, opts: { env?: boolean; inbox?: any[]; sessionId?: () => string; probe?: Probe; fetchDenied?: boolean; helloGate?: Promise<void>; inboxGate?: Promise<void>; registerThrows?: boolean } = {}) {
+function wire(on: any, opts: { env?: boolean; inbox?: any[]; sessionId?: () => string; probe?: Probe; fetchDenied?: boolean; helloGate?: Promise<void>; inboxGate?: Promise<void>; registerThrows?: boolean; runReply?: unknown; runGate?: Promise<void>; runThrows?: boolean } = {}) {
   const reqs: Req[] = []
   const inbox = [...(opts.inbox ?? [])]
   on('env.get', ($: any, e: any) => ({ value: opts.env === false ? undefined : e.name === 'FRONTLOT_LIVE_SOCKET' ? SOCK : 'tok' }))
@@ -24,6 +24,11 @@ function wire(on: any, opts: { env?: boolean; inbox?: any[]; sessionId?: () => s
     if (route === '/inbox') {
       if (inboxGate) { const g = inboxGate; inboxGate = undefined; await g }
       return ok(inbox.shift() ?? {})
+    }
+    if (route === '/run' || route === '/run-check') {
+      if (opts.runGate) await opts.runGate
+      if (opts.runThrows) return { deny: 'socket gone' }
+      return ok('runReply' in opts ? opts.runReply : { requestId: 'r-1', status: 'running', plain: 'Look' })
     }
     if (route === '/hello' && opts.helloGate) await opts.helloGate
     return ok({})
@@ -333,7 +338,7 @@ test('frontlot_run posts /run keyed by the tool-use id and never reaches the eng
   expect(body).toMatchObject({ key: 'tu-7', op: 'look', params: { entity: 'hero-a' }, turnId: '', turnSeq: 0 })
   expect(body.epoch).toBe(hellos(reqs)[0].epoch)   // bound to the epoch the add-on announced
   expect(reachedEngine).toBe(false)
-  expect(typeof r.result).toBe('string')
+  expect(r.result).toBe("Front Lot is running it. You'll get a message when it finishes. Look")
 })
 
 test('a failed tool registration never keeps the epoch closed: hello and inbox still happen', async ($, on) => {
@@ -383,4 +388,92 @@ test('a redelivered Stop replays its first final ack', async ($, on) => {
   expect(aborted).toEqual(['t7'])                              // aborted once
   expect(reqs.filter((r) => r.route === '/inbox-ack').map((r) => r.body))
     .toEqual([{ id: 's1', status: 'submitted', reason: 'stopped-through:1' }, { id: 's1', status: 'submitted', reason: 'stopped-through:1' }])
+})
+
+const RUN = 'mcp__frontlot-live__frontlot_run'
+
+test('empty and null broker replies read as uncertain with the check instruction', async ($, on) => {
+  const clock = mock.clock(on)
+  wire(on, { runReply: {} })
+  await launch($)
+  await settle(clock)
+  const r1: any = await $.tool.call({ tool: RUN, tool_use_id: 'tu-a', op: 'look' } as any)
+  expect(r1.result).toMatch(/"check": "tu-a"/)
+  expect(r1.result).toMatch(/do not resubmit/i)
+})
+
+test('a null broker reply is uncertain and never falls through to the engine', async ($, on) => {
+  const clock = mock.clock(on)
+  let reachedEngine = false
+  on('tool.call', () => { reachedEngine = true; return { result: 'engine' } })
+  wire(on, { runReply: null })
+  await launch($)
+  await settle(clock)
+  const r: any = await $.tool.call({ tool: RUN, tool_use_id: 'tu-b', op: 'look' } as any)
+  expect(r.result).toMatch(/"check": "tu-b"/)
+  expect(reachedEngine).toBe(false)
+})
+
+test('an unknown status reads as uncertain', async ($, on) => {
+  const clock = mock.clock(on)
+  wire(on, { runReply: { status: 'banana', plain: 'x' } })
+  await launch($)
+  await settle(clock)
+  const r: any = await $.tool.call({ tool: RUN, tool_use_id: 'tu-c', op: 'look' } as any)
+  expect(r.result).toMatch(/do not resubmit/i)
+})
+
+test('a /run that hangs past 5 s becomes uncertain and names the key', async ($, on) => {
+  const clock = mock.clock(on)
+  let open!: () => void
+  const runGate = new Promise<void>((res) => { open = res })
+  wire(on, { runGate })
+  await launch($)
+  await settle(clock)
+  const p: any = $.tool.call({ tool: RUN, tool_use_id: 'tu-d', op: 'look' } as any)
+  await clock.advance(5000)
+  const r: any = await p
+  expect(r.result).toMatch(/"check": "tu-d"/)
+  open()
+})
+
+test('a failing broker call becomes uncertain', async ($, on) => {
+  const clock = mock.clock(on)
+  wire(on, { runThrows: true })
+  await launch($)
+  await settle(clock)
+  const r: any = await $.tool.call({ tool: RUN, tool_use_id: 'tu-e', op: 'look' } as any)
+  expect(r.result).toMatch(/"check": "tu-e"/)
+})
+
+test('{check} goes to /run-check with the given key', async ($, on) => {
+  const clock = mock.clock(on)
+  const reqs = wire(on, { runReply: { status: 'done', plain: 'Look' } })
+  await launch($)
+  await settle(clock)
+  const r: any = await $.tool.call({ tool: RUN, tool_use_id: 'tu-10', check: 'tu-9' } as any)
+  expect(reqs.find((q) => q.route === '/run-check')!.body).toEqual({ key: 'tu-9' })
+  expect(reqs.some((q) => q.route === '/run')).toBe(false)
+  expect(r.result).toBe('It finished: Look')
+})
+
+test('a /run inside a started turn carries the real turn id and a non-zero order', async ($, on) => {
+  const clock = mock.clock(on)
+  const reqs = wire(on)
+  await launch($)
+  await $.turn.start({ text: 'go', turnId: 't9' })
+  await settle(clock)
+  await $.tool.call({ tool: RUN, tool_use_id: 'tu-f', op: 'look' } as any)
+  expect(reqs.find((q) => q.route === '/run')!.body).toMatchObject({ turnId: 't9', turnSeq: 1 })
+})
+
+test('a run with no tool-use id is refused locally and never sent', async ($, on) => {
+  const clock = mock.clock(on)
+  const reqs = wire(on)
+  await launch($)
+  await settle(clock)
+  const r: any = await $.tool.call({ tool: RUN, tool_use_id: '', op: 'look' } as any)
+  expect(reqs.filter((q) => q.route === '/run').map((q) => q.body)).toEqual([])
+  expect(reqs.some((q) => q.route === '/run')).toBe(false)
+  expect(r.result).toMatch(/couldn't send/i)
 })
