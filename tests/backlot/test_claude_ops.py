@@ -141,3 +141,48 @@ def test_shot_notes_are_required(world):
         prep(world, "shot_stop", shot_id="s1")
     p = prep(world, "shot_stop", shot_id="s1", note="Ben asked to stop this shot")
     assert p.argv[-2:] == ["--note", "Ben asked to stop this shot"]
+
+
+def test_case_changed_work_area_prefix_is_still_the_work_area(world):
+    repo, film, work, snap = world
+    probe = film / "ProbeCase"; probe.mkdir()
+    if not (film / "probecase").exists():
+        pytest.skip("case-sensitive filesystem")
+    (work / "x.md").write_text("claude wrote this")
+    for spelled in ("FrontLot-Work/x.md", "FRONTLOT-WORK/x.md"):
+        (work / "b.json").write_text(json.dumps({"shot_id": "s1", "source_paths": [spelled]}))
+        with pytest.raises(ops.OpError, match="work area"):
+            prep(world, "shot_prepare", brief="b.json", note="n")
+
+
+def test_a_named_pipe_in_the_work_area_is_refused_not_hung(world):
+    repo, film, work, snap = world
+    os.mkfifo(work / "pipe.json")
+    with pytest.raises(ops.OpError):
+        prep(world, "shot_generate", shot_id="s1", settings="pipe.json", tool="seedream_image")
+
+
+def test_flag_like_ids_are_refused(world):
+    with pytest.raises(ops.OpError):
+        prep(world, "sheet_finish", entity="--finish")
+    with pytest.raises(ops.OpError):
+        prep(world, "shot_select", shot_id="s1", take_id="-h", note="n")
+    assert prep(world, "shot_select", shot_id="s1", take_id="take-1", note="n").argv[-4:-2] == ["s1", "take-1"]
+
+
+def test_brief_lists_must_be_lists_of_strings(world):
+    repo, film, work, snap = world
+    for body in ({"source_paths": "canon/note.md"}, {"source_paths": {"a": 1}}, {"source_paths": [1]},
+                 {"reference_manifest": "abc"}, {"reference_manifest": ["a.png"]}):
+        (work / "b.json").write_text(json.dumps(body))
+        with pytest.raises(ops.OpError):
+            prep(world, "shot_prepare", brief="b.json", note="n")
+
+
+def test_unreadable_brief_revision_is_a_plain_error(world, monkeypatch):
+    import lib.supervised_production as sp
+    (world[2] / "s.json").write_text("{}")
+    monkeypatch.undo()  # use the real _brief_revision
+    monkeypatch.setattr(sp, "read_brief", lambda film, shot: (_ for _ in ()).throw(OSError("disk")))
+    with pytest.raises(ops.OpError):
+        ops._brief_revision(world[1], "s1")

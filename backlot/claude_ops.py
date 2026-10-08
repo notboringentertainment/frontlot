@@ -9,7 +9,7 @@ frozen (spec §4.2). Nothing here imports the tool registry on the request path.
 """
 from __future__ import annotations
 
-import hashlib, json, math, os, re, stat
+import errno, hashlib, json, math, os, re, stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -85,12 +85,12 @@ def _read_beneath(root: Path, rel: str) -> bytes:
         for name in p.parts[:-1]:
             nxt = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             os.close(fd); fd = nxt
-        ffd = os.open(p.parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+        ffd = os.open(p.parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)  # NONBLOCK: a named pipe must not hang the open
     except OSError:
         raise OpError(f"no plain file named {rel} in the work area") from None
     finally:
         os.close(fd)
-    with os.fdopen(ffd, "rb") as fh:
+    with os.fdopen(ffd, "rb") as fh:  # fstat before any read: only a plain file is ever read
         if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
             raise OpError(f"{rel} is not a plain file")
         return fh.read()
@@ -138,9 +138,13 @@ def _hero_budget(film: Path, entity: str, look_hash: str) -> tuple[int, int]:
         cap = int(_config(film).require_hero_qc().max_hero_attempts)
     except ProjectConfigError as exc:
         raise OpError(str(exc)) from None
-    started = qr.hero_attempts_started(film, entity, look_hash)
-    closed = {r.get("attempt_id") for r in qr.rows_of_kind(film, "verdict_attached")}
-    closed |= {r.get("attempt_id") for r in qr.rows_of_kind(film, "attempt_voided")}
+    from lib.receipts import ReceiptError
+    try:
+        started = qr.hero_attempts_started(film, entity, look_hash)
+        closed = {r.get("attempt_id") for r in qr.rows_of_kind(film, "verdict_attached")}
+        closed |= {r.get("attempt_id") for r in qr.rows_of_kind(film, "attempt_voided")}
+    except (qr.QCReceiptError, ReceiptError) as exc:
+        raise OpError(f"the record of headshot attempts can't be read, so the cost can't be worked out: {exc}") from None
     return max(cap - len(started), 0), sum(1 for r in started if r.get("attempt_id") not in closed)
 
 
@@ -178,17 +182,20 @@ def _brief_revision(film: Path, shot: str) -> str:
     from lib.supervised_production import read_brief
     try:
         brief = read_brief(film, shot)
-    except ValueError as exc:
+    except (ValueError, OSError, KeyError, TypeError) as exc:
         raise OpError(f"shot {shot} can't be read: {exc}") from None
     if brief is None or brief.get("stopped"):
         raise OpError(f"shot {shot} has no active brief")
-    return brief["revision_id"]
+    rev = brief.get("revision_id") if isinstance(brief, dict) else None
+    if not isinstance(rev, str) or not rev:
+        raise OpError(f"shot {shot} has no readable brief revision")
+    return rev
 
 
 # -- parameter checks ---------------------------------------------------------------------------
 def _entity(params: dict) -> str:
     e = params.get("entity")
-    if not isinstance(e, str) or not ENTITY_ID_RE.fullmatch(e):
+    if not isinstance(e, str) or e.startswith("-") or not ENTITY_ID_RE.fullmatch(e):
         raise OpError("entity must be a lowercase id like hero-a")
     return e
 
@@ -224,6 +231,12 @@ def _film_file(ctx: Ctx, raw) -> None:
         cur = cur / part
         if cur.is_symlink():
             raise OpError(f"the brief may not cite files through links: {raw}")
+        try:
+            # identity, not spelling: on a case-insensitive disk FrontLot-Work is the work area too
+            if ctx.work.exists() and cur.exists() and os.path.samefile(cur, ctx.work):
+                raise OpError("the brief may not cite the work area; cite the film's own files")
+        except OSError:
+            pass
     if not cur.is_file():
         raise OpError(f"no such film file: {raw}")
 
@@ -351,10 +364,15 @@ def _shot(sub: str, paid: bool = False):
                 raise OpError("the brief must be JSON") from None
             if not isinstance(brief, dict):
                 raise OpError("the brief must be a JSON object")
-            for raw in brief.get("source_paths") or []:
+            sources, refs = brief.get("source_paths") or [], brief.get("reference_manifest") or []
+            if not isinstance(sources, list) or not all(isinstance(x, str) for x in sources):
+                raise OpError("source_paths must be a list of film file paths")
+            if not isinstance(refs, list) or not all(isinstance(x, dict) for x in refs):
+                raise OpError("reference_manifest must be a list of entries that each name a path")
+            for raw in sources:
                 _film_file(ctx, raw)
-            for ref in brief.get("reference_manifest") or []:
-                _film_file(ctx, (ref or {}).get("path") if isinstance(ref, dict) else None)
+            for ref in refs:
+                _film_file(ctx, ref.get("path"))
             argv += [str(s), "--note", _note(p)]; inputs, snap = {s: digest}, {"brief": s}
             summary = "Prepare a shot from Claude's brief"
         else:
@@ -371,8 +389,8 @@ def _shot(sub: str, paid: bool = False):
                 summary = f"Generate shot {shot}"   # estimate stays None: "cost unknown", Go still required
             if sub == "select":
                 take = p.get("take_id")
-                if not isinstance(take, str) or not take:
-                    raise OpError("take_id is required")
+                if not isinstance(take, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", take):
+                    raise OpError("take_id must contain only letters, numbers, underscores and hyphens")
                 argv.append(take)
             if sub in ("stop", "select", "propose"):
                 argv += ["--note", _note(p)]
