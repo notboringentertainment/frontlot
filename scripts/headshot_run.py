@@ -34,7 +34,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from lib.run_common import (  # noqa: E402
-    Expectations, RunError, gate_command, hold_lease, parse_expectations, read_request, request_id_for, require_entity_id, resolve_project_root, write_decision,
+    EXIT_INPUT_CHANGED, Expectations, InputChanged, RunError, gate_command, hold_lease, parse_expectations, read_request, request_id_for, require_entity_id, resolve_project_root, write_decision,
 )
 
 STAGE = "headshots"
@@ -102,7 +102,7 @@ def default_generate(root: Path, ctx: dict[str, Any]) -> tuple[str, str]:
 
 def _checkpoint(root: Path) -> dict[str, Any]:
     path = root / f"checkpoint_{STAGE}.json"
-    if path.is_symlink() or (path.exists() and not path.is_file()):
+    if (path.is_symlink() or (path.exists() and not path.is_file())) and not (_EXPECT is not None and _EXPECT.frozen(path)):
         return {}
     try:
         raw = _EXPECT.read(path) if _EXPECT is not None else (path.read_bytes() if path.is_file() else None)
@@ -183,6 +183,8 @@ def _write(root: Path, packet: dict[str, Any], *, status: str, run_state: dict[s
         meta["approved_entries"] = approved_entries
     path = write_checkpoint(root.parent, root.name, STAGE, status, {"headshot_packet": packet},
                             pipeline_type="authored-film", human_approval_required=(status == "awaiting_human"), metadata=meta)
+    if _EXPECT is not None:
+        _EXPECT.thaw(path)  # from here the checkpoint holds this run's own bytes
     return checkpoint_digest(path)
 
 
@@ -268,6 +270,8 @@ def run_headshot(
         if expectations is not None:
             expectations.check("config", config.digest)  # the project.yaml bytes this run verified and uses
         _checkpoint(root)  # frozen checkpoint verified now, under the lease, before anything paid
+        if expectations is not None:
+            expectations.require_all_verified()  # a frozen path this run never reads must not pass silently
         resume_check(root)
         try:
             look = active_look_for(root, "character", entity_id)
@@ -1383,6 +1387,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         return EXIT_BLOCKED
     except Declined:
         return EXIT_DECLINED
+    except InputChanged as exc:
+        print(f"headshot_run: {exc}", file=sys.stderr)
+        return EXIT_INPUT_CHANGED
     except RunError as exc:
         print(f"headshot_run: {exc}", file=sys.stderr)
         return 1

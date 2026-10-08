@@ -8,12 +8,18 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 import math
 
+from lib.run_common import InputChanged
+
 VIDEO_KIND = "video"
 RELEASED_STATE = "failed"
 
 
 class ShotAllowanceError(RuntimeError):
     pass
+
+
+class BriefChanged(ShotAllowanceError, InputChanged):
+    """The brief was revised after Ben's Go; also an InputChanged so callers can tell a refusal from a crash."""
 
 
 @dataclass(frozen=True)
@@ -34,7 +40,7 @@ class ShotGuard:
             raise ShotAllowanceError("Supervised shot is missing or stopped")
         expected = self.inputs.get("brief_revision_id")
         if expected is not None and expected != brief["revision_id"]:
-            raise ShotAllowanceError("the shot brief changed after it was approved; nothing was spent")
+            raise BriefChanged("the shot brief changed after it was approved; nothing was spent")
         if self.inputs.get('output_path'):
             output = Path(self.inputs['output_path'])
             output = output if output.is_absolute() else Path(project_root) / output

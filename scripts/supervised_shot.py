@@ -3,12 +3,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from lib import supervised_production as production
+from lib.run_common import EXIT_INPUT_CHANGED, InputChanged
+from lib.shot_allowance import ShotAllowanceError
 
 
 def main():
+    try:
+        return _main()
+    except InputChanged as exc:
+        print(f'supervised_shot: {exc}', file=sys.stderr)
+        return EXIT_INPUT_CHANGED
+    except ShotAllowanceError as exc:
+        print(f'supervised_shot: {exc}', file=sys.stderr)
+        return 1
+
+
+def _main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('project', type=Path)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -81,7 +95,8 @@ def main():
                     reservation_id=outcome.data['reservation_id'], prompt=inputs['prompt'],
                     references=outcome.metadata.get('references_applied'))
     print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())
