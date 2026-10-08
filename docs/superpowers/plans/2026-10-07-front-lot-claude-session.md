@@ -1,4 +1,4 @@
-# Front Lot Claude Session Implementation Plan (rev 3)
+# Front Lot Claude Session Implementation Plan (rev 4)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10 (FastAPI/Starlette, asyncio, `pty`, `fcntl`), Claude Code CLI ≥ 2.1.288 (installed 2.1.294) with a mod plugin (TypeScript, Claude Code mods API, `claude plugin test` / `claude-code/testing`), vanilla JS + xterm 5.5 in the browser, pytest, `node --test`.
 
-**Spec:** `docs/superpowers/specs/2026-10-07-front-lot-claude-session-design.md` (rev 4, Codex-approved; review log beside it). Pre-flight scan: `.superpowers/sdd/2026-10-07-front-lot-claude-session/preflight.md` (P1–P43, resolved in rev 2). Plan review: `docs/superpowers/plans/2026-10-07-front-lot-claude-session-REVIEW-LOG.md` (Codex round 1, 22 findings, resolved in rev 3).
+**Spec:** `docs/superpowers/specs/2026-10-07-front-lot-claude-session-design.md` (rev 4, Codex-approved; review log beside it). Pre-flight scan: `.superpowers/sdd/2026-10-07-front-lot-claude-session/preflight.md` (P1–P43, resolved in rev 2). Plan review: `docs/superpowers/plans/2026-10-07-front-lot-claude-session-REVIEW-LOG.md` (Codex round 1, 22 findings, resolved in rev 3; round 2, 8 findings, resolved in rev 4).
 
 ## Global Constraints
 
@@ -38,6 +38,19 @@
 3. Front Lot restarted while a paid job is running: the job continues, and the card shows its real outcome afterwards (not "waiting" and not "done" by guess) — owned by Tasks 6, 8 and 11.
 4. Claude writes or edits a file the paid run depends on between card and Go: the run refuses before spending — owned by Tasks 3 and 4.
 5. Claude Code missing, signed out, too old, or its sandbox unconfirmed: the column says so with the one fix instead of a blank panel — owned by Tasks 8, 9 and 11.
+
+## Changes in rev 4
+
+Codex round 2 (8 findings, all accepted after verification; details in the review log under "Claude's response (round 2)").
+
+- **#1** Outcome messages count as delivered only when the add-on acks them `submitted` (or rejects them for a reason other than an ended epoch, shown to Ben); `mark_notified` moves from the watcher to `/inbox-ack`, so a broker killed before the ack re-sends after restart; test (Task 8).
+- **#2** The inbox is an ordered outbox stamped at delivery; a poll whose epoch ended while it waited puts the action back and answers `{}`, and an `epoch ended` rejection requeues instead of deleting; test (Task 8).
+- **#3** Stop is turn-agnostic: the broker sends `stop {turnId: "*"}`, refuses every `/run` until the add-on's ack names the aborted turn (`reason: "aborted:<turn>"`), then refuses that turn for good; the add-on's `act()` gains the `*` case; tests on both sides, with Stop before any turn report (Tasks 7, 8).
+- **#4** Headshot estimates add one judge reserve per started attempt not yet judged or voided (`verdict_attached`/`attempt_voided` rows) (Task 3).
+- **#5** Sheet estimates always price every mandatory role in addition to the requested ones (Task 3).
+- **#6** `shot_generate` shows "cost unknown" (its real inputs are built inside the script) and still needs Go; the tool-registry warm-up is removed; every upper bound rounds up to the cent (Task 3).
+- **#7** The wrapper fails closed: if the paid-call ledger cannot be read before or after a paid run, `unresolved` is `["paid-call ledger unreadable"]` and a failed exit becomes `uncertain`; test (Task 6).
+- **#8** The stub operations pass `{}` for `inputs` (Task 8 fakes).
 
 ## Changes in rev 3
 
@@ -848,7 +861,6 @@ git commit -m "test(front-lot): sandbox, native-tool, setting-source, mod tool, 
   - `@dataclass(frozen=True) class Operation: paid: bool; allowed: frozenset[str]; build: Callable[[Ctx, dict], Prepared]`
   - `prepare(op: str, params: dict, *, repo: Path, film_slug: str, film_root: Path, snapshot_dir: Path) -> Prepared`
   - `input_digest(path: Path) -> str` (sha256 hex, or `"absent"`; used by the store to re-check at Go); `sha256_bytes(data) -> str`
-  - `warm_estimates() -> None` (called once by the broker in a background thread; fills the tool cache used by `shot_generate` estimates)
   - `OPERATIONS: dict[str, Operation]` with names below.
 
 Operations (free unless marked paid):
@@ -861,7 +873,7 @@ Frozen inputs (spec §4.2; Task 4 adds the checks to the scripts):
 - `shot_generate`: the settings file is snapshotted (the script reads the snapshot), and the brief revision (`--expect-brief-revision`), checked at the paid boundary (Task 4).
 - Files Claude names in the work area are read once without following any symlink (each path component opened with `O_NOFOLLOW` under the work-area directory); the snapshot holds exactly those bytes and `inputs` records their digest.
 
-Cost shown on the card ("up to"): headshot = remaining hero attempts (`max_hero_attempts` − attempts started for this entity and look) × (`GENERATION_PRICE_USD` + `DEFAULT_RESERVE_USD`), plus one judge reserve for `headshot_finish`; sheet = Σ over roles of `max_attempts_per_series` × (role price + `DEFAULT_RESERVE_USD`); shot = the tool's own `estimate_cost` for its single call (cold cache → "cost unknown").
+Cost shown on the card ("up to", always rounded **up** to the cent): headshot = remaining hero attempts (`max_hero_attempts` − attempts started for this entity and look) × (`GENERATION_PRICE_USD` + `DEFAULT_RESERVE_USD`) + one judge reserve for every started attempt not yet judged or voided (the script resumes and judges those, `headshot_run.py:533-541`), plus one more judge reserve for `headshot_finish`; sheet = Σ over the requested roles **and every mandatory role** (a subset run regenerates any mandatory role the writer rejected, `sheet_run.py:287-297`) of `max_attempts_per_series` × (role price + `DEFAULT_RESERVE_USD`); shot = "cost unknown" (the paid call's real inputs — the saved brief's references — are built inside the script, so no exact upper bound is available before Go; the card still needs Go).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -888,7 +900,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(ops, "_brief_revision", lambda film_root, shot: "rev-1")
     monkeypatch.setattr(ops, "_config_digest", lambda film_root: "c" * 64)
     monkeypatch.setattr(ops, "_active_headshot", lambda film_root, entity: "hs-1")
-    monkeypatch.setattr(ops, "_hero_remaining", lambda film_root, entity, look: 3)
+    monkeypatch.setattr(ops, "_hero_budget", lambda film_root, entity, look: (3, 1))  # 3 attempts left, 1 unjudged
     monkeypatch.setattr(ops, "_sheet_cap", lambda film_root: 2)
     return repo, film, work, tmp_path / "snap"
 
@@ -925,7 +937,7 @@ def test_headshot_candidates_freezes_checkpoint_look_and_config_and_shows_the_fu
     assert f"--expect-input-sha={cp}={sha(b'{}')}" in p.argv
     assert p.argv[p.argv.index("--expect-look-hash") + 1] == LOOK
     assert p.argv[p.argv.index("--expect-config-sha") + 1] == "c" * 64
-    assert p.estimate_usd == round(3 * (0.07 + 0.05), 2)   # 3 attempts left in the signed budget
+    assert p.estimate_usd == 0.41   # 3 attempts left × (0.07 + 0.05) + 1 unjudged attempt × 0.05
     with pytest.raises(ops.OpError):
         prep(world, "headshot_candidates", entity="hero-a", candidates=5)  # script cap is 4
 
@@ -933,7 +945,7 @@ def test_headshot_candidates_freezes_checkpoint_look_and_config_and_shows_the_fu
 def test_headshot_finish_is_paid_and_priced_like_a_regeneration(world):
     p = prep(world, "headshot_finish", entity="hero-a")
     assert p.paid is True and "--finish" in p.argv and "--expect-config-sha" in p.argv
-    assert p.estimate_usd == round(3 * (0.07 + 0.05) + 0.05, 2)
+    assert p.estimate_usd == 0.46
 
 
 def test_headshot_import_only_stages_and_needs_origin_tool(world):
@@ -956,7 +968,9 @@ def test_sheet_freezes_bible_look_config_and_headshot(world):
     assert p.paid is True and film / "checkpoint_visual_bible.json" in p.inputs
     assert p.argv[p.argv.index("--expect-headshot") + 1] == "hs-1"
     assert p.argv[p.argv.index("--roles") + 1] == "turnaround,expressions,wardrobe"
-    assert p.estimate_usd == round(2 * (0.14 + 0.05) + 2 * (0.07 + 0.05) + 2 * (0.07 + 0.05), 2)
+    assert p.estimate_usd == 0.86
+    only = prep(world, "sheet", entity="hero-a", roles=["wardrobe"])   # mandatory roles may regenerate: priced too
+    assert only.estimate_usd == 0.86
 
 
 def test_snapshot_digest_is_of_the_bytes_snapshotted(world):
@@ -969,6 +983,7 @@ def test_snapshot_digest_is_of_the_bytes_snapshotted(world):
     assert str(snap_path) in p.argv and str(work / "s.json") not in p.argv
     assert p.argv[p.argv.index("generate") - 1] == str(film)  # positional project path
     assert p.argv[p.argv.index("--expect-brief-revision") + 1] == "rev-1"
+    assert p.estimate_usd is None   # "cost unknown": the real inputs are built inside the script
 
 
 def test_work_files_never_follow_symlinks_or_leave_the_work_area(world):
@@ -1027,7 +1042,7 @@ frozen (spec §4.2). Nothing here imports the tool registry on the request path.
 """
 from __future__ import annotations
 
-import hashlib, json, os, re, stat
+import hashlib, json, math, os, re, stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -1042,7 +1057,12 @@ ABSENT = "absent"  # same value as lib.run_common.ABSENT (Task 4); kept here so 
 SHEET_ROLES = ("turnaround", "expressions", "wardrobe")      # lib.sheet_qc.policy.SHEET_ROLES
 SHOT_TOOLS = ("seedream_image", "seedance_video", "kling_reference_video")  # supervised_production.SUPPORTED_TOOLS
 ORIGIN_TOOL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$")
-_TOOL_CACHE: dict[str, object] = {}
+MANDATORY_SHEET_ROLES = ("turnaround", "expressions")     # lib.sheet_qc.verify.MANDATORY_ROLES
+
+
+def _up(usd: float) -> float:
+    """Round an upper bound up to the cent (never down)."""
+    return math.ceil(round(usd * 100, 6)) / 100
 
 
 class OpError(ValueError):
@@ -1143,14 +1163,18 @@ def _config_digest(film: Path) -> str:
     return _config(film).digest   # sha256 of the project.yaml bytes the verification used
 
 
-def _hero_remaining(film: Path, entity: str, look_hash: str) -> int:
+def _hero_budget(film: Path, entity: str, look_hash: str) -> tuple[int, int]:
+    """(attempts left under the signed cap, started attempts not yet judged or voided)."""
     from lib import qc_receipts as qr
     from lib.project_config import ProjectConfigError
     try:
         cap = int(_config(film).require_hero_qc().max_hero_attempts)
     except ProjectConfigError as exc:
         raise OpError(str(exc)) from None
-    return max(cap - len(qr.hero_attempts_started(film, entity, look_hash)), 0)
+    started = qr.hero_attempts_started(film, entity, look_hash)
+    closed = {r.get("attempt_id") for r in qr.rows_of_kind(film, "verdict_attached")}
+    closed |= {r.get("attempt_id") for r in qr.rows_of_kind(film, "attempt_voided")}
+    return max(cap - len(started), 0), sum(1 for r in started if r.get("attempt_id") not in closed)
 
 
 def _sheet_cap(film: Path) -> int:
@@ -1280,18 +1304,20 @@ def _headshot_candidates(ctx, p):
         if not isinstance(pal, list) or not all(isinstance(h, str) and h.strip() and "," not in h for h in pal):
             raise OpError("palette must be a list of colour words")
         argv += ["--palette", ",".join(pal)]
-    most = _hero_remaining(ctx.film, e, look) * (HEADSHOT_PRICE_USD + DEFAULT_RESERVE_USD)
+    left, unjudged = _hero_budget(ctx.film, e, look)
+    most = left * (HEADSHOT_PRICE_USD + DEFAULT_RESERVE_USD) + unjudged * DEFAULT_RESERVE_USD
     return Prepared(ctx.op, True, argv, inputs, summary=f"Make {n} headshot candidates for {e}",
-                    entity=e, estimate_usd=round(most, 2))
+                    entity=e, estimate_usd=_up(most))
 
 
 def _headshot_finish(ctx, p):
     e = _entity(p)
     flags, inputs, look = _hero_frozen(ctx, e)
     argv = _script("headshot_run") + ["--project", ctx.slug, "--entity", e, "--finish", *flags]
-    most = _hero_remaining(ctx.film, e, look) * (HEADSHOT_PRICE_USD + DEFAULT_RESERVE_USD) + DEFAULT_RESERVE_USD
+    left, unjudged = _hero_budget(ctx.film, e, look)
+    most = left * (HEADSHOT_PRICE_USD + DEFAULT_RESERVE_USD) + (unjudged + 1) * DEFAULT_RESERVE_USD
     return Prepared(ctx.op, True, argv, inputs, summary=f"Finish the headshot round for {e}",
-                    entity=e, estimate_usd=round(most, 2))
+                    entity=e, estimate_usd=_up(most))
 
 
 def _headshot_import(ctx, p):
@@ -1332,9 +1358,10 @@ def _sheet(ctx, p):
     if p.get("resume"):
         argv.append("--resume")
     cap = _sheet_cap(ctx.film)
-    most = sum(cap * (SHEET_PRICE_USD[r] + DEFAULT_RESERVE_USD) for r in (roles or ["turnaround", "expressions"]))
+    priced = set(roles or []) | set(MANDATORY_SHEET_ROLES)   # a subset run can regenerate rejected mandatory roles
+    most = sum(cap * (SHEET_PRICE_USD[r] + DEFAULT_RESERVE_USD) for r in priced)
     return Prepared(ctx.op, True, argv, {cp: digest}, summary=f"Make the character sheet for {e}", entity=e,
-                    estimate_usd=round(most, 2))
+                    estimate_usd=_up(most))
 
 
 def _simple(script: str, flag: str, summary: str):
@@ -1374,8 +1401,7 @@ def _shot(sub: str, paid: bool = False):
                 if tool not in SHOT_TOOLS:
                     raise OpError("tool must be seedream_image, seedance_video, or kling_reference_video")
                 argv += ["--tool", tool, "--expect-brief-revision", _brief_revision(ctx.film, shot)]
-                summary = f"Generate shot {shot}"
-                estimate = tool_estimate(tool, snap["settings"])
+                summary = f"Generate shot {shot}"   # estimate stays None: "cost unknown", Go still required
             if sub == "select":
                 take = p.get("take_id")
                 if not isinstance(take, str) or not take:
@@ -1385,27 +1411,6 @@ def _shot(sub: str, paid: bool = False):
                 argv += ["--note", _note(p)]
         return Prepared(ctx.op, paid, argv, inputs, snap, summary=summary, estimate_usd=estimate)
     return build
-
-
-def warm_estimates() -> None:
-    """Import the shot tools once (slow: imports every tool). Broker start only, in a thread."""
-    try:
-        from tools.tool_registry import registry
-        registry.discover()
-        for name in SHOT_TOOLS:
-            _TOOL_CACHE[name] = registry.get(name)
-    except Exception:
-        pass  # estimates then say "cost unknown"
-
-
-def tool_estimate(tool_name: str, settings_file: Path) -> float | None:
-    tool = _TOOL_CACHE.get(tool_name)
-    if tool is None:
-        return None  # cold cache: never discover on the request path
-    try:
-        return round(float(tool.estimate_cost(json.loads(Path(settings_file).read_text()))), 2)
-    except Exception:
-        return None  # the card then says "cost unknown"; never invent a number
 
 
 OPERATIONS: dict[str, Operation] = {
@@ -2312,7 +2317,7 @@ git commit -m "feat(front-lot): run request store with exactly-once claim, durab
 - Consumes: `RequestStore._locked`, `_claim`, `_write`, `reconcile`, `outcome`; `lib.run_lease.process_start_time`; `tools.cost_tracker.load_reservations`, `NONTERMINAL_STATES`
 - Produces:
   - `RequestStore.launch(rid: str, *, repo: Path, env: dict[str, str], _between: Callable[[str], None] | None = None) -> int` (pid). In **one** request-lock section: require `approved`, O_EXCL claim (durable), write `launching`, spawn `scripts/frontlot_run.py --store <base> --request <rid> --repo <repo>` detached (`start_new_session=True`, stdio DEVNULL), record pid, `process_start_time(pid)` and `running`. `_between(stage)` is a test seam called inside the lock at `"claimed"` and `"spawned"`. A spawn failure records `failed` (it certainly did not run) and raises `Rejected`.
-  - Wrapper CLI: `scripts/frontlot_run.py --store <base> --request <rid> --repo <repo>`; outcome file `<rid>.outcome.json`: `{"exit": int, "finished": float, "tail": str, "unresolved": [reservation ids]}` — `unresolved` lists paid-call reservations (in the request's `film_root`) that appeared during the run and are still in a non-terminal state (`submitting`/`pending_billing`), so a failed exit with a live provider submission becomes `uncertain`, not `failed`. Full output in `<rid>.log`.
+  - Wrapper CLI: `scripts/frontlot_run.py --store <base> --request <rid> --repo <repo>`; outcome file `<rid>.outcome.json`: `{"exit": int, "finished": float, "tail": str, "unresolved": [reservation ids]}` — `unresolved` lists paid-call reservations (in the request's `film_root`) that appeared during the run and are still in a non-terminal state (`submitting`/`pending_billing`), so a failed exit with a live provider submission becomes `uncertain`, not `failed`. If the ledger cannot be read before or after the run (`load_reservations` raises on malformed JSONL), `unresolved` is `["paid-call ledger unreadable"]`: unknown financial status fails closed to `uncertain`. Full output in `<rid>.log`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2377,6 +2382,16 @@ def test_a_failed_run_that_left_a_provider_submission_open_is_uncertain(tmp_path
     assert store.outcome(r["id"])["unresolved"] == ["res-1"]
 
 
+def test_an_unreadable_paid_call_ledger_makes_a_failed_run_uncertain(tmp_path):
+    film = tmp_path / "film"; film.mkdir()
+    (film / "cost-reservations.jsonl").write_text("{not json\n")
+    store = RequestStore(tmp_path / "meta", "film")
+    r = approved_paid(store, tmp_path, code="raise SystemExit(1)", film_root=film)
+    store.launch(r["id"], repo=REPO, env=dict(os.environ))
+    wait_state(store, r["id"], "uncertain")
+    assert store.outcome(r["id"])["unresolved"] == ["paid-call ledger unreadable"]
+
+
 @pytest.mark.parametrize("reason", ["stop", "end", "addon-reload"])
 def test_cancel_before_launch_wins(tmp_path, reason):
     store = RequestStore(tmp_path / "meta", "film")
@@ -2429,15 +2444,16 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 
-def _open_reservations(film_root: str | None) -> dict[str, str]:
+UNREADABLE = "paid-call ledger unreadable"
+
+
+def _open_reservations(film_root: str | None) -> set[str]:
+    """Paid-call reservations still in flight. Raises when the ledger cannot be read: the caller must then
+    treat the run's financial status as unknown (fail closed), never as 'nothing outstanding'."""
     if not film_root:
-        return {}
-    try:
-        from tools.cost_tracker import NONTERMINAL_STATES, load_reservations
-        return {rid: r.get("state") for rid, r in load_reservations(Path(film_root)).items()
-                if r.get("state") in NONTERMINAL_STATES}
-    except Exception:
-        return {}
+        raise RuntimeError("no film folder recorded for a paid request")
+    from tools.cost_tracker import NONTERMINAL_STATES, load_reservations
+    return {rid for rid, r in load_reservations(Path(film_root)).items() if r.get("state") in NONTERMINAL_STATES}
 
 
 def main(argv=None) -> int:
@@ -2450,11 +2466,24 @@ def main(argv=None) -> int:
     rec = json.loads((req_dir / f"{a.request}.json").read_text())
     if rec["state"] not in ("launching", "running"):
         return 2
-    before = set(_open_reservations(rec.get("film_root"))) if rec.get("paid") else set()
+    unresolved: list[str] = []
+    before: set[str] | None = set()
+    if rec.get("paid"):
+        try:
+            before = _open_reservations(rec.get("film_root"))
+        except Exception:
+            before = None
     log = req_dir / f"{a.request}.log"
     with open(log, "wb") as fh:
         code = subprocess.run(rec["argv"], cwd=a.repo, stdout=fh, stderr=subprocess.STDOUT).returncode
-    unresolved = sorted(set(_open_reservations(rec.get("film_root"))) - before) if rec.get("paid") else []
+    if rec.get("paid"):
+        try:
+            after = _open_reservations(rec.get("film_root"))
+            unresolved = sorted(after) if before is None else sorted(after - before)
+            if before is None:
+                unresolved = unresolved or [UNREADABLE]
+        except Exception:
+            unresolved = [UNREADABLE]   # status cannot be established: a failed exit becomes uncertain
     tail = log.read_bytes()[-4096:].decode("utf-8", "replace")
     out = req_dir / f"{a.request}.outcome.json"
     tmp = out.with_suffix(".tmp")
@@ -2499,7 +2528,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run tests**
 
 Run: `.venv/bin/python -m pytest tests/backlot/test_frontlot_run.py tests/backlot/test_claude_requests.py -v`
-Expected: 32 passed (12 + 20).
+Expected: 33 passed (13 + 20).
 
 - [ ] **Step 6: Probe P4 (append results to the PROBES file)**
 
@@ -2678,10 +2707,39 @@ async function registerRun($: any): Promise<void> {
 
 (The 5 s race keeps the handler inside the 10-second hook budget; `$.clock.sleep` is the budget-exempt wait. A late broker answer is not lost: the request is durable, and Claude's `{check}` call finds it.)
 
+6. Turn-agnostic Stop (the broker cannot know the current turn reliably: `turn.start` only queues its report). In `act()`, replace the stop branch's first line `if (action.stop.turnId !== mainTurnId) return sendAck(...)` and the abort with:
+
+```ts
+  const target = action.stop.turnId === '*' ? mainTurnId : action.stop.turnId
+  if (!target || target !== mainTurnId) return sendAck($, { id: action.id, status: 'rejected', reason: 'turn already ended' })
+  let ack: InboxAck
+  try {
+    await $.turn.abort({ turnId: target })
+    ack = action.stop.turnId === '*' ? { id: action.id, status: 'submitted', reason: `aborted:${target}` } : { id: action.id, status: 'submitted' }
+  } catch { ack = { id: action.id, status: 'rejected', reason: 'turn already ended' } }
+  await sendAck($, ack)
+```
+
+and append to `tests/register.test.ts`:
+
+```ts
+test("a Stop for the current turn aborts it and names it in the ack", async ($, on) => {
+  const clock = mock.clock(on)
+  const aborted: string[] = []
+  on('turn.abort', ($: any, e: any) => { aborted.push(e.turnId); return { value: undefined } })
+  const reqs = wire(on, { inbox: [{ id: 's1', epoch: 'E', stop: { turnId: '*' } }] })
+  await launch($)
+  await $.turn.start({ text: 'go', turnId: 't7' })
+  await settle(clock)
+  expect(aborted).toEqual(['t7'])
+  expect(reqs.filter((r) => r.route === '/inbox-ack').map((r) => r.body)).toEqual([{ id: 's1', status: 'submitted', reason: 'aborted:t7' }])
+})
+```
+
 - [ ] **Step 5: Run tests and validate**
 
 Run: `claude plugin test backlot/claude_mod && claude plugin validate --strict backlot/claude_mod`
-Expected: every suite passes (copied ones plus the five new tests); validate clean.
+Expected: every suite passes (copied ones plus the six new tests); validate clean.
 
 - [ ] **Step 6: Commit**
 
@@ -2698,7 +2756,7 @@ git commit -m "feat(front-lot): frontlot_run tool in the vendored live add-on"
 - Test: `tests/backlot/test_claude_frames.py`, `tests/backlot/test_claude_journal.py`, `tests/backlot/test_claude_session.py`
 
 **Interfaces (the single definition of the broker and page protocols):**
-- Consumes: Task 1 (`claude_settings.*`), Task 3 (`claude_ops.prepare`, `OpError`, `warm_estimates`), Tasks 5/6 (`RequestStore`, `Rejected`), `backlot.tty.metadata_root`, `gate_sign._login_environment`, `gate_sign._safe_replay_tail`, `lib.paths.PROJECTS_DIR`, `lib.run_lease.process_start_time`. It does **not** use `backlot.tty`'s framing (its JSON limit is 4 KB and it rejects types 7/8; the signing socket keeps those limits).
+- Consumes: Task 1 (`claude_settings.*`), Task 3 (`claude_ops.prepare`, `OpError`), Tasks 5/6 (`RequestStore`, `Rejected`), `backlot.tty.metadata_root`, `gate_sign._login_environment`, `gate_sign._safe_replay_tail`, `lib.paths.PROJECTS_DIR`, `lib.run_lease.process_start_time`. It does **not** use `backlot.tty`'s framing (its JSON limit is 4 KB and it rejects types 7/8; the signing socket keeps those limits).
 - `backlot/claude_frames.py`: header `!BI` (type, length) like `tty.py`; types `HELLO=1, IN=2, OUT=3, RESIZE=4, STATUS=5, BYE=6, EVENT=7, ACTION=8`; limits IN 4096, OUT 65536, JSON types 256 KiB; `encode(type, bytes)`, `encode_json(type, dict)`, `decode_json(type, bytes)`, `async read_frame(reader)`, `FrameError(ValueError)`.
 - `backlot/claude_journal.py`: `Journal(path, keep=2000)`; `append(event) -> int` (seq); `since(seq, snapshot: Callable[[], dict]) -> tuple[list[dict], dict | None]` — events after `seq`, or `([], {**snapshot(), "kind": "snapshot", "cursor": last_seq})` when `seq` is older than retained or newer than the journal.
 - Broker CLI: `scripts/claude_session.py --broker --project <slug> [--resume]`; exits 0 after a normal shutdown, 3 when unavailable (after writing the unavailable file).
@@ -2717,7 +2775,8 @@ git commit -m "feat(front-lot): frontlot_run tool in the vendored live add-on"
   - `session-state {state, reason?}`;
   - `notice {plain}` (client-only, `seq: null`);
   - `snapshot {state, hello, rows, cards, cursor}` (sent instead of events on a gap): `hello` = last add-on hello or null, `rows` = the last 50 add-on events of kind `row` (with `epoch`), `cards` = every request of this conversation as `{requestId, summary, entity, estimate_usd, paid, state}` (record states, `approved`/`launching` shown as `running`).
-- Live endpoint `<slug>.live.sock` (0600; header `x-frontlot-token`): Story-drive routes `/hello`, `/report`, `/ping`, `/inbox`, `/inbox-ack`, plus `/run {key, op, params, epoch, turnId}` and `/run-check {key}` → `{requestId?, status, plain}`. `/run` is refused (nothing stored) when `epoch` is not the current add-on epoch or `turnId` is a turn Ben stopped ("That request came from a part of the conversation that was stopped or restarted, so it was not run."). Record states mapped: `waiting-for-ben`→`waiting-for-ben`; `approved`/`launching`/`running`→`running`; `uncertain`→`unknown-outcome`; terminal states unchanged; unknown key on `/run-check` → `not-received`; refused → `refused`.
+- Live endpoint `<slug>.live.sock` (0600; header `x-frontlot-token`): Story-drive routes `/hello`, `/report`, `/ping`, `/inbox`, `/inbox-ack`, plus `/run {key, op, params, epoch, turnId}` and `/run-check {key}` → `{requestId?, status, plain}`. `/run` is refused (nothing stored) when `epoch` is not the current add-on epoch, when a Stop is still waiting for the add-on's answer, or when `turnId` is a turn the add-on reported as aborted by a Stop ("That request came from a part of the conversation that was stopped or restarted, so it was not run."). Stop is turn-agnostic: the broker sends the inbox action `stop {turnId: "*"}`, the add-on aborts its current main turn and acks `{status: "submitted", reason: "aborted:<turnId>"}` (or `rejected` when no turn runs); until that ack (or 15 s), every `/run` is refused. So a `/run` racing a Stop is refused whether or not the turn-start report has arrived.
+- Inbox (Claude's messages from Front Lot and Stops): an ordered `outbox` (deque + `asyncio.Event`), stamped with the epoch only at delivery. A long-poll from an epoch that ended while it waited puts the action back at the front and answers `{}`; an `/inbox-ack` `rejected` with reason `epoch ended` puts it back too. Outcome messages to Claude count as delivered only when acked `submitted` (or rejected for another reason, which is shown to Ben as a notice); only then is the request marked `notified`, so a broker restart re-sends anything not yet acked (at least once). Record states mapped: `waiting-for-ben`→`waiting-for-ben`; `approved`/`launching`/`running`→`running`; `uncertain`→`unknown-outcome`; terminal states unchanged; unknown key on `/run-check` → `not-received`; refused → `refused`.
 - Controller lease: one controlling **page** per film. A connection is authorized exactly when its `page` equals `lease["page"]`, so a page's live and tty connections are authorized together and a transfer revokes both at once. HELLO with `controller: true` takes the lease when no page holds it, when the same page holds it, or when the holding page has had no connection at all for `LEASE_SECONDS` (30; `FRONTLOT_LEASE_SECONDS` overrides in tests); expiry starts only when that page's last connection closes. `take-control` always transfers it (every connection of the previous page gets `STATUS controller:false`, one of them a notice). Every mutating `ACTION` (`submit`, `stop`, `spend-decision`, `end`, `new`) and every `IN`/`RESIZE` from an unauthorized connection is refused; actions get the notice "This window is read-only. Use Take control to act here."
 - Request binding: requests are created with `session = session_id`, `epoch = current add-on epoch`; decisions are checked against the same pair.
 
@@ -2937,7 +2996,7 @@ from backlot import claude_ops as _ops
 
 def _build(paid):
     def build(ctx, p):
-        return _ops.Prepared(ctx.op, paid, [sys.executable, "-c", "print('made 1')"], [],
+        return _ops.Prepared(ctx.op, paid, [sys.executable, "-c", "print('made 1')"], {},
                              summary="Make one test picture for hero-a", entity="hero-a",
                              estimate_usd=0.12 if paid else None)
     return build
@@ -3154,22 +3213,64 @@ def test_a_second_hello_cancels_unstarted_requests(world):
     assert post_live(sock, token, "/run-check", {"key": "k1"})["status"] == "cancelled"
 
 
+def run(sock, token, key, *, epoch="e1", turn="", op="test_paid"):
+    return post_live(sock, token, "/run", {"key": key, "op": op, "params": {}, "epoch": epoch, "turnId": turn})
+
+
 def test_requests_from_an_old_epoch_or_a_stopped_turn_are_refused(world):
     start(world)
     s = connect(world)
     sock, token = live_endpoint(world["film"])
     hello(sock, token, "e1")
-    old = post_live(sock, token, "/run", {"key": "k0", "op": "test_paid", "params": {}, "epoch": "e0", "turnId": ""})
-    assert old["status"] == "refused"
-    post_live(sock, token, "/report", {"epoch": "e1", "fromSeq": 1, "events": [
-        {"seq": 1, "at": 0, "kind": "turn", "phase": "start", "turnId": "t1"}]})
+    assert run(sock, token, "k0", epoch="e0")["status"] == "refused"
+    # Stop arrives before any turn-start report (the add-on queues reports asynchronously)
     s.sendall(cf.encode_json(cf.ACTION, {"type": "stop"}))
-    time.sleep(0.5)
-    late = post_live(sock, token, "/run", {"key": "k1", "op": "test_paid", "params": {}, "epoch": "e1", "turnId": "t1"})
-    assert late["status"] == "refused"
-    assert post_live(sock, token, "/run-check", {"key": "k1"})["status"] == "not-received"
-    fresh = post_live(sock, token, "/run", {"key": "k2", "op": "test_paid", "params": {}, "epoch": "e1", "turnId": "t2"})
-    assert fresh["status"] == "waiting-for-ben"
+    time.sleep(0.3)
+    assert run(sock, token, "k1", turn="t1")["status"] == "refused"          # Stop not yet answered
+    stop = post_live(sock, token, "/inbox", {"epoch": "e1"})
+    assert stop["stop"] == {"turnId": "*"}
+    post_live(sock, token, "/inbox-ack", {"id": stop["id"], "status": "submitted", "reason": "aborted:t1"})
+    assert run(sock, token, "k2", turn="t1")["status"] == "refused"          # the aborted turn, late
+    assert post_live(sock, token, "/run-check", {"key": "k2"})["status"] == "not-received"
+    assert run(sock, token, "k3", turn="t2")["status"] == "waiting-for-ben"  # a new turn
+
+
+def test_a_poll_from_an_ended_epoch_never_eats_a_message(world):
+    import threading
+    start(world)
+    s = connect(world)
+    sock, token = live_endpoint(world["film"])
+    hello(sock, token, "e1")
+    old = {}
+    th = threading.Thread(target=lambda: old.update(post_live(sock, token, "/inbox", {"epoch": "e1"}, timeout=40)))
+    th.start(); time.sleep(0.5)
+    hello(sock, token, "e2")                                                 # reload while the old poll waits
+    s.sendall(cf.encode_json(cf.ACTION, {"type": "submit", "text": "hello again"}))
+    th.join(40)
+    assert "submit" not in old
+    assert post_live(sock, token, "/inbox", {"epoch": "e2"})["submit"] == "hello again"
+
+
+def test_outcome_messages_are_resent_after_a_crash_until_acked(world):
+    p = start(world)
+    sock, token = live_endpoint(world["film"])
+    hello(sock, token, "e1")
+    run(sock, token, "k1", op="test_free")
+    msg = post_live(sock, token, "/inbox", {"epoch": "e1"})                  # delivered, never acked
+    assert msg["submit"].startswith("[Front Lot]")
+    ident = json.loads((world["dir"] / "film.json").read_text())
+    p.kill(); p.wait(10); os.killpg(ident["claude_pgid"], 9)
+    (world["film"] / "frontlot-work" / "live.json").unlink()
+    start(world)
+    sock, token = live_endpoint(world["film"])
+    hello(sock, token, "e2")
+    again = post_live(sock, token, "/inbox", {"epoch": "e2"})
+    assert again["submit"] == msg["submit"]
+    post_live(sock, token, "/inbox-ack", {"id": again["id"], "status": "submitted"})
+    time.sleep(2.5)                                                          # a watcher pass
+    store_dir = world["gates"] / "claude" / "film" / "requests"
+    assert all(json.loads(f.read_text()).get("notified") == "done" for f in store_dir.glob("r-*.json")
+               if not f.name.endswith(".outcome.json"))
 
 
 def test_a_new_broker_cancels_what_a_killed_broker_left_waiting(world):
@@ -3247,7 +3348,7 @@ sys.path.insert(0, str(REPO))
 from backlot import claude_frames as cf                       # noqa: E402
 from backlot import claude_settings as cs                     # noqa: E402
 from backlot.claude_journal import Journal                    # noqa: E402
-from backlot.claude_ops import OpError, prepare, warm_estimates  # noqa: E402
+from backlot.claude_ops import OpError, prepare             # noqa: E402
 from backlot.claude_requests import Rejected, RequestStore    # noqa: E402
 from backlot.tty import metadata_root                         # noqa: E402
 from lib.paths import PROJECTS_DIR                            # noqa: E402
@@ -3387,14 +3488,14 @@ def card(rec: dict) -> dict:
 
 Then, in the same file, `class Broker` with:
 
-1. `__init__(slug, resume)`: `film = PROJECTS_DIR / slug` (must be a directory, else `Unavailable("missing-film")`); title from `project.json` `"title"` if present, else the slug; `work = cs.work_dir(film)`; `store = RequestStore(claude_dir(), slug)`; `journal = Journal(paths["events"])`; session id = `json.loads(paths["session"].read_text())["session_id"]` when `resume` and that file exists, else `str(uuid.uuid4())` and `resume = False` (the identity file is never a resume source); `token = secrets.token_hex(32)`; `addon_epoch = None`; `last_seq = 0`; `rows = collections.deque(maxlen=50)`; `last_hello = None`; `state = "starting"`; `turn_id = None`; `stopped_turns = set()`; `clients = {}` (writer → `{"page", "kind"}`); `lease = {"page": None, "until": None}`; `inbox = asyncio.Queue()`; `unacked = {}`; timestamps `spawned_at`, `last_heard`, flags `missing_sent`, `silent_sent`.
+1. `__init__(slug, resume)`: `film = PROJECTS_DIR / slug` (must be a directory, else `Unavailable("missing-film")`); title from `project.json` `"title"` if present, else the slug; `work = cs.work_dir(film)`; `store = RequestStore(claude_dir(), slug)`; `journal = Journal(paths["events"])`; session id = `json.loads(paths["session"].read_text())["session_id"]` when `resume` and that file exists, else `str(uuid.uuid4())` and `resume = False` (the identity file is never a resume source); `token = secrets.token_hex(32)`; `addon_epoch = None`; `last_seq = 0`; `rows = collections.deque(maxlen=50)`; `last_hello = None`; `state = "starting"`; `turn_id = None`; `stopped_turns = set()`; `clients = {}` (writer → `{"page", "kind"}`); `lease = {"page": None, "until": None}`; `outbox = collections.deque()` + `outbox_ready = asyncio.Event()`; `unacked = {}` (delivered, not yet finally acked: id → (action, time)); `notice_actions = {}` (action id → (request id, state)); `queued_notices = set()` ((request id, state) pairs already in the outbox this broker life); `stop_pending = {}` (stop action id → deadline); timestamps `spawned_at`, `last_heard`, flags `missing_sent`, `silent_sent`.
 2. `async run()`, in this order (every step after the gated spawn is inside `try: … except BaseException: await shutdown("start-failed"); raise`, so a failure never leaves a Claude, a socket or an identity behind):
    1. Lifetime lock: open `paths["lock"]` and try `fcntl.flock(fd, LOCK_EX | LOCK_NB)` every 0.1 s for up to 3 s (a server may hold it for a moment while it checks); still busy → another broker is alive → exit 0.
    2. `paths["unavailable"].unlink(missing_ok=True)`; remove leftover `sock`/`live` files (no broker owns them: we hold the lock).
    3. Predecessor requests (spec §4.3 "broker exit → every request not yet started becomes cancelled"): `cancel_and_journal("previous-session-ended")` — covers a broker that died without its own shutdown.
    4. `claude, version = resolve_claude()`. Write settings (`cs.build_settings(repo_root=REPO, film_root=film, meta_root=metadata_root(), environ=os.environ)`) and brief (`cs.build_brief(...)`) to `paths`, mode 0600. `env = cs.allowed_env(os.environ, login_path=_login_environment()["PATH"], live_socket=str(paths["live"]), live_token=token)`.
    5. Unless `FRONTLOT_SKIP_PREFLIGHT`: `sandbox_selfcheck(...)`; False → `Unavailable("sandbox", version)`.
-   6. `threading.Thread(target=warm_estimates, daemon=True).start()` (before anything is spawned or published).
+   6. (No tool-registry warm-up: no estimate needs it.)
    7. Start the live endpoint (step 4) **before** Claude so its first `/hello` has somewhere to go.
    8. Gated spawn (step 3), then `write_identity()` (step 10), then open the gate (Claude starts running only now), then write `paths["session"]` (atomic, 0600).
    9. Bind the client socket last (`asyncio.start_unix_server(handle_client, path=paths["sock"])`, chmod 0600) — this is the publication. Start the watcher (step 7) and the PTY reader (step 8). `loop.add_signal_handler(SIGTERM, lambda: asyncio.ensure_future(shutdown("terminated")))`; ignore SIGHUP.
@@ -3405,22 +3506,22 @@ Then, in the same file, `class Broker` with:
    - `/hello`: if `addon_epoch is not None` (a reload, `/clear`, or resume inside Claude): `cancel_and_journal("addon-reload")`. Set `addon_epoch = body["epoch"]`, `last_seq = 0`, `last_hello = body`, `last_heard = now`; journal `{"kind": "addon-hello", "hello": body}`; `set_state("ready")`; reply `{}`.
    - `/report`: if `body["epoch"] != addon_epoch` reply `{"acceptedThrough": 0}`; else for each event with `seq == last_seq + 1`: `last_seq = seq`, journal `{**event, "epoch": addon_epoch}` (fan-out happens in `journal_event`), keep `row` events in `rows`, track `turn` events (`phase == "start"` and no `agentId` → `turn_id = turnId`, `set_state("working")`; `complete` of that turn → `turn_id = None`, `set_state("ready")`); `last_heard = now`; reply `{"acceptedThrough": last_seq}`.
    - `/ping`: `last_heard = now`; reply `{}`.
-   - `/inbox`: if `body.get("epoch") != addon_epoch` reply `{}`; else first redeliver any `unacked` action older than 10 s, otherwise `await asyncio.wait_for(inbox.get(), 25)` (timeout → `{}`); stamp `epoch = addon_epoch` on the action at delivery, remember it in `unacked[id]` with the time; reply the action.
-   - `/inbox-ack`: status `submitted` or `rejected` removes `unacked[id]`; `queued` keeps it; reply `{}`.
-   - `/run`: `key = body.get("key")`; not matching `KEY_RE` → `{"status": "refused", "plain": "missing request key"}`. `existing = store.by_key(key)` → reply `reply_for(existing)` **without preparing again**. Stale origin → `{"status": "refused", "plain": STALE}` when `body.get("epoch") != addon_epoch` or `body.get("turnId") in stopped_turns` (nothing stored, nothing journaled). Else `prep = prepare(body.get("op"), body.get("params") or {}, repo=REPO, film_slug=slug, film_root=film, snapshot_dir=claude_dir() / slug / "snap" / key)`; `OpError as e` → `{"status": "refused", "plain": str(e)}` (nothing stored). `rec = store.create(prep, key=key, session=session_id, epoch=addon_epoch, film_root=film)` (durable before the reply). Free → `launch_and_journal(rec)` then reply `reply_for(store.get(rec["id"]))`; paid → journal `{"kind": "spend-request", **card(rec)}`, reply `reply_for(rec)`. No tool discovery happens here (Task 3), so the reply returns well inside the add-on's 5 s.
+   - `/inbox`: `poll_epoch = body.get("epoch")`; if it is not `addon_epoch` reply `{}`. Else take an `unacked` action older than 10 s (redelivery), otherwise wait up to 25 s for `outbox` (`outbox_ready`), timeout → `{}`. **After the wait** re-check: if `poll_epoch != addon_epoch` (a `/hello` arrived meanwhile), `outbox.appendleft(action)` and reply `{}`. Else stamp `epoch = addon_epoch` on a copy, remember `unacked[id] = (action, now)`, reply it.
+   - `/inbox-ack`: `queued` keeps `unacked[id]`. `rejected` with reason `epoch ended` → drop from `unacked` and `outbox.appendleft(action)` (it belongs to the conversation, not to the dead epoch). Any other final status drops it from `unacked`, then: if `id in notice_actions` → `store.mark_notified(rid, state)` (on a non-`epoch ended` rejection also journal a notice: "Claude couldn't be told that {summary} {word}."); if `id in stop_pending` → remove it, and on `submitted` with reason `aborted:<T>` add `T` to `stopped_turns`. Reply `{}`.
+   - `/run`: `key = body.get("key")`; not matching `KEY_RE` → `{"status": "refused", "plain": "missing request key"}`. `existing = store.by_key(key)` → reply `reply_for(existing)` **without preparing again**. Stale origin → `{"status": "refused", "plain": STALE}` when `body.get("epoch") != addon_epoch`, or any `stop_pending` deadline has not passed, or `body.get("turnId") in stopped_turns` (nothing stored, nothing journaled). Else `prep = prepare(body.get("op"), body.get("params") or {}, repo=REPO, film_slug=slug, film_root=film, snapshot_dir=claude_dir() / slug / "snap" / key)`; `OpError as e` → `{"status": "refused", "plain": str(e)}` (nothing stored). `rec = store.create(prep, key=key, session=session_id, epoch=addon_epoch, film_root=film)` (durable before the reply). Free → `launch_and_journal(rec)` then reply `reply_for(store.get(rec["id"]))`; paid → journal `{"kind": "spend-request", **card(rec)}`, reply `reply_for(rec)`. No tool discovery happens here (Task 3), so the reply returns well inside the add-on's 5 s.
    - `/run-check`: `rec = store.by_key(body.get("key", ""))` → `reply_for(rec)`, else `{"status": "not-received", "plain": "Front Lot has no request with that key."}`.
    - anything else → `404`.
-5. Helpers: `authorized(writer)` → `clients[writer]["page"] == lease["page"]`; `send_status_all()` → each connection its own `STATUS` with `controller = authorized(it)`; `journal_event(ev)` → `seq = journal.append(ev)` and send `EVENT {"seq": seq, "event": ev}` to every client (an event too big for a frame is replaced by `{"kind": "notice", "plain": "Part of the conversation is too long to show here; it is in the terminal view."}`); `notice(writer, plain)` → `EVENT {"seq": None, "event": {"kind": "notice", "plain": plain}}` to that client only; `set_state(s)` → if changed, journal `{"kind": "session-state", "state": s}` and `send_status_all()`; `cancel_and_journal(reason)` → for each id from `store.cancel_unstarted(reason=reason)`: journal `{"kind": "spend-decided", "requestId": id, "state": "cancelled", "reason": reason}`; `launch_and_journal(rec)` → `store.launch(rec["id"], repo=REPO, env=run_env())`, journal `{"kind": "run-started", **card(store.get(id))}`; `Rejected as e` → journal `{"kind": "notice", "plain": e.plain}`; `tell_claude(text)` → `inbox.put({"id": uuid4().hex, "submit": text})`; `snapshot()` → `{"state": state, "hello": last_hello, "rows": list(rows), "cards": [card(r) for r in store.all_requests() if r["session"] == session_id]}`.
+5. Helpers: `authorized(writer)` → `clients[writer]["page"] == lease["page"]`; `send_status_all()` → each connection its own `STATUS` with `controller = authorized(it)`; `journal_event(ev)` → `seq = journal.append(ev)` and send `EVENT {"seq": seq, "event": ev}` to every client (an event too big for a frame is replaced by `{"kind": "notice", "plain": "Part of the conversation is too long to show here; it is in the terminal view."}`); `notice(writer, plain)` → `EVENT {"seq": None, "event": {"kind": "notice", "plain": plain}}` to that client only; `set_state(s)` → if changed, journal `{"kind": "session-state", "state": s}` and `send_status_all()`; `cancel_and_journal(reason)` → for each id from `store.cancel_unstarted(reason=reason)`: journal `{"kind": "spend-decided", "requestId": id, "state": "cancelled", "reason": reason}`; `launch_and_journal(rec)` → `store.launch(rec["id"], repo=REPO, env=run_env())`, journal `{"kind": "run-started", **card(store.get(id))}`; `Rejected as e` → journal `{"kind": "notice", "plain": e.plain}`; `tell_claude(text) -> id` → append `{"id": uuid4().hex, "submit": text}` to `outbox`, set `outbox_ready`, return the id; `snapshot()` → `{"state": state, "hello": last_hello, "rows": list(rows), "cards": [card(r) for r in store.all_requests() if r["session"] == session_id]}`.
 6. Client socket `handle_client`: the first frame must be `HELLO {"subscribe_from", "controller", "page"}` (anything else → close). Register `clients[writer] = {"page": page}`. If `controller` is true and (`lease["page"] in (None, page)` or (no connection of `lease["page"]` remains and `lease["until"]` has passed)): `lease = {"page": page, "until": None}` and `send_status_all()`; else send this connection its `STATUS`. Then `OUT` with `_safe_replay_tail(replay)`, then `journal.since(subscribe_from, snapshot)` as `EVENT` frames (or one `EVENT {"seq": None, "event": snapshot}`). Loop on `cf.read_frame`:
    - `IN`/`RESIZE`: only when `authorized(writer)` (others ignored); `IN` → `os.write(master, payload)`; `RESIZE` → `fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))` with the same bounds as `tty.valid_resize`.
    - `ACTION` from an unauthorized connection with type in `{submit, stop, spend-decision, end, new}` → `notice(writer, READ_ONLY)`.
    - `submit {text}` → `tell_claude(text)`.
-   - `stop` → if `turn_id`: `stopped_turns.add(turn_id)` and `inbox.put({"id": uuid4().hex, "stop": {"turnId": turn_id}})`; `cancel_and_journal("stop")`.
+   - `stop` → `sid = uuid4().hex`; `stop_pending[sid] = now + 15`; `outbox.appendleft({"id": sid, "stop": {"turnId": "*"}})` (ahead of queued messages); `cancel_and_journal("stop")`. (`turn_id` from reports is only used for the state line, never for authorization.)
    - `spend-decision {requestId, go}` → `rec = store.decide(requestId, go=bool(go), session=session_id, epoch=addon_epoch or "", controller=True)` (durable); journal `{"kind": "spend-decided", "requestId": requestId, "state": rec["state"]}`; Go → `launch_and_journal(rec)`; Not now → `tell_claude(f"[Front Lot] Ben said Not now to: {rec['summary']}.")`. `Rejected as e` → `notice(writer, e.plain)`; if the record is now `expired`/`cancelled`, also journal its `spend-decided`.
    - `take-control` → `old = lease["page"]`; `lease = {"page": page, "until": None}`; `send_status_all()` (every connection of the old page now gets `controller: false`); `notice` one connection of `old`: "Another window took control."
    - `end` → `await shutdown("ended")`; `new` → `await shutdown("new", page=page)` (the BYE names the page; only that page's relay spawns the replacement, Task 9).
    On disconnect: drop `clients[writer]`; if it was the lease page's last connection, `lease["until"] = time.time() + LEASE_SECONDS`.
-7. Watcher, every 2 s: (a) `store.reconcile()`; then for each `rec` in `store.pending_notices()` (at least once, survives restarts): for `done`/`failed`/`uncertain` journal `{"kind": "run-finished", **card(rec)}` and `tell_claude(f"[Front Lot] {rec['summary']}: {word}. {tail}")` with `word` = finished / failed / "not sure it ran — it will not be retried" and `tail` = last lines of `rec["result"]["tail"]` trimmed to 600 chars (empty for uncertain); for `expired` journal `spend-decided {state: "expired"}` and `tell_claude(f"[Front Lot] The card for {summary} expired unanswered.")`; for `cancelled` journal `spend-decided {state: "cancelled", reason: rec["note"]}` (a repeat of an already-shown cancellation is harmless: the card state is the same); then `store.mark_notified(rec["id"], rec["state"])`. (b) `store.expire_stale()` (its records reach Claude through (a) on the next pass). (c) Add-on health: no hello and `now - spawned_at > NO_HELLO_SECONDS` → journal `{"kind": "addon-missing"}` once; after a hello, `now - last_heard > SILENT_SECONDS` → `addon-silent` once, and `addon-back` when heard again. (d) Lease expiry: when `lease["until"]` has passed and the lease page has no connection, clear `lease`. (e) `claude.poll() is not None` → `await shutdown("claude-exited")`.
+7. Watcher, every 2 s: (a) `store.reconcile()`; then for each `rec` in `store.pending_notices()` whose `(id, state)` is not in `queued_notices` (so each pending notice is queued once per broker life, and again after a restart until acked): for `done`/`failed`/`uncertain` journal `{"kind": "run-finished", **card(rec)}` and `aid = tell_claude(f"[Front Lot] {rec['summary']}: {word}. {tail}")` with `word` = finished / failed / "not sure it ran — it will not be retried" and `tail` = last lines of `rec["result"]["tail"]` trimmed to 600 chars (empty for uncertain); for `expired` journal `spend-decided {state: "expired"}` and `aid = tell_claude(f"[Front Lot] The card for {summary} expired unanswered.")`; for `cancelled` journal `spend-decided {state: "cancelled", reason: rec["note"]}` and mark it notified at once (no message to Claude); record `notice_actions[aid] = (rec["id"], rec["state"])` and add to `queued_notices`. `store.mark_notified` happens only in `/inbox-ack` (step 4). Also drop `stop_pending` entries past their deadline (add-on silent). (b) `store.expire_stale()` (its records reach Claude through (a) on the next pass). (c) Add-on health: no hello and `now - spawned_at > NO_HELLO_SECONDS` → journal `{"kind": "addon-missing"}` once; after a hello, `now - last_heard > SILENT_SECONDS` → `addon-silent` once, and `addon-back` when heard again. (d) Lease expiry: when `lease["until"]` has passed and the lease page has no connection, clear `lease`. (e) `claude.poll() is not None` → `await shutdown("claude-exited")`.
    (`cancel_and_journal` calls `store.mark_notified(id, "cancelled")` for each id it journals and tells Claude nothing: the reason is the Stop/End/New/reload itself.)
 8. PTY reader: `loop.add_reader(master, ...)` → `os.read(master, 65536)`; append to `replay` (trim to `REPLAY_BYTES`); send `OUT` to all clients; `OSError`/empty read → schedule `shutdown("claude-exited")`.
 9. `shutdown(reason, page=None)` (idempotent; safe at any point of `run()`): `cancel_and_journal(reason)`; journal `{"kind": "session-state", "state": "ended", "reason": reason}`; if a Claude child exists: close the gate's write end if it is still open (a child still waiting at the gate then exits without running Claude), `os.killpg(pgid, SIGHUP)`, poll `os.waitpid(pid, WNOHANG)` up to 5 s, then `SIGTERM` the group, 5 s, then `SIGKILL` the group; reap the exact child, then confirm the group is gone (`os.killpg(pgid, 0)` raises `ProcessLookupError`), polling up to 5 s more; send `BYE {"reason", "page"}` to clients; close both servers; unlink `sock` and `live`; unlink `ident` **only if the group is confirmed gone** (otherwise leave it, so the server's reconcile finishes the job and refuses replacement until then); keep `session`; release the lifetime lock; `os._exit(0)` after flushing. Paid jobs are not in Claude's group and keep running (spec §3.1).
@@ -3429,7 +3530,7 @@ Then, in the same file, `class Broker` with:
 - [ ] **Step 5: Run broker tests**
 
 Run: `.venv/bin/python -m pytest tests/backlot/test_claude_session.py tests/backlot/test_claude_journal.py tests/backlot/test_claude_frames.py -v`
-Expected: 23 passed (15 + 4 + 4), no broker processes left (`pgrep -f "claude_session.py --broker --project film"` prints nothing).
+Expected: 25 passed (17 + 4 + 4), no broker processes left (`pgrep -f "claude_session.py --broker --project film"` prints nothing).
 
 - [ ] **Step 6: Commit**
 

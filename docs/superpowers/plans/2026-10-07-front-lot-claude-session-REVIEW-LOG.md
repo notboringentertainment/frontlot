@@ -101,3 +101,44 @@ All 22 accepted after verification; none rejected. Plan bumped to rev 3 ("Change
 22. Accepted. Probes and the self-check parse `--output-format stream-json --verbose` (verified format: `tool_use`/`tool_result` blocks; e.g. Bash `cat` of a denied file → `is_error: true`, "Operation not permitted"). A row passes only if the matching tool call exists and its result shows the refusal and the effect is absent. Controls prove that allowed calls are seen as allowed. The "paid call from python" row is replaced by a raw TCP connect to a provider host, which sends no request, plus an env check for provider keys. The self-check now also needs a refused outside-work Write, and it fails when the denied step was skipped.
 
 Also found while verifying: `--mcp-config` is variadic, so a prompt placed right after its value is swallowed ("MCP config file not found: …/Reply with the word ok."). Rev 2's `selfcheck_argv` had that order; fixed, and a test was added.
+
+## Round 2 — Codex
+Rev 3 still has material problems. The round-1 fixes are present, but several remain incomplete.
+
+1. **Tasks 5/8 — Outcomes can still disappear across restart.** The watcher calls `mark_notified` immediately after queuing a message in the in-memory inbox. Kill the broker before `/inbox-ack: submitted`, and the queue disappears while `pending_notices()` excludes the outcome forever. This does not establish the claimed “at least once” delivery.
+   **Fix:** Tie notification completion to a durable inbox action acknowledged as `submitted`, and replay unacknowledged actions after restart.
+
+2. **Task 8 — An old inbox poll can consume a new epoch’s message.** `/inbox` checks the epoch before its 25-second wait, then stamps the current epoch after dequeueing. If `/hello` changes epochs during that wait, the old poll receives the message; the vendored add-on rejects it as “epoch ended,” and `/inbox-ack` deletes it.
+   **Fix:** Recheck the poll’s epoch after waiting and retain or requeue the action when its epoch has ended.
+
+3. **Tasks 7/8 — Stop depends on an asynchronously delivered display event.** The real add-on’s `turn.start` hook merely enqueues its report. If Stop arrives before that report, `broker.turn_id` is empty or stale, so the issuing turn is never added to `stopped_turns`; its delayed `/run` is accepted after the cancellation sweep. The new test avoids this race by posting the turn-start report first.
+   **Fix:** Synchronize turn registration and Stop cancellation with `/run` authorization, and test Stop before delivery of the turn-start report.
+
+4. **Task 3 — Headshot candidates can exceed the displayed upper bound.** `_hero_remaining()` subtracts all started attempts. When the final attempt generated an asset but crashed before judging it, the card shows “up to $0.00”; the real [`headshot_run.py`](/Users/ben/Projects/OpenMontage-worktrees/front-lot-redesign/scripts/headshot_run.py:533) resumes that open attempt and calls the paid judge.
+   **Fix:** Include the judge reserve for every open, unjudged attempt in the candidates estimate.
+
+5. **Task 3 — A sheet subset can generate roles omitted from its estimate.** `_sheet()` prices only the requested roles. The real [`sheet_run.py`](/Users/ben/Projects/OpenMontage-worktrees/front-lot-redesign/scripts/sheet_run.py:292) appends omitted mandatory roles when their previous assets or receipts were rejected. A wardrobe-only card can therefore pay for wardrobe, turnaround, and expressions.
+   **Fix:** Estimate the script’s effective role set from the frozen checkpoint, including mandatory roles it will regenerate.
+
+6. **Task 3 — Shot estimates use different inputs from execution.** `tool_estimate()` receives raw settings, while `production.request()` replaces their references with the saved brief’s references. Seedream charges for additional reference images; ten saved references can cost $0.1755 while raw settings produce an “up to $0.14” card. Ordinary rounding can also round an upper bound downward.
+   **Fix:** Estimate the actual frozen execution inputs and round upper bounds upward, or display “cost unknown.”
+
+7. **Task 6 — Reservation inspection fails open.** `_open_reservations()` catches every exception and returns `{}`. The real ledger reader raises on malformed JSONL. If inspection fails after a potentially submitted paid call, a nonzero exit becomes `failed` rather than `uncertain`, concealing unresolved financial status.
+   **Fix:** Record reservation-inspection failures in the outcome and classify the paid request as `uncertain` when its financial status cannot be established.
+
+8. **Task 8, affecting Tasks 9/12 — The shared operation fake uses the obsolete input type.** `STUB_SITECUSTOMIZE` constructs `Prepared(..., [], ...)`, but rev 3’s `RequestStore.create()` calls `prep.inputs.items()`. Both stub operations raise `AttributeError`, preventing the broker and end-to-end spend tests from reaching their assertions.
+   **Fix:** Change the fake’s `inputs` argument from `[]` to `{}`.
+
+VERDICT: REVISE
+### Claude's response (round 2)
+
+All 8 accepted after verification; none rejected. Plan bumped to rev 4 ("Changes in rev 4"). The Task 1, 3, 5, 6 code and tests, applied verbatim to a throwaway copy of HEAD, pass (59 tests); the Task 7 mod changes pass `claude plugin test` (34) and `validate --strict`.
+
+1. Accepted. Confirmed that rev 3 called `mark_notified` right after queueing in memory. Now `mark_notified` runs only from `/inbox-ack` (`submitted`, or a rejection other than `epoch ended`, which is also shown to Ben as a notice). The watcher queues each pending notice once per broker life, so a restart re-sends anything not yet acked. A test kills the broker after delivery and before the ack, and checks that the new broker re-sends the message.
+2. Accepted. Confirmed that rev 3 checked the epoch only before the 25 s wait. `/inbox` now re-checks after the wait and puts the action back at the front (`appendleft`); an `epoch ended` rejection requeues instead of dropping (the vendored add-on rejects with that reason, `register.ts:207`). A test starts a poll for epoch e1, sends `/hello e2` while it waits, and checks that the message reaches the e2 poll.
+3. Accepted. Verified that `turn.start` only enqueues its report (`register.ts:276-281`). Stop is now turn-agnostic: `stop {turnId: "*"}`; the add-on aborts its own `mainTurnId` and acks `aborted:<turn>`. The broker refuses every `/run` while a Stop is unanswered (15 s cap) and refuses the aborted turn afterwards. Tests: the broker test sends Stop before any turn report, and the mod test covers `*`.
+4. Accepted. Verified at `headshot_run.py:533-541`: an open attempt with a generation is resumed and judged. The estimate now adds `DEFAULT_RESERVE_USD` for each started attempt with no `verdict_attached`/`attempt_voided` row (`lib/qc_receipts.py:151-157` rule).
+5. Accepted. Verified at `sheet_run.py:287-297`: omitted mandatory roles that the writer rejected are regenerated. The estimate now prices the union of the requested roles and `MANDATORY_ROLES` (an upper bound, kept simple rather than replaying the checkpoint).
+6. Accepted, using the controller's allowance. Verified that `production.request` swaps in the saved brief's references (`lib/supervised_production.py:124-137`). `shot_generate` now shows "cost unknown" and still needs Go; the registry warm-up is gone; headshot and sheet upper bounds round up (`_up`).
+7. Accepted. Verified that `load_reservations` raises `ValueError` on malformed JSONL. The wrapper now records `["paid-call ledger unreadable"]` when it cannot read the ledger before or after a paid run, so a failed exit is classified `uncertain`. A test feeds a malformed ledger.
+8. Accepted. Confirmed that `RequestStore.create` iterates `prep.inputs.items()`; the stub now passes `{}`.
