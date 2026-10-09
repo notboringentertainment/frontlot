@@ -1885,7 +1885,7 @@ function renderGateViewer(s) {
     : header.state === "declined" ? tape("declined", "Declined")
     : tape("", humanize(header.state || "unknown"));
   const title = who ? `${gateWords(header.kind)}: ${who}` : gateWords(header.kind);
-  // Swap quoted machine ids ('sebastians-home') for the names Ben knows.
+  // Swap quoted machine ids ('place-a') for the names Ben knows.
   const roster = buildRoster(s);
   const named = plain(header.summary).replace(/'([a-z0-9][a-z0-9-]*)'/g, (_, id) =>
     (roster.find((e) => e.id === id) || {}).name || titleCase(id));

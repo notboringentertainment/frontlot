@@ -43,7 +43,7 @@ def test_project_is_inserted_by_front_lot_not_claude(world):
 
 
 def test_look_dry_run_is_labelled_as_a_preview_not_a_lock(world):
-    # Early real run: a dry run showed as "Lock the look for june"; Claude had to explain nothing was locked.
+    # Early real run: a dry run showed as "Lock the look for hero-a"; Claude had to explain nothing was locked.
     assert prep(world, "look", entity="hero-a", dry_run=True).summary == "Preview the look for hero-a (nothing is locked)"
     assert prep(world, "look", entity="hero-a").summary == "Lock the look for hero-a"
 
