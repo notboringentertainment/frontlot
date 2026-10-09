@@ -499,7 +499,7 @@ details.more > summary:hover { color: var(--ink-2); }
   background: var(--enamel);
   border-left: 1px solid var(--seam);
 }
-.log-feed { flex: 1 1 auto; overflow-y: auto; padding: 20px 20px 28px; min-height: 0; }
+.log-feed { flex: none; max-height: 34%; overflow-y: auto; padding: 20px 20px 24px; min-height: 0; }
 .log-section + .log-section { margin-top: 28px; }
 .log-section > h2 {
   margin: 0 0 12px; display: flex; align-items: baseline; gap: 10px;
@@ -553,6 +553,91 @@ details.log-more > summary {
 details.log-more > summary::-webkit-details-marker { display: none; }
 details.log-more > summary::after { margin: 0 0 0 8px; color: var(--ink-3); }
 details.log-more[open] > summary { margin-bottom: 12px; }
+
+/* ---------------------------------------------------------------------
+   Conversation with Claude (the session column)
+   --------------------------------------------------------------------- */
+
+.session {
+  flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
+  border-top: 1px solid var(--seam);
+}
+.session-state {
+  flex: none; margin: 0; padding: 12px 20px 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+  font-size: 14px; line-height: 1.45; color: var(--ink-2);
+}
+.session-state .state-word { font: 700 15px/1 var(--plate); letter-spacing: .14em; text-transform: uppercase; color: var(--ink); }
+.session-state .quiet-btn, .session-note .quiet-btn { margin-top: 0; }
+.session-state[data-state="waiting-for-you"] .state-word { color: var(--grease); }
+.session-note { flex: none; margin: 0; padding: 8px 20px 0; font-size: 14px; line-height: 1.45; color: var(--ink-3); }
+.session-feed { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 16px 20px; }
+.session-feed[hidden], .session-terminal[hidden] { display: none; }
+.session-terminal {
+  flex: 1 1 auto; min-height: 0; margin: 12px 20px 0; padding: 8px; overflow: hidden;
+  border-radius: 3px; background: var(--glass); box-shadow: inset 0 0 0 1px var(--glass-edge);
+}
+.session-terminal .xterm { height: 100%; }
+
+.msg { font-size: 15px; line-height: 1.55; color: var(--ink); overflow-wrap: anywhere; }
+.msg + .msg, .msg + .tool-step, .tool-step + .msg, .msg + .run-line, .run-line + .msg { margin-top: 12px; }
+.msg p { margin: 0 0 10px; }
+.msg > :last-child { margin-bottom: 0; }
+.msg ul, .msg ol { margin: 0 0 10px; padding-left: 22px; }
+.msg code { font: 13px/1.4 ui-monospace, Menlo, monospace; color: var(--ink-2); }
+.msg pre { margin: 0 0 10px; padding: 10px 12px; overflow-x: auto; background: var(--glass); border-radius: 2px; }
+.msg.you { color: var(--ink-2); padding-left: 12px; box-shadow: inset 2px 0 0 var(--seam); white-space: pre-wrap; }
+.msg.earlier { color: var(--ink-3); }
+.msg.writing { color: var(--ink-2); }
+
+.tool-step, .run-line {
+  display: block; margin: 8px 0 0; font-size: 14px; line-height: 1.45; color: var(--ink-2);
+}
+.tool-step > summary {
+  display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 12px; cursor: pointer; list-style: none;
+}
+.tool-step > summary::-webkit-details-marker { display: none; }
+.tool-step > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.tool-step .mark, .run-line .mark { width: 6px; height: 20px; margin-top: 1px; border-radius: 1px; background: var(--seam); }
+.run-line { display: grid; grid-template-columns: 10px minmax(0, 1fr); gap: 12px; }
+.run-line.done .mark { background: var(--tape-green); }
+.run-line.failed .mark { background: var(--tape-red); }
+.run-line.uncertain .mark { background: var(--tape-white); }
+.tool-files { margin: 6px 0 0 22px; padding: 0; list-style: none; font-size: 13px; color: var(--ink-3); overflow-wrap: anywhere; }
+
+.spend-card {
+  position: relative; margin: 14px 0 0; padding: 18px 16px 15px; border-radius: 3px;
+  background: var(--enamel-2); box-shadow: inset 0 0 0 1px var(--seam);
+}
+.spend-card::before {
+  content: ""; position: absolute; left: 16px; right: 16px; top: 0; height: 3px;
+  background: var(--grease); border-radius: 0 0 2px 2px;
+}
+.spend-card h3 { margin: 0 0 6px; font-size: 14.5px; line-height: 1.4; font-weight: 600; color: var(--ink); }
+.spend-card p { margin: 0; font-size: 14px; color: var(--ink-2); }
+.spend-card .spend-state { margin-top: 6px; color: var(--ink-3); }
+.spend-actions { display: flex; gap: 12px; margin-top: 12px; }
+.spend-actions .sign-btn { padding: 12px 22px 11px; }
+.spend-actions .quiet-btn { margin-top: 0; margin-left: auto; }
+
+.composer {
+  flex: none; display: grid; gap: 8px; padding: 12px 20px 16px; border-top: 1px solid var(--seam-soft);
+}
+.composer textarea {
+  width: 100%; resize: none; padding: 10px 12px; border: 0; border-radius: 2px;
+  background: var(--glass); color: var(--ink); box-shadow: inset 0 0 0 1px var(--seam);
+  font: 15px/1.45 var(--sans);
+}
+.composer textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.composer textarea:disabled { color: var(--ink-3); }
+.composer-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.composer-buttons .quiet-btn { margin-top: 0; }
+.composer-buttons #terminal-toggle { margin-left: auto; }
+.composer-buttons .quiet-btn:disabled { cursor: not-allowed; color: var(--ink-3); }
+
+.log-history { flex: none; max-height: 30%; overflow-y: auto; padding: 0 20px; border-top: 1px solid var(--seam); }
+.log-history > summary { padding: 14px 0; }
+.log-history[open] > summary { margin-bottom: 0; }
+.log-history > div { padding-bottom: 20px; }
 
 /* signing bay docked at the foot of the log */
 .terminal-shell {
@@ -820,7 +905,11 @@ details.log-more[open] > summary { margin-bottom: 12px; }
   .screen { height: auto; min-height: 220px; aspect-ratio: 4 / 3; }
   .sign-bay { grid-template-columns: minmax(0, 1fr); }
   .log { border-left: 0; border-top: 1px solid var(--seam); }
-  .log-feed { overflow: visible; }
+  .log-feed { overflow: visible; max-height: none; }
+  .session { min-height: 420px; }
+  .session-feed { max-height: 60vh; }
+  .session-terminal { min-height: 300px; }
+  .log-history { max-height: none; overflow: visible; }
   .terminal-shell { max-height: none; }
   .terminal-mount { min-height: 300px; }
   .script-card { padding: 24px 18px; }

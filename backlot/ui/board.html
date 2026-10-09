@@ -15,6 +15,21 @@
   <div id="app"></div>
   <aside class="log" id="log" aria-label="Log">
     <div class="log-feed" id="log-feed"></div>
+    <section class="session" id="session" aria-label="Conversation with Claude">
+      <p class="session-state" id="session-state" aria-live="polite"></p>
+      <p class="session-note" id="session-note" aria-live="polite" hidden></p>
+      <div class="session-feed" id="session-feed" aria-live="polite"></div>
+      <div class="session-terminal" id="session-terminal" hidden></div>
+      <form class="composer" id="composer">
+        <textarea id="composer-text" rows="2" placeholder="Talk to Claude about this film" aria-label="Message to Claude"></textarea>
+        <div class="composer-buttons">
+          <button type="submit" class="quiet-btn" id="composer-send">Send</button>
+          <button type="button" class="quiet-btn" id="composer-stop" hidden>Stop</button>
+          <button type="button" class="quiet-btn" id="terminal-toggle" aria-pressed="false">Show terminal</button>
+        </div>
+      </form>
+    </section>
+    <details class="log-section log-more log-history" id="history"><summary>History</summary><div id="history-body"></div></details>
     <!-- Stable terminal ownership boundary. render()/SSE never replace this section. -->
     <section class="terminal-shell" id="gate-terminal-shell" aria-labelledby="gate-terminal-heading" hidden>
       <div class="terminal-shell-head">

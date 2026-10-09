@@ -1,5 +1,6 @@
 // Front Lot film board (the cutting room) — renders BoardState and stays live via SSE.
 
+import { mountSession } from "/ui/session.js";
 import {
   CAPABILITY_TOKEN_KEY, el, fmtAgo, fmtClock, fmtDuration, fmtMoney,
   getJSON, mediaURL, subscribe, thumbURL, waveBars,
@@ -1946,7 +1947,8 @@ function logLine(row, roster) {
 }
 
 function renderLog(s, roster) {
-  const feed = el("div", {});
+  const needsBox = el("div", {});   // "Needs you", above the conversation
+  const history = el("div", {});    // the log, decisions and machine room, below it
   if (hasAuthoredGates(s)) {
     const pending = pendingGates(s);
     const needs = el("section", { class: "log-section", id: "gates", "aria-labelledby": "needs-heading" },
@@ -1969,7 +1971,7 @@ function renderLog(s, roster) {
         who ? el("span", { class: "who" }, who) : null));
     }
     if (s.gates.error) needs.append(el("div", { class: "alert", role: "alert" }, el("b", {}, "Couldn't read the approvals"), el("span", {}, s.gates.error)));
-    feed.append(needs);
+    needsBox.append(needs);
 
     const done = (s.gates.requests || []).filter((row) => row.state !== "pending")
       .sort((x, y) => (y.mtime || 0) - (x.mtime || 0));
@@ -1994,21 +1996,21 @@ function renderLog(s, roster) {
           onclick: () => { logShowAll = !logShowAll; render(); },
         }, logShowAll ? "Show fewer" : `Show all ${done.length}`));
       }
-      feed.append(section);
+      history.append(section);
     }
   } else {
     const awaiting = s.stages.find((x) => x.status === "awaiting_human");
-    feed.append(el("section", { class: "log-section", "aria-labelledby": "needs-heading" },
+    needsBox.append(el("section", { class: "log-section", "aria-labelledby": "needs-heading" },
       el("h2", { id: "needs-heading" }, "Needs you"),
       awaiting
         ? el("p", { class: "log-quiet", style: "color:var(--ink)" }, `${titleCase(awaiting.name)} is ready for your review. It's open in the viewer.`)
         : el("p", { class: "log-quiet" }, "Nothing is waiting on you.")));
   }
   const decisions = renderDecisions(s);
-  if (decisions) feed.append(decisions);
+  if (decisions) history.append(decisions);
   const activity = renderActivity(s);
-  if (activity) feed.append(activity);
-  return feed;
+  if (activity) history.append(activity);
+  return { needs: needsBox, history };
 }
 
 // ---------------------------------------------------------------------------
@@ -2237,8 +2239,10 @@ function render() {
   }
   app.append(viewer);
 
+  const { needs, history } = renderLog(s, roster);
   logFeed.innerHTML = "";
-  logFeed.append(renderLog(s, roster));
+  logFeed.append(needs);
+  document.getElementById("history-body").replaceChildren(history);
   if (!terminalShell.hidden) scheduleTerminalFit(false);
 }
 
@@ -2309,6 +2313,24 @@ async function refresh() {
   } finally {
     if (refreshController === controller) refreshController = null;
   }
+}
+
+if (!new URLSearchParams(location.search).has("static")) {
+  mountSession({
+    projectId,
+    feedEl: document.getElementById("session-feed"),
+    terminalEl: document.getElementById("session-terminal"),
+    composerEl: document.getElementById("composer"),
+    stateEl: document.getElementById("session-state"),
+    onRunFinished: (entity) => {
+      if (!state || !hasAuthoredGates(state)) return;
+      const roster = buildRoster(state);
+      const key = ["character", "location"].map((k) => `${k}:${entity}`).find((k) => roster.some((e) => e.key === k));
+      if (key) selectEntity(key);
+    },
+  });
+} else {
+  document.getElementById("session").hidden = true;   // static views never start Claude
 }
 
 refresh().catch((err) => {
