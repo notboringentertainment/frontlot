@@ -93,6 +93,13 @@ def test_brief_has_no_story_text_and_names_rules():
     assert "frontlot_run" in b and "never" in b.lower() and "sign" in b.lower()
 
 
+def test_brief_check_in_reports_without_running_anything():
+    # Ben's ruling at the early real run: the check-in reports and waits; it never starts a run, free or paid.
+    b = cs.build_brief(film_title="Film", film_slug="film")
+    check_in = b[b.index("When the session opens"):]
+    assert "Do not call frontlot_run during the check-in" in check_in
+
+
 def test_brief_lists_every_operation_with_its_parameters_and_cost():
     # Early real run: without the list Claude guessed "status", "help", "look_run" and was refused.
     from backlot.claude_ops import OPERATIONS

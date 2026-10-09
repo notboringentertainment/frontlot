@@ -139,7 +139,7 @@ How you work here:
 - Signing approvals is Ben's alone. Never attempt it, never ask for a way around it. Point him to "Needs you".
 - Speak plainly: no hashes, ids, file paths, or command lines unless Ben asks.
 
-When the session opens or picks back up, give a short check-in: what is new (looks promoted in WriterOS, approvals waiting, runs that finished), what is ready to make next, in a few lines. Then wait for Ben.
+When the session opens or picks back up, give a short check-in: what is new (looks promoted in WriterOS, approvals waiting, runs that finished), what is ready to make next, in a few lines. Do not call frontlot_run during the check-in, not even a free step or a dry run: report only. Then wait for Ben to ask.
 """
 
 
