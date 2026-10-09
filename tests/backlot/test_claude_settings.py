@@ -158,9 +158,38 @@ def test_keychain_and_chrome_are_closed(tmp_path):
         assert "--no-chrome" in argv
 
 
-def test_brief_tells_claude_how_to_reach_writeros():
-    b = cs.build_brief(film_title="Film", film_slug="film")
-    assert f"curl --noproxy '' http://{cs.WRITEROS_HOST}/" in b
+def linked_film(tmp_path):
+    repo, film, meta = world(tmp_path)
+    pkg = tmp_path / "Film.writeros"; (pkg / "memory" / "exports").mkdir(parents=True)
+    (film / "project.yaml").write_text(f"writeros_package: {pkg}\n")
+    return repo, film, meta, pkg.resolve()
+
+
+def test_linked_films_writeros_package_is_readable(tmp_path):
+    # Early real run: WriterOS's project library refuses anything without Ben's browser session,
+    # so promoted looks are read from the film's WriterOS package on disk, as the look step does.
+    repo, film, meta, pkg = linked_film(tmp_path)
+    assert cs.writeros_package(film) == pkg
+    assert f"Read(/{pkg}/**)" in cs.build_settings(repo_root=repo, film_root=film, meta_root=meta, environ={})["permissions"]["allow"]
+
+
+def test_unlinked_or_broken_film_has_no_package(tmp_path):
+    repo, film, meta = world(tmp_path)
+    assert cs.writeros_package(film) is None                       # no project.yaml
+    (film / "project.yaml").write_text("title: x\n")
+    assert cs.writeros_package(film) is None                       # no link
+    (film / "project.yaml").write_text("writeros_package: relative/path\n")
+    assert cs.writeros_package(film) is None                       # unusable link: no read grant
+    allow = cs.build_settings(repo_root=repo, film_root=film, meta_root=meta, environ={})["permissions"]["allow"]
+    assert len(allow) == 4
+
+
+def test_brief_sends_claude_to_the_package_not_the_web(tmp_path):
+    _, _, _, pkg = linked_film(tmp_path)
+    b = cs.build_brief(film_title="Film", film_slug="film", writeros_package=pkg)
+    assert str(pkg) in b and "memory/exports/look-locks-" in b and "curl" not in b
+    unlinked = cs.build_brief(film_title="Film", film_slug="film")
+    assert "not linked to WriterOS" in unlinked and "curl" not in unlinked
 
 
 def test_tool_events_skip_lines_whose_message_is_text():

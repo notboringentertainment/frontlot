@@ -353,7 +353,8 @@ class Broker:
         self.claude_path, self.claude_version = claude, version
         write_private(self.p["settings"], json.dumps(cs.build_settings(
             repo_root=REPO, film_root=self.film, meta_root=metadata_root(), environ=os.environ), indent=2))
-        write_private(self.p["brief"], cs.build_brief(film_title=self.title, film_slug=self.slug))
+        write_private(self.p["brief"], cs.build_brief(film_title=self.title, film_slug=self.slug,
+                                                       writeros_package=cs.writeros_package(self.film)))
         login_path = (await loop.run_in_executor(None, _login_environment))["PATH"]
         self._check()
         env = cs.allowed_env(os.environ, login_path=login_path, live_socket=str(self.p["live"]), live_token=self.token)

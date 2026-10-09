@@ -82,10 +82,23 @@ def secret_paths(repo_root: Path, environ: Mapping[str, str]) -> list[Path]:
     return sorted(found)
 
 
+def writeros_package(film_root: Path) -> Path | None:
+    """The film's linked WriterOS package (project.yaml: writeros_package), checked the way the look
+    step checks it; None when the film has no usable link. WriterOS's web library needs Ben's browser
+    session, so this folder is where Claude reads promoted looks."""
+    from lib.look_ingest import LookIngestError, writeros_package_for   # deferred: pulls in yaml
+
+    try:
+        return writeros_package_for(film_root)
+    except LookIngestError:
+        return None
+
+
 def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ: Mapping[str, str]) -> dict:
     repo, film, meta = repo_root.resolve(), film_root.resolve(), meta_root.resolve()
     work = film / "frontlot-work"
     secrets = secret_paths(repo, environ)
+    package = writeros_package(film)
     return {
         "sandbox": {
             "enabled": True,
@@ -107,7 +120,8 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
         },
         "permissions": {
             "defaultMode": "dontAsk",             # protects: anything not allowed below is refused, never prompted
-            "allow": [TOOL_NAME, f"Read(/{film}/**)", f"Read(/{repo}/**)", f"Edit(/{work}/**)"],
+            "allow": [TOOL_NAME, f"Read(/{film}/**)", f"Read(/{repo}/**)", f"Edit(/{work}/**)"]
+                     + ([f"Read(/{package}/**)"] if package else []),
             # protects: Ben's Chrome; backs up --no-chrome (probe P2: the allowlist did not stop it)
             "deny": [CHROME_TOOLS] + ([f"Read({d}/**)" for d in HOME_SECRET_DIRS] + [f"Read({f})" for f in HOME_SECRET_FILES]
                      + [f"Read(/{meta}/**)", f"Read(/{repo}/**/.env*)"] + [f"Read(/{p})" for p in secrets]
@@ -124,13 +138,22 @@ def _operations_text() -> str:
                      for name, spec in OPERATIONS.items())
 
 
-def build_brief(*, film_title: str, film_slug: str) -> str:
+def _writeros_text(package: Path | None) -> str:
+    if package is None:
+        return ("- This film is not linked to WriterOS yet (no writeros_package in its project.yaml), so you cannot see "
+                "looks Ben promoted there. Say so plainly when it matters; linking it is Ben's step.")
+    return (f"- Looks Ben promoted in WriterOS are in this film's WriterOS package, {package}: the newest "
+            "memory/exports/look-locks-<revision>.json. Read them with the Read tool. WriterOS's web pages need Ben's "
+            "login, so do not try to reach WriterOS over the network.")
+
+
+def build_brief(*, film_title: str, film_slug: str, writeros_package: Path | None = None) -> str:
     return f"""You are working inside Front Lot, Ben's app for making a film's visuals.
 Film: "{film_title}" (project id: {film_slug}). Your working folder is this film's Front Lot work area.
 
 How you work here:
 - You can read the film (../ is the film folder) and the OpenMontage repo, and think, plan, and talk with Ben. You can write only in your work area.
-- WriterOS (looks Ben promoted, the film's canon) answers at http://{WRITEROS_HOST}/. Reach it only with curl --noproxy '' http://{WRITEROS_HOST}/...; a plain curl or any other client is refused.
+{_writeros_text(writeros_package)}
 - You never run pipeline scripts yourself. Every pipeline step goes through the frontlot_run tool with an operation name and parameters. Front Lot runs it.
   Call it as {{"op": "<name>", "params": {{...}}}}. These are the only operations; each line gives its cost and the parameters it accepts:
 {_operations_text()}

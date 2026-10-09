@@ -327,3 +327,10 @@ Second conversation (after E1 fix, new conversation):
 - E8 (note): run failures reach Claude as raw script text with a file path; Claude translated it well for Ben.
 - E9 (open, same family as E3): Claude's shell call to WriterOS was refused under dontAsk this time, so the check-in
   could not read promoted looks at all.
+
+E3/E9 (fixed): WriterOS's project library answers 403 "origin not allowed" without an Origin header and 401
+"session is invalid" with one; it needs Ben's browser login, so the brief's curl recipe could never work.
+Claude now reads promoted looks the way the look step does: from the film's linked WriterOS package
+(project.yaml: writeros_package, checked by lib.look_ingest), granted as a Read allow when the link is usable.
+An unlinked film's brief says plainly it is not linked to WriterOS. As of this run no film names a package
+(bloodless, smoke-visual-bible, the-understudy), so every check-in will say "not linked" until Ben links one.
