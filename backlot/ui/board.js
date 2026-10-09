@@ -1662,7 +1662,12 @@ function renderBin(s, roster) {
     }
     bin.append(el("div", { class: "bin-group" }, el("span", { class: "plate-label" }, label), list));
   }
-  bin.append(el("div", { class: "bin-legend", "aria-hidden": "true" },
+  const shotGroup = renderShotBin(s);
+  if (shotGroup) {
+    bin.setAttribute("aria-label", roster.length ? "Characters, places and shots" : "Shots");
+    bin.append(shotGroup);
+  }
+  if (roster.length) bin.append(el("div", { class: "bin-legend", "aria-hidden": "true" },
     el("div", {}, el("span", { class: "slot done" }), "Done"),
     el("div", {}, el("span", { class: "slot waiting" }), "Waiting for you"),
     el("div", {}, el("span", { class: "slot" }), "Not made yet"),
@@ -1778,6 +1783,142 @@ function renderEntityViewer(s, e) {
       el("section", {},
         el("h3", {}, "What happened"),
         historyList(e.history) || el("p", {}, "Nothing signed yet."))));
+}
+
+// Supervised shots: each prepared shot and the takes made for it. Only a
+// chosen take is green; nothing here is yellow, because a shot never waits on
+// a signature in the board.
+const SHOT_TAPE = {
+  prepared: ["", "Brief ready"],
+  has_takes: ["", "Takes to review"],
+  selected: ["done", "Take chosen"],
+  stopped: ["", "Stopped"],
+};
+const shotKey = (shot) => `shot:${shot.id}`;
+const shotsOf = (s) => (Array.isArray(s.shots) ? s.shots : []);
+const shotName = (s, shot) => `Shot ${shotsOf(s).indexOf(shot) + 1}`;
+
+function shownTakeIndex(shot) {
+  const chosen = shot.takes.findIndex((t) => t.selected);
+  return chosen >= 0 ? chosen : Math.max(0, shot.takes.length - 1);
+}
+
+function takesSummary(shot) {
+  const n = shot.takes.length;
+  if (!n) return "No takes yet";
+  return `${n} take${n === 1 ? "" : "s"}${shot.state === "selected" ? ", one chosen" : ""}`;
+}
+
+function selectShot(shot) {
+  selectedEntity = shotKey(shot);
+  selectedGateId = null;
+  gateDetail = null;
+  gateDetailState = "idle";
+  selectedFrame = shownTakeIndex(shot);
+  render();
+  focusViewer();
+}
+
+function renderShotBin(s) {
+  const shots = shotsOf(s);
+  if (!shots.length) return null;
+  const list = el("ul", { class: "bin-list" });
+  shots.forEach((shot, index) => {
+    const take = shot.takes[shownTakeIndex(shot)];
+    const face = el("span", { class: "clip-face", "aria-hidden": "true" },
+      take && take.path
+        ? el("img", { src: thumbURL(s.project_id, take.path, 320), alt: "", loading: "lazy" })
+        : el("span", { class: "initial" }, String(index + 1)));
+    const current = selectedEntity === shotKey(shot) && !selectedGateId;
+    const [, stateText] = SHOT_TAPE[shot.state] || SHOT_TAPE.prepared;
+    list.append(el("li", {}, el("button", {
+      class: `clip${shot.takes.length ? "" : " quiet"}`,
+      type: "button",
+      "aria-current": current ? "true" : null,
+      "aria-label": `${shotName(s, shot)}: ${plain(shot.label)}. ${takesSummary(shot)}. ${stateText}`,
+      onclick: () => selectShot(shot),
+    }, face, el("span", { class: "clip-name" }, plain(shot.label) || shotName(s, shot)),
+      el("span", { class: "clip-sub" }, takesSummary(shot)))));
+  });
+  return el("div", { class: "bin-group" }, el("span", { class: "plate-label" }, "Shots"), list);
+}
+
+// One <video> per take, kept across live refreshes so a take Ben is watching
+// never restarts when something else in the film folder changes.
+let takeVideo = null;   // {src, node}
+
+function renderTakeScreen(s, take, label, fallback) {
+  if (!take) return fallback;
+  const screen = el("figure", { class: "screen take" });
+  if (!take.path) {
+    screen.classList.add("blank");
+    screen.append(el("div", {}, el("b", {}, "Take missing"),
+      el("p", {}, "This take's file isn't in the film folder any more.")));
+    return screen;
+  }
+  const src = mediaURL(s.project_id, take.path);
+  if (!takeVideo || takeVideo.src !== src) {
+    takeVideo = { src, node: el("video", { src, controls: "", preload: "metadata", playsinline: "" }) };
+  } else {
+    takeVideo.node.classList.add("settled");
+  }
+  // The video's own controls carry full screen; no extra link on the glass.
+  screen.append(takeVideo.node, el("figcaption", { class: "frame-label" }, label));
+  return screen;
+}
+
+function renderShotViewer(s, shot) {
+  const name = shotName(s, shot);
+  const frames = shot.takes.map((take, i) => ({
+    path: take.path,
+    label: `Take ${i + 1}${take.selected ? ", chosen" : ""}`,
+    state: take.selected ? "done" : "",
+    missing: take.path ? null : "File missing",
+  }));
+  if (selectedFrame >= frames.length) selectedFrame = shownTakeIndex(shot);
+  const take = shot.takes[selectedFrame];
+  const [tapeState, tapeText] = SHOT_TAPE[shot.state] || SHOT_TAPE.prepared;
+  const blank = el("figure", { class: "screen blank" }, el("div", {},
+    el("b", {}, shot.state === "stopped" ? "Stopped before a take" : "No takes yet"),
+    el("p", {}, shot.state === "stopped"
+      ? "This shot was stopped before anything was made."
+      : "The brief is ready. Takes appear here as soon as they're made.")));
+
+  const head = el("header", { class: "viewer-head" },
+    el("div", {},
+      el("h2", { id: "viewer-heading" }, name),
+      el("div", { class: "what" }, plain(shot.label))),
+    el("div", { class: "tapes" }, tape(tapeState, tapeText)));
+
+  const allowance = [
+    `${fmtMoney(shot.spent_usd)} spent`,
+    shot.spend_allowance_usd != null ? `of ${fmtMoney(shot.spend_allowance_usd)} allowed` : null,
+  ].filter(Boolean).join(" ");
+  const takeLimit = shot.max_video_takes != null
+    ? `${shot.takes.length} of ${shot.max_video_takes} takes made.` : `${takesSummary(shot)}.`;
+
+  const takeRows = shot.takes.map((t, i) => el("li", { class: t.selected ? "done" : "" },
+    el("span", { class: "dot", "aria-hidden": "true" }),
+    el("span", {},
+      el("button", {
+        class: "text linkish", type: "button", style: "all:unset;cursor:pointer",
+        onclick: () => { selectedFrame = i; render(); },
+      }, [`Take ${i + 1}`, t.selected ? ", chosen" : "", t.cost_usd != null ? `, ${fmtMoney(t.cost_usd)}` : "",
+        t.duration_seconds != null ? `, ${Math.round(t.duration_seconds)} seconds` : ""].join("")),
+      el("small", {}, `Made ${fmtGateTime(t.made_at)}${t.from_earlier_brief ? ", from an earlier brief" : ""}`))));
+
+  return el("div", { class: "viewer-inner" },
+    head,
+    renderTakeScreen(s, take, frames[selectedFrame] && frames[selectedFrame].label, blank),
+    renderFrameStrip(s, frames, name),
+    el("div", { class: "notes" },
+      el("section", {},
+        el("h3", {}, "The direction"),
+        el("p", {}, plain(shot.direction) || "No direction written.")),
+      el("section", {},
+        el("h3", {}, "Takes"),
+        takeRows.length ? el("ul", { class: "history" }, takeRows) : el("p", {}, "Nothing made yet."),
+        el("p", { class: "source", style: "margin-top:12px" }, `${allowance}. ${takeLimit}`))));
 }
 
 function gateFrames(packet) {
@@ -2201,12 +2342,20 @@ function render() {
   terminalShell.hidden = !(authoredGates && signingOpen);
 
   const roster = authoredGates ? buildRoster(s) : [];
-  const withBin = roster.length > 0;
-  if (withBin && !selectedGateId && !roster.some((e) => e.key === selectedEntity)) {
-    const pending = pendingGates(s)[0];
-    const first = roster.find((e) => e.frames.length) || roster[0];
-    selectedEntity = (pending && entityKeyOf(pending)) || first.key;
+  const shots = shotsOf(s);
+  const withBin = roster.length > 0 || shots.length > 0;
+  const inBin = (key) => roster.some((e) => e.key === key) || shots.some((sh) => shotKey(sh) === key);
+  if (withBin && !selectedGateId && !inBin(selectedEntity)) {
+    if (roster.length) {
+      const pending = pendingGates(s)[0];
+      const first = roster.find((e) => e.frames.length) || roster[0];
+      selectedEntity = (pending && entityKeyOf(pending)) || first.key;
+    } else if (!s.storyboard) {   // a scene-plan film keeps its storyboard until a shot is picked
+      selectedEntity = shotKey(shots[0]);
+      selectedFrame = shownTakeIndex(shots[0]);
+    }
   }
+  const shot = !selectedGateId && shots.find((sh) => shotKey(sh) === selectedEntity);
   tableEl.classList.toggle("no-bin", !withBin);
 
   app.innerHTML = "";
@@ -2216,7 +2365,11 @@ function render() {
   const viewer = el("main", { class: "viewer", id: "viewer", tabindex: "-1", "aria-label": "Viewer" });
   const drawer = renderDrawer(s);
 
-  if (authoredGates && (selectedGateId || withBin)) {
+  if (shot) {
+    const inner = renderShotViewer(s, shot);
+    if (drawer) inner.prepend(drawer);
+    viewer.append(inner);
+  } else if (authoredGates && (selectedGateId || roster.length > 0)) {
     let inner;
     if (selectedGateId) inner = renderGateViewer(s);
     else inner = renderEntityViewer(s, roster.find((e) => e.key === selectedEntity) || roster[0]);
@@ -2271,6 +2424,8 @@ function normalize(s) {
   s.media.snapshots = Array.isArray(s.media.snapshots) ? s.media.snapshots : [];
   s.media.music = Array.isArray(s.media.music) ? s.media.music : [];
   s.events = Array.isArray(s.events) ? s.events : [];
+  s.shots = Array.isArray(s.shots) ? s.shots : [];
+  for (const shot of s.shots) shot.takes = Array.isArray(shot.takes) ? shot.takes : [];
   if (s.storyboard && Array.isArray(s.storyboard.scenes)) {
     for (const c of s.storyboard.scenes) {
       c.takes = Array.isArray(c.takes) ? c.takes : [];
