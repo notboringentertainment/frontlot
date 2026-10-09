@@ -178,6 +178,10 @@ def spawn_broker(slug: str, mode: str) -> dict:
             return {"state": "unavailable", "reason": "previous-still-running", "can_resume": p["session"].exists()}
         if mode == "new":
             p["session"].unlink(missing_ok=True)
+            # The journal is per film: left in place, the new broker would reopen it and the page would
+            # replay the old conversation and its cards. Keep one previous copy for the record.
+            if p["events"].exists():
+                os.replace(p["events"], p["events"].with_name(f"{slug}.events.prev.jsonl"))
         p["unavailable"].unlink(missing_ok=True)
         argv = [sys.executable, str(REPO / "scripts" / "claude_session.py"), "--broker", "--project", slug]
         if mode == "resume" and p["session"].exists():

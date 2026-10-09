@@ -110,6 +110,30 @@ def test_new_replaces_only_after_the_previous_broker_exits(app_world):
         a.close()
 
 
+def test_new_conversation_starts_a_fresh_journal(app_world):
+    # CodeRabbit PR #3: "new" kept the film's event journal, so the new view replayed the old
+    # conversation and its cards. The old journal is kept once, beside the new one, never replayed.
+    app, gates, film = app_world
+    journal = gates / "claude" / "film.events.jsonl"
+    with TestClient(app) as c:
+        a = opened(c, "start", "pa")
+        try:   # a failed assert with the socket open would hang TestClient's exit
+            until(a, lambda m: m["type"] == "status")
+            first = json.loads((gates / "claude" / "film.json").read_text())["session_id"]
+            sock, token = live_endpoint(film)
+            addon_hello(sock, token, "e1")                     # puts the old conversation in the journal
+            until(a, lambda m: m["type"] == "event" and m["event"].get("kind") == "addon-hello")
+            old = journal.read_text()
+            a.send_text(json.dumps({"type": "new"}))
+            until(a, lambda m: m["type"] == "status" and m["session_id"] not in (None, first))
+        finally:
+            a.close()
+    assert old
+    assert not (journal.exists() and journal.read_text().startswith(old))   # the old events are not replayed
+    prev = gates / "claude" / "film.events.prev.jsonl"
+    assert prev.exists() and prev.read_text().startswith(old)
+
+
 def test_a_read_only_tab_cannot_replace_the_conversation(app_world):
     app, gates, film = app_world
     with TestClient(app) as c:
