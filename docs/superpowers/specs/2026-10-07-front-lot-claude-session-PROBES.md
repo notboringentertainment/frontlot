@@ -334,3 +334,18 @@ Claude now reads promoted looks the way the look step does: from the film's link
 (project.yaml: writeros_package, checked by lib.look_ingest), granted as a Read allow when the link is usable.
 An unlinked film's brief says plainly it is not linked to WriterOS. As of this run no film names a package
 (bloodless, smoke-visual-bible, the-understudy), so every check-in will say "not linked" until Ben links one.
+
+## First paid run (Task 12 step 2, 2026-10-09, with Ben)
+
+Film: bloodless. Item: one 5 s Kling take for shot ace-continuity-001 (`shot_generate`, `kling_reference_video`, audio off). Baseline: generation-ledger 74 lines, bloodless generation-receipts 62.
+
+- Spend log for the card: `waiting-for-ben` → Go → ended **failed** (exit 1). Cause: `FAL_KEY not set`. The keys live in the main checkout's `.env`; this worktree has none, and `lib/env_loader.py` reads `<repo>/.env`. Test-setup gap, not a session bug. The script stopped before any provider call: ledger still 74, receipts still 62, no new cost reservation. Nothing retried, per the brief.
+- Free steps before it worked: `shot_prepare` and `shot_request` both done.
+- F1 Brief refused: three `source_paths` point at the iCloud script folder (canon note, workflow notes, look ticket), outside the film. Claude dropped them at Ben's choice (option 1) to proceed; the shot record no longer cites them. Real briefs cite the script folder, so this needs a product answer.
+- F2 Page: replies did not appear until a manual reload (journal shows them at once).
+- F3 Page: Ben's own messages are not shown in the conversation.
+- Second card (r-5629818b44): Go → **failed** before any provider call: Kling preflight "output parent does not exist" (`takes/` folder missing). No spend. Claude changed `output_path` to the shot folder and asked again.
+- Third card (r-151ff64ba6): Go → `waiting-for-ben, approved, launching, running, done`. Generation ledger 74 → 75, receipts 62 → 63, reservation completed at $0.56 actual. Take saved as `take-01.mp4` (6.8 MB) plus the hashed copy under `takes/`. Claude summarised and stopped as told.
+- F4 One take needed three Go presses (two failed cards, each before any spend). The shot step should create its own `takes/` folder.
+- Ben watched the take: looks right (face, hair, wardrobe, motion, background).
+- F5 The take does **not** appear in the viewer. The board only shows scene-plan assets (`backlot/state.py` cards per scene); supervised-production shots under `production/shots/` have no place on the board yet. Missing feature, not a regression from this branch.
