@@ -135,6 +135,7 @@ def request(root, shot_id, *, prompt, output_path, expect_revision=None, **setti
     output.resolve().relative_to(Path(root).resolve())
     if output.exists():
         raise ValueError('Choose a new output_path; preserve the existing take')
+    output.parent.mkdir(parents=True, exist_ok=True)   # the provider check refuses a missing folder after Go
     return {**settings, **({'brief_revision_id': expect_revision} if expect_revision is not None else {}),
             'project_dir': str(Path(root).resolve()), 'shot_id': shot_id,
             'asset_class': 'supervised_shot', 'prompt': prompt, 'output_path': str(output),
