@@ -349,3 +349,5 @@ Film: bloodless. Item: one 5 s Kling take for shot ace-continuity-001 (`shot_gen
 - F4 One take needed three Go presses (two failed cards, each before any spend). The shot step should create its own `takes/` folder.
 - Ben watched the take: looks right (face, hair, wardrobe, motion, background).
 - F5 The take does **not** appear in the viewer. The board only shows scene-plan assets (`backlot/state.py` cards per scene); supervised-production shots under `production/shots/` have no place on the board yet. Missing feature, not a regression from this branch.
+- F3 FIXED (c1be5b1): the person check named Story-drive's add-on; Ben confirmed live 2026-10-09 that his question shows.
+- F2 not reproduced on demand: page and server both pass replayed real events live; failed at 07:20 and 09:45, worked at 09:49 and after the restart. Connection/control/stalled-send logging added (server.log, "[front-lot claude]"); prime suspect is a page send that fails and marks the socket dead while it stays open. Next time: Ben notes the time, no reload.
