@@ -160,6 +160,10 @@ def test_shot_prepare_accepts_sources_in_the_films_writing_folder(world, tmp_pat
         return prep(world, "shot_prepare", brief="b.json", note="Ben asked for this shot")
 
     brief([str(note), str(ticket)])
+    (work / "b.json").write_text(json.dumps({"shot_id": "s1", "source_paths": [str(note)],
+                                             "reference_manifest": [{"path": str(ticket)}]}))
+    with pytest.raises(ops.OpError):   # references stay film-relative; prepare could not store this one
+        prep(world, "shot_prepare", brief="b.json", note="Ben asked for this shot")
     for bad in ([str(tmp_path / "elsewhere.md")], [str(writing / "link.md")], [str(writing / "missing.md")],
                 [str(writing / "wayfinder" / ".." / ".." / "elsewhere.md")], [str(writing)]):
         with pytest.raises(ops.OpError):

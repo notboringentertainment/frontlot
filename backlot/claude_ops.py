@@ -243,12 +243,12 @@ def _writing_file(ctx: Ctx, p: Path) -> bool:
     return True
 
 
-def _film_file(ctx: Ctx, raw) -> None:
+def _film_file(ctx: Ctx, raw, writing: bool = False) -> None:
     """A path the privileged shot script will read (production.prepare resolves even absolute paths).
     Only film files outside the work area, named relative to the film, reached without links. Claude cannot
     write the film folder outside the work area, so nothing can be swapped in after this check."""
     p = Path(raw) if isinstance(raw, str) and raw else None
-    if p is not None and p.is_absolute() and _writing_file(ctx, p):
+    if writing and p is not None and p.is_absolute() and _writing_file(ctx, p):
         return
     if p is None or p.is_absolute() or ".." in p.parts or not p.parts:
         raise OpError("the brief may only cite the film's own files, by a path inside the film folder")
@@ -399,7 +399,7 @@ def _shot(sub: str, paid: bool = False):
             if not isinstance(refs, list) or not all(isinstance(x, dict) for x in refs):
                 raise OpError("reference_manifest must be a list of entries that each name a path")
             for raw in sources:
-                _film_file(ctx, raw)
+                _film_file(ctx, raw, writing=True)   # sources only: references are stored film-relative
             for ref in refs:
                 _film_file(ctx, ref.get("path"))
             argv += [str(s), "--note", _note(p)]; inputs, snap = {s: digest}, {"brief": s}

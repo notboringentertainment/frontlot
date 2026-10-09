@@ -284,7 +284,7 @@ class _Relay:
         await writer.drain()
         self.reader, self.writer = reader, writer
         self.pump = asyncio.create_task(self._pump(reader))
-        _log(f"relay attached {self.slug} page={self.page[:8]} tty={self.tty} from={subscribe_from}")
+        _log(f"relay attached {self.slug} page={self.page[:8]!r} tty={self.tty} from={subscribe_from}")
         return True
 
     async def _drop(self) -> None:
@@ -300,7 +300,7 @@ class _Relay:
                 try:
                     t, payload = await cf.read_frame(reader)
                 except (asyncio.IncompleteReadError, ConnectionError, cf.FrameError) as exc:
-                    _log(f"relay lost the broker {self.slug} page={self.page[:8]} tty={self.tty}: {exc!r}")
+                    _log(f"relay lost the broker {self.slug} page={self.page[:8]!r} tty={self.tty}: {exc!r}")
                     await self._drop()
                     await self._bye({"reason": "broker-exited"})
                     return
@@ -325,12 +325,12 @@ class _Relay:
                 if self.tty:
                     continue
                 if t == cf.STATUS:
-                    _log(f"status to page={self.page[:8]} controller={d.get('controller')} state={d.get('state')}")
+                    _log(f"status to page={self.page[:8]!r} controller={d.get('controller')} state={d.get('state')}")
                     self.out.json({"type": "status", **d})
                 elif t == cf.EVENT:
                     ev = d.get("event") or {}
                     if ev.get("kind") == "turn":
-                        _log(f"turn {ev.get('phase')} to page={self.page[:8]} seq={d.get('seq')} dead={self.out.dead}")
+                        _log(f"turn {ev.get('phase')} to page={self.page[:8]!r} seq={d.get('seq')} dead={self.out.dead}")
                     self.out.json({"type": "event", "seq": d.get("seq"), "event": d.get("event")})
         except asyncio.CancelledError:
             raise
@@ -452,9 +452,9 @@ async def _live_websocket(websocket: WebSocket, project_id: str) -> None:
                     continue
                 relay = _Relay(slug, page, out)
                 app.state.claude_relays.add(relay)
-                _log(f"page socket open {slug} page={page[:8]} first={kind}")
+                _log(f"page socket open {slug} page={page[:8]!r} first={kind}")
             elif kind in ACTION_KINDS or kind in OPEN_KINDS:
-                _log(f"page {kind} {slug} page={relay.page[:8]} relay_open={relay.is_open} dead={out.dead}")
+                _log(f"page {kind} {slug} page={relay.page[:8]!r} relay_open={relay.is_open} dead={out.dead}")
             if kind in OPEN_KINDS:
                 await relay.request(kind, _cursor(msg.get("from")))
             elif kind in ACTION_KINDS:
@@ -464,7 +464,7 @@ async def _live_websocket(websocket: WebSocket, project_id: str) -> None:
             _log(f"live socket for {slug} failed: {exc!r}")
     finally:
         if relay is not None:
-            _log(f"page socket closed {slug} page={relay.page[:8]}")
+            _log(f"page socket closed {slug} page={relay.page[:8]!r}")
             app.state.claude_relays.discard(relay)
             await relay.close()
         await out.close()
