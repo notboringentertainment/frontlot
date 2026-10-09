@@ -352,3 +352,4 @@ Film: bloodless. Item: one 5 s Kling take for shot ace-continuity-001 (`shot_gen
 - F3 FIXED (c1be5b1): the person check named Story-drive's add-on; Ben confirmed live 2026-10-09 that his question shows.
 - F2 not reproduced on demand: page and server both pass replayed real events live; failed at 07:20 and 09:45, worked at 09:49 and after the restart. Connection/control/stalled-send logging added (server.log, "[front-lot claude]"); prime suspect is a page send that fails and marks the socket dead while it stays open. Next time: Ben notes the time, no reload.
 - F4 FIXED: the free shot request step creates the take's folder, so the paid step's provider check no longer refuses it after Go.
+- F1 FIXED: brief sources may be files in the film's writing folder (project.yaml wayfinder_root), by absolute path, no links, no '..'; prepare still snapshots each by hash.

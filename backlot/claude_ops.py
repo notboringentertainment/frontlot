@@ -217,11 +217,39 @@ def _shot_id(ctx: Ctx, params: dict) -> str:
     return shot
 
 
+def _writing_file(ctx: Ctx, p: Path) -> bool:
+    """True for a file in the film's writing folder (project.yaml wayfinder_root: canon note, workflow notes,
+    look tickets), named by its absolute path and reached without links. Claude cannot write there, and prepare
+    snapshots each source by hash, so nothing can be swapped in after this check. False if the film names no
+    writing folder or the path is outside it; a bad path inside it is an error."""
+    from lib.look_ingest import LookIngestError, wayfinder_root_for
+    from lib.pathsafe import PathSafetyError, resolve_input
+    try:
+        root = wayfinder_root_for(ctx.film)
+    except LookIngestError:
+        return False
+    if ".." in p.parts:
+        raise OpError(f"the brief may not cite paths with '..': {p}")
+    try:
+        p.relative_to(root)
+    except ValueError:
+        return False
+    try:
+        resolved = resolve_input(p, root)
+    except PathSafetyError:
+        raise OpError(f"the brief may not cite this file in the writing folder (missing or through a link): {p}") from None
+    if not resolved.is_file():
+        raise OpError(f"no such file in the film's writing folder: {p}")
+    return True
+
+
 def _film_file(ctx: Ctx, raw) -> None:
     """A path the privileged shot script will read (production.prepare resolves even absolute paths).
     Only film files outside the work area, named relative to the film, reached without links. Claude cannot
     write the film folder outside the work area, so nothing can be swapped in after this check."""
     p = Path(raw) if isinstance(raw, str) and raw else None
+    if p is not None and p.is_absolute() and _writing_file(ctx, p):
+        return
     if p is None or p.is_absolute() or ".." in p.parts or not p.parts:
         raise OpError("the brief may only cite the film's own files, by a path inside the film folder")
     if p.parts[0] == "frontlot-work":
