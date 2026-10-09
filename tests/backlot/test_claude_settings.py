@@ -93,6 +93,19 @@ def test_brief_has_no_story_text_and_names_rules():
     assert "frontlot_run" in b and "never" in b.lower() and "sign" in b.lower()
 
 
+def test_brief_lists_every_operation_with_its_parameters_and_cost():
+    # Early real run: without the list Claude guessed "status", "help", "look_run" and was refused.
+    from backlot.claude_ops import OPERATIONS
+
+    b = cs.build_brief(film_title="Film", film_slug="film")
+    assert '{"op": ' in b and '"params"' in b
+    for name, spec in OPERATIONS.items():
+        line = next(l for l in b.splitlines() if l.startswith(f"- {name} "))
+        assert ("paid" if spec.paid else "free") in line
+        for p in spec.allowed:
+            assert p in line
+
+
 def stream(*events):
     lines = []
     for i, (name, inp, result, err) in enumerate(events):

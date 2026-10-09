@@ -297,3 +297,23 @@ PASS; stale-record PASS; `sleep 300` alive PASS.
 
 Cleanup after both runs: `pgrep -f "claude_session.py --broker"` empty; no `sleep 300`/`sleep 600`; nothing listening
 on 4752; the probe's `~/.openmontage/backlot/4752.token` removed; scratch dirs removed. Port 4750 untouched.
+
+## Early real run (Task 10, 2026-10-08, with Ben)
+
+Film: the-understudy (older pipeline: no WriterOS package, no looks set up). Server on port 4751 from the worktree.
+The page was stood in for by a small socket client (live + tty sockets), started by Ben with `!`.
+
+Worked:
+- Session started without the folder-trust prompt; sandbox self-check passed; Claude checked in in plain words.
+- A typed request reached Claude as a turn; frontlot_run calls reached the broker and refusals came back as plain text.
+- Spend log unchanged (74 lines before and after). No spend cards.
+
+Gaps:
+- E1 (fixed): the brief never named the operations. Claude guessed `status`, `help`, `look_run` and was refused each time.
+  Fix: the brief now lists every operation from `claude_ops.OPERATIONS` with free/paid and its parameters, and the call shape.
+- E2 (open, Task 11): opening the tty socket took the controller lease from the live socket on the same page, so the
+  conversation became read-only until `take-control`. The column and the terminal view must share one lease.
+- E3 (open): WriterOS refused Claude's project-list request ("origin not allowed"), so the check-in could not see
+  promoted looks. The brief's curl recipe reaches WriterOS but does not satisfy its origin check.
+- E4 (note): Claude explored the main OpenMontage checkout with git grep to find operation names; E1 removes the need.
+- E5 (note): the trust prompt did not appear on this film's new work area; the tty check of it is still unexercised.

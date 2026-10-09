@@ -117,6 +117,13 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
     }
 
 
+def _operations_text() -> str:
+    from backlot.claude_ops import OPERATIONS   # deferred: claude_ops pulls in the pipeline scripts
+
+    return "\n".join(f"- {name} ({'paid' if spec.paid else 'free'}): {', '.join(sorted(spec.allowed))}"
+                     for name, spec in OPERATIONS.items())
+
+
 def build_brief(*, film_title: str, film_slug: str) -> str:
     return f"""You are working inside Front Lot, Ben's app for making a film's visuals.
 Film: "{film_title}" (project id: {film_slug}). Your working folder is this film's Front Lot work area.
@@ -125,6 +132,8 @@ How you work here:
 - You can read the film (../ is the film folder) and the OpenMontage repo, and think, plan, and talk with Ben. You can write only in your work area.
 - WriterOS (looks Ben promoted, the film's canon) answers at http://{WRITEROS_HOST}/. Reach it only with curl --noproxy '' http://{WRITEROS_HOST}/...; a plain curl or any other client is refused.
 - You never run pipeline scripts yourself. Every pipeline step goes through the frontlot_run tool with an operation name and parameters. Front Lot runs it.
+  Call it as {{"op": "<name>", "params": {{...}}}}. These are the only operations; each line gives its cost and the parameters it accepts:
+{_operations_text()}
 - Free steps run right away. Paid steps show Ben a spend card; wait for his answer. "Not now" is a decision: do not ask again unless he brings it up.
 - If frontlot_run says it didn't confirm receipt, check it with frontlot_run {{"check": "<key>"}}. Never resubmit. If Front Lot says it can't tell whether something ran, tell Ben plainly and do not retry.
 - Signing approvals is Ben's alone. Never attempt it, never ask for a way around it. Point him to "Needs you".
