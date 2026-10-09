@@ -264,3 +264,36 @@ Driver: `.venv/bin/python <scratchpad>/p4.py`.
 | 4b | `~/.openmontage/gates/generation-ledger.jsonl` unchanged | PASS | before and after: sha1 `7d14f11cd1789f0cb93a1c3661b9a0d3dcfe9791`, mtime `1788244700`, size `19639` |
 
 Item 2 note: the brief's wording ("`decide(go=True)` -> `Rejected` whose `.plain` mentions 'changed'") holds; the request settles `cancelled` with note `input changed`.
+
+## P5 — orphan reconciliation through the server (never paid)
+
+Run 2026-10-08 against the real server (`python -m backlot serve --port 4752`, `BACKLOT_PORT=4752`), a scratch
+`OPENMONTAGE_GATES_DIR` (`tempfile.mkdtemp(prefix="om-p5-", dir="/tmp")`), a scratch projects dir with one film
+`film`, `FRONTLOT_SKIP_PREFLIGHT=1` and a fake `FRONTLOT_CLAUDE` (Python; starts a `/bin/sleep 600` child in its own
+process group, ignores stdin EOF). Driver: `.venv/bin/python <scratchpad>/p5.py [--hup-proof]`. Page traffic goes
+over a real WebSocket (`/api/project/film/claude/live`, origin + token handshake). The server logs every
+non-`clean` reconcile result to its stderr (`[front-lot claude] reconcile <film>: <result>`).
+
+Finding first: with a fake that keeps the default SIGHUP action, `kill -9` of the broker closes the PTY master and
+the kernel hangs up the terminal, which ends Claude's whole group by itself within a second (`ps -g <pgid>` already
+empty before the reconnect; reconcile then finds no live group and returns `clean`; a new session still starts).
+An orphan can only exist when something in the group survives that hangup, so the recorded run uses a fake that
+ignores SIGHUP (it and its `sleep` child inherit the ignore), which is the case reconcile exists for.
+
+| Row | Verdict | Evidence |
+|---|---|---|
+| a session starts from a WebSocket (`start`) | PASS | `status {'type': 'status', 'controller': True, 'state': 'starting', 'session_id': 'abb7e604-…'}`; identity: broker 55097, claude pgid 55108 |
+| before the kill, the Claude group is running | PASS | `ps -g 55108`: `55108 …/Python /tmp/om-p5w-…/claude --no-chrome … ; 55134 /bin/sleep 600` |
+| after `kill -9` of the broker, the group is orphaned and alive | PASS | `ps -g 55108`: `55108 …/claude … ; 55134 /bin/sleep 600` |
+| reconnect with `start`: `spawn_broker` → `reconcile_orphans` returns `terminated` | PASS | server stderr: `[front-lot claude] reconcile film: terminated` (SIGHUP ignored, SIGTERM ended it) |
+| the old Claude process group is gone | PASS | `ps -g 55108`: `''` |
+| a new session started | PASS | `status {… 'controller': True, 'session_id': '7ed72656-…'}`, new broker 55213, `GET …/claude` → `{'state': 'running', 'can_resume': False}` |
+| identity naming an unrelated live `sleep 300` with a wrong `claude_started` → `stale-record` | PASS | `reconcile_orphans('film') -> 'stale-record'`; record removed: `True` |
+| that `sleep 300` is still alive (never signalled) | PASS | pid 55253, `poll()=None`, start time unchanged `1791505165.0` (killed by the driver afterwards) |
+
+Plain-fake run (default SIGHUP), same driver without `--hup-proof`: session start PASS; group gone on its own after
+the broker's `kill -9` (`ps -g 54464` empty; there was nothing to reconcile, so no `terminated` line); new session
+PASS; stale-record PASS; `sleep 300` alive PASS.
+
+Cleanup after both runs: `pgrep -f "claude_session.py --broker"` empty; no `sleep 300`/`sleep 600`; nothing listening
+on 4752; the probe's `~/.openmontage/backlot/4752.token` removed; scratch dirs removed. Port 4750 untouched.
