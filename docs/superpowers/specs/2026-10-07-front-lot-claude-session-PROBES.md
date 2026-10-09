@@ -317,3 +317,13 @@ Gaps:
   promoted looks. The brief's curl recipe reaches WriterOS but does not satisfy its origin check.
 - E4 (note): Claude explored the main OpenMontage checkout with git grep to find operation names; E1 removes the need.
 - E5 (note): the trust prompt did not appear on this film's new work area; the tty check of it is still unexercised.
+
+Second conversation (after E1 fix, new conversation):
+- Claude used the right operation names; look dry runs went request → run-started → run-finished → plain-words report.
+  Each failed with "no project.yaml" (this film predates looks) — expected, free. Spend log still 74 lines.
+- E6 (fixed): a dry-run look showed as "Lock the look for june"; it now reads "Preview the look for june (nothing is locked)".
+- E7 (open, ask Ben): during the opening check-in Claude started four look dry runs (one per character) unasked.
+  Free and dry-run only, but the brief says check in, then wait.
+- E8 (note): run failures reach Claude as raw script text with a file path; Claude translated it well for Ben.
+- E9 (open, same family as E3): Claude's shell call to WriterOS was refused under dontAsk this time, so the check-in
+  could not read promoted looks at all.

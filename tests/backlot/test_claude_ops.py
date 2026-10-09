@@ -42,6 +42,12 @@ def test_project_is_inserted_by_front_lot_not_claude(world):
         prep(world, "look", entity="hero-a", project="other-film")
 
 
+def test_look_dry_run_is_labelled_as_a_preview_not_a_lock(world):
+    # Early real run: a dry run showed as "Lock the look for june"; Claude had to explain nothing was locked.
+    assert prep(world, "look", entity="hero-a", dry_run=True).summary == "Preview the look for hero-a (nothing is locked)"
+    assert prep(world, "look", entity="hero-a").summary == "Lock the look for hero-a"
+
+
 def test_unknown_op_and_bad_entity_refused(world):
     with pytest.raises(ops.OpError):
         prep(world, "rm_rf")

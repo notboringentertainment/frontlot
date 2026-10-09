@@ -261,7 +261,8 @@ def _look(ctx, p):
         argv.append("--supersede")
     if p.get("dry_run"):
         argv.append("--dry-run")
-    return Prepared(ctx.op, False, argv, {}, summary=f"Lock the look for {e}", entity=e)
+    summary = f"Preview the look for {e} (nothing is locked)" if p.get("dry_run") else f"Lock the look for {e}"
+    return Prepared(ctx.op, False, argv, {}, summary=summary, entity=e)
 
 
 def _hero_frozen(ctx, e) -> tuple[list[str], dict[Path, str], str]:
