@@ -7,7 +7,9 @@ from fastapi.testclient import TestClient
 
 from backlot import claude_live, server as server_mod, state as state_mod
 from scripts.claude_session import proc_started
-from tests.backlot.claude_fakes import stop_brokers, stub_ops_env, write_fake_claude
+from tests.backlot.claude_fakes import (
+    hello as addon_hello, live_endpoint, post_live, stop_brokers, stub_ops_env, write_fake_claude,
+)
 
 PORT, TOKEN = 4799, "t" * 43
 ORIGIN = f"http://127.0.0.1:{PORT}"
@@ -194,3 +196,44 @@ def test_reconcile_removes_sockets_nobody_owns(app_world):
     (d / "film.sock").write_text(""); (d / "film.live.sock").write_text("")
     assert claude_live.reconcile_orphans("film") == "clean"
     assert not (d / "film.sock").exists() and not (d / "film.live.sock").exists()
+
+
+def test_spend_card_go_runs_once_and_reports_the_outcome(app_world):
+    app, gates, film = app_world
+    with TestClient(app) as c:
+        a = opened(c, "start", "pa")
+        until(a, lambda m: m["type"] == "status" and m["controller"] is True)
+        sock, token = live_endpoint(film)
+        addon_hello(sock, token, "e1")
+        r = post_live(sock, token, "/run", {"key": "toolu_1", "op": "test_paid", "params": {}, "epoch": "e1", "turnId": ""})
+        assert r["status"] == "waiting-for-ben"
+        card = until(a, lambda m: m["type"] == "event" and m["event"].get("kind") == "spend-request")["event"]
+        assert card["requestId"] == r["requestId"] and card["estimate_usd"] == 0.12
+        a.send_text(json.dumps({"type": "spend-decision", "requestId": r["requestId"], "go": True}))
+        until(a, lambda m: m["type"] == "event" and m["event"].get("kind") == "spend-decided"
+              and m["event"]["state"] == "approved")
+        done = until(a, lambda m: m["type"] == "event" and m["event"].get("kind") == "run-finished")["event"]
+        assert done["state"] == "done"
+        a.send_text(json.dumps({"type": "spend-decision", "requestId": r["requestId"], "go": True}))
+        n = until(a, lambda m: m["type"] == "event" and m["event"].get("kind") == "notice")
+        assert n["event"]["plain"] == "That card was already answered."
+        log = [json.loads(x)["state"] for x in (gates / "claude" / "film.spend.jsonl").read_text().splitlines()]
+        assert log == ["waiting-for-ben", "approved", "launching", "running", "done"]
+        assert post_live(sock, token, "/run-check", {"key": "toolu_1"})["status"] == "done"
+        a.close()
+
+
+def test_not_now_is_recorded_and_never_runs(app_world):
+    app, gates, film = app_world
+    with TestClient(app) as c:
+        a = opened(c, "start", "pa")
+        until(a, lambda m: m["type"] == "status")
+        sock, token = live_endpoint(film)
+        addon_hello(sock, token, "e1")
+        r = post_live(sock, token, "/run", {"key": "toolu_2", "op": "test_paid", "params": {}, "epoch": "e1", "turnId": ""})
+        a.send_text(json.dumps({"type": "spend-decision", "requestId": r["requestId"], "go": False}))
+        until(a, lambda m: m["type"] == "event" and m["event"].get("kind") == "spend-decided"
+              and m["event"]["state"] == "declined")
+        assert post_live(sock, token, "/run-check", {"key": "toolu_2"})["status"] == "declined"
+        assert not list((gates / "claude" / "film" / "requests").glob("*.claim"))
+        a.close()
