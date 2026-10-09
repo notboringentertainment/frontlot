@@ -176,3 +176,82 @@ def test_live_view_shows_prose_and_a_spend_card_that_runs_on_go(session_server):
             assert "hero-a" in page.locator(".run-line.done").inner_text()
         finally:
             browser.close()
+
+
+def _approve_one_run(page, sock, live_token, key):
+    claude_fakes.post_live(sock, live_token, "/run", {"key": key, "op": "test_paid", "params": {}, "epoch": "e-fire", "turnId": ""})
+    page.wait_for_selector(".spend-card.waiting-for-ben", timeout=10000)
+    page.get_by_role("button", name="Go").click()
+    page.wait_for_function("(n) => document.querySelectorAll('#session-feed .run-line.done').length >= n", arg=1, timeout=20000)
+
+
+FIRED_HOOK = "window.__fired = []; document.addEventListener('frontlot:run-finished', (e) => window.__fired.push(e.detail));"
+
+
+def test_a_live_run_finished_reaches_the_board_but_replayed_history_does_not(session_server):
+    base, token, _gates, film = session_server
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            first = browser.new_page(viewport={"width": 1440, "height": 900})
+            first.add_init_script(FIRED_HOOK)
+            first.goto(f"{base}/p/film#k={token}", wait_until="load")
+            first.wait_for_function(
+                "() => document.querySelector('#session-terminal').textContent.includes('FAKE CLAUDE READY')", timeout=15000)
+            sock, live_token = claude_fakes.live_endpoint(film)
+            claude_fakes.hello(sock, live_token, "e-fire")
+            first.wait_for_timeout(1500)                     # past the connect window: what follows is live
+            _approve_one_run(first, sock, live_token, "k-fire-1")
+            first.wait_for_function("() => window.__fired.length === 1", timeout=5000)
+            assert first.evaluate("window.__fired") == ["hero-a"]
+            first.close()
+
+            # A fresh window replays the finished run from the journal: it shows, but selects nothing.
+            second = browser.new_page(viewport={"width": 1440, "height": 900})
+            second.add_init_script(FIRED_HOOK)
+            second.goto(f"{base}/p/film#k={token}", wait_until="load")
+            second.wait_for_function(
+                "() => document.querySelector('#session-feed .run-line.done') !== null", timeout=15000)
+            second.wait_for_timeout(1200)
+            assert second.evaluate("window.__fired") == []
+            # ...and a run finishing live in that window does fire (a fresh add-on hello puts the window back on
+            # the live view; the earlier window's lease means this one takes control first).
+            claude_fakes.hello(sock, live_token, "e-fire-2")
+            take = second.get_by_role("button", name="Take control")
+            if take.count() or second.wait_for_timeout(1500) is None and take.count():
+                take.click()
+            claude_fakes.post_live(sock, live_token, "/run", {"key": "k-fire-2", "op": "test_paid", "params": {}, "epoch": "e-fire-2", "turnId": ""})
+            second.wait_for_selector(".spend-card.waiting-for-ben", timeout=10000)
+            second.get_by_role("button", name="Go").click()
+            second.wait_for_function("() => window.__fired.length === 1", timeout=20000)
+        finally:
+            browser.close()
+
+
+def test_back_to_live_view_after_a_permission_wait(session_server):
+    base, token, _gates, film = session_server
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 900})
+        try:
+            page.goto(f"{base}/p/film#k={token}", wait_until="load")
+            page.wait_for_function(
+                "() => document.querySelector('#session-terminal').textContent.includes('FAKE CLAUDE READY')", timeout=15000)
+            sock, live_token = claude_fakes.live_endpoint(film)
+            claude_fakes.hello(sock, live_token, "e-wait")
+            claude_fakes.post_live(sock, live_token, "/report", {"epoch": "e-wait", "events": [
+                {"seq": 1, "kind": "row", "uuid": "w0", "door": "d", "type": "assistant", "role": "assistant",
+                 "origin": {"kind": "model", "model": "x"}, "blocks": [{"type": "text", "text": "Checking something."}]},
+                {"seq": 2, "kind": "waiting-for-input", "requestId": "w1", "reason": "permission", "detail": "Claude wants to use Bash"}]})
+            page.wait_for_function("() => document.getElementById('session-note').textContent.includes('Claude wants to use Bash')", timeout=10000)
+            assert page.locator("#session-terminal").is_visible()
+            claude_fakes.post_live(sock, live_token, "/report", {"epoch": "e-wait", "events": [
+                {"seq": 3, "kind": "input-done", "requestId": "w1"}]})
+            page.get_by_role("button", name="Back to live view").wait_for(timeout=10000)
+            note = page.locator("#session-note").inner_text()
+            assert "null" not in note and "object" not in note.lower()
+            page.get_by_role("button", name="Back to live view").click()
+            page.wait_for_function("() => document.querySelector('#session-terminal').hidden", timeout=5000)
+            assert "Checking something." in page.locator("#session-feed").inner_text()
+        finally:
+            browser.close()

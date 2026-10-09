@@ -2323,6 +2323,7 @@ if (!new URLSearchParams(location.search).has("static")) {
     composerEl: document.getElementById("composer"),
     stateEl: document.getElementById("session-state"),
     onRunFinished: (entity) => {
+      document.dispatchEvent(new CustomEvent("frontlot:run-finished", { detail: entity }));
       if (!state || !hasAuthoredGates(state)) return;
       const roster = buildRoster(state);
       const key = ["character", "location"].map((k) => `${k}:${entity}`).find((k) => roster.some((e) => e.key === k));

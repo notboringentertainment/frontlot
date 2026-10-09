@@ -218,7 +218,7 @@ export function mountSession({ projectId, feedEl, terminalEl, composerEl, stateE
   function markReplaying() {
     replaying = true;
     clearTimeout(replayTimer);
-    replayTimer = setTimeout(() => { replaying = false; }, 600);
+    replayTimer = setTimeout(() => { replaying = false; }, 800);   // fixed window from socket open, not extended by events
   }
 
   function scheduleAttach(ms) {
@@ -246,7 +246,6 @@ export function mountSession({ projectId, feedEl, terminalEl, composerEl, stateE
       }
       paint();
     } else if (msg.type === "event" && msg.event) {
-      markReplaying();
       if (msg.event.kind === "session-state" && msg.event.state && msg.event.state !== "ended") {
         // Sessions that come back after "ended" start a new conversation view.
         if (model.ended) model = { ...model, ended: false };
@@ -278,7 +277,7 @@ export function mountSession({ projectId, feedEl, terminalEl, composerEl, stateE
     socket.addEventListener("open", () => {
       if (live !== socket) return;
       liveRetry = 0;
-      markReplaying();
+      markReplaying();                    // history replayed right after (re)connect is not news
       socket.send(JSON.stringify({ k: token }));
       socket.send(JSON.stringify({ ...first(), page }));
     });
@@ -342,8 +341,11 @@ export function mountSession({ projectId, feedEl, terminalEl, composerEl, stateE
     const backToLive = model.view === "raw" && model.canReturn && model.rawReason !== "user";
     if (model.notice || backToLive) {
       noteEl.hidden = false;
-      noteEl.replaceChildren(model.notice || "",
-        backToLive ? [" ", el("button", { class: "quiet-btn", type: "button", onclick: () => { model = reduce(model, { type: "user-live" }); paint(); } }, "Back to live view")] : null);
+      const kids = [model.notice || ""];
+      if (backToLive) {
+        kids.push(" ", el("button", { class: "quiet-btn", type: "button", onclick: () => { model = reduce(model, { type: "user-live" }); paint(); } }, "Back to live view"));
+      }
+      noteEl.replaceChildren(...kids);
     } else {
       noteEl.hidden = true;
       noteEl.textContent = "";
