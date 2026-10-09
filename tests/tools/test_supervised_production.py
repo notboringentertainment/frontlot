@@ -156,3 +156,65 @@ def test_invalid_allowance_cannot_authorize_spending(shot, limit):
     root, spec = shot
     with pytest.raises(ValueError):
         prepare(root, {**spec, 'spend_allowance_usd': limit}, user_note='Invalid limit.')
+
+
+def test_a_changed_brief_is_refused_early_and_at_the_paid_boundary(shot):
+    from lib.run_common import InputChanged
+    from lib.shot_allowance import ShotAllowanceError
+    from lib.supervised_production import prepare, read_brief, request
+    root, spec = shot
+    rev = read_brief(root, spec['shot_id'])['revision_id']
+    inputs = request(root, spec['shot_id'], prompt='p', output_path='renders/t-new.mp4', expect_revision=rev)
+    assert inputs['brief_revision_id'] == rev
+    with pytest.raises(InputChanged, match='changed after it was approved'):
+        request(root, spec['shot_id'], prompt='p', output_path='renders/t-new.mp4', expect_revision='another-revision')
+    from tools.cost_tracker import load_reservations
+    prepare(root, dict(spec, direction='Hold four seconds.'), user_note='Ben revised the shot.')  # revised after Go
+    before = len(load_reservations(root))
+    with pytest.raises(ShotAllowanceError, match='changed after it was approved'):
+        reserve_paid_call(make_tracker(root), root, tool='kling_reference_video', endpoint='test/video',
+                          normalized_inputs_hash='b' * 64, reserved_usd=1.0, kind='video',
+                          inputs=dict(call(spec), brief_revision_id=rev))   # the paid boundary, under reservation_lock
+    assert len(load_reservations(root)) == before                          # nothing reserved, nothing submitted
+
+
+def _run_cli(root, tmp_path, monkeypatch, *extra):
+    import sys
+    from scripts import supervised_shot
+    settings = tmp_path / 's.json'
+    settings.write_text(json.dumps({'prompt': 'p', 'output_path': 'renders/t-cli.mp4'}))
+    monkeypatch.setattr(sys, 'argv', ['supervised_shot', str(root), 'generate', 'ace-turn', str(settings),
+                                      '--tool', 'kling_reference_video', *extra])
+    return supervised_shot.main()
+
+
+def test_cli_changed_brief_has_its_own_exit_code_and_no_traceback(shot, tmp_path, monkeypatch, capsys):
+    from lib.run_common import EXIT_INPUT_CHANGED
+    root, _ = shot
+    rc = _run_cli(root, tmp_path, monkeypatch, '--expect-brief-revision', 'another-revision')
+    err = capsys.readouterr().err
+    assert rc == EXIT_INPUT_CHANGED and rc not in (1, 2)
+    assert 'changed after it was approved; nothing was spent' in err and 'Traceback' not in err
+
+
+def test_cli_allowance_refusal_is_plain_with_the_generic_failure_code(shot, tmp_path, monkeypatch, capsys):
+    import lib.shot_allowance as sa
+    root, _ = shot
+
+    def refuse(*a, **k):
+        raise sa.ShotAllowanceError('Tool exceeds the shot\'s agreed scope')
+    monkeypatch.setattr(sa, 'resolve', refuse)
+    rc = _run_cli(root, tmp_path, monkeypatch)
+    err = capsys.readouterr().err
+    assert rc == 1 and 'agreed scope' in err and 'Traceback' not in err
+
+
+def test_cli_brief_changed_at_the_paid_boundary_uses_the_refusal_code(shot, tmp_path, monkeypatch, capsys):
+    import lib.shot_allowance as sa
+    from lib.run_common import EXIT_INPUT_CHANGED
+    root, _ = shot
+
+    def refuse(*a, **k):
+        raise sa.BriefChanged('the shot brief changed after it was approved; nothing was spent')
+    monkeypatch.setattr(sa, 'resolve', refuse)
+    assert _run_cli(root, tmp_path, monkeypatch) == EXIT_INPUT_CHANGED

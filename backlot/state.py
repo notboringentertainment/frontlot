@@ -550,6 +550,11 @@ def _find_poster(project_dir: Path, state: dict) -> Optional[str]:
         visual = card.get("visual")
         if visual and visual.get("exists") and visual.get("type") == "image":
             return visual["path"]
+    # Authored films: the first published canon headshot.
+    gates = state.get("gates") or {}
+    for entry in gates.get("canon") or []:
+        if entry.get("role") == "hero" and entry.get("object_rel"):
+            return entry["object_rel"]
     for snap in (state.get("media") or {}).get("snapshots", []):
         return snap["path"]
     # Common image homes, in order of how representative they usually are.

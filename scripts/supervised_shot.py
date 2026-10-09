@@ -3,12 +3,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from lib import supervised_production as production
+from lib.run_common import EXIT_INPUT_CHANGED, InputChanged
+from lib.shot_allowance import ShotAllowanceError
 
 
 def main():
+    try:
+        return _main()
+    except InputChanged as exc:
+        print(f'supervised_shot: {exc}', file=sys.stderr)
+        return EXIT_INPUT_CHANGED
+    except ShotAllowanceError as exc:
+        print(f'supervised_shot: {exc}', file=sys.stderr)
+        return 1
+
+
+def _main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('project', type=Path)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -33,6 +47,7 @@ def main():
         if command in ('request', 'generate'):
             p.add_argument('settings', type=Path, help='JSON with prompt, output_path and provider settings')
         if command == 'generate':
+            p.add_argument('--expect-brief-revision')
             p.add_argument('--tool', required=True, choices=sorted(production.SUPPORTED_TOOLS))
     args = parser.parse_args()
     root = args.project.resolve()
@@ -53,7 +68,9 @@ def main():
         result = production.propose_change(root, args.shot_id, args.note)
     else:
         settings = json.loads(args.settings.read_text())
-        inputs = production.request(root, args.shot_id, **settings)
+        if 'expect_revision' in settings or 'brief_revision_id' in settings:
+            parser.error('settings may not set the brief revision')
+        inputs = production.request(root, args.shot_id, expect_revision=getattr(args, 'expect_brief_revision', None), **settings)
         if args.command == 'request':
             result = inputs
         else:
@@ -78,7 +95,8 @@ def main():
                     reservation_id=outcome.data['reservation_id'], prompt=inputs['prompt'],
                     references=outcome.metadata.get('references_applied'))
     print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

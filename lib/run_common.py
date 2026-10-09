@@ -9,6 +9,7 @@ whether a run may start.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shlex
@@ -175,3 +176,89 @@ def write_decision(
     }
     _merge_decision_log(root.parent, root.name, {"decisions": [decision]})
     return decision
+
+
+# --- frozen inputs (Front Lot spend cards, spec §4.2) ---
+ABSENT = "absent"
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_VALUE_LABELS = {"look": "look", "config": "signed project settings", "headshot": "approved headshot"}
+
+
+EXIT_INPUT_CHANGED = 5  # a refusal because a frozen input changed; 1 = other errors, 2 = bad usage, 3/4 = blocked/declined
+
+
+class InputChanged(RunError):
+    """A frozen input changed between Ben's Go and its use; nothing was spent."""
+
+
+def _key(path: Path | str) -> Path:
+    """Where a path lives, without following a final symlink (a symlink is itself a change)."""
+    p = Path(path)
+    return p.parent.resolve() / p.name
+
+
+def parse_expectations(values: Optional[list[str]]) -> dict[Path, str]:
+    out: dict[Path, str] = {}
+    for v in values or []:
+        path, sep, digest = str(v).rpartition("=")
+        if not sep or not path or not (digest == ABSENT or _SHA256_RE.match(digest)):
+            raise ValueError(f"bad --expect-input-sha value: {v!r}")
+        out[_key(path)] = digest
+    return out
+
+
+class Expectations:
+    """What one paid run was approved against.
+
+    A frozen file is re-verified on every read, so a run only ever works from
+    bytes that match what Ben approved. The run calls ``thaw`` right after its
+    own first write to that file; from then on reads see the script's own bytes.
+    A frozen path must be a regular file (or absent); a symlink or directory
+    there counts as a change. ``require_all_verified`` refuses a run if a frozen
+    path was never read, so a typo or stale flag cannot silently switch a check off.
+    """
+
+    def __init__(self, files: Optional[dict[Path, str]] = None, values: Optional[dict[str, str]] = None):
+        self.files = {_key(k): v for k, v in (files or {}).items()}
+        for k, v in (values or {}).items():
+            if v is not None and not str(v).strip():
+                raise ValueError(f"empty expectation for {k}; leave the flag off or give a value")
+        self.values = {k: v for k, v in (values or {}).items() if v is not None}
+        self._seen: set[Path] = set()
+        self._thawed: set[Path] = set()
+
+    def frozen(self, path: Path | str) -> bool:
+        return _key(path) in self.files
+
+    def thaw(self, path: Path | str) -> None:
+        """The run has written this file itself; later reads are its own bytes."""
+        self._thawed.add(_key(path))
+
+    def read(self, path: Path | str) -> Optional[bytes]:
+        p = Path(path)
+        key = _key(p)
+        want = self.files.get(key)
+        if want is not None and key in self._thawed:
+            want = None
+        if want is not None and (p.is_symlink() or (p.exists() and not p.is_file())):
+            raise InputChanged(f"{p.name} changed after it was approved; nothing was spent")
+        try:
+            data: Optional[bytes] = p.read_bytes()
+        except FileNotFoundError:
+            data = None
+        if want is not None:
+            self._seen.add(key)
+            got = ABSENT if data is None else hashlib.sha256(data).hexdigest()
+            if got != want:
+                raise InputChanged(f"{p.name} changed after it was approved; nothing was spent")
+        return data
+
+    def require_all_verified(self) -> None:
+        for key in self.files:
+            if key not in self._seen and key not in self._thawed:
+                raise InputChanged(f"{key.name} was never checked, so it may have changed after it was approved; nothing was spent")
+
+    def check(self, kind: str, actual: str) -> None:
+        want = self.values.get(kind)
+        if want is not None and actual != want:
+            raise InputChanged(f"the {_VALUE_LABELS.get(kind, kind)} changed after it was approved; nothing was spent")

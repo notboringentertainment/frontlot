@@ -1,7 +1,8 @@
-// Backlot project board — renders BoardState and stays live via SSE.
+// Front Lot film board (the cutting room) — renders BoardState and stays live via SSE.
 
+import { mountSession } from "/ui/session.js";
 import {
-  CAPABILITY_TOKEN_KEY, STAGE_ICONS, el, fmtAgo, fmtClock, fmtDuration, fmtMoney,
+  CAPABILITY_TOKEN_KEY, el, fmtAgo, fmtClock, fmtDuration, fmtMoney,
   getJSON, mediaURL, subscribe, thumbURL, waveBars,
 } from "/ui/lib.js";
 
@@ -16,8 +17,6 @@ const terminalMount = document.getElementById("gate-terminal");
 const terminalState = document.getElementById("gate-terminal-state");
 const terminalMessage = document.getElementById("gate-terminal-message");
 
-const THEME_KEY = "backlot.theme";
-let currentTheme = localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark";
 let state = null;
 let selectedStage = null;   // stage drawer open for this stage name
 let activeRender = 0;
@@ -33,22 +32,27 @@ let refreshGeneration = 0;
 let refreshController = null;
 let gateSelectionGeneration = 0;
 let gateDetailController = null;
+let selectedEntity = null;  // trim-bin selection: "character:ace" style key
+let selectedFrame = 0;      // index into the viewer's frame strip
+let logShowAll = false;
+const logFeed = document.getElementById("log-feed");
+const tableEl = document.getElementById("table");
 
 const TERMINAL_THEME = {
-  background: "#09090b",
-  foreground: "#ececef",
-  cursor: "#f0a83c",
-  cursorAccent: "#09090b",
-  selectionBackground: "rgba(240, 168, 60, .32)",
-  black: "#09090b",
-  red: "#e5544b",
-  green: "#4fc283",
-  yellow: "#f0a83c",
-  blue: "#6aa1ff",
-  magenta: "#bd8cff",
-  cyan: "#66cbd1",
-  white: "#ececef",
-  brightBlack: "#5f5f68",
+  background: "#171716",
+  foreground: "#efece4",
+  cursor: "#efece4",
+  cursorAccent: "#171716",
+  selectionBackground: "rgba(239, 236, 228, .26)",
+  black: "#171716",
+  red: "#d65d4e",
+  green: "#74b46c",
+  yellow: "#f1cb3c",
+  blue: "#8fb0c9",
+  magenta: "#c7a2c4",
+  cyan: "#8fc4bd",
+  white: "#e6e3d8",
+  brightBlack: "#80857a",
   brightWhite: "#ffffff",
 };
 
@@ -59,8 +63,8 @@ function makeGateSession() {
     convertEol: true,
     cursorBlink: true,
     cursorStyle: "block",
-    fontFamily: "'JetBrains Mono', ui-monospace, monospace",
-    fontSize: 14,
+    fontFamily: "'SF Mono', ui-monospace, Menlo, monospace",
+    fontSize: 13,
     lineHeight: 1.22,
     minimumContrastRatio: 7,
     screenReaderMode: true,
@@ -85,7 +89,7 @@ function makeGateSession() {
   if (terminal) {
     terminal.open(terminalMount);
     const input = terminalMount.querySelector(".xterm-helper-textarea");
-    if (input) input.setAttribute("aria-label", "Gate signing terminal input");
+    if (input) input.setAttribute("aria-label", "Signing program input");
     terminal.onData((data) => {
       if (!session.inputReady || !session.socket || session.socket.readyState !== WebSocket.OPEN) return;
       session.socket.send(new TextEncoder().encode(data));
@@ -148,149 +152,101 @@ function stablePacketContent(detail) {
   return stableSerialize(content);
 }
 
-function applyTheme(theme) {
-  currentTheme = theme === "light" ? "light" : "dark";
-  document.documentElement.dataset.theme = currentTheme;
-  document.querySelector('meta[name="theme-color"]').content = currentTheme === "light" ? "#efe4c9" : "#0a0a0c";
-  localStorage.setItem(THEME_KEY, currentTheme);
-}
-
-function renderThemeToggle() {
-  const next = currentTheme === "light" ? "dark" : "light";
-  return el("button", {
-    class: "theme-toggle",
-    type: "button",
-    title: `Switch to ${next} theme`,
-    "aria-label": `Switch to ${next} theme`,
-    "aria-pressed": currentTheme === "light" ? "true" : "false",
-    onclick: () => {
-      applyTheme(next);
-      render();
-    },
-  }, el("span", { class: "theme-toggle-icon", "aria-hidden": "true" }, currentTheme === "light" ? "☾" : "☀"));
-}
-
-applyTheme(currentTheme);
-
 // ---------------------------------------------------------------------------
-// header slate
+// machine bar: maker, film title, stage counter, spend, status
 // ---------------------------------------------------------------------------
 
-function renderSlate(s) {
-  const board = s.storyboard;
-  const chips = [
-    el("span", { class: "chip" }, `${s.pipeline.pipeline_type} pipeline`),
-    board && board.total_duration_seconds
-      ? el("span", { class: "chip" }, `${board.scenes.length} scenes · ${fmtDuration(board.total_duration_seconds)}`)
-      : null,
-    s.style_playbook ? el("span", { class: "chip" }, s.style_playbook) : null,
-  ];
+const MAKER_MARK = '<svg class="maker-mark" viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="13" r="11.5" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="13" cy="13" r="2.5" fill="currentColor"/><circle cx="13" cy="6.5" r="2.6" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="19.2" cy="15" r="2.6" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="6.8" cy="15" r="2.6" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
 
+function pendingGates(s) {
+  if (!hasAuthoredGates(s)) return [];
+  return (s.gates.requests || []).filter((row) => row.state === "pending");
+}
+
+function renderStatus(s) {
   const awaiting = s.stages.find((x) => x.status === "awaiting_human");
   const inProgress = s.stages.find((x) => x.status === "in_progress");
   const stalled = s.stages.find((x) => x.stalled);
-  let liveEl;
-  if (awaiting) {
-    liveEl = el("span", { class: "live" }, el("span", { class: "dot" }), "◈ AWAITING YOU");
-  } else if (stalled) {
-    liveEl = el("span", { class: "live", style: "color:var(--red)" },
-      el("span", { class: "dot", style: "background:var(--red);animation:none" }), "⚠ STALLED?");
-  } else if (s.live || inProgress) {
-    liveEl = el("span", { class: "live" }, el("span", { class: "dot" }), "LIVE");
-  } else {
-    liveEl = el("span", { class: "live idle" }, el("span", { class: "dot" }),
-      `IDLE${s.last_activity ? " · " + fmtAgo(s.last_activity).toUpperCase() : ""}`);
-  }
-
-  const cost = el("div", { class: "cost" });
-  if (s.cost) {
-    const spent = s.cost.total_spent_usd ?? 0;
-    const budget = spent + (s.cost.budget_remaining_usd ?? 0);
-    const hasBudget = s.cost.budget_remaining_usd != null;
-    const pct = hasBudget && budget > 0 ? Math.min(100, (spent / budget) * 100) : 0;
-    cost.append(el("div", { class: "nums" }, el("b", {}, fmtMoney(spent)),
-      hasBudget ? el("span", {}, ` / ${fmtMoney(budget)}`) : ""));
-    if (hasBudget) {
-      cost.append(el("div", { class: "bar" }, el("i", {
-        class: pct > 90 ? "crit" : pct > 75 ? "warn" : "", style: `width:${pct}%`,
-      })));
-    }
-    cost.append(el("div", { class: "label" }, "generation spend"));
-  }
-
-  return el("header", { class: "slate" },
-    el("div", { class: "clapper" }),
-    el("div", {},
-      el("a", { class: "wordmark", href: "/", style: "text-decoration:none" }, "Backlot"),
-      el("h1", {}, s.title),
-    ),
-    ...chips,
-    hasAuthoredGates(s) ? gatesCTA("GATES") : null,
-    el("div", { class: "spacer" }),
-    renderThemeToggle(),
-    liveEl,
-    cost,
-  );
+  const needs = pendingGates(s).length || awaiting;
+  let cls = "";
+  let label = `Idle${s.last_activity ? ` · ${fmtAgo(s.last_activity)}` : ""}`;
+  if (needs) { cls = "needs"; label = "Needs you"; }
+  else if (stalled) { cls = "stalled"; label = "Stalled?"; }
+  else if (s.live) { cls = "running"; label = "Working"; }
+  else if (inProgress) { label = `Paused${s.last_activity ? ` · ${fmtAgo(s.last_activity)}` : ""}`; }
+  const hint = cls === "stalled" ? "A stage says it is running, but nothing has happened for a while." : null;
+  return el("span", { class: `status ${cls}`.trim(), role: "status", title: hint }, el("span", { class: "lamp" }), label);
 }
 
-// ---------------------------------------------------------------------------
-// stage rail
-// ---------------------------------------------------------------------------
+function renderMeter(s) {
+  let spent = null;
+  let budget = null;
+  if (hasAuthoredGates(s) && s.gates.cost && s.gates.cost.total_spent_usd != null) {
+    spent = s.gates.cost.total_spent_usd;
+  } else if (s.cost) {
+    spent = s.cost.total_spent_usd ?? 0;
+    if (s.cost.budget_remaining_usd != null) budget = spent + s.cost.budget_remaining_usd;
+  }
+  if (spent == null) return null;
+  return el("div", { class: "meter", title: "Money spent on generation so far" },
+    el("b", {}, fmtMoney(spent)),
+    el("span", {}, budget != null ? `spent of ${fmtMoney(budget)}` : "spent"));
+}
 
 function stageSub(st) {
-  if (st.status === "awaiting_human") return "awaiting your approval";
-  if (st.status === "in_progress" && st.stalled) {
-    return `stalled? no activity for ${st.stalled_minutes}m\nask the agent for status`;
-  }
+  if (st.status === "awaiting_human") return "waiting for your approval";
+  if (st.status === "in_progress" && st.stalled) return `no activity for ${st.stalled_minutes} minutes`;
   if (st.status === "in_progress" && st.partial_progress) {
     const done = st.partial_progress.completed_scene_ids;
     if (Array.isArray(done)) return `${done.length} scene${done.length === 1 ? "" : "s"} done`;
     return "in progress";
   }
   if (st.status === "in_progress") return "in progress";
-  if (st.status === "failed") return st.error ? String(st.error).slice(0, 60) : "failed";
-  if (st.timestamp) {
-    const approved = st.gated && st.human_approved ? " · approved" : "";
-    return fmtClock(st.timestamp) + approved;
-  }
-  return "";
+  if (st.status === "failed") return st.error ? String(st.error).slice(0, 80) : "failed";
+  if (st.status === "completed") return st.gated && st.human_approved ? "done, approved by you" : "done";
+  return "not started";
 }
 
-function gatesCTA(label = "OPEN GATES") {
+function gatesCTA(label = "See what needs you") {
   return el("a", { class: "gates-cta", href: "#gates" }, label);
 }
 
-function renderRail(s) {
-  const rail = el("nav", { class: "rail" });
-  let pendingIndex = 1;
+function renderBar(s) {
+  const counter = el("nav", { class: "counter", "aria-label": "Production stages" });
   for (const st of s.stages) {
     const cls = st.status === "completed" ? "done"
       : st.status === "in_progress" ? (st.stalled ? "active stalled" : "active")
       : st.status === "awaiting_human" ? "await"
       : st.status === "failed" ? "failed" : "";
-    const icon = STAGE_ICONS[st.status] || String(pendingIndex);
-    if (!STAGE_ICONS[st.status]) pendingIndex += 1;
-    const node = el("div", {
-      class: `stage ${cls}${selectedStage === st.name ? " selected" : ""}${st.undeclared ? " undeclared" : ""}`,
-      title: st.undeclared ? `"${st.name}" ran but isn't declared by this pipeline's manifest` : null,
+    counter.append(el("div", {
+      class: `stage ${cls}${selectedStage === st.name ? " selected" : ""}`.trim(),
+      title: `${humanize(st.name)}: ${stageSub(st)}${st.undeclared ? " (not part of this pipeline's plan)" : ""}`,
     },
-      el("span", { class: "line" }),
       el("button", {
         class: "stage-select",
         type: "button",
         "aria-expanded": selectedStage === st.name ? "true" : "false",
-        "aria-label": `Open ${st.name} stage details: ${st.status}`,
+        "aria-label": `${humanize(st.name)}: ${stageSub(st)}. Show details`,
         onclick: () => toggleDrawer(st.name),
       },
-        el("span", { class: "node" }, icon),
-        el("span", { class: "name" }, st.name),
-        el("span", { class: "sub", style: "white-space:pre-line" },
-          st.undeclared ? `${stageSub(st)}\nunlisted`.trim() : stageSub(st))),
-      st.status === "awaiting_human" && hasAuthoredGates(s) ? gatesCTA() : null,
-    );
-    rail.append(node);
+        el("span", { class: "name" }, humanize(st.name)),
+        el("span", { class: "tick", "aria-hidden": "true" }))));
   }
-  return rail;
+  const maker = el("a", { class: "maker", href: "/", "aria-label": "All films" });
+  maker.innerHTML = MAKER_MARK;
+  maker.append(el("span", { class: "maker-name" }, "Front Lot"));
+  const board = s.storyboard;
+  const kind = board && board.scenes.length
+    ? `${board.scenes.length} scenes${board.total_duration_seconds ? ` · ${fmtDuration(board.total_duration_seconds)}` : ""}`
+    : null;
+  return el("header", { class: "bar" },
+    maker,
+    el("div", { class: "title-plate" },
+      el("h1", {}, s.title),
+      kind ? el("span", { class: "kind" }, kind) : null),
+    s.stages.length ? counter : el("span", { style: "margin-left:auto" }),
+    renderMeter(s),
+    renderStatus(s));
 }
 
 function toggleDrawer(stageName) {
@@ -354,7 +310,7 @@ function renderDrawer(s) {
       el("span", { class: `f ${metrics.critical ? "crit" : ""}` }, `${metrics.critical} critical`),
       el("span", { class: `f ${metrics.suggestions ? "sugg" : ""}` }, `${metrics.suggestions} suggestions`),
       el("span", { class: "f" }, `${metrics.nitpicks} nitpicks`),
-      summary ? el("span", { style: "font-size:calc(11.5px * var(--fs-scale));color:var(--text-2);margin-left:8px" }, summary) : null,
+      summary ? el("span", { style: "font-size:11.5px;color:var(--text-2);margin-left:8px" }, summary) : null,
     ));
   }
 
@@ -365,8 +321,8 @@ function renderDrawer(s) {
     if (!artifact) continue;
     shown = true;
     body.append(
-      el("div", { class: "d-cat", style: "font-family:var(--mono);font-size:calc(9.5px * var(--fs-scale));color:var(--text-3);letter-spacing:.1em;text-transform:uppercase;margin:6px 0 4px" }, name),
-      el("pre", {}, JSON.stringify(artifact, null, 2)),
+      el("div", { class: "d-cat" }, humanize(name)),
+      readableRecord(artifact, { strip: true }),
     );
   }
   if (!shown) {
@@ -376,11 +332,11 @@ function renderDrawer(s) {
 
   return el("div", { class: "drawer" },
     el("div", { class: "drawer-head" },
-      el("h3", {}, `${st.name} — ${st.status}`),
-      st.gate_skipped ? el("span", { class: "gate-chip" }, "⚑ GATE SKIPPED") : null,
+      el("h3", {}, `${humanize(st.name)} — ${humanize(st.status)}`),
+      st.gate_skipped ? el("span", { class: "gate-chip" }, "Approval skipped") : null,
       st.versions > 1 ? el("span", { class: "ver-chip" }, `v${st.versions}`) : null,
-      st.timestamp ? el("span", { class: "meta", style: "font-family:var(--mono);font-size:calc(10.5px * var(--fs-scale));color:var(--text-3)" }, st.timestamp) : null,
-      el("span", { class: "close", onclick: () => toggleDrawer(st.name) }, "CLOSE ✕"),
+      st.timestamp ? el("span", { class: "meta" }, readableTime(st.timestamp)) : null,
+      el("button", { class: "close quiet-btn", type: "button", onclick: () => toggleDrawer(st.name) }, "Close"),
     ),
     body,
   );
@@ -431,13 +387,161 @@ function renderScriptCard(s) {
     el("div", { class: "sp-meta" },
       `script · ${fmtDuration(script.total_duration_seconds)} · ${(script.sections || []).length} sections`),
     ...scriptSections(script, 4),
-    el("span", { class: "sp-expand" }, "⤢ EXPAND SCRIPT"),
+    el("span", { class: "sp-expand" }, icon("expand"), "Read the whole script"),
   );
   return card;
 }
 
 function humanize(value) {
   return String(value || "artifact").replaceAll("_", " ");
+}
+
+// ---------------------------------------------------------------------------
+// Readable records: stage artifacts and gate evidence drawn as plain
+// headings, sentences, and lists instead of raw JSON. With `strip`, the
+// fields that only prove a record (hashes, receipts, file paths, schema
+// versions) are left out; they stay on disk and in the signing terminal.
+
+const RECORD_MACHINE_KEYS = new Set([
+  "version", "builder_version", "provenance", "qc_receipts",
+  "prompt_recipe", "decision_log_ref", "pipeline_manifest",
+]);
+const RECORD_MACHINE_KEY = /(^|_)(sha256|hash|digest|receipt_id|receipt_ids|asset_id|uuid)$/;
+const RECORD_MACHINE_VALUE = /^([0-9a-f]{40,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const RECORD_TITLE_KEYS = [
+  "name", "title", "label", "decision", "question", "rule", "line", "tradeoff",
+  "operation", "stage", "tool", "description", "entity_id", "id", "path",
+];
+
+function recordFileName(text) {
+  return text.split("/").pop().replace(/\.[a-z0-9]{1,5}$/i, "");
+}
+
+function recordKeyHidden(key, value, strip) {
+  if (!strip) return false;
+  if (RECORD_MACHINE_KEYS.has(key) || RECORD_MACHINE_KEY.test(key)) return true;
+  if (typeof value !== "string") return false;
+  const text = /(^|_)path$/.test(key) ? recordFileName(value) : value.trim();
+  return RECORD_MACHINE_VALUE.test(text);
+}
+
+function recordLabel(key) {
+  const text = humanize(key.replace(/_path$/, "")).replace(/\busd\b/i, "(USD)").replace(/\bids?\b/i, (m) => m.toUpperCase());
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+const RECORD_INLINE_MACHINE = /\b(?:[a-z0-9_]*(?:sha256|hash|digest)[:=]\s*)?(?:[0-9a-f]{32,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/gi;
+
+function recordScalar(key, value, strip = false) {
+  const shown = recordScalarText(key, value);
+  return strip ? shown.replace(RECORD_INLINE_MACHINE, "(fingerprint)") : shown;
+}
+
+function recordScalarText(key, value) {
+  if (value === true || value === "True" || value === "true") return "Yes";
+  if (value === false || value === "False" || value === "false") return "No";
+  if (/(^|_)usd$/.test(key) && Number.isFinite(Number(value))) return fmtMoney(value);
+  const text = String(value);
+  if (key === "path") return recordFileName(text).replaceAll("-", " ");
+  if (/_path$/.test(key) && text.includes("/")) return text.split("/").pop();
+  if (/^[a-z0-9]+(_[a-z0-9]+)+$/.test(text)) return humanize(text);
+  return text;
+}
+
+function readableTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value)
+    : date.toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function recordIsEmpty(value) {
+  if (value == null || value === "") return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "object") return Object.keys(value).length === 0;
+  return false;
+}
+
+function recordEntries(obj, strip) {
+  return Object.entries(obj).filter(([key, value]) =>
+    !recordIsEmpty(value) && !recordKeyHidden(key, value, strip));
+}
+
+function recordItemTitle(item, strip) {
+  for (const key of RECORD_TITLE_KEYS) {
+    if (typeof item[key] === "string" && item[key].trim() && !recordKeyHidden(key, item[key], strip)) return [key, item[key]];
+  }
+  return [null, null];
+}
+
+function recordFields(obj, strip, skip = new Set()) {
+  const short = el("dl", { class: "record-facts" });
+  const rest = [];
+  for (const [key, value] of recordEntries(obj, strip)) {
+    if (skip.has(key)) continue;
+    if (value && typeof value === "object") {
+      rest.push(el("section", { class: "record-sub" },
+        el("h5", {}, recordLabel(key)),
+        recordValue(key, value, strip)));
+      continue;
+    }
+    const text = recordScalar(key, value, strip);
+    if (text.length > 70) {
+      rest.push(el("section", { class: "record-sub" },
+        el("h5", {}, recordLabel(key)),
+        el("p", {}, text)));
+    } else {
+      short.append(el("div", {}, el("dt", {}, recordLabel(key)), el("dd", {}, text)));
+    }
+  }
+  return [short.childElementCount ? short : null, ...rest].filter(Boolean);
+}
+
+function recordValue(key, value, strip) {
+  if (Array.isArray(value)) {
+    const items = value.filter((item) => !recordIsEmpty(item));
+    if (items.every((item) => item === null || typeof item !== "object")) {
+      return el("ul", { class: "record-list" },
+        items.filter((item) => !recordKeyHidden(key, item, strip))
+          .map((item) => el("li", {}, recordScalar(key, item, strip))));
+    }
+    return el("div", { class: "record-items" }, items.map((item) => {
+      if (!item || typeof item !== "object") return el("p", {}, recordScalar(key, item, strip));
+      const [titleKey, title] = recordItemTitle(item, strip);
+      const ref = titleKey !== "id" && typeof item.id === "string" ? item.id : null;
+      const skip = new Set([titleKey, ref ? "id" : null].filter(Boolean));
+      const fields = recordFields(item, strip, skip);
+      if (!title && !fields.length) return null;
+      return el("article", { class: "record-item" },
+        title ? el("h6", {},
+          ref ? el("span", { class: "record-ref" }, ref) : null,
+          recordScalar(titleKey, title, strip)) : null,
+        ...fields);
+    }).filter(Boolean));
+  }
+  if (value && typeof value === "object") {
+    return el("div", { class: "record-group" }, recordFields(value, strip));
+  }
+  return el("p", {}, recordScalar(key, value));
+}
+
+function readableRecord(record, { strip = true } = {}) {
+  if (record == null || typeof record !== "object") {
+    return el("p", { class: "record-lead" }, record == null ? "No value supplied." : String(record));
+  }
+  if (Array.isArray(record)) return el("div", { class: "record" }, recordValue("items", record, strip));
+  const scalars = {};
+  const sections = [];
+  for (const [key, value] of recordEntries(record, strip)) {
+    if (value && typeof value === "object") {
+      const count = Array.isArray(value) ? value.length : null;
+      sections.push(el("details", { class: "record-section", open: count != null && count <= 4 ? "" : null },
+        el("summary", {}, recordLabel(key), count != null ? el("span", { class: "record-count" }, String(count)) : null),
+        recordValue(key, value, strip)));
+    } else {
+      scalars[key] = value;
+    }
+  }
+  return el("div", { class: "record" }, ...recordFields(scalars, strip), ...sections);
 }
 
 function shortText(value, limit = 180) {
@@ -642,7 +746,7 @@ function renderApprovalReview(s) {
     artifacts.push(el("div", { class: "approval-missing", role: "alert" },
       el("b", {}, "Nothing reviewable was found. "),
       names.length
-        ? `The ${awaiting.name} checkpoint declares ${names.map(humanize).join(", ")}, but Backlot could not load it.`
+        ? `The ${awaiting.name} checkpoint declares ${names.map(humanize).join(", ")}, but Front Lot could not load it.`
         : `The ${awaiting.name} checkpoint does not declare an artifact.`,
     ));
   }
@@ -710,14 +814,14 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal
 modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
 
 // ---------------------------------------------------------------------------
-// right rail: decisions, activity
+// log column: production decisions, recent work
 // ---------------------------------------------------------------------------
 
 function renderDecisions(s) {
   const log = s.artifacts.decision_log;
   const decisions = (log && log.decisions) || [];
   if (!decisions.length) return null;
-  const body = el("div", { class: "panel-body" });
+  const body = el("ol", { class: "entries" });
   // Collapse by category+subject: a decision that changed mid-run (e.g. voice
   // openai_onyx → chirp3) is superseded by the later entry — show the CURRENT
   // choice, not the first one recorded, and mark that it was revised.
@@ -736,24 +840,24 @@ function renderDecisions(s) {
     })();
     const alts = (d.options_considered || [])
       .filter((o) => (o.option_id ?? o.label) !== d.selected && (o.option_id || o.label));
-    body.append(el("div", { class: "decision" },
-      el("div", { class: "d-cat" }, `${d.category || "decision"}${d.confidence ? ` · ${d.confidence}` : ""}`,
-        revised ? el("span", { class: "d-revised" }, " · revised") : null),
-      el("div", { class: "d-pick" }, `${d.subject || ""} `, el("span", { class: "arrow" }, "→"), ` ${selLabel}`),
-      d.reason ? el("div", { class: "d-why" }, d.reason) : null,
-      alts.length ? el("div", { class: "d-alt" }, "also considered: ",
-        alts.slice(0, 3).map((o, i) => [i ? " · " : "", el("s", {}, o.label || o.option_id)]).flat()) : null,
-    ));
+    body.append(el("li", { class: "entry done decision" },
+      el("span", { class: "mark", "aria-hidden": "true" }),
+      el("div", {},
+        el("span", { class: "text" }, `${plain(d.subject) || humanize(d.category)}: ${plain(selLabel)}`),
+        d.reason ? el("span", { class: "why" }, shortText(plain(d.reason), 220)) : null,
+        el("small", {}, [humanize(d.category || "decision"), revised ? "changed since" : null,
+          alts.length ? `also considered ${alts.slice(0, 2).map((o) => plain(o.label || o.option_id)).join(", ")}` : null]
+          .filter(Boolean).join(" · ")))));
   }
-  return el("div", { class: "panel" },
-    el("div", { class: "panel-head" }, el("h2", {}, "Decisions"), el("span", { class: "meta" }, "decision_log.json")),
+  return el("details", { class: "log-section log-more" },
+    el("summary", {}, "Production decisions"),
     body);
 }
 
 function renderActivity(s) {
   const events = s.events || [];
   if (!events.length) return null;
-  const body = el("div", { class: "panel-body" });
+  const body = el("ol", { class: "entries" });
   // A start is "running" only until a later finish/error for the same
   // tool+scene closes it — closed starts are dropped (the finish row tells
   // the story), unmatched starts render as live. Counted (not keyed-single)
@@ -778,26 +882,25 @@ function renderActivity(s) {
   }
   for (const slot of open.values()) rows.push(slot.ev);
   rows.sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
+  let running = 0;
   for (const ev of rows.slice(-10).reverse()) {
-    let statusEl;
-    if (ev.event === "finish") {
-      statusEl = el("span", { class: `status ${ev.success === false ? "err" : "ok"}` },
-        `${ev.success === false ? "✕" : "✓"}${ev.duration_s != null ? ` ${ev.duration_s.toFixed ? ev.duration_s.toFixed(1) : ev.duration_s}s` : ""}${ev.cost_usd ? ` ${fmtMoney(ev.cost_usd)}` : ""}`);
-    } else if (ev.event === "error") {
-      statusEl = el("span", { class: "status err" }, "✕");
-    } else {
-      statusEl = el("span", { class: "status run" }, "● running");
-    }
-    body.append(el("div", { class: "act-row" },
-      el("span", { class: "t" }, fmtClock(ev.ts)),
-      el("span", { class: "tool" }, ev.tool || ""),
-      el("span", { class: "target" }, ev.scene_id || ""),
-      statusEl,
-    ));
+    const failed = ev.event === "error" || (ev.event === "finish" && ev.success === false);
+    const live = ev.event === "start";
+    if (live) running += 1;
+    const detail = live ? "running now"
+      : failed ? "failed"
+      : [ev.duration_s != null ? `${Number(ev.duration_s).toFixed(1)} s` : null, ev.cost_usd ? fmtMoney(ev.cost_usd) : null].filter(Boolean).join(" · ") || "done";
+    body.append(el("li", { class: `entry ${live ? "running" : failed ? "declined" : "done"}` },
+      el("span", { class: "mark", "aria-hidden": "true" }),
+      el("div", {},
+        el("span", { class: "text" }, `${titleCase(ev.tool || "tool")}${ev.scene_id ? `, ${sceneLabel(ev.scene_id)}` : ""}`),
+        el("small", {}, `${fmtClock(ev.ts)} · ${detail}`))));
   }
-  return el("div", { class: "panel" },
-    el("div", { class: "panel-head" }, el("h2", {}, "Activity"), el("span", { class: "meta" }, "events.jsonl")),
+  const section = el("details", { class: "log-section log-more" },
+    el("summary", {}, running ? `Machine room · ${running} running` : "Machine room"),
     body);
+  if (running) section.open = true;
+  return section;
 }
 
 // ---------------------------------------------------------------------------
@@ -819,7 +922,7 @@ function sceneCard(s, card) {
   const slate = el("div", { class: "sc-slate" },
     el("span", { class: "num" }, sceneLabel(card.id)),
     card.takes.length > 1 ? el("span", { class: "take" }, `T${card.takes.length}`) : null,
-    card.hero_moment ? el("span", { class: "hero" }, "★ HERO") : null,
+    card.hero_moment ? el("span", { class: "hero" }, icon("star"), "Hero") : null,
     el("span", { class: "dur" }, fmtDuration(dur)),
   );
   wrap.append(slate);
@@ -830,7 +933,7 @@ function sceneCard(s, card) {
     thumb = el("div", { class: "thumb generating" },
       el("div", { class: "shimmer" }),
       el("div", { class: "gen-label" },
-        el("span", {}, "◉ GENERATING"),
+        el("span", {}, "Making this now"),
         el("span", { class: "sub" }, card.generating_tool || "")));
   } else if (card.visual && card.visual.exists) {
     const v = card.visual;
@@ -839,7 +942,7 @@ function sceneCard(s, card) {
     if (v.type === "video") {
       thumb = el("div", { class: "thumb approved" },
         el("video", { src: mediaURL(s.project_id, v.path), muted: "", preload: "metadata", playsinline: "" }),
-        el("span", { class: "play" }, "▶"),
+        el("span", { class: "play" }, icon("play")),
         badge ? el("span", { class: "badge" }, badge) : null);
       thumb.onclick = () => {
         const vid = thumb.querySelector("video");
@@ -866,13 +969,13 @@ function sceneCard(s, card) {
     // than "no asset yet" (the composition IS the asset).
     thumb = el("div", { class: "thumb spec bespoke" },
       el("div", { class: "spec-in" },
-        el("span", { class: "bespoke-tag" }, "◆ BESPOKE"),
+        el("span", { class: "bespoke-tag" }, "Hand-built"),
         el("div", { class: "spec-desc" }, card.description || ""),
         el("div", { class: "spec-shot" }, "hand-authored composition")));
   } else if (card.visual && !card.visual.exists) {
     thumb = el("div", { class: "thumb missing" },
       el("div", { class: "spec-in" },
-        el("span", { class: "warn-ic" }, "⚑"),
+        el("span", { class: "warn-ic" }, "Missing"),
         el("div", { class: "spec-desc" }, "asset in manifest, file missing"),
         el("div", { class: "spec-shot" }, card.visual.path || "")));
   } else if (card.type === "text_card") {
@@ -881,7 +984,7 @@ function sceneCard(s, card) {
   } else if (card.required_assets.length) {
     thumb = el("div", { class: "thumb missing" },
       el("div", { class: "spec-in" },
-        el("span", { class: "warn-ic" }, "⚑"),
+        el("span", { class: "warn-ic" }, "Missing"),
         el("div", { class: "spec-desc" }, "no asset yet"),
         el("div", { class: "spec-shot" }, (card.required_assets[0].description || "").slice(0, 60))));
   } else {
@@ -898,7 +1001,7 @@ function sceneCard(s, card) {
     wrap.append(el("div", { class: "shotchips", style: "display:flex;flex-wrap:wrap;gap:4px;padding:7px 2px 0" },
       [sl.shot_size, sl.camera_movement, sl.lens_mm ? `${sl.lens_mm}mm` : null, sl.lighting_key]
         .filter(Boolean)
-        .map((t) => el("span", { style: "font-family:var(--mono);font-size:calc(8.5px * var(--fs-scale));letter-spacing:.04em;color:#62626c;border:1px solid #212129;border-radius:3px;padding:1px 5px" }, String(t).replaceAll("_", " ")))));
+        .map((t) => el("span", { style: "font-family:var(--mono);font-size:8.5px;letter-spacing:.04em;color:#62626c;border:1px solid #212129;border-radius:3px;padding:1px 5px" }, String(t).replaceAll("_", " ")))));
   }
 
   // takes drawer
@@ -925,7 +1028,7 @@ function sceneCard(s, card) {
       class: `narr${long ? " clip" : ""}`,
       title: "Click to read the full narration",
       onclick: () => openNarrModal(card),
-    }, card.narration, long ? el("span", { class: "narr-more" }, "⤢") : null));
+    }, card.narration, long ? el("span", { class: "narr-more" }, icon("expand")) : null));
   } else if (card.shot_intent || card.description) {
     wrap.append(el("div", { class: "narr tc-note" }, (card.shot_intent || card.description || "").slice(0, 110)));
   }
@@ -933,7 +1036,7 @@ function sceneCard(s, card) {
   if (narrAudio) {
     const wave = el("div", { class: "wave", style: "cursor:pointer", title: "Play narration" });
     waveBars(wave, card.id + narrAudio.path);
-    wave.append(el("span", { class: "wv-time" }, narrAudio.duration_seconds ? fmtDuration(narrAudio.duration_seconds) : "♪"));
+    wave.append(el("span", { class: "wv-time" }, narrAudio.duration_seconds ? fmtDuration(narrAudio.duration_seconds) : ""));
     wave.onclick = () => {
       player.src = mediaURL(s.project_id, narrAudio.path);
       player.play();
@@ -1013,10 +1116,10 @@ function renderFoundMedia(s) {
 function renderNoState(s) {
   if (s.has_pipeline_state) return null;
   return el("div", { class: "notice", style: "border-color:#2b2b33;background:var(--surface-2);color:var(--text-3)" },
-    el("span", { style: "font-size:calc(15px * var(--fs-scale))" }, "◌"),
+    el("span", { style: "font-size:15px" }, "◌"),
     el("span", {},
       el("b", { style: "color:var(--text-2)" }, "No pipeline state. "),
-      "This project has no checkpoints — Backlot is showing what it found on disk. ",
+      "This project has no checkpoints — Front Lot is showing what it found on disk. ",
       "Runs that follow the checkpoint protocol get the full board."));
 }
 
@@ -1024,7 +1127,7 @@ function renderAwaitingNotice(s) {
   const awaiting = s.stages.find((x) => x.status === "awaiting_human");
   if (!awaiting) return null;
   return el("div", { class: "notice" },
-    el("span", { style: "font-size:calc(16px * var(--fs-scale))" }, "◈"),
+    
     el("span", {},
       el("b", {}, `The ${awaiting.name} stage is waiting for your review. `),
       "The agent is paused at this gate. ",
@@ -1101,62 +1204,6 @@ async function selectGate(requestId, { background = false } = {}) {
   if (!background) focusGateDetail(true);
 }
 
-function renderGateRows(s) {
-  const requests = Array.isArray(s.gates.requests) ? s.gates.requests : [];
-  if (!requests.length) {
-    return el("div", { class: "gate-empty" },
-      el("b", {}, "No gate requests"),
-      el("p", {}, "When authored-film evidence reaches a governance checkpoint, it will appear here."));
-  }
-
-  const body = el("tbody");
-  for (const row of requests) {
-    const conflict = row.state === "conflict";
-    const archival = ["done", "declined", "abandoned"].includes(row.state);
-    const selected = selectedGateId === row.request_id;
-    const selector = conflict
-      ? el("span", { class: "gate-request-id" }, row.request_id)
-      : el("button", {
-        class: "gate-row-select",
-        type: "button",
-        "aria-label": `Inspect ${row.kind} gate ${row.request_id}`,
-        "aria-pressed": selected ? "true" : "false",
-        onclick: () => selectGate(row.request_id),
-      }, row.request_id);
-    const readOnly = archival
-      ? el("div", { class: "gate-row-archive" },
-        row.approval_receipt_id ? `Receipt ${row.approval_receipt_id}` : null,
-        row.declined_note ? `Note: ${row.declined_note}` : null,
-        row.state === "abandoned" ? "No decision was recorded." : null)
-      : null;
-    body.append(el("tr", {
-      class: `${selected ? "selected " : ""}${conflict ? "conflict" : ""}`.trim(),
-    },
-      el("td", {}, gateStateChip(row.state)),
-      el("td", {}, selector),
-      el("td", {},
-        el("b", {}, humanize(row.kind)),
-        el("span", {}, `${row.stage || "—"} · ${row.scope || "—"}`)),
-      el("td", {},
-        el("span", { class: "gate-summary" }, row.summary || "No summary supplied."),
-        el("span", { class: "gate-entity" }, row.entity_id || "—"),
-        readOnly),
-      el("td", { class: "gate-mtime" }, fmtGateTime(row.mtime)),
-    ));
-  }
-
-  return el("div", { class: "gate-table-scroll" },
-    el("table", { class: "gate-table" },
-      el("caption", { class: "sr-only" }, "Authored-film gate requests and their current states"),
-      el("thead", {}, el("tr", {},
-        el("th", { scope: "col" }, "State"),
-        el("th", { scope: "col" }, "Request"),
-        el("th", { scope: "col" }, "Kind / stage"),
-        el("th", { scope: "col" }, "Evidence scope"),
-        el("th", { scope: "col" }, "Modified"))),
-      body));
-}
-
 function visualFigure(s, visual, label, ordinal = null) {
   const name = ordinal == null ? String(label || visual.label || "evidence") : `[${ordinal}]`;
   const description = ordinal == null
@@ -1190,20 +1237,21 @@ function visualFigure(s, visual, label, ordinal = null) {
 }
 
 function textEvidence(label, value) {
-  const rendered = typeof value === "string" ? value : JSON.stringify(value, null, 2);
   return el("section", { class: "gate-text-evidence" },
     el("h4", {}, humanize(label)),
-    el("pre", {}, rendered == null || rendered === "" ? "No value supplied." : rendered));
+    value && typeof value === "object"
+      ? readableRecord(value, { strip: false })
+      : el("p", {}, value == null || value === "" ? "No value supplied." : recordScalar(label, value)));
 }
 
-function renderPacketEvidence(s, packet) {
+function renderPacketEvidence(s, packet, { visuals: showVisuals = true } = {}) {
   if (!packet || typeof packet !== "object") {
     return el("div", { class: "gate-empty" }, "This request has no evidence packet.");
   }
   const output = el("div", { class: "gate-packet" });
   if (packet.packet_error || packet.error) {
     output.append(el("div", { class: "gate-packet-error", role: "alert" },
-      el("b", {}, "EVIDENCE PACKET ERROR"),
+      el("b", {}, "Evidence problem"),
       el("span", {}, packet.error || "One or more evidence records failed verification.")));
   }
 
@@ -1237,7 +1285,7 @@ function renderPacketEvidence(s, packet) {
       visuals.push(visualFigure(s, row.visual, `FAIL ${items || "(unknown items)"}`, n));
     }
   }
-  if (visuals.length) {
+  if (showVisuals && visuals.length) {
     output.append(el("div", { class: "gate-contact-sheet" }, visuals));
   }
 
@@ -1248,7 +1296,7 @@ function renderPacketEvidence(s, packet) {
         el("div", { class: "gate-qc-head" },
           el("b", {}, humanize(row.role || "sheet role")),
           el("span", {}, row.label || "unverified")),
-        el("pre", {}, JSON.stringify(row.row, null, 2))));
+        readableRecord(row.row, { strip: false })));
     }
     output.append(qc);
   }
@@ -1276,17 +1324,17 @@ function renderPacketEvidence(s, packet) {
 }
 
 function websocketCloseMessage(code, reason) {
-  if (code === 4401) return ["AUTH REQUIRED", "The signing capability is missing or expired. Reopen Backlot from the CLI.", "error"];
-  if (code === 4409 && /identity mismatch/i.test(reason || "")) return ["IDENTITY MISMATCH", "The live signer does not match this gate request.", "error"];
-  if (code === 4409) return ["SIGNER BUSY", "A signing terminal is already attached to this project. Use the open-session reconnect action when it becomes available.", "warn"];
-  if (code === 4423) return ["RUN LEASE HELD", "A live production run currently owns the project lease.", "warn"];
-  if (code === 4422) return ["EVIDENCE UNAVAILABLE", "The signer is still alive, but input remains locked until the evidence packet is complete.", "error"];
-  if (code === 4400) return ["REQUEST STALE", "The gate request changed before signing could begin.", "warn"];
-  if (code === 4403) return ["ORIGIN REFUSED", "Backlot refused this page origin.", "error"];
-  if (code === 4404) return ["REQUEST MISSING", "The project or gate request is no longer available.", "error"];
-  if (code === 1011) return ["SIGNER UNAVAILABLE", reason || "The signing broker is unavailable.", "error"];
-  if (code === 1000) return ["SESSION CLOSED", "The signing session closed.", ""];
-  return ["CONNECTION CLOSED", reason || `Terminal connection closed (${code}).`, "warn"];
+  if (code === 4401) return ["Can't sign from this window", "Close this window and open Front Lot again from its icon, then try again.", "error"];
+  if (code === 4409 && /identity mismatch/i.test(reason || "")) return ["Wrong request", "The open signing program belongs to a different request.", "error"];
+  if (code === 4409) return ["Already signing", "Another signing session is open for this film. Finish or close it first.", "warn"];
+  if (code === 4423) return ["Production running", "A production run is working on this film. Signing opens when it stops.", "warn"];
+  if (code === 4422) return ["Evidence missing", "The signing program is open, but typing stays off until every picture can be shown.", "error"];
+  if (code === 4400) return ["Request changed", "This request changed before signing could start. Look again, then retry.", "warn"];
+  if (code === 4403) return ["Refused", "Front Lot refused this window. Open it again from its icon.", "error"];
+  if (code === 4404) return ["Request gone", "This film or request is no longer there.", "error"];
+  if (code === 1011) return ["Signing unavailable", reason || "The signing program couldn't start.", "error"];
+  if (code === 1000) return ["Closed", "Signing closed.", ""];
+  return ["Disconnected", reason || `The signing connection closed (${code}).`, "warn"];
 }
 
 function startSigning(requestId) {
@@ -1298,13 +1346,14 @@ function startSigning(requestId) {
     token = null;
   }
   terminalShell.hidden = false;
+  terminalShell.dataset.used = "1";
   if (!token) {
-    setTerminalStatus("AUTH REQUIRED", "Reopen Backlot from the CLI to establish a signing capability.", "error");
+    setTerminalStatus("Can't sign from this window", "Close this window and open Front Lot again from its icon, then try again.", "error");
     terminalShell.scrollIntoView({ behavior: "auto", block: "start" });
     return;
   }
   if (!gateSession.terminal) {
-    setTerminalStatus("TERMINAL UNAVAILABLE", "The vendored terminal runtime did not load.", "error");
+    setTerminalStatus("Signing unavailable", "The signing panel didn't load. Reload the page.", "error");
     return;
   }
 
@@ -1316,13 +1365,13 @@ function startSigning(requestId) {
   gateSession.inputReady = false;
   gateSession.receivedRefresh = false;
   gateSession.evidenceChanged = false;
-  setTerminalStatus("CONNECTING", `Opening signing session for ${requestId}…`, "warn");
+  setTerminalStatus("Connecting", "Opening the signing program…", "warn");
   terminalShell.scrollIntoView({ behavior: "auto", block: "start" });
 
   socket.addEventListener("open", () => {
     if (gateSession.socket !== socket) return;
     socket.send(JSON.stringify({ k: token }));
-    setTerminalStatus("VERIFYING LEASE", "Terminal input is locked while Backlot refreshes the evidence packet.", "warn");
+    setTerminalStatus("Checking", "Re-reading the pictures before you can type…", "warn");
     scheduleTerminalFit();
   });
   socket.addEventListener("message", async (event) => {
@@ -1355,12 +1404,12 @@ function startSigning(requestId) {
         gateDetail.packet_error || gateDetail.error || gateDetail.packet?.packet_error,
       );
       setTerminalStatus(
-        packetError ? "EVIDENCE UNAVAILABLE" : changed ? "EVIDENCE CHANGED" : "EVIDENCE REFRESHED",
+        packetError ? "Evidence missing" : changed ? "Pictures changed" : "Pictures checked",
         packetError
-          ? "The signer remains detached and alive, but terminal input is locked until a complete evidence packet can be shown."
+          ? "Some evidence can't be shown, so typing stays off. The signing program is still open."
           : changed
-          ? "Evidence changed under the signing lease. Review the refreshed packet above before typing."
-          : "Evidence is refreshed under lease. Waiting for the relay to open the input channel.",
+          ? "The pictures changed since you opened this. Look at them again in the viewer before you answer."
+          : "Pictures re-checked. Opening the signing program…",
         packetError ? "error" : "warn",
       );
       return;
@@ -1371,10 +1420,10 @@ function startSigning(requestId) {
       );
       if (!gateSession.receivedRefresh || packetError) return;
       setTerminalStatus(
-        gateSession.evidenceChanged ? "EVIDENCE CHANGED" : "INPUT READY",
+        gateSession.evidenceChanged ? "Pictures changed" : "Ready",
         gateSession.evidenceChanged
-          ? "Evidence changed under the signing lease. Review the refreshed packet above before typing."
-          : "Evidence is refreshed under lease. Terminal input is now enabled.",
+          ? "The pictures changed since you opened this. Look at them again in the viewer before you answer."
+          : "Answer the questions below. Nothing is decided until you do.",
         gateSession.evidenceChanged ? "warn" : "ready",
       );
       requestAnimationFrame(() => {
@@ -1388,23 +1437,23 @@ function startSigning(requestId) {
     if (message.type === "status") {
       if (message.signer === "exited") gateSession.inputReady = false;
       setTerminalStatus(
-        message.signer === "exited" ? "SIGNER EXITED" : "SIGNING IN PROGRESS",
-        message.exit_code == null ? `Signer status: ${message.signer || "active"}.` : `Signer exited with status ${message.exit_code}.`,
+        message.signer === "exited" ? "Finished" : "Signing",
+        message.exit_code == null ? "The signing program is running." : message.exit_code ? `The signing program stopped with an error (code ${message.exit_code}).` : "The signing program finished.",
         message.exit_code ? "error" : "ready",
       );
       return;
     }
     if (message.type === "lifecycle") {
-      setTerminalStatus("SIGNING IN PROGRESS", message.message || message.status || "Signer lifecycle updated.", "ready");
+      setTerminalStatus("Signing", message.message || message.status || "The signing program is running.", "ready");
       return;
     }
     if (message.type === "bye") {
       gateSession.inputReady = false;
-      setTerminalStatus("SESSION COMPLETE", message.reason ? `Signer closed: ${message.reason}.` : "Signer session complete.", "");
+      setTerminalStatus("Done", message.reason ? `Signing closed: ${message.reason}.` : "Signing is done.", "");
     }
   });
   socket.addEventListener("error", () => {
-    if (gateSession.socket === socket) setTerminalStatus("CONNECTION ERROR", "The terminal connection could not be completed.", "error");
+    if (gateSession.socket === socket) setTerminalStatus("Connection problem", "Couldn't reach the signing program. Try again.", "error");
   });
   socket.addEventListener("close", (event) => {
     if (gateSession.socket !== socket) return;
@@ -1427,82 +1476,338 @@ async function copyCommand(command) {
   if (status) status.textContent = copyStatus;
 }
 
-function renderCanonStrip(s) {
-  const canon = Array.isArray(s.gates.canon) ? [...s.gates.canon] : [];
-  canon.sort((a, b) => (a.entity || "").localeCompare(b.entity || "")
-    || ({ hero: 0, turnaround: 1, expressions: 2 }[a.role] ?? 9)
-      - ({ hero: 0, turnaround: 1, expressions: 2 }[b.role] ?? 9));
-  const strip = el("div", { class: "canon-strip" });
-  for (const entry of canon) {
-    strip.append(el("a", {
-      class: `canon-frame${entry.role === "hero" ? " hero" : ""}`,
-      href: mediaURL(s.project_id, entry.object_rel),
-      target: "_blank",
-      rel: "noreferrer",
-    },
-      el("img", {
-        src: thumbURL(s.project_id, entry.object_rel, entry.role === "hero" ? 640 : 320),
-        width: entry.role === "hero" ? "640" : "320",
-        height: entry.role === "hero" ? "480" : "240",
-        loading: "lazy",
-        alt: `${humanize(entry.role)} canon reference for ${entry.entity}`,
-      }),
-      el("span", {}, entry.entity, el("b", {}, humanize(entry.role)))));
+// ---------------------------------------------------------------------------
+// The cutting room: trim bin (cast and places), viewer, log
+// ---------------------------------------------------------------------------
+
+// Machine text (hashes, receipt ids, config digests) never reaches the main
+// view. The full record stays one click away under "Everything in this request".
+const ICONS = {
+  play: '<svg class="ic solid" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 1.8v8.4L10 6z"/></svg>',
+  pause: '<svg class="ic solid" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 2h2.4v8H2.5zM7.1 2h2.4v8H7.1z"/></svg>',
+  expand: '<svg class="ic" viewBox="0 0 12 12" aria-hidden="true"><path d="M7 1.5h3.5V5M5 10.5H1.5V7M10.5 1.5 6.8 5.2M1.5 10.5l3.7-3.7"/></svg>',
+  star: '<svg class="ic solid" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 .9l1.5 3.3 3.6.4-2.7 2.4.8 3.6L6 8.8l-3.2 1.8.8-3.6L.9 4.6l3.6-.4z"/></svg>',
+};
+function icon(name) {
+  const span = document.createElement("span");
+  span.innerHTML = ICONS[name];
+  return span.firstChild;
+}
+
+function plain(text) {
+  return String(text || "")
+    .replace(/\b(?:sha256[:=]\s*)?[0-9a-f]{16,}\b/gi, "")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "")
+    .replace(/\b(?:receipt|hash|digest|config_sha256|look_hash)\s*[:=]?\s*(?=[,;)\s]|$)/gi, "")
+    .replace(/\(\s*[,;]?\s*\)/g, "")
+    .replace(/\s+([,.;:)])/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function titleCase(id) {
+  return String(id || "").split(/[-_]/).filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+
+const GATE_WORDS = {
+  look_lock: "Lock a look",
+  headshot: "Pick a headshot",
+  headshot_grandfather: "Confirm an existing headshot",
+  reference_import: "Import a reference image",
+  sheet: "Approve a character sheet",
+  qc_override: "Overrule a quality check",
+  config: "Approve the production plan",
+  pipeline_migration: "Move to a newer pipeline",
+};
+const gateWords = (kind) => GATE_WORDS[kind] || titleCase(kind);
+
+const SLOT_OF_KIND = {
+  look_lock: "look",
+  headshot: "headshot", headshot_grandfather: "headshot", reference_import: "headshot",
+  sheet: "sheet", qc_override: "sheet",
+};
+const FRAME_ROLES = [
+  ["hero", "Headshot"],
+  ["turnaround", "Turnaround"],
+  ["expressions", "Expressions"],
+];
+
+function entityKeyOf(row) {
+  const scope = String(row.scope || "");
+  const m = scope.match(/^(character|location):(.+)$/);
+  if (m) return `${m[1]}:${m[2]}`;
+  // Older requests carried no scope; they always named a character.
+  if (!scope && SLOT_OF_KIND[row.kind] && row.entity_id && !/^[0-9a-f]{16,}$/i.test(row.entity_id)) {
+    return `character:${row.entity_id}`;
   }
-  if (!canon.length) strip.append(el("div", { class: "gate-empty" }, "No visual canon has been published yet."));
-  const looks = Array.isArray(s.gates.looks) ? s.gates.looks : [];
-  for (const look of looks) {
-    const writeros = look.source_ref && typeof look.source_ref === "object" ? look.source_ref : null;
-    const ticket = typeof look.source_ticket_ref === "object" && look.source_ticket_ref
-      ? look.source_ticket_ref.id || JSON.stringify(look.source_ticket_ref)
-      : look.source_ticket_ref;
-    const source = writeros
-      ? `WriterOS ${String(writeros.record_id || "—").slice(0, 12)} · reference ${writeros.reference || "—"}`
-      : `ticket ${ticket || "—"}`;
-    strip.append(el("div", { class: "canon-look" },
-      el("span", {}, `${look.entity_kind || "entity"} · ${look.entity || "—"}`),
-      el("b", {}, `look ${String(look.look_hash || "—").slice(0, 12)}`),
-      el("small", {}, source)));
+  return null;
+}
+
+// Every character and place the film knows about, each with the same three
+// slots (look, headshot, sheet), filled from what is on disk.
+function buildRoster(s) {
+  const a = s.artifacts || {};
+  const canonPacket = a.canon_packet || {};
+  const looksPacket = (a.look_packet && a.look_packet.looks) || [];
+  const gates = s.gates || {};
+  const map = new Map();
+  const add = (kind, id, name) => {
+    if (!id) return null;
+    const key = `${kind}:${id}`;
+    if (!map.has(key)) {
+      map.set(key, {
+        key, kind, id, name: name || titleCase(id),
+        frames: [], look: null, lookSpec: null, pending: [], history: [],
+      });
+    } else if (name) {
+      map.get(key).name = name;
+    }
+    return map.get(key);
+  };
+  for (const c of canonPacket.characters || []) add("character", c.id, c.name);
+  for (const l of canonPacket.locations || []) add("location", l.id, l.name);
+  for (const look of gates.looks || []) {
+    const e = add(look.entity_kind === "location" ? "location" : "character", look.entity);
+    if (e) e.look = look;
   }
+  for (const entry of looksPacket) {
+    const e = add(entry.entity_kind === "location" ? "location" : "character", entry.entity_id);
+    if (e) e.lookSpec = entry.look_spec || null;
+  }
+  for (const c of gates.canon || []) {
+    const e = add("character", c.entity);
+    if (e) e.frames.push(c);
+  }
+  for (const row of gates.requests || []) {
+    const key = entityKeyOf(row);
+    if (!key) continue;
+    const [kind, id] = key.split(/:(.+)/);
+    const e = add(kind, id);
+    if (!e) continue;
+    if (row.state === "pending") e.pending.push(row);
+    else e.history.push(row);
+  }
+  for (const e of map.values()) {
+    e.frames.sort((x, y) => FRAME_ROLES.findIndex(([r]) => r === x.role) - FRAME_ROLES.findIndex(([r]) => r === y.role));
+    const has = (role) => e.frames.some((f) => f.role === role);
+    const waiting = (slot) => e.pending.some((r) => SLOT_OF_KIND[r.kind] === slot);
+    const lastDeclined = (slot) => {
+      const rows = e.history.filter((r) => SLOT_OF_KIND[r.kind] === slot);
+      rows.sort((x, y) => (y.mtime || 0) - (x.mtime || 0));
+      return rows[0] && rows[0].state === "declined";
+    };
+    const slot = (slotName, done) => (waiting(slotName) ? "waiting" : done ? "done" : lastDeclined(slotName) ? "declined" : "none");
+    e.slots = {
+      look: slot("look", Boolean(e.look)),
+      headshot: slot("headshot", has("hero")),
+      sheet: slot("sheet", has("turnaround") || has("expressions")),
+    };
+    e.active = Boolean(e.look || e.frames.length || e.pending.length || e.history.length);
+  }
+  const ordered = [...map.values()];
+  ordered.sort((x, y) => (y.pending.length > 0) - (x.pending.length > 0) || (y.active - x.active));
+  return ordered;
+}
+
+function hasRoster(s) {
+  return hasAuthoredGates(s) && buildRoster(s).length > 0;
+}
+
+function selectEntity(key) {
+  selectedEntity = key;
+  selectedGateId = null;
+  gateDetail = null;
+  gateDetailState = "idle";
+  selectedFrame = 0;
+  render();
+  focusViewer();
+}
+
+function focusViewer() {
+  requestAnimationFrame(() => {
+    const viewer = document.getElementById("viewer");
+    if (viewer) { viewer.scrollTop = 0; viewer.focus({ preventScroll: true }); }
+  });
+}
+
+const SLOT_LABEL = { look: "Look", headshot: "Headshot", sheet: "Sheet" };
+const SLOT_STATE = { done: "done", waiting: "waiting for you", declined: "last one declined", none: "not made yet" };
+
+function renderBin(s, roster) {
+  const bin = el("nav", { class: "bin", "aria-label": "Characters and places" });
+  const groups = [["character", "Characters"], ["location", "Places"]];
+  for (const [kind, label] of groups) {
+    const members = roster.filter((e) => e.kind === kind);
+    if (!members.length) continue;
+    const list = el("ul", { class: "bin-list" });
+    for (const e of members) {
+      const hero = e.frames.find((f) => f.role === "hero") || e.frames[0];
+      const face = el("span", { class: "clip-face", "aria-hidden": "true" },
+        hero
+          ? el("img", { src: thumbURL(s.project_id, hero.object_rel, 320), alt: "", loading: "lazy" })
+          : el("span", { class: "initial" }, e.name.charAt(0)));
+      const slots = el("span", { class: "slots", "aria-hidden": "true" },
+        ["look", "headshot", "sheet"].map((k) => el("span", { class: `slot ${e.slots[k]}` })));
+      const described = ["look", "headshot", "sheet"].map((k) => `${SLOT_LABEL[k]} ${SLOT_STATE[e.slots[k]]}`).join(", ");
+      const current = selectedEntity === e.key && !selectedGateId;
+      list.append(el("li", {}, el("button", {
+        class: `clip${e.active ? "" : " quiet"}`,
+        type: "button",
+        "aria-current": current ? "true" : null,
+        "aria-label": `${e.name}. ${described}${e.pending.length ? ". Needs you" : ""}`,
+        onclick: () => selectEntity(e.key),
+      }, face, el("span", { class: "clip-name" }, e.name), slots,
+        e.pending.length ? el("span", { class: "needs-mark", "aria-hidden": "true" }, "You") : null)));
+    }
+    bin.append(el("div", { class: "bin-group" }, el("span", { class: "plate-label" }, label), list));
+  }
+  bin.append(el("div", { class: "bin-legend", "aria-hidden": "true" },
+    el("div", {}, el("span", { class: "slot done" }), "Done"),
+    el("div", {}, el("span", { class: "slot waiting" }), "Waiting for you"),
+    el("div", {}, el("span", { class: "slot" }), "Not made yet"),
+    el("div", {}, "Tabs read look, headshot, sheet")));
+  return bin;
+}
+
+function tape(state, text) {
+  return el("span", { class: `tape ${state}` }, text);
+}
+
+function renderScreen(s, frame, fallback) {
+  if (!frame) return fallback;
+  const screen = el("figure", { class: "screen" });
+  if (frame.missing) {
+    screen.classList.add("blank");
+    screen.append(el("div", {}, el("b", {}, "Picture missing"), el("p", {}, frame.missing)));
+    return screen;
+  }
+  // Register the picture only when it changes; live refreshes must not
+  // replay the motion on a frame Ben is already studying.
+  const fresh = renderScreen.last !== frame.path;
+  renderScreen.last = frame.path;
+  screen.append(
+    el("img", { src: mediaURL(s.project_id, frame.path), alt: frame.alt || frame.label, class: fresh ? null : "settled" }),
+    el("figcaption", { class: "frame-label" }, frame.label),
+    el("a", { class: "open-full", href: mediaURL(s.project_id, frame.path), target: "_blank", rel: "noreferrer" }, "Open full size"));
+  return screen;
+}
+
+function renderFrameStrip(s, frames, labelPrefix) {
+  if (frames.length < 2) return null;
+  const strip = el("div", { class: "strip", role: "list", "aria-label": `${labelPrefix} frames` });
+  frames.forEach((frame, index) => {
+    const current = index === selectedFrame;
+    const pic = el("span", { class: "frame-pic" },
+      frame.missing
+        ? el("span", { class: "missing" }, "Missing")
+        : el("img", { src: thumbURL(s.project_id, frame.path, 320), alt: "", loading: "lazy" }),
+      el("span", { class: "leader", "aria-hidden": "true" }));
+    strip.append(el("div", { role: "listitem" }, el("button", {
+      class: `frame ${frame.state || ""}`.trim(),
+      type: "button",
+      "aria-current": current ? "true" : null,
+      "aria-label": `Show ${frame.label} in the viewer`,
+      onclick: () => { selectedFrame = index; render(); },
+    }, pic, el("span", { class: "frame-cap" }, frame.label))));
+  });
+  // Advance the strip sideways only; never scroll the viewer itself.
+  requestAnimationFrame(() => {
+    const active = strip.querySelector('.frame[aria-current="true"]');
+    if (!active) return;
+    const target = active.offsetLeft - (strip.clientWidth - active.offsetWidth) / 2;
+    strip.scrollTo({ left: Math.max(0, target), behavior: "smooth" });
+  });
   return strip;
 }
 
-function renderGateDetail(s) {
-  if (!selectedGateId) {
-    return el("section", { class: "gate-detail empty-detail", id: "gate-detail", tabindex: "-1" },
-      el("div", { class: "gate-empty" },
-        el("b", {}, "Select a request to inspect its evidence"),
-        el("p", {}, "Evidence is loaded only when requested and refreshed again under the signing lease.")));
-  }
-  const summary = gateRowById(s, selectedGateId);
-  if (gateDetailState === "loading") {
-    return el("section", {
-      class: "gate-detail",
-      id: "gate-detail",
-      tabindex: "-1",
-      role: "status",
-      "aria-live": "polite",
-      "aria-busy": "true",
-    }, el("h3", { class: "gate-loading" }, "Loading evidence…"));
-  }
-  if (gateDetailState === "error") {
-    return el("section", {
-      class: "gate-detail",
-      id: "gate-detail",
-      tabindex: "-1",
-      "aria-labelledby": "gate-detail-heading",
-    },
-      el("h3", { class: "sr-only", id: "gate-detail-heading", tabindex: "-1" }, "Evidence could not be loaded"),
-      el("div", { class: "gate-packet-error", role: "alert" },
-        el("b", {}, "EVIDENCE COULD NOT BE LOADED"), el("span", {}, gateDetailError)));
-  }
-  if (!gateDetail) {
-    return el("section", { class: "gate-detail", id: "gate-detail", tabindex: "-1" },
-      el("div", { class: "gate-empty", role: "status" }, "No detail packet returned."));
-  }
+function historyList(rows) {
+  if (!rows.length) return null;
+  const sorted = [...rows].sort((x, y) => (y.mtime || 0) - (x.mtime || 0));
+  return el("ul", { class: "history" }, sorted.slice(0, 8).map((row) => el("li", { class: row.state },
+    el("span", { class: "dot", "aria-hidden": "true" }),
+    el("span", {},
+      el("button", { class: "text linkish", type: "button", onclick: () => selectGate(row.request_id), style: "all:unset;cursor:pointer" },
+        `${gateWords(row.kind)}: ${row.state === "done" ? "signed" : row.state}`),
+      el("small", {}, fmtGateTime(row.mtime))))));
+}
 
-  const stale = !summary || summary.state !== "pending" || gateDetail.state !== "pending";
-  const packetError = Boolean(gateDetail.error || (gateDetail.packet && gateDetail.packet.packet_error));
+function renderEntityViewer(s, e) {
+  const frames = e.frames.map((f) => {
+    const role = FRAME_ROLES.find(([r]) => r === f.role);
+    return { path: f.object_rel, label: role ? role[1] : titleCase(f.role), state: "done", alt: `${e.name}, ${role ? role[1] : f.role}` };
+  });
+  if (selectedFrame >= frames.length) selectedFrame = 0;
+  const nextStep = e.slots.look !== "done"
+    ? "No look is locked yet. Once you promote a look in WriterOS and it's locked here, the headshot comes next."
+    : e.slots.headshot !== "done"
+      ? "The look is locked. The headshot comes next."
+      : "The headshot is done. The character sheet comes next.";
+  const blank = el("figure", { class: "screen blank" },
+    el("div", {}, el("b", {}, "Nothing on film yet"), el("p", {}, nextStep)));
+
+  const lookText = e.lookSpec && (e.lookSpec.prompt_safe_description || e.lookSpec.description);
+  const source = e.look && e.look.source_ref && typeof e.look.source_ref === "object"
+    ? "From WriterOS"
+    : e.look ? "From a Story-drive ticket" : null;
+
+  const head = el("header", { class: "viewer-head" },
+    el("div", {},
+      el("h2", { id: "viewer-heading" }, e.name),
+      el("div", { class: "what" }, e.kind === "location" ? "Place" : "Character")),
+    el("div", { class: "tapes" },
+      ["look", "headshot", "sheet"].map((k) => tape(e.slots[k], SLOT_LABEL[k]))));
+
+  const needs = e.pending.length ? el("section", { class: "notice", style: "margin-top:24px" },
+    el("span", {},
+      el("b", {}, `${e.name} needs you. `),
+      e.pending.map((row, i) => [i ? " " : "", el("button", {
+        class: "quiet-btn", type: "button", style: "margin:0 0 0 6px", onclick: () => selectGate(row.request_id),
+      }, gateWords(row.kind))]))) : null;
+
+  return el("div", { class: "viewer-inner" },
+    head,
+    renderScreen(s, frames[selectedFrame], blank),
+    renderFrameStrip(s, frames, e.name),
+    needs,
+    el("div", { class: "notes" },
+      el("section", {},
+        el("h3", {}, "The look"),
+        lookText ? el("p", {}, lookText) : el("p", {}, "No look written yet."),
+        source ? el("p", { class: "source" }, source) : null),
+      el("section", {},
+        el("h3", {}, "What happened"),
+        historyList(e.history) || el("p", {}, "Nothing signed yet."))));
+}
+
+function gateFrames(packet) {
+  const frames = [];
+  const push = (visual, label, state) => {
+    if (!visual) return;
+    frames.push({
+      path: visual.path,
+      label,
+      state,
+      missing: visual.error || (!visual.path ? "This picture could not be found." : null),
+      alt: label,
+    });
+  };
+  if (!packet || typeof packet !== "object") return frames;
+  for (const c of packet.candidates || []) {
+    if (c && c.visual) push(c.visual, c.number != null ? `Candidate ${c.number}` : humanize(c.visual.label || "candidate"), "waiting");
+  }
+  for (const v of packet.visuals || []) if (v) push(v, titleCase(v.label || "picture"), "");
+  if (packet.visual) push(packet.visual, titleCase(packet.visual.label || "picture"), "");
+  let n = 0;
+  for (const row of packet.field_rows || []) {
+    if (!row || !row.visual) continue;
+    n += 1;
+    push(row.visual, `Attempt ${n}`, "declined");
+  }
+  return frames;
+}
+
+function gateActions(s, summary, stale, packetError) {
   const lease = s.gates.run_lease || {};
   const matchingOpen = openGateSessions.find((session) => session.request_id === selectedGateId);
   const otherOpen = openGateSessions.find((session) => session.request_id !== selectedGateId);
@@ -1511,115 +1816,201 @@ function renderGateDetail(s) {
   const actionablePacket = !stale && !packetError;
   const actionable = actionablePacket && !lease.held && !otherOpen && !socketOpen;
   const reconnectable = Boolean(matchingOpen && !socketOpen && actionablePacket && !otherOpen);
-  const headerSummary = summary || gateDetail.request || {};
-  const facts = [
-    ["kind", headerSummary.kind], ["stage", headerSummary.stage], ["scope", headerSummary.scope],
-    ["entity", headerSummary.entity_id], ["snapshot", fmtGateTime(gateDetail.snapshot_at)],
-  ];
 
-  const actions = el("div", { class: "gate-actions" });
+  let button;
   if (reconnectable) {
-    actions.append(
-      el("span", { class: "gate-session-note" },
-        `Signing in progress · request ${matchingOpen.request_id} · pid ${matchingOpen.pid} · started ${fmtGateTime(matchingOpen.started)}`),
-      el("button", { type: "button", class: "gate-primary", onclick: () => startSigning(selectedGateId) }, "Reconnect terminal"));
+    button = el("button", { type: "button", class: "gate-primary", onclick: () => startSigning(selectedGateId) }, "Reconnect");
   } else {
-    actions.append(el("button", {
+    button = el("button", {
       type: "button",
       class: "gate-primary",
       disabled: actionable ? null : "",
       onclick: () => startSigning(selectedGateId),
-    }, socketOpen && gateSession.requestId === selectedGateId
-      ? "Signing in progress"
-      : matchingOpen ? "Reconnect unavailable" : "Start signing"));
+    }, socketOpen && gateSession.requestId === selectedGateId ? "Signing now" : matchingOpen ? "Can't reconnect" : "Start signing");
   }
-  if (otherOpen) {
-    actions.append(el("div", { class: "gate-blocker", role: "status" },
-      `Signing disabled: request ${otherOpen.request_id} already has an open signer (pid ${otherOpen.pid}).`));
-  } else if (lease.held && !matchingOpen) {
-    actions.append(el("div", { class: "gate-blocker", role: "status" },
-      `Signing disabled: live run lease held by pid ${lease.pid || "unknown"} since ${fmtGateTime(lease.started)}.`));
-  } else if (stale) {
-    actions.append(el("div", { class: "gate-blocker stale", role: "status" },
-      "This request is no longer pending. The displayed packet is read-only; an existing terminal session is left intact."));
-  } else if (packetError) {
-    actions.append(el("div", { class: "gate-blocker", role: "status" }, "Signing is disabled until the evidence packet is valid."));
-  } else if (socketOpen) {
-    actions.append(el("div", { class: "gate-session-note", role: "status" },
-      `Terminal session ${gateSession.requestId || "connecting"} is active and preserved across board refreshes.`));
-  }
+  let blocker = null;
+  if (otherOpen) blocker = "You're already signing something else. Finish that first.";
+  else if (lease.held && !matchingOpen) blocker = `A production run is working on this film right now${lease.started ? ` (since ${fmtGateTime(lease.started)})` : ""}. Signing opens when it stops.`;
+  else if (stale) blocker = "This is already decided. What you see is the record.";
+  else if (packetError) blocker = "Signing is off until every picture in this request can be shown.";
+  else if (reconnectable) blocker = "A signing session for this is still open. Reconnect to pick up where you left off.";
+  else if (socketOpen) blocker = "Answer the questions in the signing panel on the right.";
 
-  const command = summary && summary.next_command;
-  const commandBox = command ? el("div", { class: "gate-command" },
-    el("div", {}, el("span", {}, "NEXT COMMAND"),
-      el("button", { type: "button", onclick: () => copyCommand(command) }, "Copy command")),
-    el("code", {}, command),
-    el("p", { "aria-live": "polite", "data-gate-copy-status": "" }, copyStatus)) : null;
+  return el("section", { class: "sign-bay", "aria-label": "Sign" },
+    el("p", {}, stale
+      ? "Nothing to sign here."
+      : "Signing opens the signing program in the panel on the right. It asks you one question at a time: approve or decline, which candidate, and why. Nothing is decided until you answer."),
+    stale ? null : button,
+    blocker ? el("p", { class: "blocker", role: "status" }, blocker) : null);
+}
 
-  return el("section", {
-    class: `gate-detail${stale ? " stale" : ""}`,
+function renderGateViewer(s) {
+  const summary = gateRowById(s, selectedGateId);
+  const wrap = (...children) => el("section", {
+    class: "viewer-inner gate-detail",
     id: "gate-detail",
     tabindex: "-1",
     "aria-labelledby": "gate-detail-heading",
-  },
-    el("header", { class: "gate-detail-head" },
-      el("div", {},
-        el("span", { class: "gate-detail-kicker" }, `EVIDENCE PACKET · ${selectedGateId}`),
-        el("h3", { id: "gate-detail-heading", tabindex: "-1" },
-          headerSummary.summary || humanize(headerSummary.kind || "Gate request"))),
-      gateStateChip(summary ? summary.state : gateDetail.state)),
-    gateDetail.error ? el("div", { class: "gate-packet-error", role: "alert" },
-      el("b", {}, "EVIDENCE LOOKUP ERROR"), el("span", {}, gateDetail.error)) : null,
+  }, ...children);
+  if (gateDetailState === "loading") {
+    return wrap(el("h2", { id: "gate-detail-heading", class: "sr-only" }, "Loading"),
+      el("figure", { class: "screen blank", role: "status", "aria-busy": "true" }, el("div", {}, el("b", {}, "Loading the pictures…"))));
+  }
+  if (gateDetailState === "error") {
+    return wrap(el("h2", { id: "gate-detail-heading", class: "sr-only" }, "Could not load"),
+      el("div", { class: "alert", role: "alert" }, el("b", {}, "Couldn't load this request"), el("span", {}, gateDetailError)));
+  }
+  if (!gateDetail) {
+    return wrap(el("h2", { id: "gate-detail-heading", class: "sr-only" }, "Empty"), el("p", { class: "gate-empty" }, "Nothing came back for this request."));
+  }
+  const header = summary || gateDetail.request || {};
+  const stale = !summary || summary.state !== "pending" || gateDetail.state !== "pending";
+  const packetError = Boolean(gateDetail.error || (gateDetail.packet && gateDetail.packet.packet_error));
+  let frames = gateFrames(gateDetail.packet);
+  const key = entityKeyOf(header);
+  const entity = key ? buildRoster(s).find((e) => e.key === key) : null;
+  const who = key ? (entity && entity.name) || titleCase(key.split(":")[1]) : null;
+  // Decided requests keep no pictures of their own; show what is on film now.
+  if (!frames.length && stale && entity) {
+    const roles = { headshot: ["hero"], sheet: ["turnaround", "expressions"] }[SLOT_OF_KIND[header.kind]] || [];
+    frames = entity.frames.filter((f) => roles.includes(f.role)).map((f) => {
+      const role = FRAME_ROLES.find(([r]) => r === f.role);
+      return { path: f.object_rel, label: `On film now: ${role ? role[1] : titleCase(f.role)}`, state: "done", alt: `${entity.name}, ${role ? role[1] : f.role}` };
+    });
+  }
+  if (selectedFrame >= frames.length) selectedFrame = 0;
+  const stateTape = header.state === "pending" || (!summary && gateDetail.state === "pending")
+    ? tape("waiting", "Needs you")
+    : header.state === "done" ? tape("done", "Signed")
+    : header.state === "declined" ? tape("declined", "Declined")
+    : tape("", humanize(header.state || "unknown"));
+  const title = who ? `${gateWords(header.kind)}: ${who}` : gateWords(header.kind);
+  // Swap quoted machine ids ('place-a') for the names Ben knows.
+  const roster = buildRoster(s);
+  const named = plain(header.summary).replace(/'([a-z0-9][a-z0-9-]*)'/g, (_, id) =>
+    (roster.find((e) => e.id === id) || {}).name || titleCase(id));
+  const firstSentence = (named.match(/^.*?[.!?](?=\s|$)/) || [named])[0];
+
+  const facts = [
+    ["what", gateWords(header.kind)], ["kind", header.kind], ["stage", header.stage], ["scope", header.scope],
+    ["entity", header.entity_id], ["snapshot", fmtGateTime(gateDetail.snapshot_at)],
+  ];
+  const command = summary && summary.next_command;
+  const more = el("details", { class: "more" },
+    el("summary", {}, "Everything in this request"),
+    gateDetail.error ? el("div", { class: "gate-packet-error", role: "alert" }, el("b", {}, "Lookup error"), el("span", {}, gateDetail.error)) : null,
+    header.summary ? textEvidence("the full request", header.summary) : null,
+    el("dl", { class: "gate-meta-strip gate-detail-facts" }, facts.map(([label, value]) =>
+      el("div", { class: "gate-meta-chip" }, el("dt", {}, label), el("dd", {}, value || "—")))),
     gateDetail.packet
-      ? renderPacketEvidence(s, gateDetail.packet)
-      : el("div", { class: "gate-archive-detail" },
+      ? renderPacketEvidence(s, gateDetail.packet, { visuals: false })
+      : el("div", {},
         textEvidence("request", gateDetail.request || {}),
         gateDetail.approval_receipt_id ? textEvidence("approval receipt id", gateDetail.approval_receipt_id) : null,
         gateDetail.declined_note ? textEvidence("declined note", gateDetail.declined_note) : null,
-        gateDetail.unverified_ledger_row
-          ? textEvidence(gateDetail.ledger_label || "unverified ledger row", gateDetail.unverified_ledger_row) : null),
-    el("dl", { class: "gate-detail-facts" }, facts.map(([label, value]) =>
-      el("div", {}, el("dt", {}, label), el("dd", {}, value || "—")))),
-    commandBox,
-    actions);
+        gateDetail.unverified_ledger_row ? textEvidence(gateDetail.ledger_label || "unverified ledger row", gateDetail.unverified_ledger_row) : null),
+    command ? el("div", { class: "gate-command" },
+      el("p", { class: "source" }, "Prefer your own Terminal? This command does the same signing."),
+      el("code", {}, command),
+      el("button", { type: "button", onclick: () => copyCommand(command) }, "Copy command"),
+      el("p", { "aria-live": "polite", "data-gate-copy-status": "" }, copyStatus)) : null);
+
+  const blank = el("figure", { class: `screen blank${stale ? " band" : ""}` },
+    el("div", {}, el("b", {}, "No pictures in this request"),
+      el("p", {}, stale ? "Decided requests keep their record, not their pictures. The details are below." : "Read the details below before you sign.")));
+
+  // Gate evidence pictures keep their stable hooks for the visual checks.
+  const evidence = frames.length ? el("div", { class: "sr-only" },
+    frames.map((f, i) => el("figure", { class: "gate-evidence-card" },
+      f.path && !f.missing ? el("img", { class: "gate-evidence-image", src: thumbURL(s.project_id, f.path, 320), alt: "", loading: "lazy" }) : null,
+      el("figcaption", {}, el("b", {}, gateDetail.packet && gateDetail.packet.candidates && gateDetail.packet.candidates[i] && gateDetail.packet.candidates[i].number != null ? `[${gateDetail.packet.candidates[i].number}]` : f.label))))) : null;
+
+  return wrap(
+    el("header", { class: "viewer-head" },
+      el("div", {},
+        el("h2", { id: "gate-detail-heading", class: title.length > 34 ? "long" : "", tabindex: "-1" }, title),
+        firstSentence && firstSentence !== title ? el("p", { class: "request-summary" }, shortText(firstSentence, 200)) : null),
+      el("div", { class: "tapes" }, stateTape)),
+    packetError ? el("div", { class: "alert", role: "alert" }, el("b", {}, "Some evidence is missing or changed"),
+      el("span", {}, gateDetail.packet && gateDetail.packet.error ? gateDetail.packet.error : "Signing stays off until it's complete.")) : null,
+    renderScreen(s, frames[selectedFrame], blank),
+    renderFrameStrip(s, frames, "Request"),
+    evidence,
+    gateActions(s, summary, stale, packetError),
+    more);
 }
 
-function renderGatesWorkbench(s) {
-  if (!hasAuthoredGates(s)) return null;
-  const cost = s.gates.cost || {};
-  const costUnknown = cost.total_spent_usd == null;
-  const costError = typeof cost.error === "string" && cost.error;
-  const shownRequests = (s.gates.requests || []).length;
-  const totalRequests = Number.isInteger(s.gates.total_requests) ? s.gates.total_requests : shownRequests;
-  return el("section", { class: "gates-workbench", id: "gates" },
-    el("header", { class: "gates-head" },
-      el("div", {},
-        el("span", { class: "gates-kicker" }, "AUTHORED-FILM GOVERNANCE"),
-        el("h2", {}, "Gates / Evidence desk"),
-        el("p", {}, "Proof first. Signing happens in the live terminal against a packet refreshed under lease.")),
-      el("div", { class: `gate-cost-tile${costError || costUnknown ? " unavailable" : ""}` },
-        el("span", {}, `${cost.label || "ledger"} cost`),
-        el("b", {}, costError ? "UNAVAILABLE" : costUnknown ? "UNKNOWN" : fmtMoney(cost.total_spent_usd)),
-        costError
-          ? el("small", { role: "alert" }, costError)
-          : cost.total_reserved_usd != null ? el("small", {}, `${fmtMoney(cost.total_reserved_usd)} reserved`) : null)),
-    s.gates.error ? el("div", { class: "gate-packet-error", role: "alert" },
-      el("b", {}, "GATE INDEX ERROR"), el("span", {}, s.gates.error)) : null,
-    el("div", { class: "canon-desk" },
-      el("h3", { class: "section-title" }, "Canon strip", el("span", { class: "meta" }, "published visual truth / active looks")),
-      renderCanonStrip(s)),
-    el("div", { class: "gate-ledger" },
-      el("h3", { class: "section-title" }, "Request ledger",
-        el("span", { class: "meta" }, s.gates.truncated
-          ? `${shownRequests} of ${totalRequests} requests · pending first`
-          : `${shownRequests} request${shownRequests === 1 ? "" : "s"}`)),
-      s.gates.truncated
-        ? el("div", { class: "gate-packet-error", role: "status" },
-          el("b", {}, "REQUEST LIST BOUNDED"),
-          el("span", {}, `${totalRequests - shownRequests} request${totalRequests - shownRequests === 1 ? "" : "s"} omitted; pending requests are prioritized.`))
-        : null,
-      renderGateRows(s)),
-    renderGateDetail(s));
+function logLine(row, roster) {
+  const key = entityKeyOf(row);
+  const who = key ? ((roster.find((e) => e.key === key) || {}).name || titleCase(key.split(":")[1])) : null;
+  return who ? `${who}: ${gateWords(row.kind).toLowerCase()}` : gateWords(row.kind);
+}
+
+function renderLog(s, roster) {
+  const needsBox = el("div", {});   // "Needs you", above the conversation
+  const history = el("div", {});    // the log, decisions and machine room, below it
+  if (hasAuthoredGates(s)) {
+    const pending = pendingGates(s);
+    const needs = el("section", { class: "log-section", id: "gates", "aria-labelledby": "needs-heading" },
+      el("h2", { id: "needs-heading" }, "Needs you", pending.length ? el("span", { class: "count" }, String(pending.length)) : null));
+    if (!pending.length) {
+      needs.append(el("p", { class: "log-quiet" }, "Nothing is waiting on you."));
+    }
+    for (const row of pending) {
+      const key = entityKeyOf(row);
+      const who = key ? (roster.find((e) => e.key === key) || {}).name : null;
+      needs.append(el("button", {
+        class: "need",
+        type: "button",
+        "aria-current": selectedGateId === row.request_id ? "true" : null,
+        "aria-label": `Inspect ${row.kind} gate ${row.request_id}`,
+        onclick: () => { selectedEntity = key; selectGate(row.request_id); },
+      },
+        el("span", { class: "what" }, gateWords(row.kind)),
+        el("span", { class: "text" }, plain(row.summary) || gateWords(row.kind)),
+        who ? el("span", { class: "who" }, who) : null));
+    }
+    if (s.gates.error) needs.append(el("div", { class: "alert", role: "alert" }, el("b", {}, "Couldn't read the approvals"), el("span", {}, s.gates.error)));
+    needsBox.append(needs);
+
+    const done = (s.gates.requests || []).filter((row) => row.state !== "pending")
+      .sort((x, y) => (y.mtime || 0) - (x.mtime || 0));
+    if (done.length) {
+      const shown = logShowAll ? done : done.slice(0, 8);
+      const list = el("ol", { class: "entries" }, shown.map((row) => el("li", { class: `entry ${row.state}` },
+        el("span", { class: "mark", "aria-hidden": "true" }),
+        el("div", {},
+          el("button", {
+            class: "text",
+            type: "button",
+            "aria-label": `Inspect ${row.kind} gate ${row.request_id}`,
+            onclick: () => { selectedEntity = entityKeyOf(row); selectGate(row.request_id); },
+          }, logLine(row, roster)),
+          el("small", {}, `${row.state === "done" ? "Signed" : row.state === "declined" ? "Declined" : "Dropped"} · ${fmtGateTime(row.mtime)}`)))));
+      const section = el("section", { class: "log-section", "aria-labelledby": "log-heading" },
+        el("h2", { id: "log-heading" }, "The log", el("span", { class: "count" }, String(s.gates.total_requests || done.length))),
+        list);
+      if (done.length > 8) {
+        section.append(el("button", {
+          class: "quiet-btn show-all", type: "button",
+          onclick: () => { logShowAll = !logShowAll; render(); },
+        }, logShowAll ? "Show fewer" : `Show all ${done.length}`));
+      }
+      history.append(section);
+    }
+  } else {
+    const awaiting = s.stages.find((x) => x.status === "awaiting_human");
+    needsBox.append(el("section", { class: "log-section", "aria-labelledby": "needs-heading" },
+      el("h2", { id: "needs-heading" }, "Needs you"),
+      awaiting
+        ? el("p", { class: "log-quiet", style: "color:var(--ink)" }, `${titleCase(awaiting.name)} is ready for your review. It's open in the viewer.`)
+        : el("p", { class: "log-quiet" }, "Nothing is waiting on you.")));
+  }
+  const decisions = renderDecisions(s);
+  if (decisions) history.append(decisions);
+  const activity = renderActivity(s);
+  if (activity) history.append(activity);
+  return { needs: needsBox, history };
 }
 
 // ---------------------------------------------------------------------------
@@ -1714,8 +2105,8 @@ function renderReplayBar(s) {
   if (!replay) {
     // collapsed: just the entry button
     return el("div", { class: "replay-bar", style: "justify-content:flex-end" },
-      el("span", { class: "rp-time" }, "scrub the whole run"),
-      el("span", { class: "rp-btn", onclick: startReplay }, "▶ REPLAY RUN"));
+      
+      el("button", { class: "rp-btn", type: "button", onclick: startReplay }, icon("play"), "Replay the run"));
   }
   const pos = (replay.t - replay.t0) / Math.max(1, replay.t1 - replay.t0);
   const timeLabel = el("span", { class: "rp-time" },
@@ -1726,7 +2117,7 @@ function renderReplayBar(s) {
       .toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   };
   return el("div", { class: "replay-bar" },
-    el("span", { class: "rp-btn", onclick: toggleReplayPlay }, replay.playing ? "❚❚" : "▶"),
+    el("button", { class: "rp-btn", type: "button", "aria-label": replay.playing ? "Pause" : "Play", onclick: toggleReplayPlay }, icon(replay.playing ? "pause" : "play")),
     el("input", {
       type: "range", min: "0", max: "1000", value: String(Math.round(pos * 1000)),
       // A full render() would destroy this slider mid-drag: while dragging,
@@ -1736,7 +2127,7 @@ function renderReplayBar(s) {
       onchange: (e) => { setT(e.target.value); render(); },
     }),
     timeLabel,
-    el("span", { class: "rp-btn", onclick: stopReplay }, "✕ LIVE"),
+    el("button", { class: "rp-btn", type: "button", onclick: stopReplay }, "Back to live"),
   );
 }
 
@@ -1795,61 +2186,76 @@ function render() {
     if (!sessionRow || sessionRow.state !== "pending") {
       gateSession.inputReady = false;
       setTerminalStatus(
-        "REQUEST NO LONGER PENDING",
-        "Board state changed while the terminal was open. Output is preserved; terminal input is disabled.",
+        "Already decided",
+        "This changed while signing was open. What's on screen is kept; typing is off.",
         "warn",
       );
     }
   }
-  document.title = `Backlot — ${s.title}`;
+  document.title = `${s.title} · Front Lot`;
   document.body.classList.toggle("first", firstPaint);
   firstPaint = false;
-  terminalShell.hidden = !authoredGates;
+
+  // The signing bay shows only while signing is open or resumable.
+  const signingOpen = Boolean(gateSession.socket) || openGateSessions.length > 0 || terminalShell.dataset.used === "1";
+  terminalShell.hidden = !(authoredGates && signingOpen);
+
+  const roster = authoredGates ? buildRoster(s) : [];
+  const withBin = roster.length > 0;
+  if (withBin && !selectedGateId && !roster.some((e) => e.key === selectedEntity)) {
+    const pending = pendingGates(s)[0];
+    const first = roster.find((e) => e.frames.length) || roster[0];
+    selectedEntity = (pending && entityKeyOf(pending)) || first.key;
+  }
+  tableEl.classList.toggle("no-bin", !withBin);
+
   app.innerHTML = "";
-  app.append(renderSlate(s));
-  app.append(renderRail(s));
-  const replayBar = renderReplayBar(state);
-  if (replayBar) app.append(replayBar);
+  app.append(renderBar(s));
+  if (withBin) app.append(renderBin(s, roster));
+
+  const viewer = el("main", { class: "viewer", id: "viewer", tabindex: "-1", "aria-label": "Viewer" });
   const drawer = renderDrawer(s);
-  if (drawer) app.append(drawer);
-  const awaitingNotice = renderAwaitingNotice(s);
-  if (awaitingNotice) app.append(awaitingNotice);
-  const noState = renderNoState(s);
-  if (noState) app.append(noState);
 
-  const main = el("div", { class: "main-col" });
-  const approvalReview = renderApprovalReview(s);
-  if (approvalReview) main.append(approvalReview);
-  const script = renderScriptCard(s);
-  if (script) main.append(script);
-  const aside = el("aside", {});
-  const decisions = renderDecisions(s);
-  const activity = renderActivity(s);
-  if (decisions) aside.append(decisions);
-  if (activity) aside.append(activity);
-
-  // Media sections live INSIDE the main column so a tall decisions rail
-  // never pushes them below the fold — the column flows beside the rail.
-  const storyboard = renderStoryboard(s);
-  const found = renderFoundMedia(s);
-  const renders = renderRenders(s);
-
-  if (approvalReview || script || decisions || activity) {
-    for (const section of [storyboard, found, renders]) {
-      if (section) main.append(section);
-    }
-    const hasAside = Boolean(decisions || activity);
-    app.append(el("div", { class: `board${hasAside ? "" : " solo"}` }, main, hasAside ? aside : null));
+  if (authoredGates && (selectedGateId || withBin)) {
+    let inner;
+    if (selectedGateId) inner = renderGateViewer(s);
+    else inner = renderEntityViewer(s, roster.find((e) => e.key === selectedEntity) || roster[0]);
+    if (drawer) inner.prepend(drawer);
+    viewer.append(inner);
   } else {
-    for (const section of [storyboard, found, renders]) {
-      if (section) app.append(section);
+    const inner = el("div", { class: "viewer-inner" });
+    const replayBar = renderReplayBar(state);
+    if (replayBar) inner.append(replayBar);
+    if (drawer) inner.append(drawer);
+    for (const section of [renderAwaitingNotice(s), renderNoState(s), renderApprovalReview(s),
+      renderScriptCard(s), renderStoryboard(s), renderFoundMedia(s), renderRenders(s)]) {
+      if (section) inner.append(section);
     }
+    if (inner.childNodes.length === 0) {
+      inner.append(el("figure", { class: "screen blank" },
+        el("div", {}, el("b", {}, "Nothing on film yet"), el("p", {}, "When this production makes something, it appears here."))));
+    }
+    viewer.append(inner);
   }
-  if (authoredGates) {
-    app.append(renderGatesWorkbench(s));
-    scheduleTerminalFit(false);
-  }
+  app.append(viewer);
+
+  const { needs, history } = renderLog(s, roster);
+  logFeed.innerHTML = "";
+  logFeed.append(needs);
+  document.getElementById("history-body").replaceChildren(history);
+  if (!terminalShell.hidden) scheduleTerminalFit(false);
 }
+
+// Left and right arrows step through the frame strip.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  const target = event.target;
+  if (target && (target.closest(".xterm") || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
+  const frames = document.querySelectorAll(".strip .frame");
+  if (frames.length < 2) return;
+  selectedFrame = (selectedFrame + (event.key === "ArrowRight" ? 1 : -1) + frames.length) % frames.length;
+  render();
+});
 
 // Defensive normalization (F-02): the server contract guarantees these
 // fields, but a sparse/legacy payload must degrade, never crash the board.
@@ -1909,11 +2315,32 @@ async function refresh() {
   }
 }
 
+if (!new URLSearchParams(location.search).has("static")) {
+  mountSession({
+    projectId,
+    feedEl: document.getElementById("session-feed"),
+    terminalEl: document.getElementById("session-terminal"),
+    composerEl: document.getElementById("composer"),
+    stateEl: document.getElementById("session-state"),
+    onRunFinished: (entity) => {
+      document.dispatchEvent(new CustomEvent("frontlot:run-finished", { detail: entity }));
+      if (!state || !hasAuthoredGates(state)) return;
+      const roster = buildRoster(state);
+      const key = ["character", "location"].map((k) => `${k}:${entity}`).find((k) => roster.some((e) => e.key === k));
+      if (key) selectEntity(key);
+    },
+  });
+} else {
+  document.getElementById("session").hidden = true;   // static views never start Claude
+}
+
 refresh().catch((err) => {
   app.innerHTML = "";
-  app.append(el("div", { class: "empty", style: "margin-top:80px" },
+  tableEl.classList.add("no-bin", "no-log");
+  document.getElementById("log").hidden = true;
+  app.append(el("div", { class: "viewer" }, el("div", { class: "empty", style: "margin-top:80px" },
     el("div", { class: "big" }, "PROJECT NOT FOUND"),
-    el("div", {}, String(err))));
+    el("p", {}, "This film isn't in Front Lot. "), el("a", { href: "/" }, "Back to your films"))));
 });
 // ?static=1 disables the live feed (screenshots, static exports).
 if (!new URLSearchParams(location.search).has("static")) {

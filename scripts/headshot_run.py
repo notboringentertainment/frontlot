@@ -34,7 +34,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from lib.run_common import (  # noqa: E402
-    RunError, gate_command, hold_lease, read_request, request_id_for, require_entity_id, resolve_project_root, write_decision,
+    EXIT_INPUT_CHANGED, Expectations, InputChanged, RunError, gate_command, hold_lease, parse_expectations, read_request, request_id_for, require_entity_id, resolve_project_root, write_decision,
 )
 
 STAGE = "headshots"
@@ -43,6 +43,7 @@ GENERATION_ENDPOINT = "bytedance/seedream/v5/pro/text-to-image"
 GENERATION_PRICE_USD = 0.07
 HERO_IMAGE_SIZE = {"width": 1024, "height": 1280}  # portrait; the local pre-check refuses landscape
 MAX_CANDIDATES = 4
+_EXPECT: Optional[Expectations] = None  # set by run_headshot at lease entry
 EXIT_BLOCKED = 3
 EXIT_DECLINED = 4
 # R1#12: a reject-all note that asks for a different APPEARANCE is a look change,
@@ -101,11 +102,17 @@ def default_generate(root: Path, ctx: dict[str, Any]) -> tuple[str, str]:
 
 def _checkpoint(root: Path) -> dict[str, Any]:
     path = root / f"checkpoint_{STAGE}.json"
-    if path.is_symlink() or not path.is_file():
+    if (path.is_symlink() or (path.exists() and not path.is_file())) and not (_EXPECT is not None and _EXPECT.frozen(path)):
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        raw = _EXPECT.read(path) if _EXPECT is not None else (path.read_bytes() if path.is_file() else None)
+    except OSError as exc:
+        raise HeadshotRunError(f"{path} is unreadable: {exc}") from exc
+    if raw is None:
+        return {}
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError as exc:
         raise HeadshotRunError(f"{path} is unreadable: {exc}") from exc
     return data if isinstance(data, dict) else {}
 
@@ -176,6 +183,8 @@ def _write(root: Path, packet: dict[str, Any], *, status: str, run_state: dict[s
         meta["approved_entries"] = approved_entries
     path = write_checkpoint(root.parent, root.name, STAGE, status, {"headshot_packet": packet},
                             pipeline_type="authored-film", human_approval_required=(status == "awaiting_human"), metadata=meta)
+    if _EXPECT is not None:
+        _EXPECT.thaw(path)  # from here the checkpoint holds this run's own bytes
     return checkpoint_digest(path)
 
 
@@ -222,7 +231,10 @@ def run_headshot(
     candidates: int = MAX_CANDIDATES, replace: bool = False, finish: bool = False, open_images: bool = False,
     grandfather: bool = False, retire: bool = False, palette: Optional[list[str]] = None,
     generate: Optional[Callable[[Path, dict[str, Any]], tuple[str, str]]] = None, judge_adapter: Any = None, out=None,
+    expectations: Optional[Expectations] = None,
 ) -> dict[str, Any]:
+    global _EXPECT
+    _EXPECT = None
     from lib.canon_enforcement import _is_hero_batch_manifest, _is_hero_qc_manifest, _is_qc_manifest
     from lib.headshots import HeadshotError, active_headshots
     from lib.look_ingest import LookIngestError, active_look_for
@@ -254,6 +266,12 @@ def run_headshot(
         raise HeadshotRunError("--import needs --origin-tool <name> (the tool that generated the image)")
 
     with hold_lease(root, config):
+        _EXPECT = expectations
+        if expectations is not None:
+            expectations.check("config", config.digest)  # the project.yaml bytes this run verified and uses
+        _checkpoint(root)  # frozen checkpoint verified now, under the lease, before anything paid
+        if expectations is not None:
+            expectations.require_all_verified()  # a frozen path this run never reads must not pass silently
         resume_check(root)
         try:
             look = active_look_for(root, "character", entity_id)
@@ -261,6 +279,8 @@ def run_headshot(
             raise HeadshotRunError(str(exc)) from exc
         if look is None:
             raise HeadshotRunError(f"{entity_id!r} has no active look; run look_run.py first")
+        if expectations is not None:
+            expectations.check("look", look.look_hash)
         # Inspection #5: the palette is part of the prompt; once a run has used
         # one for this entity + look it is reused until the look changes.
         stored = ((_meta(root).get("hero_palette") or {}).get(entity_id) or {})
@@ -1347,17 +1367,29 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--open", action="store_true")
     ap.add_argument("--grandfather", action="store_true")
     ap.add_argument("--retire", action="store_true", help="retire the active hero with no replacement (see D20.7)")
+    ap.add_argument("--expect-input-sha", action="append", default=[],
+                    help="PATH=SHA256 (or PATH=absent) of an input that must be unchanged (set by Front Lot)")
+    ap.add_argument("--expect-look-hash", help="the active look this run was approved against (set by Front Lot)")
+    ap.add_argument("--expect-config-sha", help="the signed project.yaml digest this run was approved against")
     a = ap.parse_args(argv)
+    try:
+        expectations = Expectations(parse_expectations(a.expect_input_sha),
+                                    {"look": a.expect_look_hash, "config": a.expect_config_sha})
+    except ValueError as exc:
+        ap.error(str(exc))
     load_env()
     try:
         root = resolve_project_root(a.project)
         run_headshot(root, a.entity, import_file=a.import_file, origin_tool=a.origin_tool, candidates=a.candidates,
                      replace=a.replace, finish=a.finish, open_images=a.open, grandfather=a.grandfather, retire=a.retire,
-                     palette=a.palette.split(",") if a.palette else None)
+                     palette=a.palette.split(",") if a.palette else None, expectations=expectations)
     except Blocked:
         return EXIT_BLOCKED
     except Declined:
         return EXIT_DECLINED
+    except InputChanged as exc:
+        print(f"headshot_run: {exc}", file=sys.stderr)
+        return EXIT_INPUT_CHANGED
     except RunError as exc:
         print(f"headshot_run: {exc}", file=sys.stderr)
         return 1
