@@ -218,3 +218,13 @@ def test_cli_brief_changed_at_the_paid_boundary_uses_the_refusal_code(shot, tmp_
         raise sa.BriefChanged('the shot brief changed after it was approved; nothing was spent')
     monkeypatch.setattr(sa, 'resolve', refuse)
     assert _run_cli(root, tmp_path, monkeypatch) == EXIT_INPUT_CHANGED
+
+
+def test_request_makes_the_take_folder_so_the_paid_step_never_stops_on_it(shot):
+    # First paid run 2026-10-09: the take's folder did not exist, so the provider check refused the Go.
+    from lib.pathsafe import validate_output_parent
+    from lib.supervised_production import request
+    root, spec = shot
+    inputs = request(root, spec['shot_id'], prompt='p', output_path=f"production/shots/{spec['shot_id']}/takes/take-01.mp4")
+    assert Path(inputs['output_path']).parent.is_dir()
+    validate_output_parent(inputs['output_path'], root)    # the check that stopped the real run now passes

@@ -134,7 +134,7 @@ const textOf = (blocks) =>
 function isPerson(origin) {
   if (!origin) return false;
   if (origin.kind === "composer") return true;
-  return origin.kind === "plugin" && origin.name === "story-drive-live" && origin.asUser === true;
+  return origin.kind === "plugin" && origin.name === "frontlot-live" && origin.asUser === true;
 }
 
 function holding(w) {

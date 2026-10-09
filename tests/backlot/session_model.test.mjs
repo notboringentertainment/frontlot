@@ -55,3 +55,11 @@ test("a client-only notice (seq null) shows the note and keeps the cursor", () =
   assert.equal(m.notice, "Another window took control.");
   assert.equal(m.cursor, 7);
 });
+
+test("Ben's own message from the Front Lot add-on shows in the feed", () => {
+  // Real origin from the bloodless run: the add-on is frontlot-live, not Story-drive's story-drive-live.
+  const m = apply(live(), { kind: "row", epoch: "e1", uuid: "u", door: "prompt", type: "user", role: "user",
+    origin: { kind: "plugin", name: "frontlot-live", asUser: true }, blocks: [{ type: "text", text: "Make one take." }] }, 2);
+  assert.equal(m.feed.at(-1).kind, "you");
+  assert.equal(m.feed.at(-1).text, "Make one take.");
+});

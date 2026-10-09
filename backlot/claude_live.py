@@ -26,7 +26,8 @@ TTY_FROM = 2 ** 62      # past the journal's end: the broker answers with a snap
 
 
 def _log(msg: str) -> None:
-    print(f"[front-lot claude] {msg}", file=sys.stderr, flush=True)
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    print(f"{stamp} [front-lot claude] {msg}", file=sys.stderr, flush=True)
 
 
 def _started_matches(pid, recorded) -> bool:
@@ -218,6 +219,7 @@ class _PageOut:
             return
         size = len(payload) if kind == "bytes" else len(json.dumps(payload))
         if self.pending + size > tty.MAX_WS_PENDING:
+            _log(f"page socket too far behind ({self.pending + size} bytes queued): closing it")
             self.dead = True
             asyncio.ensure_future(tty._close(self.ws, 1013, "too far behind"))
             return
@@ -235,7 +237,9 @@ class _PageOut:
                     await self.ws.send_bytes(payload)
                 else:
                     await self.ws.send_json(payload)
-            except Exception:
+            except Exception as exc:
+                # The page's socket stays open but hears nothing more: log it, it is a silent stall.
+                _log(f"page send failed, page hears nothing more until it reconnects: {exc!r}")
                 self.dead = True
                 return
             finally:
@@ -280,6 +284,7 @@ class _Relay:
         await writer.drain()
         self.reader, self.writer = reader, writer
         self.pump = asyncio.create_task(self._pump(reader))
+        _log(f"relay attached {self.slug} page={self.page[:8]!r} tty={self.tty} from={subscribe_from}")
         return True
 
     async def _drop(self) -> None:
@@ -294,7 +299,8 @@ class _Relay:
             while True:
                 try:
                     t, payload = await cf.read_frame(reader)
-                except (asyncio.IncompleteReadError, ConnectionError, cf.FrameError):
+                except (asyncio.IncompleteReadError, ConnectionError, cf.FrameError) as exc:
+                    _log(f"relay lost the broker {self.slug} page={self.page[:8]!r} tty={self.tty}: {exc!r}")
                     await self._drop()
                     await self._bye({"reason": "broker-exited"})
                     return
@@ -319,8 +325,12 @@ class _Relay:
                 if self.tty:
                     continue
                 if t == cf.STATUS:
+                    _log(f"status to page={self.page[:8]!r} controller={d.get('controller')} state={d.get('state')}")
                     self.out.json({"type": "status", **d})
                 elif t == cf.EVENT:
+                    ev = d.get("event") or {}
+                    if ev.get("kind") == "turn":
+                        _log(f"turn {ev.get('phase')} to page={self.page[:8]!r} seq={d.get('seq')} dead={self.out.dead}")
                     self.out.json({"type": "event", "seq": d.get("seq"), "event": d.get("event")})
         except asyncio.CancelledError:
             raise
@@ -442,6 +452,9 @@ async def _live_websocket(websocket: WebSocket, project_id: str) -> None:
                     continue
                 relay = _Relay(slug, page, out)
                 app.state.claude_relays.add(relay)
+                _log(f"page socket open {slug} page={page[:8]!r} first={kind}")
+            elif kind in ACTION_KINDS or kind in OPEN_KINDS:
+                _log(f"page {kind} {slug} page={relay.page[:8]!r} relay_open={relay.is_open} dead={out.dead}")
             if kind in OPEN_KINDS:
                 await relay.request(kind, _cursor(msg.get("from")))
             elif kind in ACTION_KINDS:
@@ -451,6 +464,7 @@ async def _live_websocket(websocket: WebSocket, project_id: str) -> None:
             _log(f"live socket for {slug} failed: {exc!r}")
     finally:
         if relay is not None:
+            _log(f"page socket closed {slug} page={relay.page[:8]!r}")
             app.state.claude_relays.discard(relay)
             await relay.close()
         await out.close()

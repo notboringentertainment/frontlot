@@ -142,6 +142,34 @@ def test_shot_prepare_refuses_brief_paths_outside_the_film(world):
         brief(["canon/note.md"], ref="/etc/hosts")
 
 
+def test_shot_prepare_accepts_sources_in_the_films_writing_folder(world, tmp_path):
+    # First paid run 2026-10-09: briefs cite the canon note and look tickets in the film's writing folder
+    # (project.yaml wayfinder_root), outside the production folder, and every one was refused.
+    repo, film, work, snap = world
+    writing = (tmp_path / "writing").resolve(); (writing / "wayfinder" / "resolved").mkdir(parents=True)
+    note = writing / "Canon Note.md"; note.write_text("canon")
+    ticket = writing / "wayfinder" / "resolved" / "look-hero-a.md"; ticket.write_text("look")
+    (film / "project.yaml").write_text(f"wayfinder_root: {writing}\n")
+    (film / "a.png").write_bytes(b"png")
+    (tmp_path / "elsewhere.md").write_text("not the film's")
+    os.symlink(tmp_path / "elsewhere.md", writing / "link.md")
+
+    def brief(sources):
+        (work / "b.json").write_text(json.dumps({"shot_id": "s1", "source_paths": sources,
+                                                 "reference_manifest": [{"path": "a.png"}]}))
+        return prep(world, "shot_prepare", brief="b.json", note="Ben asked for this shot")
+
+    brief([str(note), str(ticket)])
+    (work / "b.json").write_text(json.dumps({"shot_id": "s1", "source_paths": [str(note)],
+                                             "reference_manifest": [{"path": str(ticket)}]}))
+    with pytest.raises(ops.OpError):   # references stay film-relative; prepare could not store this one
+        prep(world, "shot_prepare", brief="b.json", note="Ben asked for this shot")
+    for bad in ([str(tmp_path / "elsewhere.md")], [str(writing / "link.md")], [str(writing / "missing.md")],
+                [str(writing / "wayfinder" / ".." / ".." / "elsewhere.md")], [str(writing)]):
+        with pytest.raises(ops.OpError):
+            brief(bad)
+
+
 def test_shot_notes_are_required(world):
     with pytest.raises(ops.OpError):
         prep(world, "shot_stop", shot_id="s1")
