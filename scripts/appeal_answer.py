@@ -39,11 +39,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             raise ApplyAppealError(
                 f"This project has no Story-drive folder set up, so there is no appeal to apply here: {exc}"
             ) from exc
-        closed = apply_appeal(wayfinder, a.ticket, date.today().isoformat())
+        closed, step = apply_appeal(wayfinder, a.ticket, date.today().isoformat())
     except (RunError, ApplyAppealError, AppealReadError) as exc:
         print(f"appeal_answer: {exc}", file=sys.stderr)
         return 1
     print(f"Applied: {closed.name} is closed. WriterOS canon is unchanged.")
+    print(step)
     return 0
 
 

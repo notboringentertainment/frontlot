@@ -311,7 +311,8 @@ from lib.appeals import ApplyAppealError, apply_appeal  # noqa: E402
 
 def test_apply_closes_in_place_and_moves(tmp_path):
     root = make(tmp_path, {"appeal-0123456789ab.md": OPEN})
-    new = apply_appeal(root, "appeal-0123456789ab.md", "2026-10-10")
+    new, step = apply_appeal(root, "appeal-0123456789ab.md", "2026-10-10")
+    assert step.endswith("ratify the look with look_run --source writeros.")
     assert new == (root / "wayfinder" / "resolved" / "appeal-0123456789ab.md").resolve()
     assert not (root / "wayfinder" / "tickets" / "appeal-0123456789ab.md").exists()
     assert list((root / "wayfinder" / "tickets").iterdir()) == []
@@ -331,7 +332,7 @@ def test_apply_closes_in_place_and_moves(tmp_path):
 def test_apply_names_a_generic_step_for_non_looks(tmp_path):
     other = OPEN.replace("writeros:looks/location/vector-chair", "writeros:facts/vector-chair")
     root = make(tmp_path, {"appeal-1.md": other})
-    text = apply_appeal(root, "appeal-1.md", "2026-10-10").read_text(encoding="utf-8")
+    text = apply_appeal(root, "appeal-1.md", "2026-10-10")[0].read_text(encoding="utf-8")
     assert "refresh the canon Front Lot reads from WriterOS." in text
 
 
@@ -378,3 +379,23 @@ def test_apply_refuses_symlinked_ticket(tmp_path):
     with pytest.raises(AppealReadError):
         apply_appeal(root, "appeal-1.md", "2026-10-10")
     assert real.read_text(encoding="utf-8") == OPEN
+
+
+def test_apply_failure_midway_leaves_open_ticket_and_retry_works(tmp_path, monkeypatch):
+    import os
+
+    root = make(tmp_path, {"appeal-1.md": OPEN})
+    real_link = os.link
+
+    def boom(*a, **k):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr("lib.appeals.os.link", boom)
+    with pytest.raises(ApplyAppealError, match="could not close"):
+        apply_appeal(root, "appeal-1.md", "2026-10-10")
+    wf = root / "wayfinder"
+    assert (wf / "tickets" / "appeal-1.md").read_text(encoding="utf-8") == OPEN
+    assert list((wf / "resolved").iterdir()) == []
+    monkeypatch.setattr("lib.appeals.os.link", real_link)
+    new, _ = apply_appeal(root, "appeal-1.md", "2026-10-10")
+    assert new.exists() and list((wf / "tickets").iterdir()) == []

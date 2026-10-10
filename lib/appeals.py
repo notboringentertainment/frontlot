@@ -259,12 +259,12 @@ def _after_step(text: str) -> str:
     return "refresh the canon Front Lot reads from WriterOS"
 
 
-def apply_appeal(wayfinder_root: Path | str, ticket_name: str, today: str) -> Path:
+def apply_appeal(wayfinder_root: Path | str, ticket_name: str, today: str) -> tuple[Path, str]:
     """Close an open appeal as applied: set ``resolved:`` to ``today``, replace
     the empty ``## Answer`` heading with ``## Answer — applied (in Front Lot)``
     plus a line naming the step that brings Front Lot's references up to date,
     and move the file from ``tickets/`` to ``resolved/`` under the same name.
-    Returns the new path. Nothing else in the file changes, and WriterOS canon
+    Returns the new path and the step line written into the ticket. Nothing else in the file changes, and WriterOS canon
     is never touched."""
     if not _TODAY_RE.match(today or ""):
         raise ApplyAppealError(f"Front Lot needs today's date as YYYY-MM-DD, got {today!r}.")
@@ -305,18 +305,27 @@ def apply_appeal(wayfinder_root: Path | str, ticket_name: str, today: str) -> Pa
         raise ApplyAppealError(f"{ticket_name} already has text under '## Answer', so Front Lot left it alone.")
     nl = "\r\n" if lines[answer_at[0]].endswith("\r\n") else "\n"
     lines[resolved_at[0]] = f"resolved: {today}{nl}"
-    lines[answer_at[0]] = (
-        f"## Answer — applied (in Front Lot){nl}"
+    step_line = (
         f"Front Lot uses the WriterOS version from today. To bring its references up to date, "
-        f"{_after_step(original)}.{nl}"
+        f"{_after_step(original)}."
     )
-    tmp = match.path.with_name(f".{ticket_name}.tmp")
+    lines[answer_at[0]] = f"## Answer — applied (in Front Lot){nl}{step_line}{nl}"
+    tmp = resolved_dir / f".{ticket_name}.tmp"
+    linked = False
     try:
-        tmp.write_text("".join(lines), encoding="utf-8")
-        os.replace(tmp, match.path)  # atomic: the open ticket now carries the closed text
         resolved_dir.mkdir(exist_ok=True)
-        os.rename(match.path, target)  # atomic move into resolved/, same file name
+        tmp.write_text("".join(lines), encoding="utf-8")
+        os.link(tmp, target)  # fails if the target exists: never overwrites
+        linked = True
+        tmp.unlink()
+        match.path.unlink()
     except OSError as exc:
+        # Undo whatever landed so the open ticket stays the only copy and a retry works.
         tmp.unlink(missing_ok=True)
+        if linked and match.path.exists():
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise ApplyAppealError(f"Front Lot could not close {ticket_name}: {exc}") from exc
-    return target
+    return target, step_line

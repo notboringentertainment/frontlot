@@ -52,7 +52,8 @@ def setup(tmp_path, monkeypatch):
 
 def test_cli_closes_the_appeal(setup, capsys):
     assert appeal_answer.main(["--project", "vector-film", "--ticket", "appeal-1.md"]) == 0
-    assert "closed" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "closed" in out and "look_run --source writeros" in out
     (a,) = read_appeals(setup)
     assert a.outcome == "applied"
 
