@@ -492,6 +492,7 @@ details.more > summary:hover { color: var(--ink-2); }
 .gate-empty { color: var(--ink-on-glass-3); }
 .canon-changes { margin: 0 0 12px; font-size: 13.5px; line-height: 1.4; color: var(--ink-3); }
 .canon-changes summary { cursor: pointer; }
+.alert .next-step { margin: 8px 0 0; color: var(--ink); }
 .canon-changes ul { margin: 6px 0 0; padding-left: 18px; color: var(--ink); }
 .canon-changes small { color: var(--ink-3); }
 

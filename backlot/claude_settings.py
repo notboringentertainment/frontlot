@@ -153,8 +153,9 @@ def _operations_text() -> str:
 
 def _writeros_text(package: Path | None) -> str:
     if package is None:
-        return ("- This film is not linked to WriterOS yet (no writeros_package in its project.yaml), so you cannot see "
-                "looks Ben promoted there. Say so plainly when it matters; linking it is Ben's step.")
+        return ("- Front Lot found no WriterOS project for this film, so you cannot see looks Ben promoted there. Front Lot "
+                "finds it on its own once the WriterOS project is linked to this film's Story-drive folder in WriterOS. "
+                "Say so plainly when it matters; linking it is Ben's step in WriterOS.")
     return (f"- Looks Ben promoted in WriterOS are in this film's WriterOS package, {package}: the newest "
             "memory/exports/look-locks-<revision>.json. Read them with the Read tool. WriterOS's web pages need Ben's "
             "login, so do not try to reach WriterOS over the network.")
@@ -168,7 +169,7 @@ def _canon_text(story_drive: Path | None) -> str:
             "(checkpoint_canon_ingest.json) is only a receipt of what canon a paid asset came from; it is not current "
             "canon. Before planning or starting any job, call frontlot_run {\"op\": \"canon_check\", \"params\": {}} and read "
             "the Canon Note plus every decision it lists, with the Read tool. When today's canon and approved work "
-            "disagree (for example the approved cast lists a place Story-drive scoped out), tell Ben plainly. Never fix it "
+            "disagree (for example the approved cast lists a place Story-drive scoped out), tell Ben plainly, with the Next: line canon_check gives. Never fix it "
             "yourself and never edit canon: changing canon or approved work is Ben's step in his own tools. If a paid step "
             "prints a \"Heads up\" line about something Story-drive scoped out, relay it to Ben.")
 
