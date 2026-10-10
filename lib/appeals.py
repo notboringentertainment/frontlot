@@ -12,6 +12,7 @@ Open versus closed is decided by the FOLDER, never by the Answer heading.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -243,3 +244,79 @@ def check_appeals(project_root: Path, names: set[str]) -> None:
     elif others > 1:
         message += f" {others} more open appeals also touch this job."
     raise OpenAppealError(message, first)
+
+
+class ApplyAppealError(RuntimeError):
+    """An appeal could not be closed; the message is a plain sentence for Ben."""
+
+
+_TODAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _after_step(text: str) -> str:
+    if "writeros:looks/" in text:
+        return "ratify the look with look_run --source writeros"
+    return "refresh the canon Front Lot reads from WriterOS"
+
+
+def apply_appeal(wayfinder_root: Path | str, ticket_name: str, today: str) -> Path:
+    """Close an open appeal as applied: set ``resolved:`` to ``today``, replace
+    the empty ``## Answer`` heading with ``## Answer — applied (in Front Lot)``
+    plus a line naming the step that brings Front Lot's references up to date,
+    and move the file from ``tickets/`` to ``resolved/`` under the same name.
+    Returns the new path. Nothing else in the file changes, and WriterOS canon
+    is never touched."""
+    if not _TODAY_RE.match(today or ""):
+        raise ApplyAppealError(f"Front Lot needs today's date as YYYY-MM-DD, got {today!r}.")
+    if (
+        not isinstance(ticket_name, str)
+        or not ticket_name.endswith(".md")
+        or ticket_name != Path(ticket_name).name
+        or ticket_name.startswith(".")
+    ):
+        raise ApplyAppealError(
+            f"{ticket_name!r} is not a ticket file name. Give just the file name of an open appeal, like appeal-0123456789ab.md."
+        )
+    appeals = read_appeals(wayfinder_root)  # strict: refuses unreadable folders and malformed appeals
+    match = next((a for a in appeals if a.path.name == ticket_name), None)
+    if match is None:
+        raise ApplyAppealError(f"{ticket_name} is not an appeal in the Story-drive tickets folder, so Front Lot left it alone.")
+    if match.outcome is not None or match.path.parent.name != "tickets":
+        raise ApplyAppealError(f"{ticket_name} is already closed, so there is nothing to apply.")
+    resolved_dir = match.path.parent.parent / "resolved"
+    target = resolved_dir / ticket_name
+    if os.path.lexists(target):
+        raise ApplyAppealError(
+            f"Story-drive already has a closed ticket named {ticket_name}, so Front Lot did not overwrite it."
+        )
+    if resolved_dir.is_symlink() or (resolved_dir.exists() and not resolved_dir.is_dir()):
+        raise ApplyAppealError(f"Front Lot can't use {resolved_dir} because it is not a plain folder.")
+
+    original = match.path.read_text(encoding="utf-8")
+    lines = original.splitlines(keepends=True)
+    first_section = next((i for i, l in enumerate(lines) if l.startswith("## ")), len(lines))
+    resolved_at = [i for i in range(first_section) if re.match(r"^resolved:[ \t]*(.*)$", lines[i])]
+    answer_at = [i for i, l in enumerate(lines) if l.rstrip("\r\n") == "## Answer"]
+    if len(resolved_at) != 1 or len(answer_at) != 1:
+        raise ApplyAppealError(
+            f"{ticket_name} doesn't have exactly one 'resolved:' line and one empty '## Answer' heading, so Front Lot left it alone."
+        )
+    if any(l.strip() for l in lines[answer_at[0] + 1 :]):
+        raise ApplyAppealError(f"{ticket_name} already has text under '## Answer', so Front Lot left it alone.")
+    nl = "\r\n" if lines[answer_at[0]].endswith("\r\n") else "\n"
+    lines[resolved_at[0]] = f"resolved: {today}{nl}"
+    lines[answer_at[0]] = (
+        f"## Answer — applied (in Front Lot){nl}"
+        f"Front Lot uses the WriterOS version from today. To bring its references up to date, "
+        f"{_after_step(original)}.{nl}"
+    )
+    tmp = match.path.with_name(f".{ticket_name}.tmp")
+    try:
+        tmp.write_text("".join(lines), encoding="utf-8")
+        os.replace(tmp, match.path)  # atomic: the open ticket now carries the closed text
+        resolved_dir.mkdir(exist_ok=True)
+        os.rename(match.path, target)  # atomic move into resolved/, same file name
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        raise ApplyAppealError(f"Front Lot could not close {ticket_name}: {exc}") from exc
+    return target

@@ -303,3 +303,78 @@ def test_job_names_collects_look_refs_references_and_entities():
     assert job_names(inputs, verified) == {"vector dock", "vector station", "vector chair"}
     assert job_names({}, {"look_refs": None}) == set()
     assert job_names({"entities": "Vector Station"}, {}) == set()
+
+
+# ---- apply_appeal ----
+from lib.appeals import ApplyAppealError, apply_appeal  # noqa: E402
+
+
+def test_apply_closes_in_place_and_moves(tmp_path):
+    root = make(tmp_path, {"appeal-0123456789ab.md": OPEN})
+    new = apply_appeal(root, "appeal-0123456789ab.md", "2026-10-10")
+    assert new == (root / "wayfinder" / "resolved" / "appeal-0123456789ab.md").resolve()
+    assert not (root / "wayfinder" / "tickets" / "appeal-0123456789ab.md").exists()
+    assert list((root / "wayfinder" / "tickets").iterdir()) == []
+    text = new.read_text(encoding="utf-8")
+    expected = (
+        OPEN.replace("resolved:\n", "resolved: 2026-10-10\n", 1).replace(
+            "## Answer\n",
+            "## Answer — applied (in Front Lot)\nFront Lot uses the WriterOS version from today. "
+            "To bring its references up to date, ratify the look with look_run --source writeros.\n",
+        )
+    )
+    assert text == expected
+    (a,) = read_appeals(root)
+    assert (a.outcome, a.path.name) == ("applied", "appeal-0123456789ab.md")
+
+
+def test_apply_names_a_generic_step_for_non_looks(tmp_path):
+    other = OPEN.replace("writeros:looks/location/vector-chair", "writeros:facts/vector-chair")
+    root = make(tmp_path, {"appeal-1.md": other})
+    text = apply_appeal(root, "appeal-1.md", "2026-10-10").read_text(encoding="utf-8")
+    assert "refresh the canon Front Lot reads from WriterOS." in text
+
+
+@pytest.mark.parametrize("name", ["../x.md", "sub/appeal-1.md", "appeal-1.txt", ".appeal-1.md", ""])
+def test_apply_refuses_bad_names(tmp_path, name):
+    root = make(tmp_path, {"appeal-1.md": OPEN})
+    with pytest.raises(ApplyAppealError, match="not a ticket file name"):
+        apply_appeal(root, name, "2026-10-10")
+
+
+def test_apply_refuses_non_appeal_missing_and_closed(tmp_path):
+    root = make(tmp_path, {"plain.md": "# Pick\ntype: decision\n\n## Answer\n\n"}, {"appeal-done.md": CLOSED})
+    with pytest.raises(ApplyAppealError, match="not an appeal"):
+        apply_appeal(root, "plain.md", "2026-10-10")
+    with pytest.raises(ApplyAppealError, match="not an appeal"):
+        apply_appeal(root, "appeal-nope.md", "2026-10-10")
+    with pytest.raises(ApplyAppealError, match="already closed"):
+        apply_appeal(root, "appeal-done.md", "2026-10-10")
+    assert (root / "wayfinder" / "tickets" / "plain.md").exists()
+
+
+def test_apply_refuses_to_overwrite_and_leaves_ticket_untouched(tmp_path):
+    root = make(tmp_path, {"appeal-1.md": OPEN}, {"appeal-1.md": "# other\ntype: decision\n"})
+    with pytest.raises(ApplyAppealError, match="did not overwrite"):
+        apply_appeal(root, "appeal-1.md", "2026-10-10")
+    assert (root / "wayfinder" / "tickets" / "appeal-1.md").read_text(encoding="utf-8") == OPEN
+    assert (root / "wayfinder" / "resolved" / "appeal-1.md").read_text(encoding="utf-8") == "# other\ntype: decision\n"
+
+
+def test_apply_refuses_answered_ticket_and_bad_date(tmp_path):
+    answered = OPEN.replace("## Answer\n\n", "## Answer\nsomething\n")
+    root = make(tmp_path, {"appeal-1.md": answered})
+    with pytest.raises(ApplyAppealError, match="already has text"):
+        apply_appeal(root, "appeal-1.md", "2026-10-10")
+    with pytest.raises(ApplyAppealError, match="YYYY-MM-DD"):
+        apply_appeal(root, "appeal-1.md", "tomorrow")
+
+
+def test_apply_refuses_symlinked_ticket(tmp_path):
+    root = make(tmp_path)
+    real = tmp_path / "elsewhere.md"
+    real.write_text(OPEN, encoding="utf-8")
+    (root / "wayfinder" / "tickets" / "appeal-1.md").symlink_to(real)
+    with pytest.raises(AppealReadError):
+        apply_appeal(root, "appeal-1.md", "2026-10-10")
+    assert real.read_text(encoding="utf-8") == OPEN

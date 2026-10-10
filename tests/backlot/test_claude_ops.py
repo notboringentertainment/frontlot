@@ -220,3 +220,12 @@ def test_unreadable_brief_revision_is_a_plain_error(world, monkeypatch):
     monkeypatch.setattr(sp, "read_brief", lambda film, shot: (_ for _ in ()).throw(OSError("disk")))
     with pytest.raises(ops.OpError):
         ops._brief_revision(world[1], "s1")
+
+
+def test_appeal_apply_builds_the_script_call_and_rejects_other_names(world):
+    p = prep(world, "appeal_apply", ticket="appeal-0123456789ab.md")
+    assert not p.paid and p.argv[-4:] == ["--project", "film", "--ticket", "appeal-0123456789ab.md"]
+    assert p.argv[-5].endswith("scripts/appeal_answer.py")
+    for bad in ("../appeal-1.md", "plain.md", "appeal-1.txt", 5):
+        with pytest.raises(ops.OpError):
+            prep(world, "appeal_apply", ticket=bad)

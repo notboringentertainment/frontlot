@@ -293,6 +293,17 @@ def _look(ctx, p):
     return Prepared(ctx.op, False, argv, {}, summary=summary, entity=e)
 
 
+_APPEAL_TICKET_RE = re.compile(r"appeal-[A-Za-z0-9][A-Za-z0-9_-]*\.md")
+
+
+def _appeal_apply(ctx, p):
+    ticket = p.get("ticket")
+    if not isinstance(ticket, str) or not _APPEAL_TICKET_RE.fullmatch(ticket):
+        raise OpError("ticket must be the appeal's file name, like appeal-0123456789ab.md")
+    argv = _script("appeal_answer") + ["--project", ctx.slug, "--ticket", ticket]
+    return Prepared(ctx.op, False, argv, {}, summary="Apply the WriterOS change (closes the appeal)")
+
+
 def _hero_frozen(ctx, e) -> tuple[list[str], dict[Path, str], str]:
     cp = ctx.film / "checkpoint_headshots.json"
     _, digest = _read_record(cp)
@@ -429,6 +440,7 @@ def _shot(sub: str, paid: bool = False):
 
 OPERATIONS: dict[str, Operation] = {
     "look": Operation(False, frozenset({"entity", "kind", "source", "supersede", "dry_run"}), _look),
+    "appeal_apply": Operation(False, frozenset({"ticket"}), _appeal_apply),
     "headshot_candidates": Operation(True, frozenset({"entity", "candidates", "palette"}), _headshot_candidates),
     "headshot_finish": Operation(True, frozenset({"entity"}), _headshot_finish),
     "headshot_import": Operation(False, frozenset({"entity", "image", "origin_tool"}), _headshot_import),
