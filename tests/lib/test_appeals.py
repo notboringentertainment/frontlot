@@ -174,6 +174,27 @@ def test_directory_named_md_refused(tmp_path):
         read_appeals(root)
 
 
-def test_missing_tickets_folder_alone_is_no_appeals(tmp_path):
-    (tmp_path / "wayfinder").mkdir()
-    assert read_appeals(tmp_path) == []
+def test_missing_tickets_folder_raises(tmp_path):
+    (tmp_path / "wayfinder" / "resolved").mkdir(parents=True)
+    with pytest.raises(AppealReadError, match="tickets"):
+        read_appeals(tmp_path)
+
+
+def test_missing_resolved_folder_reads_fine(tmp_path):
+    (tmp_path / "wayfinder" / "tickets").mkdir(parents=True)
+    (tmp_path / "wayfinder" / "tickets" / "a.md").write_text(OPEN)
+    assert len(read_appeals(tmp_path)) == 1
+
+
+def test_non_applied_heading_is_closed(tmp_path):
+    text = CLOSED.replace("applied (in Front Lot)", "dismissed by hand")
+    (a,) = read_appeals(make(tmp_path, None, {"a.md": text}))
+    assert a.outcome == "closed"
+
+
+@pytest.mark.parametrize("sub", ["tickets", "resolved"])
+def test_icloud_placeholder_raises(tmp_path, sub):
+    root = make(tmp_path)
+    (root / "wayfinder" / sub / ".appeal-x.md.icloud").write_bytes(b"")
+    with pytest.raises(AppealReadError, match=r"appeal-x\.md\.icloud.*iCloud"):
+        read_appeals(root)

@@ -38,7 +38,7 @@ class Appeal:
     affects: frozenset[str]  # lower-cased, trimmed
     story_drive_says: str
     writeros_says: str
-    outcome: str | None  # None while open; "applied" (or the word found) once closed
+    outcome: str | None  # None while open; "applied" or "closed" once closed
 
 
 def read_appeals(wayfinder_root: Path | str) -> list[Appeal]:
@@ -61,10 +61,21 @@ def read_appeals(wayfinder_root: Path | str) -> list[Appeal]:
             if folder.is_symlink():
                 raise AppealReadError(f"{CANT_READ_FOLDER}: {folder} is a link, which Front Lot will not follow.")
             if not folder.exists():
-                continue
+                if closed:
+                    continue
+                raise AppealReadError(
+                    f"{CANT_READ_FOLDER}: the folder {folder} is missing, so Front Lot can't confirm there are no open appeals."
+                )
             if not folder.is_dir():
                 raise AppealReadError(f"{CANT_READ_FOLDER}: {folder} is not a folder.")
-            names = sorted(p.name for p in folder.iterdir() if p.name.endswith(".md"))
+            entries = [p.name for p in folder.iterdir()]
+            for entry in entries:
+                if entry.endswith(".icloud"):
+                    raise AppealReadError(
+                        f"A Story-drive ticket hasn't downloaded from iCloud yet ({entry}), so Front Lot "
+                        f"can't check for open appeals. Open the folder in Finder to download it."
+                    )
+            names = sorted(n for n in entries if n.endswith(".md"))
         except OSError as exc:
             raise AppealReadError(f"{CANT_READ_FOLDER}: {exc}") from exc
         for name in names:
@@ -141,7 +152,7 @@ def _read_one(path: Path, root: Path, folder: Path, closed: bool) -> Appeal | No
 
     outcome: str | None = None
     if closed:
-        outcome = answer_word or "closed"
+        outcome = "applied" if answer_word == "applied" else "closed"
     return Appeal(
         path=safe,
         title=title[len("Appeal:"):].strip() if title.startswith("Appeal:") else title,
