@@ -542,6 +542,108 @@ def _scan_media(project_dir: Path) -> dict[str, list[dict]]:
     return {"renders": renders, "snapshots": snapshots, "music": music}
 
 
+# ---------------------------------------------------------------------------
+# Supervised-production shots (production/shots/<id>/history.jsonl)
+# ---------------------------------------------------------------------------
+
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+_SHOT_LABEL_MAX = 120
+
+
+def _shot_label(direction: Any) -> str:
+    """The brief's first sentence, in Ben's words, short enough for a clip."""
+    text = " ".join(str(direction or "").split())
+    first = _SENTENCE_END.split(text, maxsplit=1)[0] if text else ""
+    if len(first) > _SHOT_LABEL_MAX:
+        first = first[:_SHOT_LABEL_MAX].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return first
+
+
+def _shot_take_path(project_dir: Path, raw: Any) -> Optional[str]:
+    """Project-relative path of a take file, only if it stays inside the film."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        root = project_dir.resolve()
+        target = (root / raw).resolve()
+        target.relative_to(root)
+        if not target.is_file():
+            return None
+        return target.relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def _shot_entry(project_dir: Path, shot_id: str) -> Optional[dict]:
+    from lib import supervised_production as sp
+
+    rows = sp.history(project_dir, shot_id)
+    brief = sp.read_brief(project_dir, shot_id)
+    if brief is None:
+        return None
+    revision = brief.get("revision_id")
+    selected_id = None
+    takes: list[dict] = []
+    for row in rows:
+        kind = row.get("kind")
+        if kind == "take":
+            path = _shot_take_path(project_dir, row.get("path"))
+            cost = row.get("cost_usd")
+            takes.append({
+                "take_id": row.get("take_id"),
+                "path": path,
+                "playable": path is not None,
+                "made_at": row.get("at"),
+                "cost_usd": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+                "duration_seconds": row.get("duration_seconds"),
+                "from_earlier_brief": bool(revision and row.get("brief_revision_id") != revision),
+            })
+        elif kind == "selection":
+            selected_id = row.get("take_id")
+    for take in takes:
+        take["selected"] = selected_id is not None and take["take_id"] == selected_id
+    first_brief = next((r for r in rows if r.get("kind") == "brief"), {})
+    if brief.get("stopped"):
+        shot_state = "stopped"
+    elif any(t["selected"] for t in takes):
+        shot_state = "selected"
+    elif takes:
+        shot_state = "has_takes"
+    else:
+        shot_state = "prepared"
+    return {
+        "id": shot_id,
+        "label": _shot_label(brief.get("direction")),
+        "direction": brief.get("direction"),
+        "state": shot_state,
+        "prepared_at": first_brief.get("at"),
+        "spend_allowance_usd": brief.get("spend_allowance_usd"),
+        "max_video_takes": brief.get("max_video_takes"),
+        "spent_usd": round(sum(t["cost_usd"] for t in takes if t["cost_usd"] is not None), 2),
+        "takes": takes,
+    }
+
+
+def _collect_shots(project_dir: Path) -> list[dict]:
+    """Every prepared supervised shot in the film. A shot whose record can't be
+    read (half-written, malformed) is left out rather than breaking the board."""
+    shots_dir = project_dir / "production" / "shots"
+    try:
+        candidates = sorted(p.name for p in shots_dir.iterdir() if p.is_dir() and not p.is_symlink())
+    except OSError:
+        return []
+    shots = []
+    for shot_id in candidates:
+        try:
+            entry = _shot_entry(project_dir, shot_id)
+        except Exception:
+            continue
+        if entry is not None:
+            shots.append(entry)
+    shots.sort(key=lambda s: (str(s.get("prepared_at") or ""), s["id"]))
+    return shots
+
+
 def _find_poster(project_dir: Path, state: dict) -> Optional[str]:
     """Best poster for the library card (image path, or a video path —
     the /thumb endpoint extracts a frame from videos)."""
@@ -550,6 +652,11 @@ def _find_poster(project_dir: Path, state: dict) -> Optional[str]:
         visual = card.get("visual")
         if visual and visual.get("exists") and visual.get("type") == "image":
             return visual["path"]
+    # Authored films: the first published canon headshot.
+    gates = state.get("gates") or {}
+    for entry in gates.get("canon") or []:
+        if entry.get("role") == "hero" and entry.get("object_rel"):
+            return entry["object_rel"]
     for snap in (state.get("media") or {}).get("snapshots", []):
         return snap["path"]
     # Common image homes, in order of how representative they usually are.
@@ -815,6 +922,7 @@ def _looks_summary(root: Path) -> list[dict[str, Any]]:
                 "entity_kind": entry.get("entity_kind"),
                 "look_hash": entry.get("look_hash"),
                 "source_ticket_ref": entry.get("source_ticket_ref"),
+                **({"source_ref": entry["source_ref"]} if entry.get("source_ref") else {}),
             })
     return out
 
@@ -881,6 +989,24 @@ def _lease_summary(root: Path) -> dict[str, Any]:
     return {"held": held, "pid": record.get("pid"), "started": record.get("acquired_at")}
 
 
+def _canon_changes(root: Path) -> Any:
+    """Today's Story-drive canon against the approved snapshot (read-only).
+    None for a film with no Story-drive folder."""
+    from lib.canon_fresh import CanonReadError, read_canon_changes
+
+    try:
+        changes = read_canon_changes(root)
+    except CanonReadError as exc:
+        return {"error": str(exc)}
+    except Exception:
+        return {"error": "Front Lot couldn't read today's canon."}
+    if changes is None:
+        return None
+    out = changes.to_dict()
+    out["scoped_out"] = sorted(out["scoped_out"])
+    return out
+
+
 def _gates_state(project_dir: Path, checkpoint_cost: Any) -> Any:
     """The optional governed-project extension to BoardState."""
     if not (project_dir / "project.yaml").is_file():
@@ -897,6 +1023,7 @@ def _gates_state(project_dir: Path, checkpoint_cost: Any) -> Any:
         return gates
     gates.update({
         "canon": _canon_summary(root),
+        "canon_changes": _canon_changes(root),
         "looks": _looks_summary(root),
         "cost": _cost_summary(root, checkpoint_cost),
         "run_lease": _lease_summary(root),
@@ -1246,6 +1373,8 @@ def _render_look_lock(root: Path, req: dict[str, Any]) -> dict[str, Any]:
             return {"packet_error": True, "error": "active look unavailable"}
         return {"action": "retire", "source_ticket_ref": current.get("source_ticket_ref"),
                 "look_hash": current.get("look_hash"), "supersedes": current.get("look_hash")}
+    if req.get("source_promotion_id") is not None:
+        return _render_writeros_look_lock(root, req, entity_kind, entity_id, current)
     ticket = req.get("source_ticket_path")
     if not isinstance(ticket, str) or not ticket:
         return {"packet_error": True, "error": "look ticket unavailable"}
@@ -1275,6 +1404,24 @@ def _render_look_lock(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     old = current
     return {"source_ticket_ref": look.source_ticket_ref, "look_hash": look.look_hash,
             "supersedes": (old or {}).get("look_hash")}
+
+
+def _render_writeros_look_lock(root: Path, req: dict[str, Any], entity_kind: str, entity_id: str,
+                               current: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Authoritative source: the WriterOS package's current look export,
+    verified per record against its memory (text only)."""
+    try:
+        from lib.look_ingest import LookIngestError, writeros_look_for
+
+        look = writeros_look_for(root, str(req.get("source_promotion_id")))
+    except LookIngestError:
+        return {"packet_error": True, "error": "WriterOS look unavailable; re-export from WriterOS"}
+    except Exception:
+        return {"packet_error": True, "error": "WriterOS look unavailable"}
+    if (look.entity_kind, look.entity_id) != (entity_kind, entity_id):
+        return {"packet_error": True, "error": "WriterOS look names another entity"}
+    return {"source_ref": look.source_ref, "look_hash": look.look_hash,
+            "supersedes": (current or {}).get("look_hash")}
 
 
 def _render_config(root: Path, req: dict[str, Any]) -> dict[str, Any]:
@@ -1526,6 +1673,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         "live": bool(last_activity and (now - last_activity) < LIVE_WINDOW_SECONDS),
     }
     state["gates"] = _gates_state(project_dir, cost)
+    state["shots"] = _collect_shots(project_dir)
     state["poster"] = _find_poster(project_dir, state)
     return state
 

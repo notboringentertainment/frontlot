@@ -146,11 +146,22 @@ def decline_request(req: dict, root: Path, *, note: str | None = None) -> None:
 
 
 def activate_look(project_dir: Path, payload: dict, *, supersedes: str | None = None) -> dict:
+    """A wayfinder-sourced activation (the shape of every pre-WriterOS receipt)."""
     return _approve(
         project_dir, "look_lock", f"{payload['entity_kind']}:{payload['entity_id']}", payload, "look_lock",
         payload["entity_id"],
         {"action": "activate", "entity_kind": payload["entity_kind"], "look_hash": _look_hash(payload),
-         "supersedes_look_hash": supersedes, "promotion_refs": [], "source_ticket_ref": None},
+         "supersedes_look_hash": supersedes, "promotion_refs": [], "source_ticket_ref": {"id": "wf-00000000"}},
+    )
+
+
+def activate_writeros_look(project_dir: Path, payload: dict, record_id: str, *, supersedes: str | None = None) -> dict:
+    """A WriterOS-sourced activation: promotion_refs, no source_ticket_ref key."""
+    return _approve(
+        project_dir, "look_lock", f"{payload['entity_kind']}:{payload['entity_id']}", payload, "look_lock",
+        payload["entity_id"],
+        {"action": "activate", "entity_kind": payload["entity_kind"], "look_hash": _look_hash(payload),
+         "supersedes_look_hash": supersedes, "promotion_refs": [{"system": "writeros", "record_id": record_id}]},
     )
 
 

@@ -310,8 +310,13 @@ class KlingReferenceVideo(BaseTool):
 
         governance: dict[str, Any] = {}
         try:
-            # Look governance (look_refs verified before any upload) runs inside paid_call_context.
-            project_root, tracker, config = _shared.paid_call_context(inputs, governance=governance, media="video")
+            # Look governance (look_refs verified before any upload) and the
+            # per-shot allowance (C2) both run inside paid_call_context, which
+            # needs this call's own estimate to measure the shot's dollars.
+            estimate = self.estimate_cost(inputs)
+            project_root, tracker, config = _shared.paid_call_context(
+                inputs, governance=governance, media="video", estimated_usd=estimate,
+            )
             # Prompts always leave the machine; reference images only when consented.
             config.require_egress("fal", "prompts")
             local_refs = [pathsafe.resolve_input(p, project_root) for p in inputs.get("reference_image_paths") or []]
@@ -338,7 +343,6 @@ class KlingReferenceVideo(BaseTool):
                     "shot_id": str(inputs["shot_id"]),
                 })
             payload = self._build_payload(inputs, image_urls, elements)
-            estimate = self.estimate_cost(inputs)
             reservation_id = reserve_paid_call(
                 tracker,
                 project_root,
@@ -348,6 +352,8 @@ class KlingReferenceVideo(BaseTool):
                 reserved_usd=estimate,
                 output_hint={"kind": "video", "output_path": str(output_path),
                              "generate_audio": bool(payload["generate_audio"])},
+                inputs=inputs,
+                kind="video",
             )
         except Exception as exc:
             return ToolResult(success=False, error=f"Kling o3 preflight failed: {exc}")

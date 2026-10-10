@@ -485,6 +485,22 @@ class TestEntityFreeSceneIds:
         assert entity_free_scene_ids(project_dir) == set()
 
 
+    def test_the_boundary_reaches_the_entity_free_scene_through_its_shot(self, project):
+        """``tools.video._shared.shot_is_entity_free`` maps shot -> scene with
+        the scene's ``id`` — the same key the authority above reads. A scene
+        keyed any other way maps nothing, so the two never disagree."""
+        from lib.checkpoint import checkpoint_digest
+        from tools.video._shared import shot_is_entity_free
+
+        pipeline_dir, project_dir = project
+        setup_through_scene_plan(pipeline_dir, project_dir, entity_free=True)
+        path = project_dir / "checkpoint_scene_plan.json"
+        _review_scene_plan(project_dir, checkpoint_digest(path))
+        assert entity_free_scene_ids(project_dir) == {"scene-1"}
+        assert shot_is_entity_free(project_dir, "shot-1") is True
+        assert shot_is_entity_free(project_dir, "shot-nope") is False
+
+
 # ---- #8: every project-context read applies the pin ---------------------------------
 
 

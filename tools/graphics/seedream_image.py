@@ -146,6 +146,12 @@ class SeedreamImage(BaseTool):
             },
             "headshot_ref": {"type": "object", "description": "{entity_id, asset_id, approval_receipt_id} of the approved hero (lib.headshots.verify_headshot_ref)."},
             "prompt_recipe": {"type": "object", "description": "tools.prompt_builder recipe; prompt must hash to rendered_sha256."},
+            "asset_class": {
+                "type": "string",
+                "description": "'storyboard_frame' for a pipeline frame, or 'supervised_shot' for a saved supervised "
+                               "shot brief. A supervised shot requires shot_id and uses its cumulative dollar "
+                               "allowance; image calls never consume a video take.",
+            },
             "shot_id": {"type": "string"},
         },
     }
@@ -248,9 +254,14 @@ class SeedreamImage(BaseTool):
 
         governance: dict[str, Any] = {}
         try:
-            # Look governance (look_refs / headshot_ref / prompt_recipe) is
-            # verified inside paid_call_context, before any upload.
-            project_root, tracker, config = _shared.paid_call_context(inputs, governance=governance)
+            # Look governance (look_refs / headshot_ref / prompt_recipe) and
+            # the per-shot allowance (C2) are both verified inside
+            # paid_call_context, before any upload; the allowance check needs
+            # this call's own estimate to measure the shot's dollars.
+            estimate = self.estimate_cost(inputs)
+            project_root, tracker, config = _shared.paid_call_context(
+                inputs, governance=governance, estimated_usd=estimate,
+            )
             config.require_egress("fal", "prompts")
             local_refs = [pathsafe.resolve_input(p, project_root) for p in inputs.get("reference_image_paths") or []]
             # Reference provenance (R3#3): remote URLs refused and every local
@@ -268,7 +279,6 @@ class SeedreamImage(BaseTool):
             for resolved in local_refs:
                 image_urls.append(_shared.upload_image_fal(str(resolved)))
             payload = self._build_payload(inputs, image_urls)
-            estimate = self.estimate_cost(inputs)
             reservation_id = reserve_paid_call(
                 tracker,
                 project_root,
@@ -277,6 +287,8 @@ class SeedreamImage(BaseTool):
                 normalized_inputs_hash=normalized_inputs_hash(inputs),
                 reserved_usd=estimate,
                 output_hint={"kind": "image", "objects_dir": str(objects_dir)},
+                inputs=inputs,
+                kind="image",
             )
         except Exception as exc:
             return ToolResult(success=False, error=f"Seedream preflight failed: {exc}")

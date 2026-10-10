@@ -237,8 +237,17 @@ class ImageSelector(BaseTool):
         # flux_image, which implements no look-governance boundary).
         from tools.video import _shared
 
+        selection = None
+        def governed_estimate(bound_inputs):
+            nonlocal selection
+            bound = [t for t in candidates if getattr(t, "governance_bound", False) is True]
+            selection = self._select_best_tool(bound_inputs, bound, task_context)
+            if selection[0] is None:
+                raise ValueError("No governance-bound image provider available for a governed call.")
+            return selection[0].estimate_cost(bound_inputs)
+
         try:
-            governance = _shared.selector_governance(inputs)
+            governance = _shared.selector_governance(inputs, estimate_cost=governed_estimate)
         except Exception as exc:  # noqa: BLE001 — every refusal stops delegation
             return ToolResult(success=False, error=f"image_selector refused before delegation: {exc}")
         if governance is not None:
@@ -247,7 +256,7 @@ class ImageSelector(BaseTool):
                 return ToolResult(success=False, error="No governance-bound image provider available for a governed call.")
 
         # Normal generation — use scored selection
-        tool, score = self._select_best_tool(inputs, candidates, task_context)
+        tool, score = selection or self._select_best_tool(inputs, candidates, task_context)
         if tool is None:
             return ToolResult(success=False, error="No image provider available.")
 

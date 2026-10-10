@@ -33,6 +33,8 @@ run by ``tools.cost_tracker.resume_check`` before any new paid call.
 
 from __future__ import annotations
 
+import re
+
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -347,6 +349,49 @@ def record_human_approval(
     return receipt
 
 
+_WF_TICKET_ID_RE = re.compile(r"^wf-[0-9a-f]{8}$")
+_SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
+_WRITEROS_RECORD_ID_RE = re.compile(r"^mem_[0-9a-f]{32}$")
+
+
+def _validate_look_lock_source(env: dict) -> None:
+    """An activate envelope names exactly one source (look sessions,
+    2026-09-30). Wayfinder: ``source_ticket_ref`` ({id: wf-8hex} or
+    {path, content_sha256}) with ``promotion_refs`` absent or [] (the shape of
+    every receipt minted before WriterOS looks). WriterOS: a non-empty
+    ``promotion_refs`` of {system: writeros, record_id: mem_32hex} and NO
+    ``source_ticket_ref`` key. Retire envelopes carry neither and are not
+    checked here."""
+    has_ticket_key = "source_ticket_ref" in env
+    ticket = env.get("source_ticket_ref")
+    refs = env.get("promotion_refs")
+    if has_ticket_key:
+        if not isinstance(ticket, dict):
+            raise ValueError("look_lock activate: source_ticket_ref must be a ticket reference, never null")
+        id_form = set(ticket) == {"id"} and isinstance(ticket.get("id"), str) and _WF_TICKET_ID_RE.match(ticket["id"])
+        path_form = (
+            set(ticket) == {"path", "content_sha256"}
+            and isinstance(ticket.get("path"), str) and ticket["path"]
+            and isinstance(ticket.get("content_sha256"), str) and _SHA256_HEX_RE.match(ticket["content_sha256"])
+        )
+        if not (id_form or path_form):
+            raise ValueError("look_lock activate: source_ticket_ref must be {id: wf-<8hex>} or {path, content_sha256}")
+        if refs not in (None, []):
+            raise ValueError("look_lock activate: a wayfinder look carries no promotion_refs")
+        return
+    if not isinstance(refs, list) or not refs:
+        raise ValueError("look_lock activate: the envelope names no source (source_ticket_ref or WriterOS promotion_refs)")
+    for ref in refs:
+        if (
+            not isinstance(ref, dict)
+            or set(ref) != {"system", "record_id"}
+            or ref.get("system") != "writeros"
+            or not isinstance(ref.get("record_id"), str)
+            or not _WRITEROS_RECORD_ID_RE.match(ref["record_id"])
+        ):
+            raise ValueError("look_lock activate: promotion_refs items must be {system: writeros, record_id: mem_<32hex>}")
+
+
 def validate_envelope(
     kind: str,
     record: dict,
@@ -389,6 +434,8 @@ def validate_envelope(
             raise ValueError("look_lock retire: record.look_hash must equal envelope look_hash")
         if env.get("promotion_refs") is not None and not isinstance(env["promotion_refs"], list):
             raise ValueError("look_lock promotion_refs must be a list")
+        if env["action"] == "activate":
+            _validate_look_lock_source(env)
     if kind == "headshot" and record.get("look_hash") != env["look_hash"]:
         raise ValueError("headshot: record.look_hash must equal envelope look_hash")
     if kind == "qc_override":
@@ -438,6 +485,11 @@ def validate_envelope(
         # exactly-one shape: never embed the absent alternative as a null —
         # a 1.0 envelope keeps its historical bytes ({qc_receipt_id} only).
         out = {k: v for k, v in out.items() if v is not None}
+    if kind == "look_lock" and env["action"] == "activate" and "source_ticket_ref" not in env:
+        # A WriterOS activation names its source in promotion_refs and has NO
+        # source_ticket_ref key, not a null one; wayfinder and retire receipts
+        # keep their historical bytes.
+        out.pop("source_ticket_ref")
     return out
 
 
