@@ -169,9 +169,14 @@ def _canon_text(story_drive: Path | None) -> str:
             "(checkpoint_canon_ingest.json) is only a receipt of what canon a paid asset came from; it is not current "
             "canon. Before planning or starting any job, call frontlot_run {\"op\": \"canon_check\", \"params\": {}} and read "
             "the Canon Note plus every decision it lists, with the Read tool. When today's canon and approved work "
-            "disagree (for example the approved cast lists a place Story-drive scoped out), tell Ben plainly, with the Next: line canon_check gives. Never fix it "
-            "yourself and never edit canon: changing canon or approved work is Ben's step in his own tools. If a paid step "
-            "prints a \"Heads up\" line about something Story-drive scoped out, relay it to Ben.")
+            "disagree (for example the approved cast lists a place Story-drive scoped out), tell Ben plainly and give him the "
+            "Next: line canon_check prints, in its own words. Never invent a step for him: if the Next: line says Front Lot "
+            "can't do something yet, say exactly that and never tell him to do it himself in some other tool. Never fix it "
+            "yourself and never edit canon. When canon_check lists a look as ready to lock, tell Ben it's ready and offer to "
+            "bring it in (a look dry run first). For canon files it lists as edited, Front Lot keeps no old copy: read each "
+            "one and tell Ben in a sentence what it now says that matters to the job, or that nothing in it does. Never "
+            "read him the list of file names. If a paid step prints a \"Heads up\" line about something Story-drive "
+            "scoped out, relay it to Ben.")
 
 
 def build_brief(*, film_title: str, film_slug: str, writeros_package: Path | None = None,

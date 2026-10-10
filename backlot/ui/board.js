@@ -1567,6 +1567,11 @@ function buildRoster(s) {
   };
   for (const c of canonPacket.characters || []) add("character", c.id, c.name);
   for (const l of canonPacket.locations || []) add("location", l.id, l.name);
+  // Looks promoted in WriterOS since the snapshot: new places and characters
+  // belong in the bin as soon as they're ready to lock.
+  for (const t of (gates.canon_changes && gates.canon_changes.to_lock) || []) {
+    add(t.kind === "location" ? "location" : "character", t.entity_id, t.name);
+  }
   for (const look of gates.looks || []) {
     const e = add(look.entity_kind === "location" ? "location" : "character", look.entity);
     if (e) e.look = look;
@@ -1986,6 +1991,33 @@ function gateActions(s, summary, stale, packetError) {
     blocker ? el("p", { class: "blocker", role: "status" }, blocker) : null);
 }
 
+// A look request has no pictures: the look's own words are the evidence, so
+// they fill the screen instead of an empty box.
+const LOOK_FIELDS = [
+  ["prompt_safe_description", "The look"],
+  ["establishing_view", "Establishing view"],
+  ["architecture_or_terrain", "The space"],
+  ["time_of_day_default", "Time of day"],
+  ["weather_or_light_rules", "Light"],
+  ["palette_anchors", "Palette"],
+  ["dressing", "Dressing"],
+  ["continuity_risks", "Keep the same in every shot"],
+  ["negative_lines", "Ruled out"],
+];
+const LOOK_SKIP = new Set(["version", "entity_id", "entity_kind", "depends_on"]);
+function lookCard(spec) {
+  const known = new Set(LOOK_FIELDS.map(([k]) => k));
+  const rows = [...LOOK_FIELDS, ...Object.keys(spec).filter((k) => !known.has(k) && !LOOK_SKIP.has(k)).map((k) => [k, humanize(k)])];
+  const value = (v) => Array.isArray(v)
+    ? (v.length ? el("ul", {}, v.map((item) => el("li", {}, String(item)))) : null)
+    : typeof v === "string" && v.trim() ? el("p", {}, v) : null;
+  return el("section", { class: "look-card", "aria-label": "The look you're locking" },
+    rows.map(([k, label]) => {
+      const body = value(spec[k]);
+      return body ? el("div", { class: "look-row" }, el("h3", {}, label), body) : null;
+    }));
+}
+
 function renderGateViewer(s) {
   const summary = gateRowById(s, selectedGateId);
   const wrap = (...children) => el("section", {
@@ -2067,6 +2099,8 @@ function renderGateViewer(s) {
       f.path && !f.missing ? el("img", { class: "gate-evidence-image", src: thumbURL(s.project_id, f.path, 320), alt: "", loading: "lazy" }) : null,
       el("figcaption", {}, el("b", {}, gateDetail.packet && gateDetail.packet.candidates && gateDetail.packet.candidates[i] && gateDetail.packet.candidates[i].number != null ? `[${gateDetail.packet.candidates[i].number}]` : f.label))))) : null;
 
+  const spec = header.kind === "look_lock" && !frames.length && gateDetail.packet && gateDetail.packet.look_spec;
+  const lookSpec = spec && typeof spec === "object" ? spec : null;
   return wrap(
     el("header", { class: "viewer-head" },
       el("div", {},
@@ -2075,10 +2109,11 @@ function renderGateViewer(s) {
       el("div", { class: "tapes" }, stateTape)),
     packetError ? el("div", { class: "alert", role: "alert" }, el("b", {}, "Some evidence is missing or changed"),
       el("span", {}, gateDetail.packet && gateDetail.packet.error ? gateDetail.packet.error : "Signing stays off until it's complete.")) : null,
-    renderScreen(s, frames[selectedFrame], blank),
-    renderFrameStrip(s, frames, "Request"),
+    lookSpec ? gateActions(s, summary, stale, packetError) : null,
+    lookSpec ? lookCard(lookSpec) : renderScreen(s, frames[selectedFrame], blank),
+    lookSpec ? null : renderFrameStrip(s, frames, "Request"),
     evidence,
-    gateActions(s, summary, stale, packetError),
+    lookSpec ? null : gateActions(s, summary, stale, packetError),
     more);
 }
 
@@ -2104,6 +2139,11 @@ function renderCanonChanges(s) {
     section.append(el("p", { class: "log-quiet" }, `Story-drive canon hasn't changed since the approved snapshot (${c.snapshot_date}).`));
     return section;
   }
+  for (const t of c.to_lock || []) {
+    section.append(el("div", { class: "alert ready", role: "status" },
+      el("b", {}, t.waiting ? "Waiting for your signature" : "Ready to lock"), el("span", {}, t.message),
+      t.next_step ? el("p", { class: "next-step" }, `What to do: ${t.next_step}`) : null));
+  }
   for (const m of c.mismatches || []) {
     section.append(el("div", { class: "alert", role: "status" }, el("b", {}, "Doesn't match canon"), el("span", {}, m.message),
       m.next_step ? el("p", { class: "next-step" }, `What to do: ${m.next_step}`) : null));
@@ -2112,14 +2152,16 @@ function renderCanonChanges(s) {
   const files = c.changed_sources || [];
   const counts = [
     decisions.length ? `${decisions.length} ${decisions.length === 1 ? "decision" : "decisions"}` : "",
-    files.length ? `${files.length} changed ${files.length === 1 ? "file" : "files"}` : "",
+    files.length ? `${files.length} edited ${files.length === 1 ? "document" : "documents"}` : "",
   ].filter(Boolean).join(", ");
   if (counts) {
     section.append(el("details", { class: "canon-changes" },
       el("summary", {}, `Since the approved snapshot (${c.snapshot_date}): ${counts}`),
       decisions.length ? el("ul", {}, decisions.map((d) =>
         el("li", {}, `${d.title}${d.scoped_out ? " (scoped out)" : ""}`, el("small", {}, ` · ${d.resolved}`)))) : null,
-      files.length ? el("ul", {}, files.map((f) => el("li", {}, f.path, el("small", {}, ` · ${f.state}`)))) : null));
+      files.length ? el("ul", {}, files.map((f) => el("li", {}, f.title || f.path,
+        el("small", {}, f.state === "changed" ? (f.edited ? ` · edited ${f.edited}` : " · edited") : ` · ${f.state}`)))) : null,
+      files.length ? el("p", { class: "source" }, "Front Lot keeps no old copy of these, so it can't show the exact edit. Ask Claude what they say now.") : null));
   }
   return section;
 }
@@ -2539,4 +2581,10 @@ refresh().catch((err) => {
 // ?static=1 disables the live feed (screenshots, static exports).
 if (!new URLSearchParams(location.search).has("static")) {
   subscribe(`/api/project/${encodeURIComponent(projectId)}/events`, () => refresh().catch(console.error));
+  // Story-drive and WriterOS live outside the folders Front Lot watches, so
+  // coming back to this window re-reads them (a promote shows without a reload).
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") refresh().catch(console.error);
+  });
+  window.addEventListener("focus", () => refresh().catch(console.error));
 }

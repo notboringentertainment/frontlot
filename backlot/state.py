@@ -1403,7 +1403,7 @@ def _render_look_lock(root: Path, req: dict[str, Any]) -> dict[str, Any]:
         return {"packet_error": True, "error": "look ticket names another entity"}
     old = current
     return {"source_ticket_ref": look.source_ticket_ref, "look_hash": look.look_hash,
-            "supersedes": (old or {}).get("look_hash")}
+            "supersedes": (old or {}).get("look_hash"), "look_spec": look.payload}
 
 
 def _render_writeros_look_lock(root: Path, req: dict[str, Any], entity_kind: str, entity_id: str,
@@ -1421,7 +1421,7 @@ def _render_writeros_look_lock(root: Path, req: dict[str, Any], entity_kind: str
     if (look.entity_kind, look.entity_id) != (entity_kind, entity_id):
         return {"packet_error": True, "error": "WriterOS look names another entity"}
     return {"source_ref": look.source_ref, "look_hash": look.look_hash,
-            "supersedes": (current or {}).get("look_hash")}
+            "supersedes": (current or {}).get("look_hash"), "look_spec": look.payload}
 
 
 def _render_config(root: Path, req: dict[str, Any]) -> dict[str, Any]:

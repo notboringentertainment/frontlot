@@ -9,7 +9,9 @@ for current canon. This module reads the film's Story-drive folder
 - source files the snapshot pinned that have since changed or gone missing,
 - decisions resolved in Story-drive since the snapshot,
 - approved work that no longer matches canon (an approved trailer-cast entry
-  that Story-drive has since scoped out).
+  that Story-drive has since scoped out),
+- looks Ben promoted in WriterOS that Front Lot hasn't locked yet (new places
+  and characters to make, or changed looks to lock again).
 
 It never writes anything: not the Story-drive folder, not the snapshot, not
 any signed checkpoint. Mismatches are shown to Ben; changing canon or approved
@@ -39,8 +41,8 @@ _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # What Ben can do about an approved-cast entry Story-drive scoped out. Front Lot
 # has no step to change an approved cast yet, so this says what is true today.
 SCOPED_OUT_NEXT_STEP = (
-    "Nothing is blocked: shots don't depend on the trailer cast, and Front Lot warns before any job that uses it. "
-    "Front Lot can't change an approved trailer cast yet, so this stays listed until it can."
+    "Nothing to do now. Nothing is blocked: shots don't depend on the trailer cast, and Front Lot warns before any "
+    "job that uses it. Front Lot has no way yet to take it out of the approved cast, so this stays listed until it does."
 )
 
 
@@ -52,6 +54,22 @@ class CanonReadError(RuntimeError):
 class SourceChange:
     path: str  # relative to the Story-drive folder
     state: str  # "changed" | "missing" | "not downloaded"
+    title: str = ""  # the document or decision title, for Ben
+    edited: str = ""  # last edited (YYYY-MM-DD), when the file is there
+
+
+@dataclass(frozen=True)
+class ToLock:
+    """A look promoted in WriterOS that Front Lot hasn't locked."""
+
+    kind: str  # "character" | "location"
+    entity_id: str
+    name: str
+    state: str  # "new" | "changed"
+    promoted: str  # YYYY-MM-DD, or ""
+    waiting: bool  # a lock request already waits under Needs you
+    message: str
+    next_step: str
 
 
 @dataclass(frozen=True)
@@ -80,10 +98,11 @@ class CanonChanges:
     new_decisions: list[Decision] = field(default_factory=list)
     mismatches: list[Mismatch] = field(default_factory=list)
     scoped_out: dict[str, Decision] = field(default_factory=dict)  # entity id -> the ticket that scoped it out
+    to_lock: list[ToLock] = field(default_factory=list)
 
     @property
     def unchanged(self) -> bool:
-        return not (self.changed_sources or self.new_decisions or self.mismatches)
+        return not (self.changed_sources or self.new_decisions or self.mismatches or self.to_lock)
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
@@ -124,6 +143,27 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _doc_title(path: Path, root: Path, fallback: Any) -> str:
+    """The file's own "# " heading, else the snapshot's title, else its name."""
+    try:
+        with open(resolve_input(path, root), encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    if line.startswith("# "):
+                        return line[2:].strip()
+                    break
+    except (PathSafetyError, OSError, UnicodeDecodeError):
+        pass
+    return fallback.strip() if isinstance(fallback, str) and fallback.strip() else path.stem
+
+
+def _edited(path: Path) -> str:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).date().isoformat()
+    except OSError:
+        return ""
+
+
 def _changed_sources(packet: dict[str, Any], root: Path) -> tuple[list[SourceChange], set[Path]]:
     changes: list[SourceChange] = []
     pinned: set[Path] = set()
@@ -136,9 +176,10 @@ def _changed_sources(packet: dict[str, Any], root: Path) -> tuple[list[SourceCha
         except ValueError:
             continue  # outside the Story-drive folder: not today's canon
         pinned.add(rel)
+        title = doc.get("title") if isinstance(doc.get("title"), str) and doc["title"].strip() else path.stem
         placeholder = path.with_name(f".{path.name}.icloud")
         if not path.exists():
-            changes.append(SourceChange(str(rel), "not downloaded" if placeholder.exists() else "missing"))
+            changes.append(SourceChange(str(rel), "not downloaded" if placeholder.exists() else "missing", title))
             continue
         expected = doc.get("sha256")
         if not isinstance(expected, str):
@@ -146,10 +187,10 @@ def _changed_sources(packet: dict[str, Any], root: Path) -> tuple[list[SourceCha
         try:
             actual = _sha256(resolve_input(path, root))
         except (PathSafetyError, OSError):
-            changes.append(SourceChange(str(rel), "missing"))
+            changes.append(SourceChange(str(rel), "missing", title))
             continue
         if actual != expected:
-            changes.append(SourceChange(str(rel), "changed"))
+            changes.append(SourceChange(str(rel), "changed", _doc_title(path, root, doc.get("title")), _edited(path)))
     return changes, pinned
 
 
@@ -201,6 +242,68 @@ def _approved_cast(project_root: Path) -> list[tuple[str, str]]:
         ids = cast.get(key)
         if isinstance(ids, list):
             out += [(kind, i) for i in ids if isinstance(i, str)]
+    return out
+
+
+def _waiting_look_requests(project_root: Path) -> set[tuple[str, str]]:
+    """(kind, entity id) of look lock requests waiting under Needs you."""
+    out: set[tuple[str, str]] = set()
+    try:
+        files = [p for p in (project_root / ".gate-requests").iterdir() if p.suffix == ".json"]
+    except OSError:
+        return out
+    for path in files:
+        req = _read_json(path) or {}
+        if req.get("kind") != "look_lock":
+            continue
+        kind, _, entity = str(req.get("scope") or "").partition(":")
+        out.add((kind or str(req.get("entity_kind") or ""), str(req.get("entity_id") or entity)))
+    return out
+
+
+def _looks_to_lock(project_root: Path, names: dict[str, str], scoped_out: dict[str, Decision]) -> list[ToLock]:
+    """Looks promoted in WriterOS that Front Lot hasn't locked, or locked an
+    older version of. Empty when the film has no WriterOS project or its looks
+    can't be read: the look step itself reports those problems."""
+    from lib.look_ingest import active_looks, latest_writeros_export, parse_writeros_export, writeros_package_for
+
+    try:
+        package = writeros_package_for(project_root)
+        if package is None:
+            return []
+        promoted = parse_writeros_export(package)
+        locked = active_looks(project_root)
+        export = _read_json(latest_writeros_export(package)) or {}
+    except Exception:
+        return []
+    dates = {
+        e.get("promotion_id"): e["promoted_at"][:10]
+        for e in export.get("looks") or []
+        if isinstance(e, dict) and isinstance(e.get("promoted_at"), str)
+    }
+    waiting = _waiting_look_requests(project_root)
+    out: list[ToLock] = []
+    for key, look in sorted(promoted.items()):
+        current = locked.get(key)
+        if (current is not None and current.look_hash == look.look_hash) or look.entity_id in scoped_out:
+            continue
+        kind, entity_id = key
+        name = names.get(entity_id) or entity_id.replace("-", " ").replace("_", " ").title()
+        state = "new" if current is None else "changed"
+        when = dates.get((look.source_ref or {}).get("record_id"), "")
+        on = f" on {when}" if when else ""
+        what = "place" if kind == "location" else "character"
+        message = (
+            f"{name}: a new {what} look you promoted in WriterOS{on}. Front Lot hasn't locked it yet."
+            if state == "new"
+            else f"{name}: you promoted a changed look in WriterOS{on}. Front Lot still has the older one locked."
+        )
+        next_step = (
+            "It's waiting for your signature under Needs you."
+            if key in waiting
+            else f"In the Claude box, say: \"Bring in the {name} look from WriterOS.\" Then sign it under Needs you."
+        )
+        out.append(ToLock(kind, entity_id, name, state, when, key in waiting, message, next_step))
     return out
 
 
@@ -259,7 +362,8 @@ def read_canon_changes(project_root: Path | str) -> CanonChanges | None:
         for kind, entity_id in _approved_cast(project_root)
         if entity_id in scoped_out
     ]
-    return CanonChanges(snapshot_date, changed, new_decisions, mismatches, scoped_out)
+    to_lock = _looks_to_lock(project_root, names_by_id, scoped_out)
+    return CanonChanges(snapshot_date, changed, new_decisions, mismatches, scoped_out, to_lock)
 
 
 def warn_scoped_out(project_root: Path | str, names: set[str], *, stream=None) -> list[str]:
