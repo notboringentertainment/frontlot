@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openmontage/qc_verdict",
+  "title": "QC Verdict",
+  "description": "D19: the canonical verdict of one sheet-QC evaluation. Computed by code from the judge's per-item answers; signed into a QC receipt (lib.qc_receipts) that binds the full evaluation tuple. Never authored by an agent.",
+  "type": "object",
+  "required": [
+    "version",
+    "project_id",
+    "entity_kind",
+    "entity_id",
+    "role",
+    "asset_id",
+    "look_hash",
+    "look_receipt_id",
+    "headshot_asset_id",
+    "headshot_receipt_id",
+    "policy_version",
+    "policy_bundle_sha256",
+    "provider",
+    "model",
+    "prompt_sha256",
+    "tuple_sha256",
+    "attempt_id",
+    "attempt_n",
+    "items",
+    "verdict",
+    "warnings",
+    "cost_usd",
+    "judged_at",
+    "provider_request_id",
+    "raw_response_asset_id"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entity_kind": {
+      "type": "string",
+      "enum": [
+        "character",
+        "location"
+      ]
+    },
+    "entity_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "turnaround",
+        "expressions",
+        "wardrobe",
+        "hero"
+      ],
+      "description": "Sheet roles are judged under the sheet bundle; hero (D20) under the separate hero bundle."
+    },
+    "asset_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "look_hash": {
+      "type": "string",
+      "minLength": 1
+    },
+    "look_receipt_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "headshot_asset_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "headshot_receipt_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policy_bundle_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "provider": {
+      "type": "string",
+      "enum": [
+        "openai",
+        "local"
+      ]
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prompt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "provider_request_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "provider_model_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "raw_response_asset_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tuple_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "attempt_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attempt_n": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "answer",
+          "note",
+          "severity"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "answer": {
+            "type": "string",
+            "enum": [
+              "yes",
+              "no",
+              "unsure"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 400
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "fail",
+              "warn"
+            ]
+          }
+        }
+      }
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail"
+      ]
+    },
+    "failing_items": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "cost_usd": {
+      "type": "number",
+      "minimum": 0
+    },
+    "judged_at": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "const": "local"
+          }
+        }
+      },
+      "else": {
+        "required": [
+          "provider_request_id",
+          "raw_response_asset_id"
+        ],
+        "properties": {
+          "provider_request_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "raw_response_asset_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  ]
+}

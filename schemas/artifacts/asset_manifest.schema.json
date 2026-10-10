@@ -2,61 +2,636 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "openmontage/artifacts/asset_manifest",
   "title": "Asset Manifest",
-  "description": "Inventory of generated/sourced assets produced by the Asset Generator.",
+  "description": "Inventory of generated/sourced assets produced by the Asset Generator. Versioned: a oneOf over v1.0 (unchanged legacy body) and v1.1, keyed on `version`; schemas.artifacts.validate_artifact dispatches on the version field and applies the Python-level uniqueness checks documented in each branch.",
   "type": "object",
-  "required": ["version", "assets"],
   "properties": {
-    "version": { "type": "string", "const": "1.0" },
+    "version": {
+      "type": "string",
+      "enum": [
+        "1.0",
+        "1.1"
+      ],
+      "description": "Schema version; selects the oneOf branch below"
+    },
     "assets": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "type", "path", "source_tool", "scene_id"],
         "properties": {
-          "id": { "type": "string" },
-          "type": {
-            "type": "string",
-            "enum": ["image", "video", "audio", "narration", "music", "sfx", "diagram", "animation", "code_snippet", "subtitle", "font", "lut"]
-          },
-          "path": { "type": "string", "description": "Relative path within the pipeline project directory" },
-          "source_tool": { "type": "string" },
-          "scene_id": { "type": "string" },
-          "prompt": { "type": "string", "description": "Generation prompt if AI-generated" },
-          "seed": { "type": "integer", "description": "Seed if applicable" },
-          "model": { "type": "string", "description": "Model used for generation" },
-          "cost_usd": { "type": "number", "minimum": 0 },
-          "duration_seconds": { "type": "number", "minimum": 0 },
-          "resolution": { "type": "string" },
-          "format": { "type": "string" },
-          "quality_score": { "type": "number", "minimum": 0, "maximum": 1 },
-          "subtype": { "type": "string", "description": "Sub-classification (e.g. 'background', 'stock', 'generated')" },
-          "generation_summary": { "type": "string", "description": "Brief summary of how the asset was generated or sourced" },
-          "provider": { "type": "string", "description": "Provider name (e.g. pixabay, google_imagen)" },
-          "license": { "type": "string", "description": "License type (e.g. Pixabay License, CC0)" },
-          "original_url": { "type": "string", "description": "Source URL if downloaded from a stock service" },
           "voice_performance": {
             "type": "object",
             "description": "Applied voice-performance contract for narration assets.",
             "properties": {
-              "source_section_id": { "type": "string" },
-              "delivery_cues_applied": { "type": "boolean" },
-              "provider_text_used": { "type": "boolean" },
+              "source_section_id": {
+                "type": "string"
+              },
+              "delivery_cues_applied": {
+                "type": "boolean"
+              },
+              "provider_text_used": {
+                "type": "boolean"
+              },
               "provider_settings": {
                 "type": "object",
                 "additionalProperties": true
               },
-              "sample_approved": { "type": "boolean" },
-              "sample_path": { "type": "string" },
-              "review_notes": { "type": "string" }
+              "sample_approved": {
+                "type": "boolean"
+              },
+              "sample_path": {
+                "type": "string"
+              },
+              "review_notes": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/v1_0"
+    },
+    {
+      "$ref": "#/$defs/v1_1"
+    }
+  ],
+  "$defs": {
+    "v1_0": {
+      "type": "object",
+      "required": [
+        "version",
+        "assets"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "const": "1.0"
+        },
+        "assets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "type",
+              "path",
+              "source_tool",
+              "scene_id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "image",
+                  "video",
+                  "audio",
+                  "narration",
+                  "music",
+                  "sfx",
+                  "diagram",
+                  "animation",
+                  "code_snippet",
+                  "subtitle",
+                  "font",
+                  "lut"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "description": "Relative path within the pipeline project directory"
+              },
+              "source_tool": {
+                "type": "string"
+              },
+              "scene_id": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string",
+                "description": "Generation prompt if AI-generated"
+              },
+              "seed": {
+                "type": "integer",
+                "description": "Seed if applicable"
+              },
+              "model": {
+                "type": "string",
+                "description": "Model used for generation"
+              },
+              "cost_usd": {
+                "type": "number",
+                "minimum": 0
+              },
+              "duration_seconds": {
+                "type": "number",
+                "minimum": 0
+              },
+              "resolution": {
+                "type": "string"
+              },
+              "format": {
+                "type": "string"
+              },
+              "quality_score": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "subtype": {
+                "type": "string",
+                "description": "Sub-classification (e.g. 'background', 'stock', 'generated')"
+              },
+              "generation_summary": {
+                "type": "string",
+                "description": "Brief summary of how the asset was generated or sourced"
+              },
+              "continuity": {
+                "type": "object",
+                "description": "Structured canon/continuity evidence. Required for visual assets by the authored-canon validation profile: which canon entities this asset depicts and which references and risk mitigations were actually applied.",
+                "required": [
+                  "canon_refs",
+                  "references_applied",
+                  "risk_notes_applied"
+                ],
+                "properties": {
+                  "canon_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 1,
+                    "description": "Canon packet lock/beat ids or character/location names this asset must stay true to"
+                  },
+                  "references_applied": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Reference asset paths/URLs actually supplied to generation (may be empty when canon lists none)"
+                  },
+                  "risk_notes_applied": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Continuity risk notes from the canon packet that were mitigated in the prompt/settings (may be empty when canon lists none)"
+                  },
+                  "notes": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "provider": {
+                "type": "string",
+                "description": "Provider name (e.g. pixabay, google_imagen)"
+              },
+              "license": {
+                "type": "string",
+                "description": "License type (e.g. Pixabay License, CC0)"
+              },
+              "original_url": {
+                "type": "string",
+                "description": "Source URL if downloaded from a stock service"
+              },
+              "voice_performance": {
+                "type": "object",
+                "description": "Applied voice-performance contract for narration assets.",
+                "properties": {
+                  "source_section_id": {
+                    "type": "string"
+                  },
+                  "delivery_cues_applied": {
+                    "type": "boolean"
+                  },
+                  "provider_text_used": {
+                    "type": "boolean"
+                  },
+                  "provider_settings": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "sample_approved": {
+                    "type": "boolean"
+                  },
+                  "sample_path": {
+                    "type": "string"
+                  },
+                  "review_notes": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
             },
             "additionalProperties": false
           }
         },
-        "additionalProperties": false
-      }
+        "total_cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
     },
-    "total_cost_usd": { "type": "number", "minimum": 0 },
-    "metadata": { "type": "object" }
-  },
-  "additionalProperties": false
+    "v1_1": {
+      "type": "object",
+      "required": [
+        "version",
+        "assets"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "const": "1.1"
+        },
+        "assets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "type",
+              "path",
+              "source_tool",
+              "scene_id",
+              "asset_class"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "image",
+                  "video",
+                  "audio",
+                  "narration",
+                  "music",
+                  "sfx",
+                  "diagram",
+                  "animation",
+                  "code_snippet",
+                  "subtitle",
+                  "font",
+                  "lut"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "description": "Relative path within the pipeline project directory"
+              },
+              "source_tool": {
+                "type": "string"
+              },
+              "scene_id": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string",
+                "description": "Generation prompt if AI-generated"
+              },
+              "seed": {
+                "type": "integer",
+                "description": "Seed if applicable"
+              },
+              "model": {
+                "type": "string",
+                "description": "Model used for generation"
+              },
+              "cost_usd": {
+                "type": "number",
+                "minimum": 0
+              },
+              "duration_seconds": {
+                "type": "number",
+                "minimum": 0
+              },
+              "resolution": {
+                "type": "string"
+              },
+              "format": {
+                "type": "string"
+              },
+              "quality_score": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "subtype": {
+                "type": "string",
+                "description": "Sub-classification (e.g. 'background', 'stock', 'generated')"
+              },
+              "generation_summary": {
+                "type": "string",
+                "description": "Brief summary of how the asset was generated or sourced"
+              },
+              "continuity": {
+                "type": "object",
+                "description": "Structured canon/continuity evidence. Required for visual assets by the authored-canon validation profile: which canon entities this asset depicts and which references and risk mitigations were actually applied.",
+                "required": [
+                  "canon_refs",
+                  "references_applied",
+                  "risk_notes_applied"
+                ],
+                "properties": {
+                  "canon_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 1,
+                    "description": "Canon packet lock/beat ids or character/location names this asset must stay true to"
+                  },
+                  "references_applied": {
+                    "type": "array",
+                    "description": "References actually supplied to generation. Each item is either an entity reference (an approved visual_bible ImageRef, keyed by visual_bible_entity_id) or a storyboard reference (role 'storyboard', keyed by shot_id; asset_id is the approved storyboard_frame's content hash).",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "title": "entity reference",
+                          "required": [
+                            "asset_id",
+                            "path",
+                            "role",
+                            "visual_bible_entity_id"
+                          ],
+                          "properties": {
+                            "asset_id": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$",
+                              "description": "sha256 of the reference image bytes (content-addressed)"
+                            },
+                            "path": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "role": {
+                              "type": "string",
+                              "minLength": 1,
+                              "not": {
+                                "const": "storyboard"
+                              },
+                              "description": "e.g. hero, front, establishing"
+                            },
+                            "visual_bible_entity_id": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9-]+$"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "title": "storyboard reference",
+                          "required": [
+                            "asset_id",
+                            "path",
+                            "role",
+                            "shot_id"
+                          ],
+                          "properties": {
+                            "asset_id": {
+                              "type": "string",
+                              "pattern": "^[a-f0-9]{64}$",
+                              "description": "sha256 of the reference image bytes (content-addressed)"
+                            },
+                            "path": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "role": {
+                              "const": "storyboard"
+                            },
+                            "shot_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "description": "must equal the citing shot_visual's shot_id"
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "risk_notes_applied": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Continuity risk notes from the canon packet that were mitigated in the prompt/settings (may be empty when canon lists none)"
+                  },
+                  "notes": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "provider": {
+                "type": "string",
+                "description": "Provider name (e.g. pixabay, google_imagen)"
+              },
+              "license": {
+                "type": "string",
+                "description": "License type (e.g. Pixabay License, CC0)"
+              },
+              "original_url": {
+                "type": "string",
+                "description": "Source URL if downloaded from a stock service"
+              },
+              "voice_performance": {
+                "type": "object",
+                "description": "Applied voice-performance contract for narration assets.",
+                "properties": {
+                  "source_section_id": {
+                    "type": "string"
+                  },
+                  "delivery_cues_applied": {
+                    "type": "boolean"
+                  },
+                  "provider_text_used": {
+                    "type": "boolean"
+                  },
+                  "provider_settings": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "sample_approved": {
+                    "type": "boolean"
+                  },
+                  "sample_path": {
+                    "type": "string"
+                  },
+                  "review_notes": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "asset_class": {
+                "type": "string",
+                "enum": [
+                  "storyboard_frame",
+                  "shot_visual",
+                  "non_shot"
+                ],
+                "description": "storyboard_frame: image bound to a shot_id with continuity refs. shot_visual: image|video take for a shot (shot_id, take_id, usage_status, model_endpoint, continuity). non_shot: everything else; carries no shot/take/model fields. Only the first two are subject to continuity and model rules."
+              },
+              "shot_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "scene_plan 1.1 shot id this asset realizes"
+              },
+              "take_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Take identifier, unique per shot"
+              },
+              "usage_status": {
+                "type": "string",
+                "enum": [
+                  "candidate",
+                  "selected",
+                  "rejected"
+                ]
+              },
+              "model_endpoint": {
+                "type": "string",
+                "description": "Endpoint used; must equal the owning scene's model_endpoint for selected takes (enforced by the authored-canon profile)"
+              }
+            },
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "required": [
+                    "asset_class"
+                  ],
+                  "properties": {
+                    "asset_class": {
+                      "const": "storyboard_frame"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "shot_id",
+                    "continuity"
+                  ],
+                  "properties": {
+                    "type": {
+                      "const": "image"
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "required": [
+                    "asset_class"
+                  ],
+                  "properties": {
+                    "asset_class": {
+                      "const": "shot_visual"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "shot_id",
+                    "take_id",
+                    "usage_status",
+                    "model_endpoint",
+                    "continuity"
+                  ],
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "image",
+                        "video"
+                      ]
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "required": [
+                    "asset_class"
+                  ],
+                  "properties": {
+                    "asset_class": {
+                      "const": "non_shot"
+                    }
+                  }
+                },
+                "then": {
+                  "allOf": [
+                    {
+                      "not": {
+                        "required": [
+                          "shot_id"
+                        ]
+                      }
+                    },
+                    {
+                      "not": {
+                        "required": [
+                          "take_id"
+                        ]
+                      }
+                    },
+                    {
+                      "not": {
+                        "required": [
+                          "model_endpoint"
+                        ]
+                      }
+                    },
+                    {
+                      "not": {
+                        "required": [
+                          "usage_status"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "total_cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "migration_status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "needs_review"
+          ],
+          "description": "Set by lib/migrations when this artifact was upgraded from 1.0. needs_review = fields the director must emit were not synthesized (refs, cast, shots); enforcement treats the artifact as invalid for downstream paid stages until a human-reviewed regeneration is approved."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
 }

@@ -1,0 +1,59 @@
+{
+  "verified_at": "2026-08-25",
+  "source": "https://fal.ai/docs/model-endpoints/queue.md",
+  "submit": {
+    "method": "POST",
+    "url": "https://queue.fal.run/{model_id}",
+    "response": [
+      "request_id",
+      "response_url",
+      "status_url",
+      "cancel_url",
+      "queue_position"
+    ]
+  },
+  "status": {
+    "method": "GET",
+    "url": "https://queue.fal.run/{app_id}/requests/{request_id}/status",
+    "fields": [
+      "status",
+      "queue_position",
+      "logs",
+      "metrics",
+      "error",
+      "error_type"
+    ],
+    "status_enum": [
+      "IN_QUEUE",
+      "IN_PROGRESS",
+      "COMPLETED"
+    ]
+  },
+  "result": {
+    "method": "GET",
+    "url": "https://queue.fal.run/{app_id}/requests/{request_id}"
+  },
+  "cancel": {
+    "method": "PUT",
+    "url": "https://queue.fal.run/{app_id}/requests/{request_id}/cancel"
+  },
+  "auth_header": "Authorization: Key $FAL_KEY",
+  "allowed_hosts": [
+    "fal.run",
+    "queue.fal.run",
+    "fal.media",
+    "v3.fal.media"
+  ],
+  "headers": [
+    "X-Fal-Request-Timeout",
+    "X-Fal-Runner-Hint",
+    "X-Fal-Queue-Priority",
+    "X-Fal-Object-Lifecycle-Preference",
+    "X-Fal-Store-IO",
+    "X-Fal-No-Retry",
+    "X-Fal-Retry-Config"
+  ],
+  "idempotency_key_supported": false,
+  "default_provider_retries_on_503_504": 10,
+  "app_id_rule": "app_id = first two path segments of model_id (owner/app); sub-paths are dropped for requests/* URLs. Verified live 2026-08-25."
+}

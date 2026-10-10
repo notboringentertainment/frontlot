@@ -118,6 +118,24 @@ def sample_artifact(name: str) -> dict:
             },
             "approval": {"status": "approved"},
         }
+    if name == "decision_log":
+        return {
+            "version": "1.0",
+            "project_id": "test_project",
+            "decisions": [
+                {
+                    "decision_id": "d-001",
+                    "stage": "proposal",
+                    "category": "concept_selection",
+                    "subject": "Concept selection",
+                    "options_considered": [
+                        {"option_id": "c1", "label": "Concept 1", "score": 0.9, "reason": "Strongest hook"},
+                    ],
+                    "selected": "c1",
+                    "reason": "Best research backing",
+                }
+            ],
+        }
     if name == "brief":
         return {
             "version": "1.0",

@@ -136,13 +136,153 @@ class ToolResult:
     duration_seconds: float = 0.0
     seed: Optional[int] = None
     model: Optional[str] = None
+    # Provenance hints consumed by the generation-receipt layer (PLAN §6):
+    # model_endpoint, provider_request_id, generator_kind ("model"|"local"),
+    # local_tool, local_tool_version, parameters_hash, input_asset_ids,
+    # prompt, seed, references_applied (ordered list of uploaded references).
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 import threading as _threading
+import uuid as _uuid
+from datetime import datetime as _datetime, timezone as _timezone
 
 # Shared nesting counter for instrumented execute() calls (thread-local so
-# parallel tool threads don't see each other's depth).
+# parallel tool threads don't see each other's depth). Also carries the
+# per-call ``execution_id`` of the innermost running execute().
 _EXECUTE_DEPTH = _threading.local()
+
+# Keys stripped from ``inputs`` before hashing for a generation receipt /
+# paid-call reservation. Path-like keys are machine-specific (they encode the
+# checkout location) and volatile keys change per run without changing what
+# was generated. Anything whose value cannot be canonicalized (objects such
+# as an injected cost tracker) is dropped too.
+_VOLATILE_INPUT_KEYS = frozenset({
+    "project_dir", "project_path", "output_path", "output_dir", "output_file",
+    "objects_dir", "scene_id", "execution_id", "cost_tracker", "api_key",
+    "budget_usd_cap", "poll_s", "deadline_s", "timeout_s",
+})
+_PATH_KEY_SUFFIXES = ("_path", "_paths", "_dir", "_file")
+
+
+def current_execution_id() -> Optional[str]:
+    """Execution id of the innermost instrumented execute() on this thread."""
+    return getattr(_EXECUTE_DEPTH, "execution_id", None)
+
+
+def normalized_inputs_hash(inputs: Any) -> str:
+    """Canonical (RFC 8785) sha256 of ``inputs`` minus path-like and volatile keys.
+
+    Dropped: keys in ``_VOLATILE_INPUT_KEYS``, keys ending in ``_path``,
+    ``_paths``, ``_dir`` or ``_file``, and any key whose value is not
+    JSON-canonicalizable. The same function is used for reservations and
+    receipts so the two hashes always agree.
+    """
+    from lib.canonical_json import canonical_bytes, record_sha256
+
+    if not isinstance(inputs, dict):
+        return record_sha256(inputs)
+    kept: dict[str, Any] = {}
+    for key, value in inputs.items():
+        if not isinstance(key, str) or key in _VOLATILE_INPUT_KEYS:
+            continue
+        if key.endswith(_PATH_KEY_SUFFIXES):
+            continue
+        try:
+            canonical_bytes(value)
+        except (TypeError, ValueError):
+            continue
+        kept[key] = value
+    return record_sha256(kept)
+
+
+def _utc_iso() -> str:
+    return _datetime.now(_timezone.utc).isoformat()
+
+
+def _write_generation_receipts(
+    self: Any,
+    inputs: Any,
+    result: Any,
+    *,
+    execution_id: str,
+    started_at: str,
+    finished_at: str,
+) -> None:
+    """Record one generation receipt per output of a successful, flagged execute().
+
+    Unlike events this is FATAL: any failure propagates to the caller, because
+    a generated file without a receipt can never become canon (PLAN §6).
+    """
+    from lib.events import infer_project_dir
+    from lib.pathsafe import sha256_file
+    from lib.receipts import find_generation, record_generation
+
+    if not getattr(result, "success", False):
+        return
+    data = getattr(result, "data", None) or {}
+    outputs = list(data.get("output_paths") or [])
+    single = data.get("output_path") or (inputs.get("output_path") if isinstance(inputs, dict) else None)
+    if single and str(single) not in [str(o) for o in outputs]:
+        outputs.insert(0, single)
+    if not outputs:
+        return
+    meta = getattr(result, "metadata", None) or {}
+    tool_name = getattr(self, "name", "") or self.__class__.__name__
+    inputs_hash = normalized_inputs_hash(inputs)
+    seed = meta.get("seed", getattr(result, "seed", None))
+    for output_path in outputs:
+        project_dir = infer_project_dir({"output_path": str(output_path)})
+        if project_dir is None:
+            continue
+        output_sha = sha256_file(output_path)
+        # Paid tools receipt their own outputs inside execute() through the
+        # generation WAL (receipt → ledger → terminal reservation → WAL
+        # delete); a verified receipt for this very execution is not repeated.
+        existing = find_generation(project_dir, output_sha)
+        if existing is not None and existing.get("execution_id") == execution_id:
+            continue
+        record_generation(
+            project_dir,
+            execution_id=execution_id,
+            tool=tool_name,
+            model_endpoint=meta.get("model_endpoint"),
+            provider_request_id=meta.get("provider_request_id"),
+            normalized_inputs_hash=inputs_hash,
+            output_sha256=output_sha,
+            cost_usd=float(getattr(result, "cost_usd", 0.0) or 0.0),
+            started_at=started_at,
+            finished_at=finished_at,
+            generator_kind=meta.get("generator_kind", "model"),
+            local_tool=meta.get("local_tool"),
+            local_tool_version=meta.get("local_tool_version"),
+            parameters_hash=meta.get("parameters_hash"),
+            input_asset_ids=meta.get("input_asset_ids"),
+            prompt=meta.get("prompt"),
+            seed=seed,
+            references_applied=meta.get("references_applied"),
+            **_receipt_passthrough_fields(meta),
+        )
+
+
+# Receipt fields a tool may bind through ``ToolResult.metadata`` (plan D10):
+# look governance (``look_refs``, ``headshot_ref``, ``prompt_recipe``) and, for
+# ``generator_kind: imported`` (Slice A′), the import provenance. They are
+# passed to ``record_generation`` only when present, so a tool that binds them
+# fails closed if the receipt layer cannot carry them.
+_RECEIPT_PASSTHROUGH_KEYS = (
+    "look_refs", "headshot_ref", "prompt_recipe",
+    "origin_tool", "attestation_receipt_id", "import_receipt_id", "normalized_pixel_hash",
+)
+
+
+def _receipt_passthrough_fields(meta: dict[str, Any]) -> dict[str, Any]:
+    out = {k: meta[k] for k in _RECEIPT_PASSTHROUGH_KEYS if meta.get(k) is not None}
+    if meta.get("generator_kind") == "imported":
+        missing = [k for k in ("origin_tool", "attestation_receipt_id") if k not in out]
+        if missing:
+            raise ValueError(f"imported provenance receipt is missing {missing}")
+    return out
 
 
 def _instrument_execute(fn: Callable) -> Callable:
@@ -155,6 +295,12 @@ def _instrument_execute(fn: Callable) -> Callable:
 
     Instrumentation is strictly non-fatal: any failure inside the event layer
     is swallowed and the tool call proceeds untouched.
+
+    Every call gets a uuid4 ``execution_id`` (thread-local, see
+    ``current_execution_id``) included in the start/error/finish events. Tools
+    that set ``emits_generation_receipt = True`` additionally get a generation
+    receipt written for each output path under a project dir after a
+    successful execute — that write is fatal on failure.
     """
     if getattr(fn, "_backlot_instrumented", False):
         return fn
@@ -177,12 +323,16 @@ def _instrument_execute(fn: Callable) -> Callable:
         # consumers dedupe — e.g. sum cost_usd only at depth 0.
         depth = getattr(depth_state, "value", 0)
         depth_state.value = depth + 1
+        parent_execution_id = getattr(depth_state, "execution_id", None)
+        execution_id = str(_uuid.uuid4())
+        depth_state.execution_id = execution_id
         project_dir = infer_project_dir(inputs)
 
         base = {
             "tool": tool_name,
             "scene_id": scene_id,
             "depth": depth if depth else None,
+            "execution_id": execution_id,
         }
         if project_dir is not None:
             emit_event(project_dir, {
@@ -191,6 +341,7 @@ def _instrument_execute(fn: Callable) -> Callable:
             })
 
         started = time.monotonic()
+        started_at = _utc_iso()
         try:
             result = fn(self, inputs, *args, **kwargs)
         except Exception as exc:
@@ -203,6 +354,8 @@ def _instrument_execute(fn: Callable) -> Callable:
             raise
         finally:
             depth_state.value = depth
+            depth_state.execution_id = parent_execution_id
+        finished_at = _utc_iso()
 
         if project_dir is None:
             # The tool may have created its own project dir during execute
@@ -218,6 +371,14 @@ def _instrument_execute(fn: Callable) -> Callable:
                 "cost_usd": cost if isinstance(cost, (int, float)) else None,
                 "duration_s": round(time.monotonic() - started, 2),
             })
+        if getattr(self, "emits_generation_receipt", False):
+            # Deliberately outside any try/except: receipt failures are fatal.
+            _write_generation_receipts(
+                self, inputs, result,
+                execution_id=execution_id,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
         return result
 
     wrapper._backlot_instrumented = True  # type: ignore[attr-defined]
@@ -260,6 +421,11 @@ class BaseTool(ABC):
     best_for: list[str] = []
     not_good_for: list[str] = []
     provider_matrix: dict[str, Any] = {}
+    # True only for tools whose execute() runs the look-governance boundary
+    # (paid_call_context / verify_look_governance / verify_reference_lineage)
+    # before any upload and seals look_refs / prompt_recipe into the receipt.
+    # Generic selectors delegate governed calls only to these (inspection #9).
+    governance_bound: bool = False
 
     # --- Resource & retry ---
     resource_profile: ResourceProfile = ResourceProfile()
@@ -282,6 +448,14 @@ class BaseTool(ABC):
 
     # --- Verification ---
     user_visible_verification: list[str] = []
+
+    # --- Provenance (PLAN §6) ---
+    # When True, the execute() wrapper appends a generation receipt to the
+    # owning project's generation-receipts.jsonl for every output path of a
+    # successful call. Receipt failures raise. Tools must fill
+    # ToolResult.metadata (model_endpoint / provider_request_id, or
+    # generator_kind="local" + local_tool details) for the receipt to validate.
+    emits_generation_receipt: bool = False
 
     # --- Optional telemetry / quality hints for the scoring engine ---
     # If set (0.0-1.0), lib/scoring.py uses these directly instead of falling

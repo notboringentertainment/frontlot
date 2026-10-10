@@ -1,0 +1,33 @@
+{
+  "model_id": "bytedance/seedance-2.5/reference-to-video",
+  "verified_at": "2026-08-25",
+  "sources": [
+    "https://fal.ai/models/bytedance/seedance-2.5/reference-to-video/llms.txt",
+    "https://fal.ai/models/bytedance/seedance-2.5/reference-to-video/api"
+  ],
+  "endpoints": {
+    "sync": "https://fal.run/bytedance/seedance-2.5/reference-to-video",
+    "queue": "https://queue.fal.run/bytedance/seedance-2.5/reference-to-video"
+  },
+  "input": {
+    "required": ["prompt"],
+    "properties": {
+      "prompt": {"type": "string"},
+      "image_urls": {"type": "array", "items": {"type": "string"}, "maxItems": 30,
+        "note": "Referenced in prompt as @Image1, @Image2 ... Total files across image/video/audio <= 50. No first-frame / start-image parameter exists on this endpoint."},
+      "video_urls": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
+      "audio_urls": {"type": "array", "items": {"type": "string"}, "maxItems": 10},
+      "resolution": {"enum": ["480p", "720p", "1080p"], "default": "720p"},
+      "duration": {"enum": ["auto", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30"], "default": "auto"},
+      "aspect_ratio": {"enum": ["auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], "default": "auto"},
+      "generate_audio": {"type": "boolean", "default": true},
+      "bitrate_mode": {"enum": ["standard", "high"], "default": "standard"},
+      "end_user_id": {"type": "string"}
+    },
+    "limits": {"max_total_reference_files": 50, "max_images": 30, "max_videos": 10, "max_audios": 10}
+  },
+  "output": {"required": ["video", "seed"], "video_url_path": "video.url"},
+  "pricing": {"usd_per_second": {"480p": 0.2205, "720p": 0.4730}, "video_input_multiplier": 0.6, "note": "1080p billed per 1000 tokens (~0.0234)"},
+  "idempotency": {"client_key_supported": false, "server_request_id": true, "no_retry_header": "X-Fal-No-Retry: 1"},
+  "start_frame_with_references": false
+}
