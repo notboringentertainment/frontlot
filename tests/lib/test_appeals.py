@@ -198,3 +198,108 @@ def test_icloud_placeholder_raises(tmp_path, sub):
     (root / "wayfinder" / sub / ".appeal-x.md.icloud").write_bytes(b"")
     with pytest.raises(AppealReadError, match=r"iCloud.*appeal-x\.md\.icloud"):
         read_appeals(root)
+
+
+# ---- Task C2: check_appeals / job_names (Front Lot's spend-time check) ----
+
+from lib.appeals import OpenAppealError, check_appeals, job_names  # noqa: E402
+
+
+def film_with_appeals(tmp_path, open_files=None, closed_files=None):
+    """A film folder whose project.yaml names a Story-drive folder with these appeals."""
+    writing = make(tmp_path / "writing", open_files, closed_files)
+    film = tmp_path / "film"
+    film.mkdir()
+    (film / "project.yaml").write_text(f"wayfinder_root: {writing}\n")
+    return film
+
+
+def test_open_appeal_touching_the_job_stops_it(tmp_path):
+    film = film_with_appeals(tmp_path, {"appeal-0123456789ab.md": OPEN})
+    with pytest.raises(OpenAppealError) as caught:
+        check_appeals(film, {"vector chair"})
+    assert str(caught.value) == (
+        "WriterOS changed canon this job uses: The chair is green. (Story-drive said: The chair is blue.; "
+        "ticket appeal-0123456789ab.md). Apply the change before generating? Nothing is spent until you answer."
+    )
+    assert caught.value.appeal.path.name == "appeal-0123456789ab.md"
+
+
+def test_new_appeal_message_and_first_lines_only(tmp_path):
+    text = (
+        OPEN.replace("appeal: overrule", "appeal: new")
+        .replace("The chair is blue.\n", "Nothing — Story-drive never decided this.\n")
+        .replace("## WriterOS now says\nThe chair is green.\n", "## WriterOS now says\nThe chair is green.\nSecond line.\n")
+    )
+    film = film_with_appeals(tmp_path, {"appeal-a.md": text})
+    with pytest.raises(OpenAppealError, match=r"^WriterOS changed canon this job uses: The chair is green\. \(Story-drive said: "
+                       r"Nothing — Story-drive never decided this\.; ticket appeal-a\.md\)\. Apply"):
+        check_appeals(film, {"vector chair"})
+
+
+def test_several_matching_appeals_name_the_first_and_count_the_rest(tmp_path):
+    film = film_with_appeals(tmp_path, {"appeal-b.md": OPEN, "appeal-a.md": OPEN, "appeal-c.md": OPEN})
+    with pytest.raises(OpenAppealError) as caught:
+        check_appeals(film, {"vector chair"})
+    assert caught.value.appeal.path.name == "appeal-a.md"
+    assert str(caught.value).endswith("Nothing is spent until you answer. 2 more open appeals also touch this job.")
+    film2 = film_with_appeals(tmp_path / "two", {"appeal-b.md": OPEN, "appeal-a.md": OPEN})
+    with pytest.raises(OpenAppealError, match=r"answer\. 1 more open appeal also touches this job\.$"):
+        check_appeals(film2, {"vector chair"})
+
+
+def test_open_appeal_about_something_else_does_not_stop(tmp_path):
+    film = film_with_appeals(tmp_path, {"appeal-a.md": OPEN})
+    check_appeals(film, {"vector station", "vector-dock"})
+    check_appeals(film, set())
+
+
+def test_closed_appeal_never_stops(tmp_path):
+    film = film_with_appeals(tmp_path, None, {"appeal-a.md": CLOSED, "appeal-b.md": OPEN})
+    check_appeals(film, {"vector chair"})
+
+
+def test_hyphen_space_and_case_variants_match(tmp_path):
+    text = OPEN.replace("[Vector Chair]", "[vector-dock, Vector Parlor]")
+    film = film_with_appeals(tmp_path, {"appeal-a.md": text})
+    for names in ({"Vector Dock"}, {" vector-parlor "}, {"VECTOR-DOCK"}):
+        with pytest.raises(OpenAppealError):
+            check_appeals(film, names)
+
+
+def test_no_wayfinder_root_skips_the_check(tmp_path):
+    film = tmp_path / "film"
+    film.mkdir()
+    (film / "project.yaml").write_text("budget_usd_cap: 1.0\n")
+    check_appeals(film, {"vector chair"})
+    (film / "project.yaml").write_text("wayfinder_root: ''\n")
+    check_appeals(film, {"vector chair"})
+
+
+def test_unreachable_story_drive_folder_stops_spending(tmp_path):
+    film = tmp_path / "film"
+    film.mkdir()
+    (film / "project.yaml").write_text(f"wayfinder_root: {tmp_path / 'evicted'}\n")
+    with pytest.raises(AppealReadError, match="Front Lot can't read your Story-drive folder"):
+        check_appeals(film, {"vector chair"})
+
+
+def test_malformed_appeal_stops_spending_even_when_unrelated(tmp_path):
+    film = film_with_appeals(tmp_path, {"appeal-a.md": OPEN.replace("appeal: overrule", "appeal: maybe")})
+    with pytest.raises(AppealReadError, match="malformed"):
+        check_appeals(film, {"vector station"})
+
+
+def test_job_names_collects_look_refs_references_and_entities():
+    inputs = {
+        "reference_manifest": [
+            {"asset_id": "a", "path": "p", "role": "hero", "visual_bible_entity_id": "Vector-Dock"},
+            {"asset_id": "b", "path": "q", "role": "hero"},
+            "not a dict",
+        ],
+        "entities": [" Vector Station ", 7, ""],
+    }
+    verified = {"look_refs": [{"entity_kind": "location", "entity_id": "vector-chair", "look_hash": "0" * 64}]}
+    assert job_names(inputs, verified) == {"vector dock", "vector station", "vector chair"}
+    assert job_names({}, {"look_refs": None}) == set()
+    assert job_names({"entities": "Vector Station"}, {}) == set()

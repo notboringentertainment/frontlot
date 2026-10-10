@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from lib.look_ingest import LookIngestError, _resolved_wayfinder_root
+from lib.look_ingest import WAYFINDER_ROOT_FIELD, LookIngestError, _resolved_wayfinder_root, wayfinder_root_for
 from lib.pathsafe import PathSafetyError, resolve_input
 
 CANT_READ_FOLDER = "Front Lot can't read your Story-drive folder, so it can't check for open appeals"
@@ -27,6 +27,14 @@ _ANSWER_RE = re.compile(r"^Answer(?:\s*[—–-]+\s*(.*))?$")
 
 class AppealReadError(RuntimeError):
     """An appeal (or the folder holding appeals) could not be read safely."""
+
+
+class OpenAppealError(RuntimeError):
+    """An open appeal touches this paid job; nothing is spent until Ben answers."""
+
+    def __init__(self, message: str, appeal: "Appeal") -> None:
+        super().__init__(message)
+        self.appeal = appeal
 
 
 @dataclass(frozen=True)
@@ -163,3 +171,72 @@ def _read_one(path: Path, root: Path, folder: Path, closed: bool) -> Appeal | No
         writeros_says=section("WriterOS now says"),
         outcome=outcome,
     )
+
+
+def _name_key(name: str) -> str:
+    """One spelling per name: case, spacing, hyphens and underscores don't matter
+    (``affects`` carries both look ids like ``vector-dock`` and display names)."""
+    return " ".join(re.sub(r"[-_]+", " ", name).lower().split())
+
+
+def job_names(inputs: dict, verified: dict) -> set[str]:
+    """Every name or id a paid job uses: its verified ``look_refs`` entity ids,
+    the ``visual_bible_entity_id`` of each ``reference_manifest`` entry, and
+    ``inputs["entities"]`` when given. Normalized like :func:`_name_key`."""
+    raw: list[object] = [r.get("entity_id") for r in (verified or {}).get("look_refs") or [] if isinstance(r, dict)]
+    manifest = inputs.get("reference_manifest")
+    if isinstance(manifest, list):
+        raw += [m.get("visual_bible_entity_id") for m in manifest if isinstance(m, dict)]
+    entities = inputs.get("entities")
+    if isinstance(entities, list):
+        raw += entities
+    return {key for key in (_name_key(n) for n in raw if isinstance(n, str)) if key}
+
+
+def _first_line(text: str) -> str:
+    return next((line.strip() for line in text.splitlines() if line.strip()), "")
+
+
+def check_appeals(project_root: Path, names: set[str]) -> None:
+    """Refuse a paid job that an open appeal touches.
+
+    A project with no ``wayfinder_root`` in its project.yaml has no Story-drive
+    folder and is skipped. Otherwise the appeals are read live; any read
+    failure raises :class:`AppealReadError` (spending stops), and the first
+    open appeal (by file name) whose ``affects`` shares a name with ``names``
+    raises :class:`OpenAppealError`.
+    """
+    import yaml
+
+    config = Path(project_root) / "project.yaml"
+    try:
+        data = yaml.safe_load(config.read_bytes())
+    except (OSError, yaml.YAMLError) as exc:
+        raise AppealReadError(f"Front Lot can't read {config}, so it can't check for open appeals: {exc}") from exc
+    value = data.get(WAYFINDER_ROOT_FIELD) if isinstance(data, dict) else None
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return
+    try:
+        root = wayfinder_root_for(project_root)
+    except LookIngestError as exc:
+        raise AppealReadError(f"{CANT_READ_FOLDER}: {exc}") from exc
+
+    wanted = {_name_key(n) for n in names}
+    touching = sorted(
+        (a for a in read_appeals(root) if a.outcome is None and wanted & {_name_key(x) for x in a.affects}),
+        key=lambda a: a.path.name,
+    )
+    if not touching:
+        return
+    first = touching[0]
+    message = (
+        f"WriterOS changed canon this job uses: {_first_line(first.writeros_says)} "
+        f"(Story-drive said: {_first_line(first.story_drive_says)}; ticket {first.path.name}). "
+        f"Apply the change before generating? Nothing is spent until you answer."
+    )
+    others = len(touching) - 1
+    if others == 1:
+        message += " 1 more open appeal also touches this job."
+    elif others > 1:
+        message += f" {others} more open appeals also touch this job."
+    raise OpenAppealError(message, first)

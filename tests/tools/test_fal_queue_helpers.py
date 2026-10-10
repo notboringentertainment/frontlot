@@ -167,6 +167,59 @@ def test_paid_call_context_halts_on_nonterminal_reservation_before_config_load(t
     assert root == project.resolve()
 
 
+def _appeal_project(tmp_path, monkeypatch, slug, appeal_text=None):
+    """A verified project whose approved project.yaml names a Story-drive folder."""
+    import tests.tools._authored_film_helpers as helpers
+
+    writing = tmp_path / "writing"
+    (writing / "wayfinder" / "tickets").mkdir(parents=True)
+    if appeal_text is not None:
+        (writing / "wayfinder" / "tickets" / "appeal-0123456789ab.md").write_text(appeal_text, encoding="utf-8")
+    monkeypatch.setattr(helpers, "PROJECT_CONFIG", {**helpers.PROJECT_CONFIG, "wayfinder_root": str(writing)})
+    return helpers.make_verified_project(tmp_path, monkeypatch, slug), writing
+
+
+def test_paid_call_context_stops_on_open_appeal_before_any_reservation_or_upload(tmp_path, monkeypatch):
+    from lib.appeals import AppealReadError, OpenAppealError
+    from tools.graphics.seedream_image import SeedreamImage
+
+    from tests.lib.test_appeals import OPEN
+
+    monkeypatch.setenv("FAL_KEY", "test-key")
+    project, writing = _appeal_project(tmp_path, monkeypatch, "proj-appeal", OPEN)
+    spend_files = [project / "cost_log.json", project / "cost-reservations.jsonl"]
+    before = {p: p.read_bytes() if p.exists() else None for p in spend_files}
+
+    with pytest.raises(OpenAppealError, match=r"Apply the change before generating\? Nothing is spent"):
+        _shared.paid_call_context({"project_dir": str(project), "entities": ["Vector-Chair"]})
+    # an appeal about something else lets the call through
+    root, _tracker, _config = _shared.paid_call_context({"project_dir": str(project), "entities": ["Vector Station"]})
+    assert root == project.resolve()
+
+    # the real paid tool refuses before any upload, submit or reservation
+    ref = project / "ref.png"
+    ref.write_bytes(b"\x89PNG")
+    with patch.object(_shared, "upload_image_fal") as up, patch.object(_shared, "fal_queue_submit") as submit:
+        r = SeedreamImage().execute({"prompt": "p", "operation": "edit", "project_dir": str(project),
+                                     "reference_image_paths": [str(ref)], "entities": ["vector chair"]})
+    assert not r.success and "WriterOS changed canon this job uses" in r.error
+    up.assert_not_called()
+    submit.assert_not_called()
+    assert {p: p.read_bytes() if p.exists() else None for p in spend_files} == before
+
+    # an unreadable Story-drive folder stops spending too
+    (writing / "wayfinder" / "tickets" / "appeal-0123456789ab.md").write_text(
+        OPEN.replace("appeal: overrule", "appeal: maybe"), encoding="utf-8")
+    with pytest.raises(AppealReadError, match="malformed"):
+        _shared.paid_call_context({"project_dir": str(project), "entities": ["Vector Station"]})
+    import shutil
+
+    shutil.rmtree(writing)
+    with pytest.raises(AppealReadError, match="Front Lot can't read your Story-drive folder"):
+        _shared.paid_call_context({"project_dir": str(project)})
+    assert {p: p.read_bytes() if p.exists() else None for p in spend_files} == before
+
+
 def test_request_urls_use_owner_app_prefix_only():
     from tools.video import _shared
 
