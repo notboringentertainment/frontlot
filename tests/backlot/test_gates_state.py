@@ -1061,6 +1061,8 @@ def test_lazy_gate_detail_bounds_and_malformed_shapes_fail_closed(gate_world, mo
 def test_look_lock_uses_confined_wayfinder_ticket_and_exact_escape_text(gate_world, tmp_path):
     project = gate_world["project"]
     good = load_gate_detail(project, gate_world["rids"]["look_lock"])["packet"]
+    spec = good.pop("look_spec")  # the look's own words: the board shows them in place of pictures
+    assert isinstance(spec, dict) and spec.get("prompt_safe_description")
     assert good == {"source_ticket_ref": {"id": "wf-0badc0de"}, "look_hash": TICKET_LOOK_HASH,
                     "supersedes": "c" * 64}
 

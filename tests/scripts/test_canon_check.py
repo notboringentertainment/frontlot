@@ -18,7 +18,7 @@ def test_prints_mismatches_and_new_decisions(tmp_path, monkeypatch, capsys):
     assert "Approved canon snapshot: 2026-09-29." in out
     assert 'Mismatch: The approved trailer cast lists "The glass foundry"' in out
     assert "(scoped out) [wayfinder/resolved/glass-foundry-look.md]" in out
-    assert "- gone.md (missing)" in out
+    assert "- gone (missing) [gone.md]" in out
 
 
 def test_unreadable_snapshot_fails_plainly(tmp_path, monkeypatch, capsys):

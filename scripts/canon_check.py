@@ -43,15 +43,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     for m in changes.mismatches:
         print(f"Mismatch: {m.message}")
         print(f"Next: {m.next_step}")
+    for t in changes.to_lock:
+        print(f"Ready to lock: {t.message}")
+        print(f"Next: {t.next_step}")
     if changes.new_decisions:
         print("Decided in Story-drive since the snapshot:")
         for d in changes.new_decisions:
             note = " (scoped out)" if d.scoped_out else ""
             print(f"- {d.resolved}: {d.title}{note} [wayfinder/resolved/{d.file}]")
     if changes.changed_sources:
-        print("Canon files changed since the snapshot:")
+        print("Canon files edited since the snapshot (Front Lot keeps no old copy, so read each one for what it says now):")
         for s in changes.changed_sources:
-            print(f"- {s.path} ({s.state})")
+            when = f", last edited {s.edited}" if s.edited else ""
+            print(f"- {s.title or s.path} ({s.state}{when}) [{s.path}]")
     return 0
 
 
