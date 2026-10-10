@@ -151,3 +151,10 @@ def test_warn_scoped_out_never_raises(tmp_path):
     film, _ = make(tmp_path)
     (film / "checkpoint_canon_ingest.json").unlink()
     assert warn_scoped_out(film, {"glass-foundry"}, stream=io.StringIO()) == []
+
+
+def test_next_step_is_given_with_every_mismatch(tmp_path):
+    film, story = make(tmp_path)
+    (story / "wayfinder" / "resolved" / "glass-foundry-look.md").write_text(SCOPED_OUT, encoding="utf-8")
+    (m,) = read_canon_changes(film).mismatches
+    assert "Nothing is blocked" in m.next_step

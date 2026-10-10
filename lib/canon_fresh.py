@@ -36,6 +36,14 @@ _ENTITY_RE = re.compile(r"^entity_id:[ \t]*['\"]?([A-Za-z0-9][A-Za-z0-9_-]*)['\"
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
+# What Ben can do about an approved-cast entry Story-drive scoped out. Front Lot
+# has no step to change an approved cast yet, so this says what is true today.
+SCOPED_OUT_NEXT_STEP = (
+    "Nothing is blocked: shots don't depend on the trailer cast, and Front Lot warns before any job that uses it. "
+    "Front Lot can't change an approved trailer cast yet, so this stays listed until it can."
+)
+
+
 class CanonReadError(RuntimeError):
     """Today's canon could not be read; the message is a plain sentence for Ben."""
 
@@ -62,6 +70,7 @@ class Mismatch:
     ticket: str
     resolved: str
     message: str
+    next_step: str
 
 
 @dataclass(frozen=True)
@@ -245,6 +254,7 @@ def read_canon_changes(project_root: Path | str) -> CanonChanges | None:
             kind, entity_id, "trailer cast", scoped_out[entity_id].file, scoped_out[entity_id].resolved,
             f"The approved trailer cast lists \"{names_by_id.get(entity_id, entity_id)}\", which Story-drive "
             f"scoped out on {scoped_out[entity_id].resolved}.",
+            SCOPED_OUT_NEXT_STEP,
         )
         for kind, entity_id in _approved_cast(project_root)
         if entity_id in scoped_out

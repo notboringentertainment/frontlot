@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -611,10 +612,69 @@ def writeros_package_for(project_dir: Path | str) -> Optional[Path]:
         raise LookIngestError(f"{config} is not YAML: {exc}") from exc
     value = (data or {}).get(WRITEROS_PACKAGE_FIELD) if isinstance(data, dict) else None
     if value is None:
-        return None
+        return discover_writeros_package(project_dir)
     if not isinstance(value, str) or not value.strip():
         raise LookIngestError(f"{config}: {WRITEROS_PACKAGE_FIELD} must be an absolute path to a .writeros package")
     return _resolved_writeros_package(value)
+
+
+WRITEROS_LIBRARY_ENV = "WRITEROS_LIBRARY"
+WRITEROS_LINKS_FILENAME = ".writeros-story-drive-links.json"
+
+
+def writeros_library() -> Path:
+    """WriterOS's project library (where its .writeros packages live)."""
+    return Path(os.environ.get(WRITEROS_LIBRARY_ENV) or (Path.home() / "WriterOS Projects"))
+
+
+def discover_writeros_package(project_dir: Path | str) -> Optional[Path]:
+    """The film's WriterOS package found through WriterOS's own Story-drive
+    link: when Ben links a WriterOS project to a Story-drive folder, WriterOS
+    records ``links[<projectId>].root = <story-drive folder>/wayfinder`` in
+    its library. The package is the one ``.writeros`` folder in that library
+    whose ``project.json`` carries that projectId. None when the film has no
+    Story-drive folder, no WriterOS project links to it, or the match is not
+    exactly one package. ``project.yaml: writeros_package`` always wins."""
+    try:
+        wayfinder = (wayfinder_root_for(project_dir) / "wayfinder").resolve()
+    except (LookIngestError, OSError):
+        return None
+    library = writeros_library()
+    try:
+        links = json.loads((library / WRITEROS_LINKS_FILENAME).read_text(encoding="utf-8")).get("links")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(links, dict):
+        return None
+    ids = set()
+    for project_id, link in links.items():
+        root = link.get("root") if isinstance(link, dict) else None
+        if isinstance(root, str) and root.strip():
+            try:
+                if Path(root).expanduser().resolve() == wayfinder:
+                    ids.add(project_id)
+            except OSError:
+                continue
+    if len(ids) != 1:
+        return None
+    (wanted,) = ids
+    matches = []
+    try:
+        candidates = sorted(p for p in library.iterdir() if p.name.endswith(".writeros") and p.is_dir())
+    except OSError:
+        return None
+    for package in candidates:
+        try:
+            if json.loads((package / "project.json").read_text(encoding="utf-8")).get("projectId") == wanted:
+                matches.append(package)
+        except (OSError, ValueError, AttributeError):
+            continue
+    if len(matches) != 1:
+        return None
+    try:
+        return _resolved_writeros_package(matches[0])
+    except LookIngestError:
+        return None
 
 
 def _resolved_writeros_package(package: Path | str) -> Path:

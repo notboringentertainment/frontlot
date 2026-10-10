@@ -189,7 +189,7 @@ def test_brief_sends_claude_to_the_package_not_the_web(tmp_path):
     b = cs.build_brief(film_title="Film", film_slug="film", writeros_package=pkg)
     assert str(pkg) in b and "memory/exports/look-locks-" in b and "curl" not in b
     unlinked = cs.build_brief(film_title="Film", film_slug="film")
-    assert "not linked to WriterOS" in unlinked and "curl" not in unlinked
+    assert "found no WriterOS project" in unlinked and "curl" not in unlinked
 
 
 def test_tool_events_skip_lines_whose_message_is_text():

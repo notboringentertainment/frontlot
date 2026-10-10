@@ -2096,7 +2096,8 @@ function renderCanonChanges(s) {
   const section = el("section", { class: "log-section", "aria-labelledby": "canon-changes-heading" },
     el("h2", { id: "canon-changes-heading" }, "Canon since approval"));
   if (c.error) {
-    section.append(el("div", { class: "alert", role: "alert" }, el("b", {}, "Couldn't read today's canon"), el("span", {}, c.error)));
+    section.append(el("div", { class: "alert", role: "alert" }, el("b", {}, "Couldn't read today's canon"), el("span", {}, c.error),
+      el("p", { class: "next-step" }, "What to do: open the film's Story-drive folder in Finder so iCloud finishes downloading it, then reload Front Lot.")));
     return section;
   }
   if (c.unchanged) {
@@ -2104,7 +2105,8 @@ function renderCanonChanges(s) {
     return section;
   }
   for (const m of c.mismatches || []) {
-    section.append(el("div", { class: "alert", role: "status" }, el("b", {}, "Doesn't match canon"), el("span", {}, m.message)));
+    section.append(el("div", { class: "alert", role: "status" }, el("b", {}, "Doesn't match canon"), el("span", {}, m.message),
+      m.next_step ? el("p", { class: "next-step" }, `What to do: ${m.next_step}`) : null));
   }
   const decisions = c.new_decisions || [];
   const files = c.changed_sources || [];

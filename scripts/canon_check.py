@@ -42,6 +42,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
     for m in changes.mismatches:
         print(f"Mismatch: {m.message}")
+        print(f"Next: {m.next_step}")
     if changes.new_decisions:
         print("Decided in Story-drive since the snapshot:")
         for d in changes.new_decisions:
