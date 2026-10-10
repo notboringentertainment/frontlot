@@ -219,7 +219,7 @@ def test_open_appeal_touching_the_job_stops_it(tmp_path):
     with pytest.raises(OpenAppealError) as caught:
         check_appeals(film, {"vector chair"})
     assert str(caught.value) == (
-        "WriterOS changed canon this job uses: The chair is green. (Story-drive said: The chair is blue.; "
+        "WriterOS changed canon this job uses: The chair is green (Story-drive said: The chair is blue; "
         "ticket appeal-0123456789ab.md). Apply the change before generating? Nothing is spent until you answer."
     )
     assert caught.value.appeal.path.name == "appeal-0123456789ab.md"
@@ -232,8 +232,8 @@ def test_new_appeal_message_and_first_lines_only(tmp_path):
         .replace("## WriterOS now says\nThe chair is green.\n", "## WriterOS now says\nThe chair is green.\nSecond line.\n")
     )
     film = film_with_appeals(tmp_path, {"appeal-a.md": text})
-    with pytest.raises(OpenAppealError, match=r"^WriterOS changed canon this job uses: The chair is green\. \(Story-drive said: "
-                       r"Nothing — Story-drive never decided this\.; ticket appeal-a\.md\)\. Apply"):
+    with pytest.raises(OpenAppealError, match=r"^WriterOS changed canon this job uses: The chair is green \(Story-drive said: "
+                       r"Nothing — Story-drive never decided this; ticket appeal-a\.md\)\. Apply"):
         check_appeals(film, {"vector chair"})
 
 

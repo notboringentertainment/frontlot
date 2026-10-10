@@ -194,7 +194,10 @@ def job_names(inputs: dict, verified: dict) -> set[str]:
 
 
 def _first_line(text: str) -> str:
-    return next((line.strip() for line in text.splitlines() if line.strip()), "")
+    """First non-blank line, without trailing sentence punctuation, so it reads
+    cleanly inside the refusal sentence."""
+    line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    return line.rstrip(".!?… ")
 
 
 def check_appeals(project_root: Path, names: set[str]) -> None:
