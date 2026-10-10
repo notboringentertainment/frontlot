@@ -94,11 +94,23 @@ def writeros_package(film_root: Path) -> Path | None:
         return None
 
 
+def story_drive_folder(film_root: Path) -> Path | None:
+    """The film's Story-drive folder (project.yaml: wayfinder_root), checked the way the look step checks
+    it; None when the film has none. Claude reads today's canon there; it cannot write there."""
+    from lib.look_ingest import LookIngestError, wayfinder_root_for   # deferred: pulls in yaml
+
+    try:
+        return wayfinder_root_for(film_root)
+    except LookIngestError:
+        return None
+
+
 def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ: Mapping[str, str]) -> dict:
     repo, film, meta = repo_root.resolve(), film_root.resolve(), meta_root.resolve()
     work = film / "frontlot-work"
     secrets = secret_paths(repo, environ)
     package = writeros_package(film)
+    story = story_drive_folder(film)
     return {
         "sandbox": {
             "enabled": True,
@@ -121,7 +133,8 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
         "permissions": {
             "defaultMode": "dontAsk",             # protects: anything not allowed below is refused, never prompted
             "allow": [TOOL_NAME, f"Read(/{film}/**)", f"Read(/{repo}/**)", f"Edit(/{work}/**)"]
-                     + ([f"Read(/{package}/**)"] if package else []),
+                     + ([f"Read(/{package}/**)"] if package else [])
+                     + ([f"Read(/{story}/**)"] if story else []),
             # protects: Ben's Chrome; backs up --no-chrome (probe P2: the allowlist did not stop it)
             "deny": [CHROME_TOOLS] + ([f"Read({d}/**)" for d in HOME_SECRET_DIRS] + [f"Read({f})" for f in HOME_SECRET_FILES]
                      + [f"Read(/{meta}/**)", f"Read(/{repo}/**/.env*)"] + [f"Read(/{p})" for p in secrets]
@@ -147,13 +160,28 @@ def _writeros_text(package: Path | None) -> str:
             "login, so do not try to reach WriterOS over the network.")
 
 
-def build_brief(*, film_title: str, film_slug: str, writeros_package: Path | None = None) -> str:
+def _canon_text(story_drive: Path | None) -> str:
+    if story_drive is None:
+        return ("- This film has no Story-drive folder (no wayfinder_root in its project.yaml), so there is no live canon "
+                "to read. Say so plainly when it matters.")
+    return (f"- Today's canon lives in this film's Story-drive folder, {story_drive}. The approved canon snapshot "
+            "(checkpoint_canon_ingest.json) is only a receipt of what canon a paid asset came from; it is not current "
+            "canon. Before planning or starting any job, call frontlot_run {\"op\": \"canon_check\", \"params\": {}} and read "
+            "the Canon Note plus every decision it lists, with the Read tool. When today's canon and approved work "
+            "disagree (for example the approved cast lists a place Story-drive scoped out), tell Ben plainly. Never fix it "
+            "yourself and never edit canon: changing canon or approved work is Ben's step in his own tools. If a paid step "
+            "prints a \"Heads up\" line about something Story-drive scoped out, relay it to Ben.")
+
+
+def build_brief(*, film_title: str, film_slug: str, writeros_package: Path | None = None,
+                story_drive: Path | None = None) -> str:
     return f"""You are working inside Front Lot, Ben's app for making a film's visuals.
 Film: "{film_title}" (project id: {film_slug}). Your working folder is this film's Front Lot work area.
 
 How you work here:
 - You can read the film (../ is the film folder) and the OpenMontage repo, and think, plan, and talk with Ben. You can write only in your work area.
 {_writeros_text(writeros_package)}
+{_canon_text(story_drive)}
 - You never run pipeline scripts yourself. Every pipeline step goes through the frontlot_run tool with an operation name and parameters. Front Lot runs it.
   Call it as {{"op": "<name>", "params": {{...}}}}. These are the only operations; each line gives its cost and the parameters it accepts:
 {_operations_text()}

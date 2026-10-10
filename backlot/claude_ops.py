@@ -304,6 +304,11 @@ def _appeal_apply(ctx, p):
     return Prepared(ctx.op, False, argv, {}, summary="Apply the WriterOS change (closes the appeal)")
 
 
+def _canon_check(ctx, p):
+    argv = _script("canon_check") + ["--project", ctx.slug]
+    return Prepared(ctx.op, False, argv, {}, summary="Read today's canon from Story-drive")
+
+
 def _hero_frozen(ctx, e) -> tuple[list[str], dict[Path, str], str]:
     cp = ctx.film / "checkpoint_headshots.json"
     _, digest = _read_record(cp)
@@ -441,6 +446,7 @@ def _shot(sub: str, paid: bool = False):
 OPERATIONS: dict[str, Operation] = {
     "look": Operation(False, frozenset({"entity", "kind", "source", "supersede", "dry_run"}), _look),
     "appeal_apply": Operation(False, frozenset({"ticket"}), _appeal_apply),
+    "canon_check": Operation(False, frozenset(), _canon_check),
     "headshot_candidates": Operation(True, frozenset({"entity", "candidates", "palette"}), _headshot_candidates),
     "headshot_finish": Operation(True, frozenset({"entity"}), _headshot_finish),
     "headshot_import": Operation(False, frozenset({"entity", "image", "origin_tool"}), _headshot_import),

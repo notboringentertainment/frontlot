@@ -1066,6 +1066,11 @@ def paid_call_context(
         from lib.appeals import check_appeals, job_names
 
         check_appeals(project_root, job_names(inputs, verified))
+        # Story-drive scope-outs only warn (Ben's ruling, 2026-10-10): the
+        # session read today's canon before the job and the warning reaches it.
+        from lib.canon_fresh import warn_scoped_out
+
+        warn_scoped_out(project_root, job_names(inputs, verified))
     # C2, first of two checks: before any upload, and before the tracker
     # exists, a shot call must fit the shot's approved dollars and takes.
     # Calls without a supervised brief retain their existing contract.

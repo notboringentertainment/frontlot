@@ -204,3 +204,22 @@ def test_brief_tells_the_session_what_to_do_on_an_open_appeal():
     assert "never ask him which version" in b
     assert "do not retry the paid step: wait for Ben" in b and "then retry" not in b
     assert "Ben's own signed step; never run it yourself" in b
+
+
+def test_films_story_drive_folder_is_readable(tmp_path):
+    # Fresh canon read (2026-10-10): the session reads today's canon in the Story-drive folder, not the snapshot.
+    repo, film, meta = world(tmp_path)
+    story = tmp_path / "story"; (story / "wayfinder").mkdir(parents=True)
+    (film / "project.yaml").write_text(f"wayfinder_root: {story}\n")
+    assert cs.story_drive_folder(film) == story.resolve()
+    allow = cs.build_settings(repo_root=repo, film_root=film, meta_root=meta, environ={})["permissions"]["allow"]
+    assert f"Read(/{story.resolve()}/**)" in allow
+    assert not any(a.startswith("Edit(") and str(story) in a for a in allow)
+
+
+def test_brief_treats_the_snapshot_as_a_receipt(tmp_path):
+    story = tmp_path / "story"
+    b = cs.build_brief(film_title="Film", film_slug="film", story_drive=story)
+    assert str(story) in b and "only a receipt" in b and '"op": "canon_check"' in b
+    assert "Never fix it yourself and never edit canon" in b
+    assert "no Story-drive folder" in cs.build_brief(film_title="Film", film_slug="film")
