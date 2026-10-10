@@ -207,7 +207,16 @@ def test_paid_call_context_stops_on_open_appeal_before_any_reservation_or_upload
     submit.assert_not_called()
     assert {p: p.read_bytes() if p.exists() else None for p in spend_files} == before
 
-    # an unreadable Story-drive folder stops spending too
+    # closed appeals are never read for the spend check: a malformed closed
+    # appeal or an evicted (iCloud) resolved ticket does not block a paid call
+    resolved = writing / "wayfinder" / "resolved"
+    resolved.mkdir()
+    (resolved / "appeal-old.md").write_text(OPEN.replace("appeal: overrule", "appeal: maybe"), encoding="utf-8")
+    (resolved / ".appeal-older.md.icloud").write_bytes(b"")
+    root, _tracker, _config = _shared.paid_call_context({"project_dir": str(project), "entities": ["Vector Station"]})
+    assert root == project.resolve()
+
+    # an unreadable Story-drive folder stops spending too: a malformed open appeal
     (writing / "wayfinder" / "tickets" / "appeal-0123456789ab.md").write_text(
         OPEN.replace("appeal: overrule", "appeal: maybe"), encoding="utf-8")
     with pytest.raises(AppealReadError, match="malformed"):
@@ -218,6 +227,24 @@ def test_paid_call_context_stops_on_open_appeal_before_any_reservation_or_upload
     with pytest.raises(AppealReadError, match="Front Lot can't read your Story-drive folder"):
         _shared.paid_call_context({"project_dir": str(project)})
     assert {p: p.read_bytes() if p.exists() else None for p in spend_files} == before
+
+
+def test_reconciling_is_not_blocked_by_an_unreadable_appeal_folder(tmp_path, monkeypatch):
+    from lib.appeals import AppealReadError
+
+    from tests.lib.test_appeals import OPEN
+
+    project, writing = _appeal_project(tmp_path, monkeypatch, "proj-reconcile", OPEN.replace("appeal: overrule", "appeal: maybe"))
+    with pytest.raises(AppealReadError):
+        _shared.paid_call_context({"project_dir": str(project)})
+    # scripts/reconcile_paid_calls.py calls with check_resume=False and never spends
+    root, _tracker, _config = _shared.paid_call_context({"project_dir": str(project)}, check_resume=False)
+    assert root == project.resolve()
+    import shutil
+
+    shutil.rmtree(writing)
+    root, _tracker, _config = _shared.paid_call_context({"project_dir": str(project)}, check_resume=False)
+    assert root == project.resolve()
 
 
 def test_request_urls_use_owner_app_prefix_only():

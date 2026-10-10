@@ -196,8 +196,36 @@ def test_non_applied_heading_is_closed(tmp_path):
 def test_icloud_placeholder_raises(tmp_path, sub):
     root = make(tmp_path)
     (root / "wayfinder" / sub / ".appeal-x.md.icloud").write_bytes(b"")
-    with pytest.raises(AppealReadError, match=r"iCloud.*appeal-x\.md\.icloud"):
+    with pytest.raises(AppealReadError, match=r"iCloud.*appeal-x\.md\.icloud") as err:
         read_appeals(root)
+    assert "In Finder, right-click the Story-drive folder and choose Download Now." in str(err.value)
+
+
+@pytest.mark.parametrize("sub", ["tickets", "resolved"])
+def test_other_icloud_placeholders_are_ignored(tmp_path, sub):
+    root = make(tmp_path, {"appeal-0123456789ab.md": OPEN})
+    for name in (".appeal-x.md.bak.icloud", ".notes.txt.icloud", "x.md.icloud"):
+        (root / "wayfinder" / sub / name).write_bytes(b"")
+    assert [a.path.name for a in read_appeals(root)] == ["appeal-0123456789ab.md"]
+
+
+def test_indented_escaped_heading_lines_are_unescaped(tmp_path):
+    text = OPEN.replace("The chair is green.\n\n## Where", "  \\# Green\n\t\\## Shade\nThe chair is green.\n\n## Where")
+    (a,) = read_appeals(make(tmp_path, {"a.md": text}))
+    assert a.writeros_says == "# Green\n\t## Shade\nThe chair is green."
+
+
+def test_open_only_read_skips_resolved(tmp_path):
+    root = make(tmp_path, {"appeal-0123456789ab.md": OPEN}, {"bad.md": OPEN.replace("appeal: overrule", "appeal: maybe")})
+    (root / "wayfinder" / "resolved" / ".appeal-old.md.icloud").write_bytes(b"")
+    assert [a.path.name for a in read_appeals(root, include_resolved=False)] == ["appeal-0123456789ab.md"]
+    with pytest.raises(AppealReadError):
+        read_appeals(root)
+    import shutil
+
+    shutil.rmtree(root / "wayfinder" / "tickets")
+    with pytest.raises(AppealReadError, match="tickets"):
+        read_appeals(root, include_resolved=False)
 
 
 # ---- Task C2: check_appeals / job_names (Front Lot's spend-time check) ----
@@ -312,7 +340,11 @@ from lib.appeals import ApplyAppealError, apply_appeal  # noqa: E402
 def test_apply_closes_in_place_and_moves(tmp_path):
     root = make(tmp_path, {"appeal-0123456789ab.md": OPEN})
     new, step = apply_appeal(root, "appeal-0123456789ab.md", "2026-10-10")
-    assert step.endswith("ratify the look with look_run --source writeros.")
+    assert step == (
+        "Front Lot uses the WriterOS version from today. "
+        "Next, ratify the updated look in Front Lot so its references match."
+    )
+    assert "look_run" not in step and "--" not in step
     assert new == (root / "wayfinder" / "resolved" / "appeal-0123456789ab.md").resolve()
     assert not (root / "wayfinder" / "tickets" / "appeal-0123456789ab.md").exists()
     assert list((root / "wayfinder" / "tickets").iterdir()) == []
@@ -321,7 +353,7 @@ def test_apply_closes_in_place_and_moves(tmp_path):
         OPEN.replace("resolved:\n", "resolved: 2026-10-10\n", 1).replace(
             "## Answer\n",
             "## Answer — applied (in Front Lot)\nFront Lot uses the WriterOS version from today. "
-            "To bring its references up to date, ratify the look with look_run --source writeros.\n",
+            "Next, ratify the updated look in Front Lot so its references match.\n",
         )
     )
     assert text == expected
@@ -333,7 +365,10 @@ def test_apply_names_a_generic_step_for_non_looks(tmp_path):
     other = OPEN.replace("writeros:looks/location/vector-chair", "writeros:facts/vector-chair")
     root = make(tmp_path, {"appeal-1.md": other})
     text = apply_appeal(root, "appeal-1.md", "2026-10-10")[0].read_text(encoding="utf-8")
-    assert "refresh the canon Front Lot reads from WriterOS." in text
+    assert (
+        "Front Lot uses the WriterOS version from today. "
+        "Next, refresh Front Lot's canon from Story-drive so its references match.\n"
+    ) in text
 
 
 @pytest.mark.parametrize("name", ["../x.md", "sub/appeal-1.md", "appeal-1.txt", ".appeal-1.md", ""])
@@ -379,6 +414,27 @@ def test_apply_refuses_symlinked_ticket(tmp_path):
     with pytest.raises(AppealReadError):
         apply_appeal(root, "appeal-1.md", "2026-10-10")
     assert real.read_text(encoding="utf-8") == OPEN
+
+
+def test_apply_rollback_still_removes_target_when_temp_cleanup_fails(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    root = make(tmp_path, {"appeal-1.md": OPEN})
+    wf = root / "wayfinder"
+    ticket = (wf / "tickets" / "appeal-1.md").resolve()
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, *a, **k):
+        if self.name == ".appeal-1.md.tmp" or self == ticket:
+            raise OSError("busy")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    with pytest.raises(ApplyAppealError, match="could not close"):
+        apply_appeal(root, "appeal-1.md", "2026-10-10")
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert ticket.read_text(encoding="utf-8") == OPEN
+    assert not (wf / "resolved" / "appeal-1.md").exists()
 
 
 def test_apply_failure_midway_leaves_open_ticket_and_retry_works(tmp_path, monkeypatch):

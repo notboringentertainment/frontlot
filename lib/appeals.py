@@ -24,6 +24,12 @@ CANT_READ_FOLDER = "Front Lot can't read your Story-drive folder, so it can't ch
 _KINDS = ("overrule", "new")
 _HEADER_RE = re.compile(r"^([a-z][a-z0-9-]*):[ \t]*(.*)$")
 _ANSWER_RE = re.compile(r"^Answer(?:\s*[—–-]+\s*(.*))?$")
+# iCloud keeps an evicted file as ".<name>.icloud"; only an evicted ticket
+# (``.<name>.md.icloud``) hides an appeal. Other placeholders (an evicted
+# backup, say) can't be appeals and are ignored.
+_ICLOUD_TICKET_RE = re.compile(r"^\..+\.md\.icloud$")
+# WriterOS escapes a line starting with optional indent and "#" as "<indent>\#".
+_ESCAPED_HASH_RE = re.compile(r"^([ \t]*)\\#")
 
 
 class AppealReadError(RuntimeError):
@@ -50,8 +56,11 @@ class Appeal:
     outcome: str | None  # None while open; "applied" or "closed" once closed
 
 
-def read_appeals(wayfinder_root: Path | str) -> list[Appeal]:
-    """Every appeal under ``<root>/wayfinder/{tickets,resolved}``, open and closed."""
+def read_appeals(wayfinder_root: Path | str, *, include_resolved: bool = True) -> list[Appeal]:
+    """Every appeal under ``<root>/wayfinder/{tickets,resolved}``, open and closed.
+
+    With ``include_resolved=False`` only ``tickets/`` (the open appeals) is read;
+    ``resolved/`` is never opened, so a closed ticket can't block the caller."""
     try:
         root = _resolved_wayfinder_root(wayfinder_root)
     except LookIngestError as exc:
@@ -64,7 +73,8 @@ def read_appeals(wayfinder_root: Path | str) -> list[Appeal]:
         raise AppealReadError(f"{CANT_READ_FOLDER}: {exc}") from exc
 
     appeals: list[Appeal] = []
-    for sub, closed in (("tickets", False), ("resolved", True)):
+    subs = (("tickets", False), ("resolved", True)) if include_resolved else (("tickets", False),)
+    for sub, closed in subs:
         folder = wayfinder / sub
         try:
             if folder.is_symlink():
@@ -79,10 +89,11 @@ def read_appeals(wayfinder_root: Path | str) -> list[Appeal]:
                 raise AppealReadError(f"{CANT_READ_FOLDER}: {folder} is not a folder.")
             entries = [p.name for p in folder.iterdir()]
             for entry in entries:
-                if entry.endswith(".icloud"):
+                if _ICLOUD_TICKET_RE.match(entry):
                     raise AppealReadError(
                         f"A Story-drive ticket hasn't downloaded from iCloud yet ({entry}), so Front Lot "
-                        f"can't check for open appeals. Open the folder in Finder to download it."
+                        f"can't check for open appeals. In Finder, right-click the Story-drive folder and "
+                        f"choose Download Now."
                     )
             names = sorted(n for n in entries if n.endswith(".md"))
         except OSError as exc:
@@ -152,7 +163,7 @@ def _read_one(path: Path, root: Path, folder: Path, closed: bool) -> Appeal | No
                 words = m.group(1).split()
                 answer_word = re.sub(r"\W+$", "", words[0]).lower() if words else None
         elif current is not None:
-            current.append(line[1:] if line.startswith("\\#") else line)
+            current.append(_ESCAPED_HASH_RE.sub(r"\1#", line))
 
     def section(name: str) -> str:
         if name not in sections:
@@ -227,7 +238,7 @@ def check_appeals(project_root: Path, names: set[str]) -> None:
 
     wanted = {_name_key(n) for n in names}
     touching = sorted(
-        (a for a in read_appeals(root) if a.outcome is None and wanted & {_name_key(x) for x in a.affects}),
+        (a for a in read_appeals(root, include_resolved=False) if wanted & {_name_key(x) for x in a.affects}),
         key=lambda a: a.path.name,
     )
     if not touching:
@@ -253,10 +264,15 @@ class ApplyAppealError(RuntimeError):
 _TODAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def _after_step(text: str) -> str:
+def _step_line(text: str) -> str:
+    """The plain-words follow-up written into a closed appeal. Bringing Front
+    Lot's references up to date is Ben's own signed step, so this names it and
+    never gives command text."""
     if "writeros:looks/" in text:
-        return "ratify the look with look_run --source writeros"
-    return "refresh the canon Front Lot reads from WriterOS"
+        next_step = "ratify the updated look in Front Lot so its references match"
+    else:
+        next_step = "refresh Front Lot's canon from Story-drive so its references match"
+    return f"Front Lot uses the WriterOS version from today. Next, {next_step}."
 
 
 def apply_appeal(wayfinder_root: Path | str, ticket_name: str, today: str) -> tuple[Path, str]:
@@ -305,10 +321,7 @@ def apply_appeal(wayfinder_root: Path | str, ticket_name: str, today: str) -> tu
         raise ApplyAppealError(f"{ticket_name} already has text under '## Answer', so Front Lot left it alone.")
     nl = "\r\n" if lines[answer_at[0]].endswith("\r\n") else "\n"
     lines[resolved_at[0]] = f"resolved: {today}{nl}"
-    step_line = (
-        f"Front Lot uses the WriterOS version from today. To bring its references up to date, "
-        f"{_after_step(original)}."
-    )
+    step_line = _step_line(original)
     lines[answer_at[0]] = f"## Answer — applied (in Front Lot){nl}{step_line}{nl}"
     tmp = resolved_dir / f".{ticket_name}.tmp"
     linked = False
@@ -321,7 +334,10 @@ def apply_appeal(wayfinder_root: Path | str, ticket_name: str, today: str) -> tu
         match.path.unlink()
     except OSError as exc:
         # Undo whatever landed so the open ticket stays the only copy and a retry works.
-        tmp.unlink(missing_ok=True)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         if linked and match.path.exists():
             try:
                 target.unlink(missing_ok=True)
