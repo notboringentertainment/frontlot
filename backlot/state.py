@@ -989,6 +989,24 @@ def _lease_summary(root: Path) -> dict[str, Any]:
     return {"held": held, "pid": record.get("pid"), "started": record.get("acquired_at")}
 
 
+def _canon_changes(root: Path) -> Any:
+    """Today's Story-drive canon against the approved snapshot (read-only).
+    None for a film with no Story-drive folder."""
+    from lib.canon_fresh import CanonReadError, read_canon_changes
+
+    try:
+        changes = read_canon_changes(root)
+    except CanonReadError as exc:
+        return {"error": str(exc)}
+    except Exception:
+        return {"error": "Front Lot couldn't read today's canon."}
+    if changes is None:
+        return None
+    out = changes.to_dict()
+    out["scoped_out"] = sorted(out["scoped_out"])
+    return out
+
+
 def _gates_state(project_dir: Path, checkpoint_cost: Any) -> Any:
     """The optional governed-project extension to BoardState."""
     if not (project_dir / "project.yaml").is_file():
@@ -1005,6 +1023,7 @@ def _gates_state(project_dir: Path, checkpoint_cost: Any) -> Any:
         return gates
     gates.update({
         "canon": _canon_summary(root),
+        "canon_changes": _canon_changes(root),
         "looks": _looks_summary(root),
         "cost": _cost_summary(root, checkpoint_cost),
         "run_lease": _lease_summary(root),

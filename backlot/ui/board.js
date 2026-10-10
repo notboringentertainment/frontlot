@@ -1637,6 +1637,7 @@ const SLOT_STATE = { done: "done", waiting: "waiting for you", declined: "last o
 function renderBin(s, roster) {
   const bin = el("nav", { class: "bin", "aria-label": "Characters and places" });
   const groups = [["character", "Characters"], ["location", "Places"]];
+  const scopedOut = new Set((s.gates && s.gates.canon_changes && s.gates.canon_changes.scoped_out) || []);
   for (const [kind, label] of groups) {
     const members = roster.filter((e) => e.kind === kind);
     if (!members.length) continue;
@@ -1657,7 +1658,7 @@ function renderBin(s, roster) {
         "aria-current": current ? "true" : null,
         "aria-label": `${e.name}. ${described}${e.pending.length ? ". Needs you" : ""}`,
         onclick: () => selectEntity(e.key),
-      }, face, el("span", { class: "clip-name" }, e.name), slots,
+      }, face, el("span", { class: "clip-name" }, e.name, scopedOut.has(e.id) ? el("small", { class: "scoped-out" }, " · scoped out") : null), slots,
         e.pending.length ? el("span", { class: "needs-mark", "aria-hidden": "true" }, "You") : null)));
     }
     bin.append(el("div", { class: "bin-group" }, el("span", { class: "plate-label" }, label), list));
@@ -2087,6 +2088,40 @@ function logLine(row, roster) {
   return who ? `${who}: ${gateWords(row.kind).toLowerCase()}` : gateWords(row.kind);
 }
 
+// Today's Story-drive canon against the approved snapshot. Read-only: it
+// shows mismatches for Ben to settle in his own tools and fixes nothing.
+function renderCanonChanges(s) {
+  const c = s.gates && s.gates.canon_changes;
+  if (!c) return null;
+  const section = el("section", { class: "log-section", "aria-labelledby": "canon-changes-heading" },
+    el("h2", { id: "canon-changes-heading" }, "Canon since approval"));
+  if (c.error) {
+    section.append(el("div", { class: "alert", role: "alert" }, el("b", {}, "Couldn't read today's canon"), el("span", {}, c.error)));
+    return section;
+  }
+  if (c.unchanged) {
+    section.append(el("p", { class: "log-quiet" }, `Story-drive canon hasn't changed since the approved snapshot (${c.snapshot_date}).`));
+    return section;
+  }
+  for (const m of c.mismatches || []) {
+    section.append(el("div", { class: "alert", role: "status" }, el("b", {}, "Doesn't match canon"), el("span", {}, m.message)));
+  }
+  const decisions = c.new_decisions || [];
+  const files = c.changed_sources || [];
+  const counts = [
+    decisions.length ? `${decisions.length} ${decisions.length === 1 ? "decision" : "decisions"}` : "",
+    files.length ? `${files.length} changed ${files.length === 1 ? "file" : "files"}` : "",
+  ].filter(Boolean).join(", ");
+  if (counts) {
+    section.append(el("details", { class: "canon-changes" },
+      el("summary", {}, `Since the approved snapshot (${c.snapshot_date}): ${counts}`),
+      decisions.length ? el("ul", {}, decisions.map((d) =>
+        el("li", {}, `${d.title}${d.scoped_out ? " (scoped out)" : ""}`, el("small", {}, ` · ${d.resolved}`)))) : null,
+      files.length ? el("ul", {}, files.map((f) => el("li", {}, f.path, el("small", {}, ` · ${f.state}`)))) : null));
+  }
+  return section;
+}
+
 function renderLog(s, roster) {
   const needsBox = el("div", {});   // "Needs you", above the conversation
   const history = el("div", {});    // the log, decisions and machine room, below it
@@ -2113,6 +2148,8 @@ function renderLog(s, roster) {
     }
     if (s.gates.error) needs.append(el("div", { class: "alert", role: "alert" }, el("b", {}, "Couldn't read the approvals"), el("span", {}, s.gates.error)));
     needsBox.append(needs);
+    const canonBox = renderCanonChanges(s);
+    if (canonBox) needsBox.append(canonBox);
 
     const done = (s.gates.requests || []).filter((row) => row.state !== "pending")
       .sort((x, y) => (y.mtime || 0) - (x.mtime || 0));

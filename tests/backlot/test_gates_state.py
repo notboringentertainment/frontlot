@@ -493,7 +493,7 @@ def test_gate_summary_rows_are_exact_unique_and_pending_only_actionable(gate_wor
     gates = state["gates"]
 
     assert set(gates) == {
-        "requests", "truncated", "total_requests", "canon", "looks", "cost", "run_lease",
+        "requests", "truncated", "total_requests", "canon", "canon_changes", "looks", "cost", "run_lease",
     }
     assert gates["truncated"] is False
     assert gates["total_requests"] == len(gates["requests"])
@@ -1236,3 +1236,10 @@ def test_gate_detail_route_is_get_only_validated_hardened_and_project_confined(g
     with TestClient(server_mod.create_app()) as client:
         assert_hardened(client.get(f"/api/project/{PROJECT}/state"), 404)
         assert_hardened(client.get(f"/api/project/{PROJECT}/gate/unknown-id"), 404)
+
+
+def test_board_carries_canon_changes_without_failing(gate_world):
+    # Fresh canon read (2026-10-10): a film without a Story-drive folder has no canon_changes;
+    # the board never fails because today's canon can't be read.
+    gates = load_board_state(gate_world["project"])["gates"]
+    assert gates["canon_changes"] is None or isinstance(gates["canon_changes"], dict)
