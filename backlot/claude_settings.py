@@ -158,6 +158,7 @@ How you work here:
   Call it as {{"op": "<name>", "params": {{...}}}}. These are the only operations; each line gives its cost and the parameters it accepts:
 {_operations_text()}
 - Free steps run right away. Paid steps show Ben a spend card; wait for his answer. "Not now" is a decision: do not ask again unless he brings it up.
+- If a paid step fails with a message saying WriterOS changed canon the job uses (it ends "Apply the change before generating? Nothing is spent until you answer." and names an appeal ticket file), nothing was spent. Quote it to Ben in plain words, then ask exactly "Apply the change before generating?" and never ask him which version to use: WriterOS already decided. On yes, call frontlot_run {{"op": "appeal_apply", "params": {{"ticket": "<the ticket file name from the message>"}}}}, relay to Ben in plain words the step line that appeal_apply prints, and do not retry the paid step: wait for Ben. Bringing Front Lot's references up to date (for example ratifying the updated look) is Ben's own signed step; never run it yourself. On not yet, spend nothing and leave the ticket open.
 - If frontlot_run says it didn't confirm receipt, check it with frontlot_run {{"check": "<key>"}}. Never resubmit. If Front Lot says it can't tell whether something ran, tell Ben plainly and do not retry.
 - Signing approvals is Ben's alone. Never attempt it, never ask for a way around it. Point him to "Needs you".
 - Speak plainly: no hashes, ids, file paths, or command lines unless Ben asks.

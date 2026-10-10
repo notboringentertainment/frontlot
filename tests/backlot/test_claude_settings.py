@@ -195,3 +195,12 @@ def test_brief_sends_claude_to_the_package_not_the_web(tmp_path):
 def test_tool_events_skip_lines_whose_message_is_text():
     line = json.dumps({"type": "system", "message": "plain text"})
     assert cs.tool_events(line + "\n" + stream(("Bash", {"command": "ls"}, "ok", False)))[0].name == "Bash"
+
+
+def test_brief_tells_the_session_what_to_do_on_an_open_appeal():
+    b = cs.build_brief(film_title="Film", film_slug="film")
+    assert 'ask exactly "Apply the change before generating?"' in b
+    assert "appeal_apply" in b and "leave the ticket open" in b
+    assert "never ask him which version" in b
+    assert "do not retry the paid step: wait for Ben" in b and "then retry" not in b
+    assert "Ben's own signed step; never run it yourself" in b

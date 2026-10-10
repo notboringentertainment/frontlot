@@ -998,6 +998,13 @@ def paid_call_context(
     sheet roles. Pass a dict as ``governance`` to receive the verified
     ``look_refs`` / ``headshot_ref`` for binding into the generation receipt.
 
+    Canon appeals run right after governance: ``lib.appeals.check_appeals``
+    reads the project's open Story-drive appeals live and raises
+    ``OpenAppealError`` when an open appeal touches the job's names, or
+    ``AppealReadError`` when the appeals can't be read. Projects without
+    ``wayfinder_root`` skip it, and so does ``check_resume=False`` (the
+    reconciler never spends, so an appeal must not block reconciling).
+
     The project root is derived ONLY from ``lib.events.infer_project_dir`` and
     must be a registered project directory under ``lib.paths.PROJECTS_DIR``;
     arbitrary directories are rejected. Caller-injected trackers/caps are not
@@ -1051,6 +1058,14 @@ def paid_call_context(
     verified = verify_look_governance(inputs, project_root, media=media)
     if governance is not None:
         governance.update(verified)
+    # Canon appeals: an open appeal that touches this job stops it here, read
+    # live from the Story-drive folder, before any reservation, cost-log write
+    # or upload. A project with no wayfinder_root has no appeals to read, and
+    # the reconciler (check_resume=False) never spends, so it skips the check.
+    if check_resume:
+        from lib.appeals import check_appeals, job_names
+
+        check_appeals(project_root, job_names(inputs, verified))
     # C2, first of two checks: before any upload, and before the tracker
     # exists, a shot call must fit the shot's approved dollars and takes.
     # Calls without a supervised brief retain their existing contract.
