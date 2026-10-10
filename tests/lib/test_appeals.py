@@ -196,5 +196,5 @@ def test_non_applied_heading_is_closed(tmp_path):
 def test_icloud_placeholder_raises(tmp_path, sub):
     root = make(tmp_path)
     (root / "wayfinder" / sub / ".appeal-x.md.icloud").write_bytes(b"")
-    with pytest.raises(AppealReadError, match=r"appeal-x\.md\.icloud.*iCloud"):
+    with pytest.raises(AppealReadError, match=r"iCloud.*appeal-x\.md\.icloud"):
         read_appeals(root)
