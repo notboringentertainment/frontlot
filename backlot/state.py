@@ -1458,6 +1458,67 @@ def _render_pipeline_migration(root: Path, req: dict[str, Any]) -> dict[str, Any
     return result
 
 
+def _render_cast_change(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative sources, read raw (no ledger replay): the proposal
+    checkpoint bytes and cast, the superseded cast_change row in
+    ``approvals.jsonl``, and the request's take-out/put-in lists. Shown in
+    the names Ben knows; the signer rebuilds and verifies everything."""
+    from lib.cast_change import (
+        CAST_KEYS,
+        apply_change,
+        base_cast,
+        canon_entities,
+        cast_from_record,
+        describe_cast,
+        name_of,
+    )
+
+    summary = req.get("summary")
+    change = req.get("cast_change") if isinstance(req.get("cast_change"), dict) else {}
+    remove = [i for i in change.get("remove") or [] if isinstance(i, str)]
+    add = [i for i in change.get("add") or [] if isinstance(i, str)]
+    proposal_path = root / "checkpoint_proposal.json"
+    info = _lstat(proposal_path)
+    if info is None or not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_GATE_DETAIL_JSON_BYTES:
+        return {"packet_error": True, "error": "approved proposal unavailable", "summary": summary}
+    try:
+        raw = proposal_path.read_bytes()
+        packet = ((json.loads(raw.decode("utf-8")) or {}).get("artifacts") or {}).get("proposal_packet") or {}
+    except (OSError, ValueError, AttributeError):
+        return {"packet_error": True, "error": "approved proposal unreadable", "summary": summary}
+    sha = hashlib.sha256(raw).hexdigest()
+    before = base_cast(packet)
+    prior_id = (req.get("envelope") or {}).get("supersedes_receipt_id")
+    lookup_error = None
+    if isinstance(prior_id, str):
+        rows, lookup_error = _raw_jsonl_targets(root / "approvals.jsonl", {prior_id})
+        prior = rows.get(prior_id) or {}
+        before = cast_from_record(prior.get("record") if isinstance(prior, dict) else None, sha) or before
+    names = canon_entities(root)
+    in_cast = {i: kind for kind, key in CAST_KEYS for i in before[key]}
+    kinds = {i: names[i][0] for i in add if i in names}
+    hint = req.get("approval_record") if isinstance(req.get("approval_record"), dict) else {}
+    kinds.update({e.get("id"): e.get("kind") for e in hint.get("added") or [] if isinstance(e, dict) and e.get("id") not in kinds})
+    removed = [{"kind": in_cast[i], "id": i} for i in remove if i in in_cast]
+    added = [{"kind": kinds[i], "id": i} for i in add if kinds.get(i) in ("character", "location")]
+    after = apply_change(before, removed, added)
+    result: dict[str, Any] = {
+        "summary": summary,
+        "cast_now": describe_cast(before, names),
+        "cast_after_signing": describe_cast(after, names),
+        "taking_out": ", ".join(name_of(i, names) for i in remove) or "nothing",
+        "putting_in": ", ".join(name_of(i, names) for i in add) or "nothing",
+    }
+    if lookup_error:
+        result.update({"packet_error": True, "error": lookup_error})
+    elif len(removed) != len(remove) or len(added) != len(add):
+        result.update({"packet_error": True, "error": "the approved trailer cast changed since this request was made"})
+    elif hint and (hint.get("base_proposal_sha256") != sha
+                   or any(hint.get(k) != after[k] for _, k in CAST_KEYS)):
+        result.update({"packet_error": True, "error": "the approved proposal or cast changed since this request was made"})
+    return result
+
+
 def _render_character(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     """Authoritative source: visual_bible character entry hero + sheet refs, as gate constructor uses."""
     entry = next((x for x in _bible(root).get("characters") or [] if isinstance(x, dict) and x.get("id") == req.get("entity_id")), None)
@@ -1531,7 +1592,9 @@ class _GateRendererMap(dict[str, Any]):
     ``reference_import``: ``reference_import.STAGING_DIR/reference-<pixel-hash>.png``.
     ``look_lock``: confined ``wayfinder/resolved`` ticket named by request.
     ``config``: ``project.yaml``; ``pipeline_migration``: request plus raw
-    ``approvals.jsonl`` superseded row; grandfather/artifact review: text-only.
+    ``approvals.jsonl`` superseded row; ``cast_change``: ``checkpoint_proposal.json``
+    bytes + cast, the raw superseded cast_change row, the request's lists;
+    grandfather/artifact review: text-only.
     """
 
 
@@ -1551,6 +1614,7 @@ GATE_RENDERERS = _GateRendererMap({
     "storyboard_batch": _render_storyboard,
     "headshot_grandfather": _render_text_only,
     "artifact_review": _render_text_only,
+    "cast_change": _render_cast_change,
 })
 assert set(GATE_RENDERERS) == set(APPROVAL_KINDS)
 

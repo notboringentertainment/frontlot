@@ -229,3 +229,16 @@ def test_appeal_apply_builds_the_script_call_and_rejects_other_names(world):
     for bad in ("../appeal-1.md", "plain.md", "appeal-1.txt", 5):
         with pytest.raises(ops.OpError):
             prep(world, "appeal_apply", ticket=bad)
+
+
+def test_cast_change_is_free_and_only_files_a_request(world):
+    p = prep(world, "cast", remove=["underground-arena"], add=["parlor-room"])
+    assert p.paid is False and p.inputs == {}
+    assert p.argv[1].endswith("scripts/cast_change.py")
+    assert p.argv[2:] == ["--project", "film", "--remove", "underground-arena", "--add", "parlor-room"]
+    assert "signs" in p.summary.lower() or "sign" in p.summary.lower()
+    assert prep(world, "cast", remove=["a"]).argv[2:] == ["--project", "film", "--remove", "a"]
+    for bad in ({}, {"remove": []}, {"remove": "a"}, {"remove": ["../x"]}, {"add": ["-rf"]}, {"add": [5]},
+                {"remove": ["a"], "project": "other"}):
+        with pytest.raises(ops.OpError):
+            prep(world, "cast", **bad)

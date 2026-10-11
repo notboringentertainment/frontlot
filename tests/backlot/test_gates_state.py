@@ -360,6 +360,7 @@ def gate_world(tmp_path: Path, monkeypatch) -> dict[str, object]:
         "storyboard_batch": "storyboard-p-1",
         "headshot_grandfather": "grandfather-char-01-deadbeef-1",
         "artifact_review": "artifact-p-1",
+        "cast_change": "cast-change-1",
     }
     headshot_digest = hashlib.sha256((project / "checkpoint_headshots.json").read_bytes()).hexdigest()
     sheet_digest = hashlib.sha256((project / "checkpoint_visual_bible.json").read_bytes()).hexdigest()
@@ -416,6 +417,10 @@ def gate_world(tmp_path: Path, monkeypatch) -> dict[str, object]:
              preview_paths=["drafts/review-a.png", "/private/review-b.png"],
              envelope={"secret": "excluded"}, approval_record={"secret": "excluded"},
              artifact={"artifact_type": "script"})
+    _request(project, "pending", rids["cast_change"], "cast_change", stage="proposal", scope="cast:trailer",
+             entity_id="trailer_cast", summary="Take Loc A out of the approved trailer cast.", artifact=None,
+             cast_change={"remove": [LOC_ID], "add": []}, envelope={"supersedes_receipt_id": None},
+             source_checkpoint_digest=None, preview_paths=[])
     (project / ".gate-requests" / "nonregular.json").mkdir()
 
     return {
@@ -531,6 +536,8 @@ def test_gate_summary_rows_are_exact_unique_and_pending_only_actionable(gate_wor
 
     expected = [
         pending(rids["artifact_review"], "artifact_review", "visual_bible", f"character:{CHAR}", CHAR),
+        pending(rids["cast_change"], "cast_change", "proposal", "cast:trailer", "trailer_cast",
+                "Take Loc A out of the approved trailer cast."),
         pending(rids["config"], "config", "config", "project:config", "project-config",
                 "Review project configuration."),
         pending(rids["headshot_grandfather"], "headshot_grandfather", "visual_bible",
@@ -797,7 +804,7 @@ def test_legacy_and_governed_non_authored_cost_behavior(tmp_path):
 
 def test_renderer_map_and_all_pending_packet_envelopes(gate_world):
     assert set(GATE_RENDERERS) == set(APPROVAL_KINDS)
-    assert len(GATE_RENDERERS) == 13
+    assert len(GATE_RENDERERS) == 14
     for kind in APPROVAL_KINDS:
         detail = load_gate_detail(gate_world["project"], gate_world["rids"][kind])
         assert detail["state"] == "pending"

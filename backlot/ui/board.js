@@ -1519,6 +1519,7 @@ const GATE_WORDS = {
   qc_override: "Overrule a quality check",
   config: "Approve the production plan",
   pipeline_migration: "Move to a newer pipeline",
+  cast_change: "Change the trailer cast",
 };
 const gateWords = (kind) => GATE_WORDS[kind] || titleCase(kind);
 
