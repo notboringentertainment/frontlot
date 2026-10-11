@@ -231,3 +231,11 @@ def test_brief_files_a_cast_change_only_when_ben_asks():
     assert "Only when Ben asks to change the approved trailer cast" in b
     assert '"op": "cast"' in b and "sign it under Needs you" in b
     assert "Never file one on your own initiative, not even to clear a canon mismatch" in b
+
+
+def test_brief_answers_where_things_stand_from_status_not_memory():
+    b = cs.build_brief(film_title="Film", film_slug="film")
+    assert "- status (free): " in b
+    assert '{"op": "status", "params": {}}' in b and "in that same turn" in b
+    assert "Never answer those from earlier in the conversation" in b
+    assert "finish it with the look op right away" in b

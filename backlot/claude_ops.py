@@ -309,6 +309,11 @@ def _canon_check(ctx, p):
     return Prepared(ctx.op, False, argv, {}, summary="Read today's canon from Story-drive")
 
 
+def _status(ctx, p):
+    argv = _script("frontlot_status") + ["--project", ctx.slug]
+    return Prepared(ctx.op, False, argv, {}, summary="Check where the film stands")
+
+
 def _cast_ids(p, key: str) -> list[str]:
     ids = p.get(key, [])
     if not isinstance(ids, list) or not all(
@@ -469,6 +474,7 @@ OPERATIONS: dict[str, Operation] = {
     "appeal_apply": Operation(False, frozenset({"ticket"}), _appeal_apply),
     "canon_check": Operation(False, frozenset(), _canon_check),
     "cast": Operation(False, frozenset({"remove", "add"}), _cast),
+    "status": Operation(False, frozenset(), _status),
     "headshot_candidates": Operation(True, frozenset({"entity", "candidates", "palette"}), _headshot_candidates),
     "headshot_finish": Operation(True, frozenset({"entity"}), _headshot_finish),
     "headshot_import": Operation(False, frozenset({"entity", "image", "origin_tool"}), _headshot_import),
