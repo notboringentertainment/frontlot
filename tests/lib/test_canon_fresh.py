@@ -222,3 +222,35 @@ def test_edited_files_carry_their_title_and_date(tmp_path):
     (story / "Canon Note.md").write_text("# The Canon Note\ncanon v2\n", encoding="utf-8")
     (s,) = [s for s in read_canon_changes(film).changed_sources if s.state == "changed"]
     assert s.title == "The Canon Note" and len(s.edited) == 10
+
+
+@pytest.fixture
+def human_tty(monkeypatch):
+    import sys
+
+    class _Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(sys, "stdin", _Tty())
+
+
+def test_the_next_step_says_how_to_take_it_out_of_the_cast(tmp_path):
+    film, story = make(tmp_path)
+    (story / "wayfinder" / "resolved" / "glass-foundry-look.md").write_text(SCOPED_OUT, encoding="utf-8")
+    (m,) = read_canon_changes(film).mismatches
+    assert "ask the Front Lot session to take it out of the approved trailer cast" in m.next_step
+    assert "Needs you" in m.next_step and "no way yet" not in m.next_step
+
+
+def test_a_waiting_cast_change_says_so_and_a_signed_one_clears_the_mismatch(tmp_path, human_tty):
+    from lib.cast_change import prepare_cast_change_request
+    from tests.lib.look_lock_helpers import approve_request
+
+    film, story = make(tmp_path)
+    (story / "wayfinder" / "resolved" / "glass-foundry-look.md").write_text(SCOPED_OUT, encoding="utf-8")
+    req = json.loads(prepare_cast_change_request(film, "film", remove=["glass-foundry"]).read_text())
+    (m,) = read_canon_changes(film).mismatches
+    assert "waiting for your signature under Needs you" in m.next_step
+    approve_request(req, film)
+    assert read_canon_changes(film).mismatches == []

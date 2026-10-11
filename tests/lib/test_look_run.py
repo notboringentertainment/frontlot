@@ -239,3 +239,22 @@ class TestInspectionRound2:
     def test_casting_is_character_only(self, world, tmp_path):
         with pytest.raises(LookRunError, match="characters only"):
             run_look(world["project"], LOC, entity_kind="location", casting=_jpeg(tmp_path / "x.jpg"), out=world["out"])
+
+
+class TestSignedCastChange:
+    def test_look_packet_completes_against_the_effective_cast(self, world):
+        """A signed cast change (not an edit of the fingerprinted proposal)
+        decides what "every cast entity has a look" means — for look_run's
+        complete flag and for the checkpoint enforcement that holds it to
+        the full cast."""
+        from lib.cast_change import prepare_cast_change_request
+
+        w = world
+        req = json.loads(prepare_cast_change_request(w["project"], PROJECT, remove=[CHAR2, LOC]).read_text())
+        approve_request(req, w["project"])
+        r = run_look(w["project"], CHAR, out=w["out"])
+        approve_request(_req(w, r["request_id"]), w["project"])
+        assert run_look(w["project"], CHAR, out=w["out"])["status"] == "ratified"
+        packet = json.loads((w["project"] / "checkpoint_look_lock.json").read_text())["artifacts"]["look_packet"]
+        assert packet["complete"] is True
+        write(w["pipeline"], "look_lock", {"look_packet": packet}, status="completed")

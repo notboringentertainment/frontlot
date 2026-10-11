@@ -46,13 +46,14 @@ Request file contract::
       "request_id": "...", "project_id": "...", "stage": "visual_bible",
       "scope": "character:<id>",
       "kind": "hero|sheet|location|poster|storyboard_batch|config|artifact_review|
-               look_lock|reference_import|pipeline_migration|headshot",
+               look_lock|reference_import|pipeline_migration|headshot|cast_change",
       "entity_id": "<id>" | null, "artifact": {...} | null,
       "approval_record": {...} | null,     # HINT — must equal the constructed record
       "envelope": {...} | null,            # HINT — must equal the constructed envelope
       "source_checkpoint_digest": "..." | null,
       "source_ticket_path": "...",         # look_lock: ticket path relative to the wayfinder root
       "pipeline_version": "1.2",           # pipeline_migration: the version the human is pinning
+      "cast_change": {"remove": [...], "add": [...]},  # cast_change: ids to take out of / put in the trailer cast
       "summary": "one paragraph for the human",
       "preview_paths": ["canon/visual/objects/<sha>.png", ...]
     }
@@ -487,14 +488,17 @@ def _construct_reference_import(root: Path, req: dict) -> Constructed:
     if bound_entity is not None:
         if not isinstance(bound_entity, str) or not re.match(r"^[a-z0-9-]+$", bound_entity):
             raise GateHandlerError(f"reference_import entity_id {bound_entity!r} is not a cast entity slug")
-        proposal = _read_json_file(root / "checkpoint_proposal.json")
-        packet = ((proposal or {}).get("artifacts") or {}).get("proposal_packet") or {}
-        cast = packet.get("cast") or {}
-        known = set(cast.get("character_ids") or []) | set(cast.get("location_ids") or [])
+        from lib.cast_change import CastChangeError, effective_cast
+
+        try:
+            cast = effective_cast(root, project_id=req["project_id"])  # the proposal cast plus signed cast changes
+        except (CastChangeError, ReceiptError) as exc:
+            raise GateHandlerError(f"the approved trailer cast can't be read: {exc}") from exc
+        known = set(cast["character_ids"]) | set(cast["location_ids"])
         if bound_entity not in known:
             raise GateHandlerError(
-                f"reference_import binds entity {bound_entity!r}, which is not in the proposal cast "
-                f"(checkpoint_proposal.json); an import is for a cast entity or for nobody"
+                f"reference_import binds entity {bound_entity!r}, which is not in the approved trailer cast "
+                f"(checkpoint_proposal.json plus signed cast changes); an import is for a cast entity or for nobody"
             )
     try:
         record = validate_import_record(import_record(origin_class, pixel_hash, origin_tool=origin_tool, entity_id=bound_entity))
@@ -567,6 +571,58 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
 
     return Constructed(record, envelope, pipeline_name, evidence=evidence, extra={"pipeline_name": pipeline_name},
                        pre_commit_check=pre_commit)
+
+
+def _construct_cast_change(root: Path, req: dict) -> Constructed:
+    """Rebuild the cast change from disk: the current proposal bytes, the
+    current effective cast and chain tip, and the request's take-out/put-in
+    lists — never the agent's record. The pre-commit check refuses if the
+    proposal bytes or the chain tip moved after display."""
+    from lib.cast_change import (
+        ENTITY_ID,
+        CastChangeError,
+        build_cast_change,
+        chain_tip,
+        describe_cast,
+        name_of,
+        proposal_sha256,
+    )
+
+    if _require_entity(req) != ENTITY_ID:
+        raise GateHandlerError(f"cast_change request entity_id must be {ENTITY_ID!r}")
+    change = req.get("cast_change")
+    if not isinstance(change, dict) or set(change) - {"remove", "add"}:
+        raise GateHandlerError("cast_change request needs cast_change: {remove: [...], add: [...]}")
+    project_id = str(req["project_id"])
+    try:
+        built = build_cast_change(root, project_id, remove=change.get("remove") or [], add=change.get("add") or [])
+    except (CastChangeError, ReceiptError) as exc:
+        raise GateHandlerError(str(exc)) from exc
+    names = built.names
+    after = {k: built.record[k] for k in ("character_ids", "location_ids")}
+    evidence = (
+        built.summary,
+        f"Approved trailer cast now. {describe_cast(built.before, names)}",
+        f"After you sign. {describe_cast(after, names)}",
+        "Taking out: " + (", ".join(name_of(e["id"], names) for e in built.record["removed"]) or "nothing"),
+        "Putting in: " + (", ".join(name_of(e["id"], names) for e in built.record["added"]) or "nothing"),
+        "The proposal file itself is not edited; this signed change sits on top of it "
+        f"(proposal sha256 {built.record['base_proposal_sha256']}).",
+        f"Replaces the earlier signed cast change {built.tip_receipt_id}." if built.tip_receipt_id
+        else "First change to this film's approved trailer cast.",
+    )
+
+    def pre_commit() -> None:  # under the consumed token: nothing moved since display
+        if proposal_sha256(root) != built.record["base_proposal_sha256"]:
+            raise GateHandlerError("the approved proposal changed since this cast change was shown; re-run the request")
+        try:
+            tip = chain_tip(root, project_id=project_id)
+        except (CastChangeError, ReceiptError) as exc:
+            raise GateHandlerError(str(exc)) from exc
+        if (tip["receipt_id"] if tip else None) != built.tip_receipt_id:
+            raise GateHandlerError("the approved trailer cast changed since this request was shown; re-run the request")
+
+    return Constructed(built.record, built.envelope, ENTITY_ID, evidence=evidence, pre_commit_check=pre_commit)
 
 
 def _construct_config(root: Path, req: dict) -> Constructed:
@@ -1473,6 +1529,7 @@ CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
     "headshot": _construct_headshot,
     "qc_override": _construct_qc_override,
     "headshot_grandfather": _construct_headshot_grandfather,
+    "cast_change": _construct_cast_change,
 }
 assert set(CONSTRUCTORS) == set(APPROVAL_KINDS), "every approval kind needs a gate-side constructor"
 

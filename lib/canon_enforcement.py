@@ -719,6 +719,22 @@ def _load_stage_artifact(
     return value if isinstance(value, dict) else None
 
 
+def _load_proposal(pipeline_dir: Path, project_id: str, artifacts: dict[str, Any]) -> dict[str, Any]:
+    """The proposal_packet with its ``cast`` replaced by the EFFECTIVE trailer
+    cast: the proposal's own cast amended by the tip of the human-signed
+    cast_change chain (lib/cast_change.py). The proposal checkpoint is
+    fingerprinted and never edited, so every cast rule reads this."""
+    from lib.cast_change import CastChangeError, with_effective_cast
+    from lib.receipts import ReceiptError
+
+    proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}
+    try:
+        return with_effective_cast(pipeline_dir / project_id, proposal, project_id=project_id) or {}
+    except (CastChangeError, ReceiptError) as exc:
+        _fail(f"the approved trailer cast can't be read (signed cast changes): {exc}")
+        return proposal
+
+
 def _version(artifact: dict[str, Any]) -> str:
     return str(artifact.get("version") or "1.0")
 
@@ -1972,7 +1988,7 @@ def enforce_authored_canon(
         # look and an approved, current headshot for every entity the bible
         # carries.
         project_dir = pipeline_dir / project_id
-        proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}
+        proposal = _load_proposal(pipeline_dir, project_id, artifacts)
         if stage == "look_lock" and isinstance(artifacts.get("look_packet"), dict):
             _check_look_lock(project_dir, artifacts["look_packet"], proposal, status)
         elif stage == "headshots" and isinstance(artifacts.get("headshot_packet"), dict):
@@ -2023,9 +2039,7 @@ def enforce_authored_canon(
         return bible
 
     if stage == "visual_bible":
-        proposal = _load_stage_artifact(
-            pipeline_dir, project_id, "proposal", "proposal_packet", artifacts
-        ) or {}
+        proposal = _load_proposal(pipeline_dir, project_id, artifacts)
         _check_visual_bible(
             project_dir, artifacts.get("visual_bible", {}), proposal, canon,
             config.data if config else {}, decisions, status,
@@ -2037,10 +2051,10 @@ def enforce_authored_canon(
                 qc_required=_is_qc_manifest(pin), status=status, pin=pin,
             )
     elif stage == "look_lock":
-        proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}
+        proposal = _load_proposal(pipeline_dir, project_id, artifacts)
         _check_look_lock(project_dir, artifacts.get("look_packet", {}), proposal, status)
     elif stage == "headshots":
-        proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}
+        proposal = _load_proposal(pipeline_dir, project_id, artifacts)
         _check_headshots(project_dir, artifacts.get("headshot_packet", {}), proposal, status, pin=pin)
     elif stage == "script":
         _check_script(artifacts.get("script", {}), canon, ids, status)

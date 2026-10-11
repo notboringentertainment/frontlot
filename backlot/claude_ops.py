@@ -309,6 +309,27 @@ def _canon_check(ctx, p):
     return Prepared(ctx.op, False, argv, {}, summary="Read today's canon from Story-drive")
 
 
+def _cast_ids(p, key: str) -> list[str]:
+    ids = p.get(key, [])
+    if not isinstance(ids, list) or not all(
+        isinstance(i, str) and not i.startswith("-") and ENTITY_ID_RE.fullmatch(i) for i in ids
+    ):
+        raise OpError(f"{key} must be a list of lowercase ids like underground-arena")
+    return ids
+
+
+def _cast(ctx, p):
+    remove, add = _cast_ids(p, "remove"), _cast_ids(p, "add")
+    if not remove and not add:
+        raise OpError("name at least one id to remove from or add to the trailer cast")
+    argv = _script("cast_change") + ["--project", ctx.slug]
+    for i in remove:
+        argv += ["--remove", i]
+    for i in add:
+        argv += ["--add", i]
+    return Prepared(ctx.op, False, argv, {}, summary="Ask to change the trailer cast (Ben signs it under Needs you)")
+
+
 def _hero_frozen(ctx, e) -> tuple[list[str], dict[Path, str], str]:
     cp = ctx.film / "checkpoint_headshots.json"
     _, digest = _read_record(cp)
@@ -447,6 +468,7 @@ OPERATIONS: dict[str, Operation] = {
     "look": Operation(False, frozenset({"entity", "kind", "source", "supersede", "dry_run"}), _look),
     "appeal_apply": Operation(False, frozenset({"ticket"}), _appeal_apply),
     "canon_check": Operation(False, frozenset(), _canon_check),
+    "cast": Operation(False, frozenset({"remove", "add"}), _cast),
     "headshot_candidates": Operation(True, frozenset({"entity", "candidates", "palette"}), _headshot_candidates),
     "headshot_finish": Operation(True, frozenset({"entity"}), _headshot_finish),
     "headshot_import": Operation(False, frozenset({"entity", "image", "origin_tool"}), _headshot_import),

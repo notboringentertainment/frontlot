@@ -223,3 +223,11 @@ def test_brief_treats_the_snapshot_as_a_receipt(tmp_path):
     assert str(story) in b and "only a receipt" in b and '"op": "canon_check"' in b
     assert "Never fix it yourself and never edit canon" in b
     assert "no Story-drive folder" in cs.build_brief(film_title="Film", film_slug="film")
+
+
+def test_brief_files_a_cast_change_only_when_ben_asks():
+    b = cs.build_brief(film_title="Film", film_slug="film")
+    assert "- cast (free): add, remove" in b
+    assert "Only when Ben asks to change the approved trailer cast" in b
+    assert '"op": "cast"' in b and "sign it under Needs you" in b
+    assert "Never file one on your own initiative, not even to clear a canon mismatch" in b

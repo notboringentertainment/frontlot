@@ -38,11 +38,16 @@ _ENTITY_RE = re.compile(r"^entity_id:[ \t]*['\"]?([A-Za-z0-9][A-Za-z0-9_-]*)['\"
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
-# What Ben can do about an approved-cast entry Story-drive scoped out. Front Lot
-# has no step to change an approved cast yet, so this says what is true today.
+# What Ben can do about an approved-cast entry Story-drive scoped out. The
+# cast is changed by a signed cast change (lib/cast_change.py): the Front Lot
+# session files the request when Ben asks, and Ben signs it under Needs you.
 SCOPED_OUT_NEXT_STEP = (
     "Nothing to do now. Nothing is blocked: shots don't depend on the trailer cast, and Front Lot warns before any "
-    "job that uses it. Front Lot has no way yet to take it out of the approved cast, so this stays listed until it does."
+    "job that uses it. If you want it gone, ask the Front Lot session to take it out of the approved trailer cast; "
+    "you then sign that change under Needs you."
+)
+SCOPED_OUT_WAITING_STEP = (
+    "A change to the approved trailer cast is waiting for your signature under Needs you. Nothing is blocked meanwhile."
 )
 
 
@@ -231,18 +236,28 @@ def _names(packet: dict[str, Any]) -> dict[str, str]:
 
 
 def _approved_cast(project_root: Path) -> list[tuple[str, str]]:
+    """The approved trailer cast: the proposal's cast plus signed cast changes."""
+    from lib.cast_change import base_cast, effective_cast
+
     checkpoint = _read_json(project_root / "checkpoint_proposal.json") or {}
     artifacts = checkpoint.get("artifacts")
     proposal = artifacts.get("proposal_packet") if isinstance(artifacts, dict) else None
-    cast = proposal.get("cast") if isinstance(proposal, dict) else None
-    if not isinstance(cast, dict):
+    if not isinstance(proposal, dict) or not isinstance(proposal.get("cast"), dict):
         return []
-    out: list[tuple[str, str]] = []
-    for kind, key in (("character", "character_ids"), ("location", "location_ids")):
-        ids = cast.get(key)
-        if isinstance(ids, list):
-            out += [(kind, i) for i in ids if isinstance(i, str)]
-    return out
+    try:
+        cast = effective_cast(project_root)
+    except Exception:  # a report, never a gate: an unreadable receipt chain shows the proposal's own cast
+        cast = base_cast(proposal)
+    return [(kind, i) for kind, key in (("character", "character_ids"), ("location", "location_ids")) for i in cast[key]]
+
+
+def _cast_change_waiting(project_root: Path) -> bool:
+    from lib.cast_change import pending_cast_change
+
+    try:
+        return pending_cast_change(project_root) is not None
+    except OSError:
+        return False
 
 
 def _waiting_look_requests(project_root: Path) -> set[tuple[str, str]]:
@@ -352,12 +367,13 @@ def read_canon_changes(project_root: Path | str) -> CanonChanges | None:
     new_decisions.sort(key=lambda d: (d.resolved, d.file))
 
     names_by_id = _names(packet)
+    next_step = SCOPED_OUT_WAITING_STEP if _cast_change_waiting(project_root) else SCOPED_OUT_NEXT_STEP
     mismatches = [
         Mismatch(
             kind, entity_id, "trailer cast", scoped_out[entity_id].file, scoped_out[entity_id].resolved,
             f"The approved trailer cast lists \"{names_by_id.get(entity_id, entity_id)}\", which Story-drive "
             f"scoped out on {scoped_out[entity_id].resolved}.",
-            SCOPED_OUT_NEXT_STEP,
+            next_step,
         )
         for kind, entity_id in _approved_cast(project_root)
         if entity_id in scoped_out
