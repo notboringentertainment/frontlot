@@ -974,8 +974,10 @@ def build_look_packet(
         })
     packet: dict[str, Any] = {"version": "1.0", "looks": entries}
     if proposal is not None:
-        cast = proposal.get("cast") or {}
-        wanted = {("character", c) for c in cast.get("character_ids") or []}
-        wanted |= {("location", l) for l in cast.get("location_ids") or []}
+        from lib.cast_change import effective_cast
+
+        cast = effective_cast(project_dir, dict(proposal), project_id=project_id)  # plus signed cast changes
+        wanted = {("character", c) for c in cast["character_ids"]}
+        wanted |= {("location", l) for l in cast["location_ids"]}
         packet["complete"] = wanted <= set(looks)
     return packet

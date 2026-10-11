@@ -44,6 +44,7 @@ from typing import Any, Optional
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+from lib.cast_change import effective_cast  # noqa: E402
 from lib.run_common import (  # noqa: E402
     RunError, gate_command, hold_lease, read_request, request_id_for, require_entity_id, resolve_project_root, write_decision,
 )
@@ -435,9 +436,8 @@ def _finish_look(root, project_id, entity_id, state, out, bound: str) -> dict[st
         entry["source_ticket_ref"] = row.get("source_ticket_ref") or {"id": "unknown"}
     packet = _packet_on_disk(root)
     packet["looks"] = [e for e in packet.get("looks") or [] if (e.get("entity_kind"), e.get("entity_id")) != (kind, entity_id)] + [entry]
-    proposal = _proposal(root)
-    cast = proposal.get("cast") or {}
-    wanted = {("character", c) for c in cast.get("character_ids") or []} | {("location", l) for l in cast.get("location_ids") or []}
+    cast = effective_cast(root, _proposal(root))  # the proposal cast plus signed cast changes
+    wanted = {("character", c) for c in cast["character_ids"]} | {("location", l) for l in cast["location_ids"]}
     packet["complete"] = wanted <= {(e["entity_kind"], e["entity_id"]) for e in packet["looks"]}
     _write(root, packet, run_state={entity_id: None})  # outcome + state cleared in ONE write
     _log(out, f"look for {entity_id!r} ratified (receipt {current.receipt_id}, look_hash {current.look_hash[:12]}…); "

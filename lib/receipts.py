@@ -63,6 +63,9 @@ APPROVAL_KINDS = frozenset(
         # D20.7: a human attesting that a LEGACY (pre-QC) hero passed the hero
         # judge; adjunct to the headshot chain, never part of it.
         "headshot_grandfather",
+        # A human changing the approved trailer cast without editing the
+        # fingerprinted proposal checkpoint (lib/cast_change.py).
+        "cast_change",
     }
 )
 HEADSHOT_GRANDFATHER_FIELDS = ("entity_kind", "entity_id", "legacy_headshot_receipt_id", "asset_id", "look_hash", "qc_receipt_id")
@@ -84,6 +87,7 @@ ENVELOPE_FIELDS: dict[str, dict[str, bool]] = {
     },
     "reference_import": {"origin_class": True, "normalized_pixel_hash": True},
     "pipeline_migration": {"supersedes_receipt_id": False},
+    "cast_change": {"supersedes_receipt_id": False},
     # qc_override has two envelope shapes, enforced exactly-one in
     # validate_envelope: record 1.0 (verdict-bound) carries qc_receipt_id;
     # record 1.1 (field-bound batch) carries field_manifest_sha256.
@@ -480,6 +484,24 @@ def validate_envelope(
                 raise ValueError(f"reference_import: record.{field} must equal envelope {field}")
         if not isinstance(env["normalized_pixel_hash"], str) or len(env["normalized_pixel_hash"]) != 64:
             raise ValueError("reference_import: normalized_pixel_hash must be a sha256 hex digest")
+    if kind == "cast_change":
+        if entity_id != "trailer_cast":
+            raise ValueError("cast_change: entity_id must be 'trailer_cast'")
+        if set(record) != {"base_proposal_sha256", "character_ids", "location_ids", "removed", "added"}:
+            raise ValueError("cast_change: record must be exactly base_proposal_sha256, character_ids, location_ids, removed, added")
+        if not _is_sha256_hex(record.get("base_proposal_sha256")):
+            raise ValueError("cast_change: base_proposal_sha256 must be a sha256 hex digest")
+        for field in ("character_ids", "location_ids"):
+            if not isinstance(record[field], list) or not all(isinstance(i, str) and i for i in record[field]):
+                raise ValueError(f"cast_change: {field} must be a list of ids")
+        for field in ("removed", "added"):
+            entries = record[field]
+            if not isinstance(entries, list) or not all(
+                isinstance(e, dict) and set(e) == {"kind", "id"} and e["kind"] in ENTITY_KINDS for e in entries
+            ):
+                raise ValueError(f"cast_change: {field} must be a list of {{kind, id}} entries")
+        if not record["removed"] and not record["added"]:
+            raise ValueError("cast_change: a change must take out or put in at least one entity")
     out = {k: env.get(k) for k in spec}
     if kind == "qc_override":
         # exactly-one shape: never embed the absent alternative as a null —
