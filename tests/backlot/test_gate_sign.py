@@ -575,3 +575,18 @@ def test_real_signer_config_gate_under_pty(tmp_path: Path, monkeypatch: pytest.M
     assert str(project).startswith(str(tmp_path)) and str(gates).startswith(str(tmp_path))
     with gate_sign._project_flock(PROJECT):
         pass
+
+
+@pytest.mark.parametrize("line,ok", [
+    (b'{"ask":"approve"}', True),
+    (b'{"ask":"choose","n":3}', True),
+    (b'{"outcome":"approved","message":"approved \\u2014 receipt r"}', True),
+    (b'{"ask":"run_this"}', False),
+    (b'{"outcome":"signed"}', False),
+    (b'{"ask":"approve","answer":"y"}', False),
+    (b'["ask"]', False),
+    (b'not json', False),
+    (b'{"ask":"note","message":"' + b"x" * 5000 + b'"}', False),
+])
+def test_signer_tag_lines_are_checked_before_reaching_the_page(line, ok) -> None:
+    assert (gate_sign._signer_tag(line) is not None) is ok

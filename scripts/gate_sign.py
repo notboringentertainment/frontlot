@@ -37,6 +37,7 @@ from backlot.tty import (
     BYE,
     HELLO,
     IN,
+    MAX_JSON,
     OUT,
     RESIZE,
     STATUS,
@@ -302,6 +303,26 @@ def _apply_resize(master: int, payload: dict[str, Any]) -> None:
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
+_TAG_ASKS = {"approve", "sign_choice", "choose", "reject_confirm", "note", "accept_items", "why"}
+_TAG_OUTCOMES = {"approved", "declined", "left", "error"}
+_TAG_KEYS = {"ask", "outcome", "n", "required", "min", "items", "message"}
+
+
+def _signer_tag(line: bytes) -> Optional[dict[str, Any]]:
+    """One question/outcome line from gate_approve's private pipe, or None."""
+    if len(line) > MAX_JSON:
+        return None
+    try:
+        tag = json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(tag, dict) or not set(tag) <= _TAG_KEYS:
+        return None
+    if tag.get("ask") not in _TAG_ASKS and tag.get("outcome") not in _TAG_OUTCOMES:
+        return None
+    return tag
+
+
 def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -> int:
     paths = session_paths(project)
     # Under the held project flock, these can only belong to a dead broker.
@@ -309,6 +330,11 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
     paths["sidecar"].unlink(missing_ok=True)
 
     master, slave = pty.openpty()
+    # gate_approve names each question here for Front Lot's signing screen;
+    # only the signer holds the write end, so terminal text can't pose as one.
+    tag_read, tag_write = os.pipe()
+    tag_buffer = bytearray()
+    last_tag: Optional[dict[str, Any]] = None
     child: Optional[subprocess.Popen] = None
     listener: Optional[socket.socket] = None
     selector = selectors.DefaultSelector()
@@ -338,12 +364,17 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
         _write_sidecar(paths["sidecar"], sidecar)
         selector.register(listener, selectors.EVENT_READ, "listener")
         selector.register(master, selectors.EVENT_READ, "master")
+        os.set_blocking(tag_read, False)
+        selector.register(tag_read, selectors.EVENT_READ, "tags")
 
         # Every fallible socket/sidecar/selector setup step precedes spawn. If
         # a later runtime failure occurs, finally passively reaps this exact
         # child before any PTY descriptor or ownership context is released.
         signer_argv = _gate_approve_argv(project, request_id)
         signer_environment = _login_environment()
+        # Front Lot draws its own buttons for the signer's questions; the
+        # signer tags each question for it (gate_approve.APP_PROMPTS_ENV).
+        signer_environment["FRONTLOT_SIGN_PROMPTS"] = str(tag_write)
         child = lifecycle.spawn(
             signer_argv,
             cwd=REPO,
@@ -353,7 +384,10 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
             env=signer_environment,
             start_new_session=True,
             close_fds=True,
+            pass_fds=(tag_write,),
         )
+        os.close(tag_write)
+        tag_write = -1
         os.close(slave)
         slave = -1
         hello = {
@@ -400,6 +434,34 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
             except ProtocolError:
                 detach_client()
 
+        def read_tags() -> None:
+            nonlocal last_tag
+            while True:
+                try:
+                    chunk = os.read(tag_read, 4096)
+                except BlockingIOError:
+                    return
+                except OSError:
+                    chunk = b""
+                if not chunk:
+                    with contextlib.suppress(Exception):
+                        selector.unregister(tag_read)
+                    return
+                tag_buffer.extend(chunk)
+                while b"\n" in tag_buffer:
+                    line, _, rest = bytes(tag_buffer).partition(b"\n")
+                    tag_buffer[:] = rest
+                    tag = _signer_tag(line)
+                    if tag is None:
+                        continue
+                    last_tag = tag
+                    if client is not None and client.authenticated:
+                        with contextlib.suppress(ProtocolError):
+                            client.queue(encode_json_frame(STATUS, {"tag": tag}))
+                            update_client_events()
+                if len(tag_buffer) > MAX_JSON:
+                    tag_buffer.clear()
+
         def queue_output(clean: bytes) -> None:
             if client is None or not client.authenticated:
                 return
@@ -434,6 +496,10 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
                     incoming.setblocking(False)
                     client = _Client(incoming, hello)
                     selector.register(incoming, selectors.EVENT_READ | selectors.EVENT_WRITE, "client")
+                    continue
+
+                if key.data == "tags":
+                    read_tags()
                     continue
 
                 if key.data == "master":
@@ -515,6 +581,8 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
                                     client.authenticated = True
                                     if replay:
                                         client.queue(encode_frame(OUT, bytes(replay)))
+                                    if last_tag is not None:
+                                        client.queue(encode_json_frame(STATUS, {"tag": last_tag}))
                                     continue
                                 if frame_type == IN:
                                     pty_input.extend(payload)
@@ -550,6 +618,7 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
                     master_open = False
                     with contextlib.suppress(Exception):
                         selector.unregister(master)
+                read_tags()   # the outcome line precedes the exit status
                 if client is not None:
                     with contextlib.suppress(ProtocolError):
                         client.queue(encode_json_frame(STATUS, {"signer": "exited", "exit_code": exit_code}))
@@ -588,6 +657,12 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
                 selector.unregister(master)
         with contextlib.suppress(OSError):
             os.close(master)
+        with contextlib.suppress(Exception):
+            selector.unregister(tag_read)
+        for fd in (tag_read, tag_write):
+            if fd >= 0:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
         if slave >= 0:
             with contextlib.suppress(OSError):
                 os.close(slave)

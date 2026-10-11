@@ -16,6 +16,8 @@ const terminalShell = document.getElementById("gate-terminal-shell");
 const terminalMount = document.getElementById("gate-terminal");
 const terminalState = document.getElementById("gate-terminal-state");
 const terminalMessage = document.getElementById("gate-terminal-message");
+const signPanel = document.getElementById("gate-sign-panel");
+const terminalToggle = document.getElementById("gate-terminal-toggle");
 
 let state = null;
 let selectedStage = null;   // stage drawer open for this stage name
@@ -84,6 +86,13 @@ function makeGateSession() {
     receivedRefresh: false,
     evidenceChanged: false,
     fitFrame: null,
+    ask: null,          // the signer's current question, sent on its private pipe
+    outcome: null,      // approved | declined | left | error, once the signer says so
+    appView: false,     // true once the signer tags its questions: draw buttons, hide the text
+    showText: false,    // Ben asked to see the signing program's text
+    textFallback: false, // the signer never tagged a question: show its text instead
+    note: null,         // a note Ben typed before answering; sent when the signer asks for it
+    textTimer: null,
   };
 
   if (terminal) {
@@ -118,8 +127,198 @@ function setTerminalStatus(label, message, tone = "") {
   terminalMessage.textContent = message;
 }
 
+// ---------------------------------------------------------------------------
+// signing screen: buttons for the signer's questions
+// ---------------------------------------------------------------------------
+
+const OUTCOME_WORDS = {
+  approved: ["Signed", "Your approval is recorded. You can close this.", "ready"],
+  declined: ["Declined", "Your decision is recorded. Nothing was approved.", "warn"],
+  left: ["Nothing decided", "This is still waiting for you under Needs you.", ""],
+  error: ["Couldn't sign", "", "error"],
+};
+
+function sendAnswer(text) {
+  const socket = gateSession.socket;
+  if (!gateSession.inputReady || !socket || socket.readyState !== WebSocket.OPEN) return false;
+  socket.send(new TextEncoder().encode(`${String(text).replace(/[\r\n]+/g, " ")}\r`));
+  gateSession.ask = null;
+  renderSignPanel();
+  return true;
+}
+
+function noteFits(note, ask) {
+  const text = (note || "").trim();
+  if (ask.required && !text) return false;
+  return text.length >= (ask.min || 0) || (!ask.required && !text);
+}
+
+function onSignerTag(tag) {
+  if (!tag || typeof tag !== "object") return;
+  if (!gateSession.appView) {
+    gateSession.appView = true;
+    clearTimeout(gateSession.textTimer);
+  }
+  if (tag.outcome) {
+    gateSession.outcome = tag.outcome;
+    gateSession.ask = null;
+    gateSession.inputReady = false;
+    const [label, message, tone] = OUTCOME_WORDS[tag.outcome] || OUTCOME_WORDS.error;
+    setTerminalStatus(label, message || tag.message || "The signing program stopped.", tone);
+  } else if (tag.ask === "note" && gateSession.note !== null && noteFits(gateSession.note, tag)) {
+    const note = gateSession.note;
+    gateSession.note = null;
+    gateSession.ask = tag;
+    if (sendAnswer(note)) return;
+  } else {
+    gateSession.ask = tag;
+  }
+  renderSignPanel();
+}
+
+function noteBox(placeholder) {
+  return el("textarea", { class: "sign-note", rows: "2", placeholder, "aria-label": placeholder });
+}
+
+function choiceRow(...buttons) {
+  return el("div", { class: "sign-choices" }, buttons);
+}
+
+function answerButton(label, answer, { primary = false, before = null } = {}) {
+  return el("button", {
+    type: "button",
+    class: primary ? "gate-primary" : "quiet-btn",
+    disabled: gateSession.inputReady ? null : "",
+    onclick: () => {
+      if (before) before();
+      sendAnswer(answer);
+    },
+  }, label);
+}
+
+function askView(ask) {
+  if (ask.ask === "approve" || ask.ask === "sign_choice") {
+    const note = noteBox("Add a note (optional)");
+    const keep = () => { gateSession.note = note.value; };
+    return [
+      el("p", { class: "sign-question" }, ask.ask === "approve" ? "Approve this?" : "Sign the one you picked?"),
+      note,
+      choiceRow(
+        answerButton(ask.ask === "approve" ? "Approve and sign" : "Sign", "y", { primary: true, before: keep }),
+        answerButton(ask.ask === "approve" ? "Decline" : "Go back", "n", { before: keep }),
+        answerButton("Not now", "q"),
+      ),
+    ];
+  }
+  if (ask.ask === "choose") {
+    const picks = Array.from({ length: Math.max(0, Number(ask.n) || 0) }, (_, i) =>
+      answerButton(`Pick ${i + 1}`, String(i + 1), { primary: true }));
+    return [
+      el("p", { class: "sign-question" }, "Which one? The numbers match the candidates on the left."),
+      choiceRow(...picks),
+      choiceRow(answerButton("Reject all and make new ones", "r"), answerButton("Not now", "q")),
+    ];
+  }
+  if (ask.ask === "reject_confirm") {
+    return [
+      el("p", { class: "sign-question" }, "Reject every candidate and make new ones?"),
+      choiceRow(answerButton("Yes, reject all", "reject", { primary: true }), answerButton("Cancel", "")),
+    ];
+  }
+  if (ask.ask === "accept_items") {
+    const items = Array.isArray(ask.items) ? ask.items.map(String) : [];
+    const boxes = items.map((item) => el("input", { type: "checkbox", value: item, "aria-label": item }));
+    const accept = el("button", {
+      type: "button",
+      class: "gate-primary",
+      disabled: "",
+      onclick: () => sendAnswer(boxes.filter((b) => b.checked).map((b) => b.value).join(",")),
+    }, "Accept the ones ticked");
+    const sync = () => {
+      const any = boxes.some((b) => b.checked);
+      if (any && gateSession.inputReady) accept.removeAttribute("disabled");
+      else accept.setAttribute("disabled", "");
+    };
+    boxes.forEach((b) => b.addEventListener("change", sync));
+    return [
+      el("p", { class: "sign-question" }, "Which failed items do you accept anyway?"),
+      el("div", { class: "sign-items" }, items.map((item, i) => el("label", {}, boxes[i], ` ${item}`))),
+      choiceRow(accept, answerButton("Not now", "q")),
+    ];
+  }
+  if (ask.ask === "why" || ask.ask === "note") {
+    const min = Number(ask.min) || 0;
+    const required = ask.ask === "why" || Boolean(ask.required);
+    const box = noteBox(ask.ask === "why"
+      ? "Why is the judge wrong on these items?"
+      : required ? "Your note (needed to finish)" : "Add a note (optional)");
+    const go = el("button", {
+      type: "button",
+      class: "gate-primary",
+      disabled: "",
+      onclick: () => sendAnswer(box.value.trim()),
+    }, "Continue");
+    const sync = () => {
+      const ok = gateSession.inputReady && noteFits(box.value, { required, min });
+      if (ok) go.removeAttribute("disabled");
+      else go.setAttribute("disabled", "");
+    };
+    box.addEventListener("input", sync);
+    sync();
+    const hint = min ? el("p", { class: "sign-hint" }, `At least ${min} characters.`) : null;
+    const rest = ask.ask === "why" ? [answerButton("Not now", "q")] : required ? [] : [answerButton("Skip", "")];
+    return [el("p", { class: "sign-question" }, ask.ask === "why" ? "Tell the record why." : "Note"), box, hint, choiceRow(go, ...rest)];
+  }
+  return [el("p", { class: "sign-question" }, "The signing program asked something this screen doesn't know. Show its text to answer.")];
+}
+
+function renderSignPanel() {
+  const textOn = gateSession.showText || (gateSession.textFallback && !gateSession.appView);
+  terminalMount.classList.toggle("is-hidden", !textOn);
+  terminalToggle.hidden = (gateSession.textFallback && !gateSession.appView) || (Boolean(gateSession.outcome) && !gateSession.showText);
+  terminalToggle.setAttribute("aria-pressed", gateSession.showText ? "true" : "false");
+  terminalToggle.textContent = gateSession.showText ? "Hide the signing program's text" : "Show the signing program's text";
+  let kids = [];
+  if (gateSession.outcome) {
+    const [word, line] = OUTCOME_WORDS[gateSession.outcome] || OUTCOME_WORDS.error;
+    kids = [el("div", { class: `sign-done ${gateSession.outcome}`, role: "status" },
+      el("p", { class: "sign-done-word" }, word),
+      el("p", { class: "sign-done-line" }, terminalMessage.textContent || line),
+      el("button", { type: "button", class: "quiet-btn", onclick: closeSigning }, "Close"))];
+  } else if (gateSession.appView && gateSession.ask) {
+    kids = askView(gateSession.ask);
+  } else if (!gateSession.textFallback || gateSession.appView) {
+    kids = [el("p", { class: "sign-hint" }, "Getting the question ready…")];
+  }
+  terminalMessage.hidden = Boolean(gateSession.outcome);   // the card says it
+  signPanel.replaceChildren(...kids);
+  signPanel.hidden = kids.length === 0;
+  if (textOn) scheduleTerminalFit();
+}
+
+function resetSignPanel() {
+  clearTimeout(gateSession.textTimer);
+  Object.assign(gateSession, { ask: null, outcome: null, appView: false, showText: false, textFallback: false, note: null, textTimer: null });
+  if (gateSession.terminal) gateSession.terminal.reset();
+  renderSignPanel();
+}
+
+function closeSigning() {
+  const socket = gateSession.socket;
+  if (socket && socket.readyState === WebSocket.OPEN) socket.close(1000);
+  resetSignPanel();
+  delete terminalShell.dataset.used;
+  terminalShell.hidden = true;
+  render();
+}
+
+terminalToggle.addEventListener("click", () => {
+  gateSession.showText = !gateSession.showText;
+  renderSignPanel();
+});
+
 function scheduleTerminalFit(sendResize = true) {
-  if (!gateSession.terminal || !gateSession.fitAddon || terminalShell.hidden) return;
+  if (!gateSession.terminal || !gateSession.fitAddon || terminalShell.hidden || terminalMount.classList.contains("is-hidden")) return;
   cancelAnimationFrame(gateSession.fitFrame);
   gateSession.fitFrame = requestAnimationFrame(() => {
     try {
@@ -1365,6 +1564,7 @@ function startSigning(requestId) {
   gateSession.inputReady = false;
   gateSession.receivedRefresh = false;
   gateSession.evidenceChanged = false;
+  resetSignPanel();
   setTerminalStatus("Connecting", "Opening the signing program…", "warn");
   terminalShell.scrollIntoView({ behavior: "auto", block: "start" });
 
@@ -1423,19 +1623,32 @@ function startSigning(requestId) {
         gateSession.evidenceChanged ? "Pictures changed" : "Ready",
         gateSession.evidenceChanged
           ? "The pictures changed since you opened this. Look at them again in the viewer before you answer."
-          : "Answer the questions below. Nothing is decided until you do.",
+          : "Answer below. Nothing is decided until you do.",
         gateSession.evidenceChanged ? "warn" : "ready",
       );
       requestAnimationFrame(() => {
         if (gateSession.socket !== socket || !gateSession.receivedRefresh) return;
         gateSession.inputReady = true;
-        scheduleTerminalFit();
-        gateSession.terminal.focus();
+        renderSignPanel();
+        if (!gateSession.appView) {
+          // A signer that never tags its questions gets its text shown instead.
+          gateSession.textTimer = setTimeout(() => {
+            if (gateSession.appView || gateSession.socket !== socket) return;
+            gateSession.textFallback = true;
+            renderSignPanel();
+            gateSession.terminal.focus();
+          }, 20000);
+        }
       });
+      return;
+    }
+    if (message.type === "status" && message.tag) {
+      onSignerTag(message.tag);   // the signer's next question, from its private pipe
       return;
     }
     if (message.type === "status") {
       if (message.signer === "exited") gateSession.inputReady = false;
+      if (gateSession.outcome) return;
       setTerminalStatus(
         message.signer === "exited" ? "Finished" : "Signing",
         message.exit_code == null ? "The signing program is running." : message.exit_code ? `The signing program stopped with an error (code ${message.exit_code}).` : "The signing program finished.",
@@ -1449,6 +1662,7 @@ function startSigning(requestId) {
     }
     if (message.type === "bye") {
       gateSession.inputReady = false;
+      if (gateSession.outcome) return;
       setTerminalStatus("Done", message.reason ? `Signing closed: ${message.reason}.` : "Signing is done.", "");
     }
   });
@@ -1458,9 +1672,13 @@ function startSigning(requestId) {
   socket.addEventListener("close", (event) => {
     if (gateSession.socket !== socket) return;
     gateSession.inputReady = false;
-    const [label, message, tone] = websocketCloseMessage(event.code, event.reason);
-    setTerminalStatus(label, message, tone);
     gateSession.socket = null;
+    if (!gateSession.outcome) {
+      const [label, message, tone] = websocketCloseMessage(event.code, event.reason);
+      setTerminalStatus(label, message, tone);
+      gateSession.ask = null;
+    }
+    renderSignPanel();
     refresh().catch(() => {});
   });
 }
@@ -1987,7 +2205,7 @@ function gateActions(s, summary, stale, packetError) {
   return el("section", { class: "sign-bay", "aria-label": "Sign" },
     el("p", {}, stale
       ? "Nothing to sign here."
-      : "Signing opens the signing program in the panel on the right. It asks you one question at a time: approve or decline, which candidate, and why. Nothing is decided until you answer."),
+      : "Signing opens in the panel on the right. It asks one question at a time, with buttons: approve or decline, which candidate, and why. Nothing is decided until you answer."),
     stale ? null : button,
     blocker ? el("p", { class: "blocker", role: "status" }, blocker) : null);
 }
@@ -2406,7 +2624,7 @@ function render() {
   const authoredGates = hasAuthoredGates(s);
   if (hasAuthoredGates(state) && gateSession.socket && gateSession.requestId) {
     const sessionRow = gateRowById(state, gateSession.requestId);
-    if (!sessionRow || sessionRow.state !== "pending") {
+    if ((!sessionRow || sessionRow.state !== "pending") && !gateSession.outcome) {
       gateSession.inputReady = false;
       setTerminalStatus(
         "Already decided",
