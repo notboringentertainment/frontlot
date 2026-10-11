@@ -679,6 +679,32 @@ details.log-more[open] > summary { margin-bottom: 12px; }
   background: var(--glass); padding: 8px; box-shadow: inset 0 0 0 1px var(--glass-edge);
 }
 .terminal-mount .xterm { height: 100%; }
+.terminal-mount.is-hidden { display: none; }
+
+/* signing screen: the signer's questions as buttons */
+.sign-panel { display: flex; flex-direction: column; gap: 10px; }
+.sign-panel[hidden] { display: none; }
+.sign-question { margin: 0; font-size: 15px; font-weight: 600; color: var(--ink); }
+.sign-hint { margin: 0; font-size: 13px; color: var(--ink-3); }
+.sign-choices { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.sign-note {
+  width: 100%; box-sizing: border-box; resize: vertical; font: inherit; font-size: 14px;
+  padding: 8px 10px; border: 0; border-radius: 3px; color: var(--ink);
+  background: var(--glass); box-shadow: inset 0 0 0 1px var(--glass-edge);
+}
+.sign-items { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 14px; color: var(--ink-2); }
+.sign-done {
+  display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 12px;
+  padding: 14px 16px; border-radius: 3px; background: var(--glass); box-shadow: inset 0 0 0 1px var(--glass-edge);
+}
+.sign-done .quiet-btn { grid-row: 1 / span 2; grid-column: 2; margin: 0; }
+.sign-done-word { margin: 0; font: 700 22px/1.1 var(--plate); letter-spacing: .08em; text-transform: uppercase; color: var(--ink); }
+.sign-done.approved { box-shadow: inset 4px 0 0 var(--tape-green), inset 0 0 0 1px var(--glass-edge); }
+.sign-done.declined { box-shadow: inset 4px 0 0 var(--enamel-3), inset 0 0 0 1px var(--glass-edge); }
+.sign-done.error { box-shadow: inset 4px 0 0 var(--tape-red), inset 0 0 0 1px var(--glass-edge); }
+.sign-done-line { margin: 0; font-size: 13.5px; color: var(--ink-2); }
+.sign-raw-toggle { align-self: flex-start; font-size: 12.5px; }
+.sign-raw-toggle[hidden] { display: none; }
 
 /* ---------------------------------------------------------------------
    Stage drawer (raw artifacts, opened from the counter)

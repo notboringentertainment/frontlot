@@ -95,6 +95,48 @@ class TestHappyPath:
         assert r["status"] == "dry_run" and not (w["project"] / ".gate-requests").exists()
         assert not (w["project"] / "checkpoint_look_lock.json").exists()
 
+    def test_dry_run_never_finishes_a_signed_look(self, world):
+        """2026-10-11: --dry-run on an entity with a signed request wrote the look into the packet."""
+        w = world
+        r = run_look(w["project"], CHAR, out=w["out"])
+        approve_request(_req(w, r["request_id"]), w["project"])
+        cp = w["project"] / "checkpoint_look_lock.json"
+        before = cp.read_bytes()
+        d = run_look(w["project"], CHAR, dry_run=True, out=w["out"])
+        assert d["status"] == "dry_run" and d["request_id"] == r["request_id"]
+        assert cp.read_bytes() == before and _state(w) is not None
+        assert "[dry-run]" in w["out"].getvalue()
+        assert run_look(w["project"], CHAR, out=w["out"])["status"] == "ratified"
+
+    def test_dry_run_never_consumes_a_decline_or_republishes(self, world):
+        w = world
+        r = run_look(w["project"], CHAR, out=w["out"])
+        path = w["project"] / ".gate-requests" / f"{r['request_id']}.json"
+        path.unlink()
+        assert run_look(w["project"], CHAR, dry_run=True, out=w["out"])["status"] == "dry_run"
+        assert not path.exists()
+        run_look(w["project"], CHAR, out=w["out"])   # republish for real
+        decline_request(_req(w, r["request_id"]), w["project"], note="not yet")
+        log = w["project"] / "decision_log.json"
+        before = log.read_bytes() if log.exists() else None
+        assert run_look(w["project"], CHAR, dry_run=True, out=w["out"])["status"] == "dry_run"
+        assert _state(w) is not None and (log.read_bytes() if log.exists() else None) == before
+
+    def test_status_tells_signed_from_finished(self, world):
+        from scripts.frontlot_status import status_lines
+        w = world
+        r = run_look(w["project"], CHAR, out=w["out"])
+        assert any(l.startswith("Look waiting for Ben's signature") for l in status_lines(w["project"]))
+        assert any(l.startswith("Waiting for Ben under Needs you") for l in status_lines(w["project"]))
+        approve_request(_req(w, r["request_id"]), w["project"])
+        lines = status_lines(w["project"])
+        assert any(l.startswith("Signed but not finished") for l in lines)
+        assert "Nothing is waiting for Ben under Needs you." in lines
+        run_look(w["project"], CHAR, out=w["out"])
+        lines = status_lines(w["project"])
+        assert not any(l.startswith("Signed but not finished") for l in lines)
+        assert any(l.startswith("Looks locked into the look packet:") and "none" not in l for l in lines)
+
     def test_no_or_ambiguous_ticket(self, world):
         w = world
         with pytest.raises(LookRunError, match="no resolved look ticket"):

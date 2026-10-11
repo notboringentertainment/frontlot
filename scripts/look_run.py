@@ -232,6 +232,8 @@ def run_look(
     with hold_lease(root, config):
         state = _run_state(root, entity_id)
         if state is not None:
+            if dry_run:
+                return _resume_preview(root, entity_id, state, out)
             return _resume(root, project_id, entity_id, state, out)
         try:
             current = active_look_for(root, entity_kind, entity_id)
@@ -323,6 +325,22 @@ def _pending(root, entity_id, request_id, out, headline: str) -> dict[str, Any]:
 
 
 # ---- resume (the five states) ----
+
+_PREVIEW = {
+    "pending": "is still waiting for the writer; a real run only prints the approval command",
+    "declined": "was declined; a real run records the note in the decision log and clears the run",
+    "missing": "has no request file; a real run republishes it with the same id",
+    "done": "is signed; a real run finishes it into the look packet",
+}
+
+
+def _resume_preview(root, entity_id, state, out) -> dict[str, Any]:
+    """--dry-run on an entity mid-run: say what a real run would do, write nothing."""
+    request_id = str(state.get("request_id") or "")
+    where, _req = read_request(root, request_id) if request_id else ("missing", None)
+    _log(out, f"[dry-run] {state.get('mode')} request {request_id} for {entity_id!r} "
+              f"{_PREVIEW.get(where, f'is {where}')}. Nothing was written.")
+    return {"entity_id": entity_id, "status": "dry_run", "request_id": request_id, "request_state": where}
 
 def _resume(root, project_id, entity_id, state, out) -> dict[str, Any]:
     request_id = str(state.get("request_id") or "")

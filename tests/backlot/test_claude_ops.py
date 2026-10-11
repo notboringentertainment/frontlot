@@ -242,3 +242,11 @@ def test_cast_change_is_free_and_only_files_a_request(world):
                 {"remove": ["a"], "project": "other"}):
         with pytest.raises(ops.OpError):
             prep(world, "cast", **bad)
+
+
+def test_status_is_free_and_reads_only(world):
+    p = prep(world, "status")
+    assert p.paid is False and p.inputs == {}
+    assert p.argv[1].endswith("scripts/frontlot_status.py") and p.argv[2:] == ["--project", "film"]
+    with pytest.raises(ops.OpError):
+        prep(world, "status", project="other")

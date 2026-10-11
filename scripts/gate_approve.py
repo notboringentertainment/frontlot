@@ -98,6 +98,34 @@ class GateHandlerError(RuntimeError):
     pass
 
 
+APP_PROMPTS_ENV = "FRONTLOT_SIGN_PROMPTS"   # names a pipe descriptor Front Lot's signing broker reads
+
+
+def _tell_app(**event: Any) -> None:
+    """Tell Front Lot's signing screen which question comes next (or how it
+    ended), one JSON line on a private pipe the broker passes in. The screen
+    draws buttons that type the same answers a person would; the answer is
+    still read from the interactive prompt. Never on the terminal itself, so
+    text a request carries can't pose as a question."""
+    fd = os.environ.get(APP_PROMPTS_ENV, "")
+    if not fd.isdigit():
+        return
+    try:
+        os.write(int(fd), (json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8"))
+    except OSError:
+        pass
+
+
+def _ask(kind: str, text: str, **extra: Any) -> str:
+    _tell_app(ask=kind, **extra)
+    return input(text)
+
+
+def _done(outcome: str, line: str) -> None:
+    print(line)
+    _tell_app(outcome=outcome, message=line)
+
+
 def require_tty(stdin=None) -> None:
     stream = stdin if stdin is not None else sys.stdin
     if not hasattr(stream, "isatty") or not stream.isatty():
@@ -1834,12 +1862,12 @@ def main(argv: list[str] | None = None) -> int:
             n = len(candidates)
             reject_all = False
             while True:
-                raw = input(f"Type a number 1-{n} to choose, r to reject all, or q to quit without deciding: ").strip().lower()
+                raw = _ask("choose", f"Type a number 1-{n} to choose, r to reject all, or q to quit without deciding: ", n=n).strip().lower()
                 if raw == "q":
-                    print("quit — nothing decided, request left pending")
+                    _done("left", "quit — nothing decided, request left pending")
                     return 0
                 if raw == "r":
-                    if input("Reject ALL candidates and regenerate? type 'reject' to confirm: ").strip().lower() == "reject":
+                    if _ask("reject_confirm", "Reject ALL candidates and regenerate? type 'reject' to confirm: ").strip().lower() == "reject":
                         reject_all = True
                         break
                     continue
@@ -1851,22 +1879,22 @@ def main(argv: list[str] | None = None) -> int:
                 shown = construct(root, req, selection=selection)
                 show_constructed(shown)
                 while True:
-                    a = input("Sign this record? y to sign, n to go back, q to quit: ").strip().lower()
+                    a = _ask("sign_choice", "Sign this record? y to sign, n to go back, q to quit: ").strip().lower()
                     if a in ("y", "n", "q"):
                         break
                     print("  enter y, n, or q")
                 if a == "q":
-                    print("quit — nothing decided, request left pending")
+                    _done("left", "quit — nothing decided, request left pending")
                     return 0
                 approved = a == "y"
                 if not approved:
-                    print("not signed — request left pending; run again to choose")
+                    _done("left", "not signed — request left pending; run again to choose")
                     return 0
-                note = input("Note (optional): ").strip() or None
+                note = _ask("note", "Note (optional): ", required=False).strip() or None
             else:
-                note = input("Note (required for reject-all): ").strip() or None
+                note = _ask("note", "Note (required for reject-all): ", required=True).strip() or None
                 if not note:
-                    print("a note is required to reject all — nothing decided, request left pending")
+                    _done("left", "a note is required to reject all — nothing decided, request left pending")
                     return 0
         else:
             if req["kind"] == "qc_override":
@@ -1878,9 +1906,9 @@ def main(argv: list[str] | None = None) -> int:
                     # anything is signed.
                     items = _show_batch_field(req)
                     while True:
-                        raw = input(f"Accept which failed items? (comma list from {items}, 'all', or q to quit): ").strip().lower()
+                        raw = _ask("accept_items", f"Accept which failed items? (comma list from {items}, 'all', or q to quit): ", items=list(items)).strip().lower()
                         if raw == "q":
-                            print("quit — nothing decided, request left pending")
+                            _done("left", "quit — nothing decided, request left pending")
                             return 0
                         chosen = sorted(items) if raw == "all" else sorted({p.strip() for p in raw.split(",") if p.strip()})
                         if chosen and set(chosen) <= set(items):
@@ -1889,9 +1917,9 @@ def main(argv: list[str] | None = None) -> int:
                     req["_chosen_items"] = chosen
                 # The reason is the human's, typed here — never the request's text.
                 while True:
-                    typed = input("Why is the judge wrong on these items? (10+ characters, or q to quit): ").strip()
+                    typed = _ask("why", "Why is the judge wrong on these items? (10+ characters, or q to quit): ", min=10).strip()
                     if typed.lower() == "q":
-                        print("quit — nothing decided, request left pending")
+                        _done("left", "quit — nothing decided, request left pending")
                         return 0
                     if len(typed) >= 10 and "REPLACE" not in typed:
                         break
@@ -1900,34 +1928,35 @@ def main(argv: list[str] | None = None) -> int:
             shown = construct(root, req)
             show_constructed(shown)
             while True:
-                a = input("Approve? y to sign, n to decline, q to quit without deciding: ").strip().lower()
+                a = _ask("approve", "Approve? y to sign, n to decline, q to quit without deciding: ").strip().lower()
                 if a in ("y", "n", "q"):
                     break
                 print("  enter y, n, or q")
             if a == "q":
-                print("quit — nothing decided, request left pending")
+                _done("left", "quit — nothing decided, request left pending")
                 return 0
             approved = a == "y"
             if not approved and req["kind"] == "qc_override" and req.get("batch"):
                 # Declining a batch waiver is a recorded decision (round-3 #8).
                 while True:
-                    note = input("Decline note (required, 10+ characters): ").strip()
+                    note = _ask("note", "Decline note (required, 10+ characters): ", required=True, min=10).strip()
                     if len(note) >= 10:
                         break
                     print("  declining the field needs a real note — it is the record that the writer chose the judge-approved faces only")
             else:
-                note = input("Note (optional): ").strip() or None
+                note = _ask("note", "Note (optional): ", required=False).strip() or None
         if approved and shown is not None:
             # The handler marker exists only for this call; minting is refused elsewhere.
             with gates.handler_context():
                 receipt = _decide(req, root, shown=shown, note=note, selection=selection)
-            print(f"approved — receipt {receipt['receipt_id']}")
+            _done("approved", f"approved — receipt {receipt['receipt_id']}")
         else:
             _decline_request(req, root, note)
-            print("declined — no receipt written")
+            _done("declined", "declined — no receipt written")
         return 0
     except GateHandlerError as e:
         print(f"error: {e}", file=sys.stderr)
+        _tell_app(outcome="error", message=str(e))
         return 2
 
 
