@@ -1063,6 +1063,8 @@ def _construct_qc_override(root: Path, req: dict) -> Constructed:
 def _construct_location(root: Path, req: dict) -> Constructed:
     from lib.canon_enforcement import location_approval_record
 
+    if (req.get("envelope") or {}).get("staged_pictures") is not None:
+        return _construct_location_set(root, req)
     entity_id = _require_entity(req)
     bible, palette, path = _bible_palette_path(root, req)
     # G10: a location request is bound to the checkpoint it was published
@@ -1078,6 +1080,95 @@ def _construct_location(root: Path, req: dict) -> Constructed:
             _verify_image_ref(root, ref, f"location {entity_id!r} {role}")
             evidence.append(f"{role}: {root / ref['path']} (sha256 {ref['asset_id']})")
     return Constructed(location_approval_record(entry, palette), None, entity_id, evidence=tuple(evidence))
+
+
+def _construct_location_set(root: Path, req: dict) -> Constructed:
+    """G10 one-signature place set: the writer's own pictures of a place,
+    staged by ``location_run --add-image``, signed ONCE. The record is the
+    exact ``location_approval_record`` the finished bible entry will carry;
+    the envelope signs the fixed likeness promise for every picture (the
+    same promise a per-picture reference_import signs)."""
+    from lib.canon_enforcement import location_approval_record
+    from lib.cast_change import CastChangeError, effective_cast
+    from lib.look_ingest import LookIngestError, active_look_for
+    from lib.pathsafe import PathSafetyError, resolve_input
+    from lib.reference_import import (
+        ORIGIN_IMPORTED_SYNTHETIC, STAGING_DIR, SYNTHETIC_ATTESTATION, ReferenceImportError, assert_untainted,
+        normalize_image_bytes, refuse_conflicting_origin,
+    )
+    from scripts.location_run import set_entry
+
+    entity_id = _require_entity(req)
+    hint = req.get("envelope") or {}
+    pics = hint.get("staged_pictures")
+    if not isinstance(pics, list) or not pics:
+        raise GateHandlerError("a location set needs at least one staged picture")
+    try:
+        cast = effective_cast(root, project_id=req["project_id"])
+    except (CastChangeError, ReceiptError) as exc:
+        raise GateHandlerError(f"the approved trailer cast can't be read: {exc}") from exc
+    if entity_id not in set(cast["location_ids"]):
+        raise GateHandlerError(f"{entity_id!r} is not a place in the approved trailer cast")
+    try:
+        look = active_look_for(root, "location", entity_id)
+    except LookIngestError as exc:
+        raise GateHandlerError(str(exc)) from exc
+    if look is None:
+        raise GateHandlerError(f"{entity_id!r} has no locked look")
+    evidence = [f"promise for every picture below: {SYNTHETIC_ATTESTATION!r}"]
+    clean: list[dict] = []
+    for p in pics:
+        if not isinstance(p, dict) or set(p) != {"pixel_hash", "label", "origin_tool"}:
+            raise GateHandlerError("each staged picture carries exactly pixel_hash, label, origin_tool")
+        h = p["pixel_hash"]
+        if not _sha256_hex(h):
+            raise GateHandlerError(f"staged picture hash {h!r} is not a 64-hex sha256")
+        try:
+            staged = resolve_input(STAGING_DIR / f"reference-{h}.png", root)
+        except PathSafetyError as exc:
+            raise GateHandlerError(f"staged picture {p['label']!r} is missing or not project-local: {exc}") from exc
+        data = staged.read_bytes()
+        if hashlib.sha256(data).hexdigest() != h:
+            raise GateHandlerError(f"staged picture {p['label']!r} does not hash to {h}")
+        try:
+            if normalize_image_bytes(data).sha256 != h:
+                raise GateHandlerError(f"staged picture {p['label']!r} is not in normalized form")
+            refuse_conflicting_origin(root, h, ORIGIN_IMPORTED_SYNTHETIC, project_id=req["project_id"])
+            assert_untainted(root, [h], project_id=req["project_id"], label=f"location picture {p['label']!r}")
+        except ReferenceImportError as exc:
+            raise GateHandlerError(str(exc)) from exc
+        clean.append({"pixel_hash": h, "label": str(p["label"]), "origin_tool": str(p["origin_tool"])})
+        evidence.append(f"{p['label']}: {staged} (sha256 {h}, made with {p['origin_tool']})")
+    revision = req.get("revision")
+    if not isinstance(revision, int) or revision < 1:
+        raise GateHandlerError("a location set request needs its revision")
+    bible = _pending_or_current_bible(root)
+    entry = set_entry(entity_id, clean, look, revision)
+    record = location_approval_record(entry, bible.get("palette") or {})
+
+    def recheck() -> None:
+        try:
+            for p in clean:
+                refuse_conflicting_origin(root, p["pixel_hash"], ORIGIN_IMPORTED_SYNTHETIC, project_id=req["project_id"])
+                assert_untainted(root, [p["pixel_hash"]], project_id=req["project_id"])
+        except ReferenceImportError as exc:
+            raise GateHandlerError(f"origin conflict detected at signing: {exc}") from exc
+
+    envelope = {"attestation_text": SYNTHETIC_ATTESTATION, "staged_pictures": clean}
+    return Constructed(record, envelope, entity_id, evidence=tuple(evidence), pre_commit_check=recheck)
+
+
+def _pending_or_current_bible(root: Path) -> dict:
+    """The visual bible on disk, whatever its status (a place set writes no draft)."""
+    path = root / "checkpoint_visual_bible.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() and not path.is_symlink() else {}
+    except (OSError, ValueError) as exc:
+        raise GateHandlerError(f"checkpoint_visual_bible.json is unreadable: {exc}") from exc
+    bible = (data.get("artifacts") or {}).get("visual_bible") if isinstance(data, dict) else None
+    if not isinstance(bible, dict):
+        raise GateHandlerError("there is no visual bible yet")
+    return bible
 
 
 def _construct_poster(root: Path, req: dict) -> Constructed:

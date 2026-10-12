@@ -1564,7 +1564,18 @@ def _render_character(root: Path, req: dict[str, Any]) -> dict[str, Any]:
 
 
 def _render_location(root: Path, req: dict[str, Any]) -> dict[str, Any]:
-    """Authoritative source: visual_bible locations[].establishing and angles refs."""
+    """Authoritative source: visual_bible locations[].establishing and angles refs;
+    for a one-signature place set (G10), the staged pictures the signer checks."""
+    staged = (req.get("envelope") or {}).get("staged_pictures") if isinstance(req.get("envelope"), dict) else None
+    if isinstance(staged, list):
+        visuals = []
+        for p in staged:
+            h = p.get("pixel_hash") if isinstance(p, dict) else None
+            path = root / ".staging" / f"reference-{h}.png"
+            if not path.exists():  # signed and finished: the picture now lives in canon
+                path = root / "canon" / "visual" / "objects" / f"{h}.png"
+            visuals.append(_file_packet(root, h, path=path, label=str((p or {}).get("label") or "picture")))
+        return {"visuals": visuals, "packet_error": any(v.get("error") for v in visuals) or not visuals}
     entry = next((x for x in _bible(root).get("locations") or [] if isinstance(x, dict) and x.get("id") == req.get("entity_id")), None)
     refs = [] if not isinstance(entry, dict) else [("establishing", entry.get("establishing"))] + [
         ((x.get("role") if isinstance(x, dict) and x.get("role") not in (None, "", "angle") else f"angle_{i}"), x) for i, x in enumerate(entry.get("angles") or [])]
