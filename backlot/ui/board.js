@@ -1791,7 +1791,7 @@ function buildRoster(s) {
     const key = `${kind}:${id}`;
     if (!map.has(key)) {
       map.set(key, {
-        key, kind, id, name: name || titleCase(id),
+        key, kind, id, name: name || named.get(key) || titleCase(id),
         frames: [], look: null, lookSpec: null, pending: [], history: [],
       });
     } else if (name) {
@@ -1799,8 +1799,18 @@ function buildRoster(s) {
     }
     return map.get(key);
   };
-  for (const c of canonPacket.characters || []) add("character", c.id, c.name);
-  for (const l of canonPacket.locations || []) add("location", l.id, l.name);
+  // The canon snapshot is a fixed record; it keeps people and places Ben has
+  // since cut. List only the trailer cast from it (names come from it too);
+  // anything else shows up only once it has work on it below.
+  const cast = Array.isArray(gates.cast) ? new Set(gates.cast) : null;
+  const named = new Map();
+  for (const c of canonPacket.characters || []) named.set(`character:${c.id}`, c.name);
+  for (const l of canonPacket.locations || []) named.set(`location:${l.id}`, l.name);
+  for (const [key, name] of named) {
+    if (cast && !cast.has(key)) continue;
+    const [kind, id] = key.split(/:(.+)/);
+    add(kind, id, name);
+  }
   // Looks promoted in WriterOS since the snapshot: new places and characters
   // belong in the bin as soon as they're ready to lock.
   for (const t of (gates.canon_changes && gates.canon_changes.to_lock) || []) {

@@ -831,6 +831,17 @@ def _gate_public_field_error(request: dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _cast_keys(root: Path) -> Optional[list[str]]:
+    """``kind:id`` for everyone and everything in the approved trailer cast;
+    None when it can't be read (the board then lists the whole canon snapshot)."""
+    try:
+        from lib.cast_change import effective_cast
+        cast = effective_cast(root, project_id=root.name)
+    except Exception:  # noqa: BLE001
+        return None
+    return sorted([f"character:{c}" for c in cast["character_ids"]] + [f"location:{l}" for l in cast["location_ids"]])
+
+
 def _cast_location_ids(root: Path) -> set[str]:
     try:
         from lib.cast_change import effective_cast
@@ -1058,6 +1069,7 @@ def _gates_state(project_dir: Path, checkpoint_cost: Any) -> Any:
         return gates
     gates.update({
         "canon": _canon_summary(root),
+        "cast": _cast_keys(root),
         "canon_changes": _canon_changes(root),
         "looks": _looks_summary(root),
         "cost": _cost_summary(root, checkpoint_cost),
