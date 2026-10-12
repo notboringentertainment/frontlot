@@ -142,15 +142,20 @@ def locate_ticket(wayfinder_root: Path, entity_kind: str, entity_id: str):
     resolved_dir = wayfinder_root / RESOLVED_SUBDIR
     if not resolved_dir.is_dir():
         raise LookRunError(f"no resolved tickets directory {resolved_dir}")
-    matches = []
-    for path, _meta, _raw in _resolved_tickets(resolved_dir, resolved_dir / "\0never"):
+    matches, near = [], []
+    for path, _meta, raw in _resolved_tickets(resolved_dir, resolved_dir / "\0never"):
         try:
             look = parse_look_ticket(path, wayfinder_root=wayfinder_root)
-        except LookIngestError:
-            continue  # not a (valid) look ticket; the one we want must parse
+        except LookIngestError as exc:
+            # not a (valid) look ticket; but if it names this entity, say why it was passed over
+            if f"entity_id: {entity_id}".encode() in (raw or b""):
+                near.append(f"{path.name}: {exc}")
+            continue
         if look.key == (entity_kind, entity_id):
             matches.append((path, look))
     if not matches:
+        if near:
+            raise LookRunError(f"the resolved look ticket for ({entity_kind}, {entity_id}) can't be used: " + "; ".join(near))
         raise LookRunError(
             f"no resolved look ticket describes ({entity_kind}, {entity_id}) under {resolved_dir}; "
             f"the writer answers the ticket in story-wayfinder first"
@@ -281,7 +286,8 @@ def _start_look(root, project_id, entity_kind, entity_id, source, current, super
     request_id = request_id_for("look", entity_id, rev)
     if dry_run:
         _log(out, f"[dry-run] would request {request_id}: ratify look {look.look_hash} for ({entity_kind}, {entity_id}) "
-                  f"from {origin}" + (f", superseding {current.look_hash[:12]}…" if current else ""))
+                  f"from {origin}" + (f", superseding {current.look_hash[:12]}…" if current else "")
+                  + "".join(f"\nHeads up: {line}. Ben decides at signing whether it matters." for line in look.changed_since))
         return {"entity_id": entity_id, "status": "dry_run", "request_id": request_id, "look_hash": look.look_hash}
     state = {"mode": "look_lock", "revision": rev, "request_id": request_id, "look_hash": look.look_hash,
              "entity_kind": entity_kind, "expected_kind": "look_lock", **source_fields}
