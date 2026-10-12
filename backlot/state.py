@@ -831,6 +831,14 @@ def _gate_public_field_error(request: dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _cast_location_ids(root: Path) -> set[str]:
+    try:
+        from lib.cast_change import effective_cast
+        return set(effective_cast(root, project_id=root.name)["location_ids"])
+    except Exception:  # noqa: BLE001  (an unreadable cast just means imports show under characters, as before)
+        return set()
+
+
 def _gate_rows(root: Path, slug: str, *, limit: Optional[int] = _MAX_GATE_ROWS) -> dict[str, Any]:
     """Read bounded request summaries; malformed files are simply not rows."""
     tree_error = _gate_tree_error(root)
@@ -858,6 +866,7 @@ def _gate_rows(root: Path, slug: str, *, limit: Optional[int] = _MAX_GATE_ROWS) 
             found.setdefault(request_id, []).append((state_name, path, request))
 
     rows: list[dict[str, Any]] = []
+    loc_ids: Optional[set[str]] = None
     for request_id, copies in sorted(found.items()):
         state_name, path, request = copies[0]
         row: dict[str, Any] = {
@@ -870,6 +879,13 @@ def _gate_rows(root: Path, slug: str, *, limit: Optional[int] = _MAX_GATE_ROWS) 
             "state": "conflict" if len(copies) > 1 else state_name,
             "mtime": _lstat(path).st_mtime if _lstat(path) else None,
         }
+        if request.get("kind") == "reference_import":
+            bound = (request.get("approval_record") or {}).get("entity_id") if isinstance(request.get("approval_record"), dict) else None
+            if isinstance(bound, str) and re.fullmatch(r"[a-z0-9-]{1,128}", bound):
+                row["bound_entity"] = bound
+                if loc_ids is None:
+                    loc_ids = _cast_location_ids(root)
+                row["bound_kind"] = "location" if bound in loc_ids else "character"
         if request.get("approval_receipt_id") is not None:
             row["approval_receipt_id"] = request.get("approval_receipt_id")
         if request.get("declined_note") is not None:
@@ -896,6 +912,7 @@ def _canon_summary(root: Path) -> list[dict[str, str]]:
     except Exception:
         return []
     allowed = {"hero", *CHARACTER_ROLES}
+    labels = _location_labels(root)
     rows: list[dict[str, str]] = []
     for link_rel, object_rel in plan:
         parts = Path(link_rel).parts
@@ -904,7 +921,25 @@ def _canon_summary(root: Path) -> list[dict[str, str]]:
         entity, role = parts[-2], Path(parts[-1]).stem
         if role in allowed:
             rows.append({"entity": entity, "role": role, "object_rel": object_rel})
+        elif role == "establishing" or re.fullmatch(r"angle_\d+", role):
+            # G10: an approved place's pictures, labelled the way Ben labelled them
+            row = {"entity": entity, "kind": "location", "role": role, "object_rel": object_rel}
+            if labels.get((entity, role)):
+                row["label"] = labels[(entity, role)]
+            rows.append(row)
     return rows
+
+
+def _location_labels(root: Path) -> dict[tuple[str, str], str]:
+    """``(location id, angle_N) -> Ben's label`` for approved location entries."""
+    out: dict[tuple[str, str], str] = {}
+    for loc in _bible(root).get("locations") or []:
+        if not isinstance(loc, dict) or loc.get("status") != "approved":
+            continue
+        for i, ref in enumerate(loc.get("angles") or [], start=1):
+            if isinstance(ref, dict) and isinstance(ref.get("role"), str):
+                out[(str(loc.get("id")), f"angle_{i}")] = ref["role"]
+    return out
 
 
 def _looks_summary(root: Path) -> list[dict[str, Any]]:
@@ -1531,7 +1566,8 @@ def _render_character(root: Path, req: dict[str, Any]) -> dict[str, Any]:
 def _render_location(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     """Authoritative source: visual_bible locations[].establishing and angles refs."""
     entry = next((x for x in _bible(root).get("locations") or [] if isinstance(x, dict) and x.get("id") == req.get("entity_id")), None)
-    refs = [] if not isinstance(entry, dict) else [("establishing", entry.get("establishing"))] + [(f"angle_{i}", x) for i, x in enumerate(entry.get("angles") or [])]
+    refs = [] if not isinstance(entry, dict) else [("establishing", entry.get("establishing"))] + [
+        ((x.get("role") if isinstance(x, dict) and x.get("role") else f"angle_{i}"), x) for i, x in enumerate(entry.get("angles") or [])]
     result = _visuals_from_refs(root, refs)
     result["packet_error"] |= not isinstance(entry, dict)
     return result

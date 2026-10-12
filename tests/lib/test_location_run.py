@@ -168,3 +168,27 @@ def test_pinned_manifest_is_untouched():
     from lib.pipeline_loader import manifest_digest
 
     assert manifest_digest("authored-film@1.5") == "881e1f023e153331d6ce8aeaabc1510d794524eba3e20316ae59a50ca79b1913"
+
+
+def test_status_and_board_show_the_place(world, tmp_path):
+    from backlot.state import _canon_summary, _gate_rows
+    from scripts.frontlot_status import _location_lines
+
+    w = world
+    looks = [{"entity_kind": "location", "entity_id": LOC}]
+    assert "No location pictures yet" in _location_lines(w["project"], looks, {})[0]
+    _bible_ready(w)
+    pending = _run(w, add_image_path=_picture(tmp_path, "front"), origin_tool="imagetool")
+    assert "waiting for Ben's signature" in _location_lines(w["project"], looks, {})[0]
+    row = next(r for r in _gate_rows(w["project"], PROJECT)["requests"] if r["request_id"] == pending["request_id"])
+    assert row["bound_entity"] == LOC and row["bound_kind"] == "location"
+    approve_request(_req(w, pending["request_id"]), w["project"])
+    assert "signed but not sealed" in _location_lines(w["project"], looks, {})[0]
+    _add_signed(w, tmp_path, "after", label="aftermath")
+    approve_request(_req(w, _run(w, do_seal=True)["request_id"]), w["project"])
+    assert "signed by Ben but not finished" in _location_lines(w["project"], looks, {})[0]
+    _run(w, do_finish=True)
+    assert "Location pictures approved" in _location_lines(w["project"], looks, {})[0]
+    rows = [r for r in _canon_summary(w["project"]) if r["entity"] == LOC]
+    assert {r["role"] for r in rows} == {"establishing", "angle_1"} and all(r["kind"] == "location" for r in rows)
+    assert next(r for r in rows if r["role"] == "angle_1")["label"] == "aftermath"

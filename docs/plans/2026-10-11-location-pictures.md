@@ -80,3 +80,11 @@ Ben then adds his own images from Front Lot.
 ## Open question for Ben
 
 Q1. Where are the Parlor clean and aftermath image files? Sebastian's two images are in the Bloodless iCloud folder.
+
+## As built (2026-10-11)
+
+- `scripts/location_run.py`: `--add-image` / `--seal` / `--finish` / `--list`. The working list of added pictures lives in `<film>/.location-images/<id>.json`, outside the checkpoint, so adding a picture never disturbs a sheet waiting for signature. The location run state shares `metadata.run_state` with sheet_run, which means each blocks the other (tested both ways).
+- **Changed from the plan:** the three Front Lot ops pass **no** fingerprint flags. They are free, like `sheet_finish` and `look`. The only frozen input is the snapshot of Ben's image.
+- **Added:** the status op now says "signed by Ben but not finished" for a signed set that hasn't been finished yet. A test caught it reporting "waiting for Ben's signature".
+- Board: places show two tabs, look and pictures. Imports appear under their place (the server sends `bound_entity` / `bound_kind`), approved pictures show with Ben's labels, and the location gate is titled "Approve location pictures".
+- Front Lot's Claude copies Ben's file from his Story-drive folder into its work area, then calls `location_add_image`. Front Lot still has no upload button.

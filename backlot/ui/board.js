@@ -1738,6 +1738,7 @@ const GATE_WORDS = {
   config: "Approve the production plan",
   pipeline_migration: "Move to a newer pipeline",
   cast_change: "Change the trailer cast",
+  location: "Approve location pictures",
 };
 const gateWords = (kind) => GATE_WORDS[kind] || titleCase(kind);
 
@@ -1750,12 +1751,26 @@ const FRAME_ROLES = [
   ["hero", "Headshot"],
   ["turnaround", "Turnaround"],
   ["expressions", "Expressions"],
+  ["establishing", "Establishing"],
 ];
+// Characters go look, headshot, sheet; places go look, pictures (G10).
+const SLOTS_OF = { character: ["look", "headshot", "sheet"], location: ["look", "pictures"] };
+const slotsOf = (e) => SLOTS_OF[e.kind] || SLOTS_OF.character;
+function slotOfRow(row, entityKind) {
+  if (entityKind === "location" && (row.kind === "reference_import" || row.kind === "location")) return "pictures";
+  return SLOT_OF_KIND[row.kind];
+}
+const frameLabel = (f) => {
+  const role = FRAME_ROLES.find(([r]) => r === f.role);
+  return role ? role[1] : titleCase(f.label || f.role);
+};
 
 function entityKeyOf(row) {
   const scope = String(row.scope || "");
   const m = scope.match(/^(character|location):(.+)$/);
   if (m) return `${m[1]}:${m[2]}`;
+  // An import names the character or place it is for inside its record; the server passes that along.
+  if (row.kind === "reference_import" && row.bound_entity) return `${row.bound_kind === "location" ? "location" : "character"}:${row.bound_entity}`;
   // Older requests carried no scope; they always named a character.
   if (!scope && SLOT_OF_KIND[row.kind] && row.entity_id && !/^[0-9a-f]{16,}$/i.test(row.entity_id)) {
     return `character:${row.entity_id}`;
@@ -1800,7 +1815,7 @@ function buildRoster(s) {
     if (e) e.lookSpec = entry.look_spec || null;
   }
   for (const c of gates.canon || []) {
-    const e = add("character", c.entity);
+    const e = add(c.kind === "location" ? "location" : "character", c.entity);
     if (e) e.frames.push(c);
   }
   for (const row of gates.requests || []) {
@@ -1815,9 +1830,9 @@ function buildRoster(s) {
   for (const e of map.values()) {
     e.frames.sort((x, y) => FRAME_ROLES.findIndex(([r]) => r === x.role) - FRAME_ROLES.findIndex(([r]) => r === y.role));
     const has = (role) => e.frames.some((f) => f.role === role);
-    const waiting = (slot) => e.pending.some((r) => SLOT_OF_KIND[r.kind] === slot);
+    const waiting = (slot) => e.pending.some((r) => slotOfRow(r, e.kind) === slot);
     const lastDeclined = (slot) => {
-      const rows = e.history.filter((r) => SLOT_OF_KIND[r.kind] === slot);
+      const rows = e.history.filter((r) => slotOfRow(r, e.kind) === slot);
       rows.sort((x, y) => (y.mtime || 0) - (x.mtime || 0));
       return rows[0] && rows[0].state === "declined";
     };
@@ -1826,6 +1841,7 @@ function buildRoster(s) {
       look: slot("look", Boolean(e.look)),
       headshot: slot("headshot", has("hero")),
       sheet: slot("sheet", has("turnaround") || has("expressions")),
+      pictures: slot("pictures", has("establishing")),
     };
     e.active = Boolean(e.look || e.frames.length || e.pending.length || e.history.length);
   }
@@ -1855,7 +1871,7 @@ function focusViewer() {
   });
 }
 
-const SLOT_LABEL = { look: "Look", headshot: "Headshot", sheet: "Sheet" };
+const SLOT_LABEL = { look: "Look", headshot: "Headshot", sheet: "Sheet", pictures: "Pictures" };
 const SLOT_STATE = { done: "done", waiting: "waiting for you", declined: "last one declined", none: "not made yet" };
 
 function renderBin(s, roster) {
@@ -1873,8 +1889,8 @@ function renderBin(s, roster) {
           ? el("img", { src: thumbURL(s.project_id, hero.object_rel, 320), alt: "", loading: "lazy" })
           : el("span", { class: "initial" }, e.name.charAt(0)));
       const slots = el("span", { class: "slots", "aria-hidden": "true" },
-        ["look", "headshot", "sheet"].map((k) => el("span", { class: `slot ${e.slots[k]}` })));
-      const described = ["look", "headshot", "sheet"].map((k) => `${SLOT_LABEL[k]} ${SLOT_STATE[e.slots[k]]}`).join(", ");
+        slotsOf(e).map((k) => el("span", { class: `slot ${e.slots[k]}` })));
+      const described = slotsOf(e).map((k) => `${SLOT_LABEL[k]} ${SLOT_STATE[e.slots[k]]}`).join(", ");
       const current = selectedEntity === e.key && !selectedGateId;
       list.append(el("li", {}, el("button", {
         class: `clip${e.active ? "" : " quiet"}`,
@@ -1896,7 +1912,7 @@ function renderBin(s, roster) {
     el("div", {}, el("span", { class: "slot done" }), "Done"),
     el("div", {}, el("span", { class: "slot waiting" }), "Waiting for you"),
     el("div", {}, el("span", { class: "slot" }), "Not made yet"),
-    el("div", {}, "Tabs read look, headshot, sheet")));
+    el("div", {}, "Tabs read look, headshot, sheet; places read look, pictures")));
   return bin;
 }
 
@@ -1963,12 +1979,13 @@ function historyList(rows) {
 }
 
 function renderEntityViewer(s, e) {
-  const frames = e.frames.map((f) => {
-    const role = FRAME_ROLES.find(([r]) => r === f.role);
-    return { path: f.object_rel, label: role ? role[1] : titleCase(f.role), state: "done", alt: `${e.name}, ${role ? role[1] : f.role}` };
-  });
+  const frames = e.frames.map((f) => ({ path: f.object_rel, label: frameLabel(f), state: "done", alt: `${e.name}, ${frameLabel(f)}` }));
   if (selectedFrame >= frames.length) selectedFrame = 0;
-  const nextStep = e.slots.look !== "done"
+  const nextStep = e.kind === "location"
+    ? (e.slots.look !== "done"
+      ? "No look is locked yet. Once you promote a look in WriterOS and it's locked here, its pictures come next."
+      : "The look is locked. Ask in the Claude box to add your own pictures of this place.")
+    : e.slots.look !== "done"
     ? "No look is locked yet. Once you promote a look in WriterOS and it's locked here, the headshot comes next."
     : e.slots.headshot !== "done"
       ? "The look is locked. The headshot comes next."
@@ -1986,7 +2003,7 @@ function renderEntityViewer(s, e) {
       el("h2", { id: "viewer-heading" }, e.name),
       el("div", { class: "what" }, e.kind === "location" ? "Place" : "Character")),
     el("div", { class: "tapes" },
-      ["look", "headshot", "sheet"].map((k) => tape(e.slots[k], SLOT_LABEL[k]))));
+      slotsOf(e).map((k) => tape(e.slots[k], SLOT_LABEL[k]))));
 
   const needs = e.pending.length ? el("section", { class: "notice", style: "margin-top:24px" },
     el("span", {},
@@ -2265,11 +2282,11 @@ function renderGateViewer(s) {
   const who = key ? (entity && entity.name) || titleCase(key.split(":")[1]) : null;
   // Decided requests keep no pictures of their own; show what is on film now.
   if (!frames.length && stale && entity) {
-    const roles = { headshot: ["hero"], sheet: ["turnaround", "expressions"] }[SLOT_OF_KIND[header.kind]] || [];
-    frames = entity.frames.filter((f) => roles.includes(f.role)).map((f) => {
-      const role = FRAME_ROLES.find(([r]) => r === f.role);
-      return { path: f.object_rel, label: `On film now: ${role ? role[1] : titleCase(f.role)}`, state: "done", alt: `${entity.name}, ${role ? role[1] : f.role}` };
-    });
+    const slotName = slotOfRow(header, entity.kind);
+    const keep = slotName === "pictures" ? () => true
+      : (f) => ({ headshot: ["hero"], sheet: ["turnaround", "expressions"] }[slotName] || []).includes(f.role);
+    frames = entity.frames.filter(keep).map((f) => (
+      { path: f.object_rel, label: `On film now: ${frameLabel(f)}`, state: "done", alt: `${entity.name}, ${frameLabel(f)}` }));
   }
   if (selectedFrame >= frames.length) selectedFrame = 0;
   const stateTape = header.state === "pending" || (!summary && gateDetail.state === "pending")

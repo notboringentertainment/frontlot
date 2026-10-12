@@ -65,7 +65,44 @@ def status_lines(root: Path) -> list[str]:
             lines.append(f"Look waiting for Ben's signature: {who}.")
         elif where == "declined":
             lines.append(f"Look declined by Ben: {who}. The look op records his note.")
+    lines += _location_lines(root, looks, names)
     return lines
+
+
+def _location_lines(root: Path, looks: list, names: dict) -> list[str]:
+    """G10: for each locked place, whether its reference pictures are approved,
+    waiting for a signature, or not added yet."""
+    from lib.cast_change import name_of
+    from scripts.location_run import _images
+
+    cp = _json(root / "checkpoint_visual_bible.json")
+    bible = ((cp.get("artifacts") or {}).get("visual_bible")) or {}
+    run_states = ((cp.get("metadata") or {}).get("run_state")) or {}
+    entries = {e.get("id"): e for e in bible.get("locations") or [] if isinstance(e, dict)}
+    out = []
+    for look in looks:
+        if not isinstance(look, dict) or look.get("entity_kind") != "location":
+            continue
+        lid = str(look.get("entity_id"))
+        who, entry = name_of(lid, names), entries.get(lid) or {}
+        states = [read_request(root, str(i.get("request_id") or ""))[0] for i in _images(root, lid)]
+        if entry.get("status") == "approved":
+            out.append(f"Location pictures approved: {who} ({1 + len(entry.get('angles') or [])}).")
+        elif entry.get("status") == "draft":
+            st = run_states.get(lid) if isinstance(run_states.get(lid), dict) else {}
+            where = read_request(root, str(st.get("request_id") or ""))[0] if st.get("request_id") else "missing"
+            if where in ("done", "declined"):
+                out.append(f"Location pictures {'signed' if where == 'done' else 'declined'} by Ben but not finished: {who}. "
+                           f"Finish now with location_finish (free); it only records what Ben decided.")
+            else:
+                out.append(f"Location pictures sealed and waiting for Ben's signature as a set: {who}.")
+        elif "pending" in states:
+            out.append(f"Location pictures waiting for Ben's signature: {who} ({states.count('pending')}).")
+        elif "done" in states:
+            out.append(f"Location pictures signed but not sealed: {who} ({states.count('done')}). Seal them when Ben has added all he wants.")
+        else:
+            out.append(f"No location pictures yet: {who}.")
+    return out
 
 
 def main(argv: Optional[list[str]] = None) -> int:
