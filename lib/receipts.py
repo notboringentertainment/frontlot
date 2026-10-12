@@ -93,6 +93,11 @@ ENVELOPE_FIELDS: dict[str, dict[str, bool]] = {
     # record 1.1 (field-bound batch) carries field_manifest_sha256.
     "qc_override": {"qc_receipt_id": False, "field_manifest_sha256": False},
     "headshot_grandfather": {"attests_receipt_id": True, "entity_kind": True, "look_hash": True},
+    # G10 one-signature place sets: the writer's own pictures of a place are
+    # signed once, as a set. The same fixed likeness promise a reference_import
+    # carries is signed here for every picture in the set (attestation_text +
+    # staged_pictures), so each picture keeps a signed promise behind it.
+    "location": {"attestation_text": False, "staged_pictures": False},
 }
 
 # Record 1.1 (batch) allowlist: a field-bound waiver over the exact candidates
@@ -396,6 +401,24 @@ def _validate_look_lock_source(env: dict) -> None:
             raise ValueError("look_lock activate: promotion_refs items must be {system: writeros, record_id: mem_<32hex>}")
 
 
+def _validate_location_set(record: dict, env: dict) -> None:
+    """A place set signs the fixed likeness promise for exactly the pictures
+    its record approves; both fields travel together."""
+    from lib.reference_import import SYNTHETIC_ATTESTATION
+
+    if env.get("attestation_text") != SYNTHETIC_ATTESTATION:
+        raise ValueError(f"location set: attestation_text must be the fixed promise {SYNTHETIC_ATTESTATION!r}")
+    pics = env.get("staged_pictures")
+    if not isinstance(pics, list) or not pics or not all(isinstance(p, dict) for p in pics):
+        raise ValueError("location set: staged_pictures must be a non-empty list of pictures")
+    hashes = [p.get("pixel_hash") for p in pics]
+    if sorted(hashes) != sorted((record.get("assets") or {}).values()) or len(set(hashes)) != len(hashes):
+        raise ValueError("location set: staged_pictures must be exactly the pictures the record approves")
+    for p in pics:
+        if set(p) != {"pixel_hash", "label", "origin_tool"} or not all(isinstance(v, str) and v for v in p.values()):
+            raise ValueError("location set: each picture carries exactly pixel_hash, label, origin_tool")
+
+
 def validate_envelope(
     kind: str,
     record: dict,
@@ -440,6 +463,8 @@ def validate_envelope(
             raise ValueError("look_lock promotion_refs must be a list")
         if env["action"] == "activate":
             _validate_look_lock_source(env)
+    if kind == "location" and env:
+        _validate_location_set(record, env)
     if kind == "headshot" and record.get("look_hash") != env["look_hash"]:
         raise ValueError("headshot: record.look_hash must equal envelope look_hash")
     if kind == "qc_override":

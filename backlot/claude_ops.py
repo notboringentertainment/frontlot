@@ -430,6 +430,15 @@ def _location_add_image(ctx, p):
                     summary=f"Add a picture to {e}" + (f" ({label})" if label else ""), entity=e)
 
 
+def _location_remove_image(ctx, p):
+    e = _entity(p)
+    label = p.get("label")
+    if not isinstance(label, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", label):
+        raise OpError("label must be the picture's label, like establishing or aftermath")
+    argv = _script("location_run") + ["--project", ctx.slug, "--entity", e, "--remove-image", label]
+    return Prepared(ctx.op, False, argv, {}, summary=f"Take {label} out of {e}'s pictures", entity=e)
+
+
 def _simple(script: str, flag: str, summary: str):
     def build(ctx, p):
         e = _entity(p)
@@ -497,7 +506,8 @@ OPERATIONS: dict[str, Operation] = {
     "sheet_finish": Operation(False, frozenset({"entity"}), _simple("sheet_run", "--finish", "Finish the sheet for {e}")),
     "sheet_abandon": Operation(False, frozenset({"entity"}), _simple("sheet_run", "--abandon", "Abandon the sheet for {e}")),
     "location_add_image": Operation(False, frozenset({"entity", "image", "origin_tool", "label"}), _location_add_image),
-    "location_seal": Operation(False, frozenset({"entity"}), _simple("location_run", "--seal", "Put {e}'s pictures up for signing as a set")),
+    "location_remove_image": Operation(False, frozenset({"entity", "label"}), _location_remove_image),
+    "location_seal": Operation(False, frozenset({"entity"}), _simple("location_run", "--seal", "Put {e}'s pictures up for Ben's one signature")),
     "location_finish": Operation(False, frozenset({"entity"}), _simple("location_run", "--finish", "Finish {e}'s location pictures")),
     "shot_prepare": Operation(False, frozenset({"brief", "note"}), _shot("prepare")),
     "shot_request": Operation(False, frozenset({"shot_id", "settings"}), _shot("request")),
