@@ -418,7 +418,7 @@ def _construct_look_lock(root: Path, req: dict) -> Constructed:
         f"ticket {ticket} (wayfinder root {wf_root})",
         f"source_ticket_ref {json.dumps(look.source_ticket_ref, sort_keys=True)}",
         f"look_hash {look.look_hash}" + (f" supersedes {current.look_hash}" if current else " (first activation)"),
-    )
+    ) + tuple(f"heads up: {line}; signing locks the look as written" for line in look.changed_since)
     return Constructed(look.payload, envelope, entity_id, evidence=evidence)
 
 

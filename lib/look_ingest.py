@@ -37,7 +37,7 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
@@ -74,6 +74,11 @@ class IngestedLook:
     look_hash: str
     source_ticket_ref: Optional[dict[str, Any]] = None
     source_ref: Optional[dict[str, Any]] = None
+    # Decisions this look depends on that were edited after the look was
+    # settled (plain-language lines for the signing screen). A note for the
+    # writer, never a block: Ben, 2026-10-11 — he judges whether a change
+    # matters when he signs. Not part of the look or its hash.
+    changed_since: tuple[str, ...] = field(default=(), compare=False)
 
     def __post_init__(self) -> None:
         if (self.source_ticket_ref is None) == (self.source_ref is None):
@@ -419,10 +424,22 @@ def parse_look_ticket(path: Path | str, *, wayfinder_root: Path | str) -> Ingest
         raise LookIngestError(f"look ticket {path.name}: look spec block must be a mapping")
     derived = derive_depends_on(path, meta, root)
     declared_deps = payload.get("depends_on")
+    changed_since: tuple[str, ...] = ()
     if declared_deps is not None and declared_deps != derived:
-        raise LookIngestError(
-            f"look ticket {path.name}: the block declares depends_on {declared_deps!r} but the ticket's "
-            f"blocked-by derives {derived!r} — depends_on is derived from the wayfinder, never authored"
+        same_decisions = (
+            isinstance(declared_deps, list) and len(declared_deps) == len(derived)
+            and all(isinstance(d, dict) and {k: v for k, v in d.items() if k != "content_sha256"}
+                    == {k: v for k, v in e.items() if k != "content_sha256"} for d, e in zip(declared_deps, derived))
+        )
+        if not same_decisions:
+            raise LookIngestError(
+                f"look ticket {path.name}: the block declares depends_on {declared_deps!r} but the ticket's "
+                f"blocked-by derives {derived!r} — depends_on is derived from the wayfinder, never authored"
+            )
+        # Same decisions, edited since: lock against today's versions and tell the writer what moved.
+        changed_since = tuple(
+            _changed_decision_line(root, e["path"], meta.get("resolved"))
+            for d, e in zip(declared_deps, derived) if d.get("content_sha256") != e["content_sha256"]
         )
     payload = dict(payload)
     payload["depends_on"] = derived
@@ -450,7 +467,23 @@ def parse_look_ticket(path: Path | str, *, wayfinder_root: Path | str) -> Ingest
         payload=payload,
         look_hash=_look_hash(payload),
         source_ticket_ref=ref,
+        changed_since=changed_since,
     )
+
+
+_AMENDED_RE = re.compile(r"\*\*Amended (\d{4}-\d{2}-\d{2})\*\*")
+
+
+def _changed_decision_line(root: Path, rel: str, settled: Any) -> str:
+    """'"<title>" changed since this look was settled (amended 2026-09-24, 2026-10-04)'."""
+    try:
+        text = (root / rel).read_text(encoding="utf-8")
+    except OSError:
+        return f"{Path(rel).stem} changed since this look was settled"
+    title = next((ln[2:].strip() for ln in text.splitlines() if ln.startswith("# ")), Path(rel).stem)
+    since = str(settled)[:10] if settled else ""
+    dates = sorted({d for d in _AMENDED_RE.findall(text) if not since or d > since})
+    return f"\"{title}\" changed since this look was settled" + (f" (amended {', '.join(dates)})" if dates else "")
 
 
 def _is_utf8(raw: bytes) -> bool:
@@ -927,6 +960,8 @@ def look_lock_request(
             f"The writer attested a fictional subject: {look.payload.get('fictional_subject_attestation')}. "
             f"Refusal rule: a reference with no receipted lineage, a real person, or a minor is refused."
             + (f" Supersedes active look {current.look_hash}." if current else "")
+            + (" Heads up: " + "; ".join(look.changed_since)
+               + ". Signing locks the look as written; decline if a change matters." if look.changed_since else "")
         ),
         "preview_paths": [],
     }
