@@ -498,7 +498,7 @@ def test_gate_summary_rows_are_exact_unique_and_pending_only_actionable(gate_wor
     gates = state["gates"]
 
     assert set(gates) == {
-        "requests", "truncated", "total_requests", "canon", "canon_changes", "looks", "cost", "run_lease",
+        "requests", "truncated", "total_requests", "canon", "cast", "canon_changes", "looks", "cost", "run_lease",
     }
     assert gates["truncated"] is False
     assert gates["total_requests"] == len(gates["requests"])
@@ -1254,3 +1254,13 @@ def test_board_carries_canon_changes_without_failing(gate_world):
     # the board never fails because today's canon can't be read.
     gates = load_board_state(gate_world["project"])["gates"]
     assert gates["canon_changes"] is None or isinstance(gates["canon_changes"], dict)
+
+
+def test_board_cast_lists_the_trailer_cast_only(gate_world):
+    """The canon snapshot keeps people Ben has since cut; the board's cast list is the trailer cast."""
+    from backlot.state import _cast_keys
+    from lib.cast_change import effective_cast
+
+    cast = effective_cast(gate_world["project"], project_id=gate_world["project"].name)
+    keys = _cast_keys(gate_world["project"])
+    assert keys == sorted([f"character:{c}" for c in cast["character_ids"]] + [f"location:{l}" for l in cast["location_ids"]])
