@@ -88,6 +88,22 @@ def test_headshot_import_only_stages_and_needs_origin_tool(world):
         prep(world, "headshot_import", entity="hero-a", image="face.png", origin_tool="midjourney")
 
 
+def test_location_pictures_steps_are_free_and_pass_the_picture_and_label(world):
+    repo, film, work, snap = world
+    (work / "hall.png").write_bytes(b"png")
+    with pytest.raises(ops.OpError, match="origin_tool"):
+        prep(world, "location_add_image", entity="place-a", image="hall.png")
+    with pytest.raises(ops.OpError, match="label"):
+        prep(world, "location_add_image", entity="place-a", image="hall.png", origin_tool="midjourney", label="Big Hall")
+    p = prep(world, "location_add_image", entity="place-a", image="hall.png", origin_tool="midjourney", label="aftermath")
+    assert p.paid is False and p.argv[p.argv.index("--add-image") + 1] == str(p.snapshot["image"])
+    assert p.argv[p.argv.index("--label") + 1] == "aftermath" and p.argv[1] == "scripts/location_run.py"
+    first = prep(world, "location_add_image", entity="place-a", image="hall.png", origin_tool="midjourney")
+    assert "--label" not in first.argv
+    assert prep(world, "location_seal", entity="place-a").argv[-1] == "--seal"
+    assert prep(world, "location_finish", entity="place-a").argv[-1] == "--finish"
+
+
 def test_sheet_freezes_bible_look_config_and_headshot(world):
     repo, film, *_ = world
     p = prep(world, "sheet", entity="hero-a", roles=["turnaround", "expressions", "wardrobe"])

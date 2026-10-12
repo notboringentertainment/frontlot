@@ -555,9 +555,11 @@ def test_gate_summary_rows_are_exact_unique_and_pending_only_actionable(gate_wor
             "state": "declined", "mtime": FIXED_MTIME, "declined_note": "Invented decline note.",
         },
         pending(rids["qc_override"], "qc_override", "visual_bible", f"character:{CHAR}", CHAR),
-        pending(rids["reference_import"], "reference_import", "look_lock",
-                f"reference:{gate_world['imported']['asset_id']}",
-                f"reference-{gate_world['imported']['asset_id'][:12]}"),
+        {**pending(rids["reference_import"], "reference_import", "look_lock",
+                   f"reference:{gate_world['imported']['asset_id']}",
+                   f"reference-{gate_world['imported']['asset_id'][:12]}"),
+         # G10: an import names the cast entity it is for, so the board files it under that character or place
+         "bound_entity": CHAR, "bound_kind": "character"},
         {
             "request_id": rids["done"], "kind": "sheet", "stage": "visual_bible",
             "scope": f"character:{CHAR}", "entity_id": CHAR, "summary": "Archived sheet request.",

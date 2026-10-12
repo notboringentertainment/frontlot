@@ -415,6 +415,21 @@ def _sheet(ctx, p):
                     estimate_usd=_up(most))
 
 
+def _location_add_image(ctx, p):
+    e = _entity(p)
+    origin = p.get("origin_tool")
+    if not isinstance(origin, str) or not ORIGIN_TOOL_RE.fullmatch(origin):
+        raise OpError("origin_tool must name the tool that made the picture, e.g. midjourney")
+    label = p.get("label")
+    if label is not None and (not isinstance(label, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", label)):
+        raise OpError("label must be establishing or a short lowercase word like aftermath")
+    snap, _, img_digest = _snapshot(ctx, "location-image", p.get("image"))
+    argv = _script("location_run") + ["--project", ctx.slug, "--entity", e, "--add-image", str(snap),
+                                      "--origin-tool", origin] + (["--label", label] if label else [])
+    return Prepared(ctx.op, False, argv, {snap: img_digest}, {"image": snap},
+                    summary=f"Add a picture to {e}" + (f" ({label})" if label else ""), entity=e)
+
+
 def _simple(script: str, flag: str, summary: str):
     def build(ctx, p):
         e = _entity(p)
@@ -481,6 +496,9 @@ OPERATIONS: dict[str, Operation] = {
     "sheet": Operation(True, frozenset({"entity", "roles", "resume"}), _sheet),
     "sheet_finish": Operation(False, frozenset({"entity"}), _simple("sheet_run", "--finish", "Finish the sheet for {e}")),
     "sheet_abandon": Operation(False, frozenset({"entity"}), _simple("sheet_run", "--abandon", "Abandon the sheet for {e}")),
+    "location_add_image": Operation(False, frozenset({"entity", "image", "origin_tool", "label"}), _location_add_image),
+    "location_seal": Operation(False, frozenset({"entity"}), _simple("location_run", "--seal", "Put {e}'s pictures up for signing as a set")),
+    "location_finish": Operation(False, frozenset({"entity"}), _simple("location_run", "--finish", "Finish {e}'s location pictures")),
     "shot_prepare": Operation(False, frozenset({"brief", "note"}), _shot("prepare")),
     "shot_request": Operation(False, frozenset({"shot_id", "settings"}), _shot("request")),
     "shot_generate": Operation(True, frozenset({"shot_id", "settings", "tool"}), _shot("generate", paid=True)),
