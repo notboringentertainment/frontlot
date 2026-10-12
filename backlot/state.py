@@ -1567,7 +1567,7 @@ def _render_location(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     """Authoritative source: visual_bible locations[].establishing and angles refs."""
     entry = next((x for x in _bible(root).get("locations") or [] if isinstance(x, dict) and x.get("id") == req.get("entity_id")), None)
     refs = [] if not isinstance(entry, dict) else [("establishing", entry.get("establishing"))] + [
-        ((x.get("role") if isinstance(x, dict) and x.get("role") else f"angle_{i}"), x) for i, x in enumerate(entry.get("angles") or [])]
+        ((x.get("role") if isinstance(x, dict) and x.get("role") not in (None, "", "angle") else f"angle_{i}"), x) for i, x in enumerate(entry.get("angles") or [])]
     result = _visuals_from_refs(root, refs)
     result["packet_error"] |= not isinstance(entry, dict)
     return result
