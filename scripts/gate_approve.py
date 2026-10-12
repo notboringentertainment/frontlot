@@ -1064,7 +1064,10 @@ def _construct_location(root: Path, req: dict) -> Constructed:
     from lib.canon_enforcement import location_approval_record
 
     entity_id = _require_entity(req)
-    bible, palette = _bible_and_palette(root, req)
+    bible, palette, path = _bible_palette_path(root, req)
+    # G10: a location request is bound to the checkpoint it was published
+    # against, like a sheet; the set Ben sees is the set he signs.
+    _bind_request_digest(req, path, required=True)
     entry = next((e for e in bible.get("locations") or [] if isinstance(e, dict) and e.get("id") == entity_id), None)
     if entry is None:
         raise GateHandlerError(f"location {entity_id!r} is not in the pending visual_bible")
