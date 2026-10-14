@@ -79,7 +79,7 @@ def test_film_writes_outside_the_work_area_are_refused(tmp_path):
     (film / "approvals.jsonl").write_text(""); (film / "cost_log.json.lock").write_text("")
     deny = cs.build_settings(repo_root=repo, film_root=film, meta_root=meta, environ={})["permissions"]["deny"]
     f = film.resolve()
-    assert f"Edit(/{f}/*.jsonl)" in deny and f"Edit(/{f}/*.json)" in deny   # ledgers, even before they exist
+    assert f"Edit(/{f}/*.*)" in deny        # any top-level file with an extension, even one created after launch
     assert f"Edit(/{f}/approvals.jsonl)" in deny and f"Edit(/{f}/cost_log.json.lock)" in deny
     assert f"Edit(/{f}/production/**)" in deny and f"Edit(/{f}/.gate-requests/**)" in deny
     assert f"Edit(/{f}/*)" not in deny                                 # would refuse the work area too
@@ -273,3 +273,13 @@ def test_brief_answers_where_things_stand_from_status_not_memory():
     assert '{"op": "status", "params": {}}' in b and "in that same turn" in b
     assert "Never answer those from earlier in the conversation" in b
     assert "finish it with the look op right away" in b
+
+
+def test_connector_actions_that_send_or_delete_ask_ben(tmp_path):
+    repo, film, meta = world(tmp_path)
+    p = cs.build_settings(repo_root=repo, film_root=film, meta_root=meta, environ={})["permissions"]
+    for tool in ("Gmail__send_message", "Docusign__createEnvelope", "Supabase__execute_sql",
+                 "Google_Calendar__create_event", "Google_Drive__share_file"):
+        assert f"mcp__claude_ai_{tool}" in p["ask"], tool
+    assert "mcp__claude_ai_Gmail__search_threads" not in p["ask"]       # reading stays free
+    assert "mcp__claude_ai_Gmail" in p["allow"]                          # ask beats the server-wide allow

@@ -36,6 +36,30 @@ HIGGSFIELD_SPEND = (
     "shorts_studio_create", "scene_builder_3d_generate_angles", "scene_builder_3d_generate_video",
     "video_analysis_create", "virality_predictor", "apps_invoke",
 )
+# protects: nothing goes out or is deleted under Ben's name without his yes. Connector tools that send, share,
+# sign, delete, or change outside systems ask him; reading stays free. (Web pages Claude reads can carry
+# instructions, so the card is enforced, not left to the brief.)
+CONNECTOR_SIDE_EFFECTS = (
+    "Gmail__send_message", "Gmail__reply", "Gmail__forward", "Gmail__trash_message", "Gmail__trash_thread",
+    "Gmail__delete_label",
+    "Google_Calendar__create_event", "Google_Calendar__update_event", "Google_Calendar__delete_event",
+    "Google_Calendar__respond_to_event",
+    "Google_Drive__share_file", "Google_Drive__trash_file", "Google_Drive__update_file",
+    "Docusign__createEnvelope", "Docusign__createEnvelopeWithDocuments", "Docusign__updateEnvelope",
+    "Docusign__updateEnvelopeRecipients", "Docusign__updateEnvelopeTabs", "Docusign__sendReminder",
+    "Docusign__triggerWorkflow", "Docusign__startClmWorkflow", "Docusign__stopClmWorkflow",
+    "Docusign__cancelWorkflowInstance", "Docusign__pauseNewWorkflowInstances", "Docusign__resumeWorkflow",
+    "Notion__notion-delete-pages", "Notion__notion-delete-databases", "Notion__notion-delete-comment",
+    "Notion__notion-update-page", "Notion__notion-create-comment",
+    "Airtable__delete_records_for_table", "Airtable__delete_table", "Airtable__delete_automation",
+    "Airtable__delete_interface", "Airtable__delete_page",
+    "Supabase__execute_sql", "Supabase__apply_migration", "Supabase__deploy_edge_function",
+    "Supabase__create_project", "Supabase__pause_project", "Supabase__delete_branch", "Supabase__merge_branch",
+    "Supabase__reset_branch", "Supabase__create_edge_function_secret",
+    "Claude_Docs__delete",
+    "Higgsfield__publish_website", "Higgsfield__deploy_website", "Higgsfield__tiktok_prepare_publish",
+    "Higgsfield__participate_in_contest", "Higgsfield__cancel_trial_auto_renewal",
+)
 # Blender needs the GPU, which the sandbox blocks, so it is the one command allowed to run outside it.
 UNSANDBOXED_COMMANDS = ("blender",)
 _ENV_KEEP = ("HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL", "TMPDIR")
@@ -127,10 +151,10 @@ def story_drive_folder(film_root: Path) -> Path | None:
 def _film_write_denials(film: Path, work: Path) -> list[str]:
     """protects: approved film files. Front Lot's checks rely on Claude never writing the film folder outside
     its work area, so those writes are refused outright rather than put to Ben as a question."""
-    # Never a bare "/film/*": it matches the work area itself and refuses everything inside it.
-    # Record-like names at the top level are refused even before they exist (a ledger a new film hasn't
-    # written yet); every existing file and folder other than the work area is refused by name.
-    out = [f"Edit(/{film}/*.{ext})" for ext in ("json", "jsonl", "yaml", "yml", "lock", "md", "txt")]
+    # Never a bare "/film/*": it matches the work area itself and refuses everything inside it. "*.*" refuses any
+    # top-level file with an extension, existing or new ("frontlot-work" has no dot); every existing file and
+    # folder other than the work area is also refused by name.
+    out = [f"Edit(/{film}/*.*)"]
     try:
         children = sorted(film.iterdir())
     except OSError:
@@ -153,7 +177,6 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
             "enabled": True,
             "failIfUnavailable": True,           # protects: never run unsandboxed
             "autoAllowBashIfSandboxed": True,
-            "allowUnsandboxedCommands": False,   # protects: no dangerouslyDisableSandbox escape
             # Only Blender, and only when Claude asks for it (Bash's dangerouslyDisableSandbox): the allow rule
             # below covers blender alone, so any other unsandboxed command asks Ben.
             "allowUnsandboxedCommands": True,
@@ -176,7 +199,8 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
                      + [f"mcp__claude_ai_{c}" for c in CONNECTORS]
                      + ([f"Read(/{package}/**)"] if package else [])
                      + ([f"Read(/{story}/**)"] if story else []),
-            "ask": [f"mcp__claude_ai_Higgsfield__{t}" for t in HIGGSFIELD_SPEND],
+            "ask": [f"mcp__claude_ai_Higgsfield__{t}" for t in HIGGSFIELD_SPEND]
+                   + [f"mcp__claude_ai_{t}" for t in CONNECTOR_SIDE_EFFECTS],
             "deny": [f"Read({d}/**)" for d in HOME_SECRET_DIRS] + [f"Read({f})" for f in HOME_SECRET_FILES]
                     + [f"Read(/{meta}/**)", f"Read(/{repo}/**/.env*)"] + [f"Read(/{p})" for p in secrets]
                     + [f"Edit(/{work}/{name})" for name in WORK_PROTECTED]
