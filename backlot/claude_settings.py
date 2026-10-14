@@ -2,9 +2,14 @@
 
 Everything here is pure (apart from reading .env* files to find credential
 paths). The sandbox and permission rules are the session's enforced boundary
-(spec §4.1): Claude may read the film and the repo, write only its work area,
-reach only WriterOS on localhost, and use exactly one MCP tool. Native tools
-run in "dontAsk" mode: whatever is not allowed is refused, never prompted.
+(spec §4.1). Claude gets the reach Ben's own Claude has: the open internet,
+Ben's claude.ai connectors and Chrome, and Blender (which needs the GPU, so it
+alone may run outside the sandbox). What stays closed, and why:
+- signing keys, provider keys and saved passwords are unreadable;
+- Claude writes only its work area, because Front Lot's checks on approved film
+  files rely on Claude never writing the film folder;
+- Higgsfield calls that spend credits ask Ben first.
+Anything not allowed below asks Ben ("default" mode); what is denied is refused.
 """
 from __future__ import annotations
 
@@ -19,6 +24,20 @@ TOOL_NAME = f"mcp__{PLUGIN_NAME}__frontlot_run"
 WRITEROS_HOST = "127.0.0.1:5177"
 EMPTY_MCP = '{"mcpServers":{}}'
 CHROME_TOOLS = "mcp__claude-in-chrome"
+# Ben's claude.ai connectors, allowed whole. A connector missing here still works: Claude Code asks Ben.
+CONNECTORS = ("Higgsfield", "Google_Drive", "Google_Calendar", "Gmail", "Notion", "Claude_Docs", "Airtable",
+              "Granola", "Hugging_Face", "Supabase", "Docusign")
+# protects: Ben's credits. Every Higgsfield call that makes or changes media asks him first.
+HIGGSFIELD_SPEND = (
+    "generate_image", "generate_video", "generate_audio", "generate_3d", "generate_image_batch",
+    "generate_video_batch", "generate_audio_batch", "upscale_image", "upscale_video", "outpaint_image", "reframe",
+    "remove_background", "motion_control", "execute_preset", "dubbing", "voice_change", "create_voice",
+    "create_voice_from_confirmed_audio", "ai_influencer_generate", "build_ai_influencer", "ads_studio_generate",
+    "shorts_studio_create", "scene_builder_3d_generate_angles", "scene_builder_3d_generate_video",
+    "video_analysis_create", "virality_predictor", "apps_invoke",
+)
+# Blender needs the GPU, which the sandbox blocks, so it is the one command allowed to run outside it.
+UNSANDBOXED_COMMANDS = ("blender",)
 _ENV_KEEP = ("HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL", "TMPDIR")
 # protects: signing key, ledgers, signer and broker sockets, provider and cloud keys
 HOME_SECRET_DIRS = (
@@ -105,6 +124,24 @@ def story_drive_folder(film_root: Path) -> Path | None:
         return None
 
 
+def _film_write_denials(film: Path, work: Path) -> list[str]:
+    """protects: approved film files. Front Lot's checks rely on Claude never writing the film folder outside
+    its work area, so those writes are refused outright rather than put to Ben as a question."""
+    # Never a bare "/film/*": it matches the work area itself and refuses everything inside it.
+    # Record-like names at the top level are refused even before they exist (a ledger a new film hasn't
+    # written yet); every existing file and folder other than the work area is refused by name.
+    out = [f"Edit(/{film}/*.{ext})" for ext in ("json", "jsonl", "yaml", "yml", "lock", "md", "txt")]
+    try:
+        children = sorted(film.iterdir())
+    except OSError:
+        children = []
+    for c in children:
+        if c.resolve() == work.resolve():
+            continue
+        out.append(f"Edit(/{c}/**)" if c.is_dir() else f"Edit(/{c})")
+    return out
+
+
 def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ: Mapping[str, str]) -> dict:
     repo, film, meta = repo_root.resolve(), film_root.resolve(), meta_root.resolve()
     work = film / "frontlot-work"
@@ -117,6 +154,9 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
             "failIfUnavailable": True,           # protects: never run unsandboxed
             "autoAllowBashIfSandboxed": True,
             "allowUnsandboxedCommands": False,   # protects: no dangerouslyDisableSandbox escape
+            # Only Blender, and only when Claude asks for it (Bash's dangerouslyDisableSandbox): the allow rule
+            # below covers blender alone, so any other unsandboxed command asks Ben.
+            "allowUnsandboxedCommands": True,
             "excludedCommands": [],
             "filesystem": {
                 "denyRead": [*HOME_SECRET_DIRS, *HOME_SECRET_FILES, str(meta), *map(str, secrets)],
@@ -124,21 +164,23 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
                 "denyWrite": [str(work / n.removesuffix("/**")) for n in WORK_PROTECTED],
             },
             "network": {
-                "allowedDomains": [WRITEROS_HOST],  # protects: no route to paid services
-                "strictAllowlist": True,
+                "allowedDomains": ["*", WRITEROS_HOST],
                 "allowUnixSockets": [],             # protects: signer and broker sockets
                 "allowLocalBinding": False,
             },
         },
         "permissions": {
-            "defaultMode": "dontAsk",             # protects: anything not allowed below is refused, never prompted
-            "allow": [TOOL_NAME, f"Read(/{film}/**)", f"Read(/{repo}/**)", f"Edit(/{work}/**)"]
+            "defaultMode": "default",             # anything not allowed or denied below asks Ben
+            "allow": [TOOL_NAME, CHROME_TOOLS, f"Read(/{film}/**)", f"Read(/{repo}/**)", f"Edit(/{work}/**)"]
+                     + [f"Bash({c}:*)" for c in UNSANDBOXED_COMMANDS]
+                     + [f"mcp__claude_ai_{c}" for c in CONNECTORS]
                      + ([f"Read(/{package}/**)"] if package else [])
                      + ([f"Read(/{story}/**)"] if story else []),
-            # protects: Ben's Chrome; backs up --no-chrome (probe P2: the allowlist did not stop it)
-            "deny": [CHROME_TOOLS] + ([f"Read({d}/**)" for d in HOME_SECRET_DIRS] + [f"Read({f})" for f in HOME_SECRET_FILES]
-                     + [f"Read(/{meta}/**)", f"Read(/{repo}/**/.env*)"] + [f"Read(/{p})" for p in secrets]
-                     + [f"Edit(/{work}/{name})" for name in WORK_PROTECTED]),
+            "ask": [f"mcp__claude_ai_Higgsfield__{t}" for t in HIGGSFIELD_SPEND],
+            "deny": [f"Read({d}/**)" for d in HOME_SECRET_DIRS] + [f"Read({f})" for f in HOME_SECRET_FILES]
+                    + [f"Read(/{meta}/**)", f"Read(/{repo}/**/.env*)"] + [f"Read(/{p})" for p in secrets]
+                    + [f"Edit(/{work}/{name})" for name in WORK_PROTECTED]
+                    + _film_write_denials(film, work),
         },
         "enableAllProjectMcpServers": False,
     }
@@ -185,7 +227,9 @@ def build_brief(*, film_title: str, film_slug: str, writeros_package: Path | Non
 Film: "{film_title}" (project id: {film_slug}). Your working folder is this film's Front Lot work area.
 
 How you work here:
-- You can read the film (../ is the film folder) and the OpenMontage repo, and think, plan, and talk with Ben. You can write only in your work area.
+- You can read the film (../ is the film folder) and the OpenMontage repo, and think, plan, and talk with Ben. You write files only in your work area (writes anywhere else in the film are refused: Front Lot's checks on approved files rely on that). You have the open internet, Ben's claude.ai connectors (Higgsfield, Google Drive, Gmail, Notion and the rest) and Chrome. A tool that isn't pre-approved asks Ben with a Yes/No prompt; that is fine to use when the job needs it.
+- Gray-box previz (Ben's way to steer camera and blocking on a complex shot): write a Blender Python script in your work area that builds the shot from plain blocks (room, figures, camera move, timing) and renders it with the Workbench engine to PNG frames, then join them with ffmpeg. Run Blender as `blender -b -P <script> -- <args>` with the Bash tool's dangerouslyDisableSandbox set to true: Blender needs the GPU, which the sandbox blocks, and it is the only command allowed out. Render a version with the figures and one without (environment only), pull a few stills, and show Ben before anything is spent.
+- Higgsfield: Ben has credits there and it accepts reference images with faces, which fal.ai refuses. Seedance 2.5 (model seedance_2_5, mode omni_reference) follows a gray-box clip given as a video_references entry, with reference images as image_references; a 10-second 480p draft (draft: true) costs about 30 credits, and a draft can be finalized at 1080p within seven days. Upload local files with media_upload (PUT the bytes with curl, sending the If-None-Match: * header the signed URL requires), then media_confirm. Every Higgsfield call that makes media asks Ben Yes/No first; tell him the cost before you call (generate_video with get_cost: true gives it, and also asks him). Decline preset suggestions unless Ben wants one. An "ip_detected" result means Higgsfield refused the job and charged nothing. Download a finished take into your work area, then file it on its shot with shot_attach (shot_id, take: its path in your work area, note: what Ben asked for plus the credits it cost, job_id: Higgsfield's job id) so Front Lot keeps the record. The shot must be prepared first (shot_prepare).
 {_writeros_text(writeros_package)}
 {_canon_text(story_drive)}
 - You never run pipeline scripts yourself. Every pipeline step goes through the frontlot_run tool with an operation name and parameters. Front Lot runs it.
@@ -215,7 +259,7 @@ def allowed_env(base: Mapping[str, str], *, login_path: str, live_socket: str, l
 def launch_argv(*, claude: str, mod_dir: Path, settings_file: Path, brief_file: Path,
                 session_id: str, resume: bool, prompt: str) -> list[str]:
     # --mcp-config is variadic: it must be followed by an option, never by the prompt.
-    argv = [claude, "--no-chrome", "--plugin-dir", str(mod_dir), "--strict-mcp-config", "--mcp-config", EMPTY_MCP,
+    argv = [claude, "--plugin-dir", str(mod_dir),
             "--settings", str(settings_file), "--setting-sources", "",
             "--append-system-prompt-file", str(brief_file)]
     argv += ["--resume", session_id] if resume else ["--session-id", session_id]

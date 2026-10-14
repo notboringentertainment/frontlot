@@ -193,6 +193,23 @@ def test_shot_notes_are_required(world):
     assert p.argv[-2:] == ["--note", "Ben asked to stop this shot"]
 
 
+def test_outside_take_is_snapshotted_and_attached_free(world):
+    repo, film, work, snap = world
+    (work / "take.mp4").write_bytes(b"video-bytes")
+    p = prep(world, "shot_attach", shot_id="s1", take="take.mp4", note="Ben's Higgsfield draft, 30 credits",
+             job_id="77e96a52-9fd4-443f-ae05-050c12119a9c")
+    assert p.paid is False
+    taken = Path(p.argv[p.argv.index("s1") + 1])
+    assert taken.parent == snap and taken.read_bytes() == b"video-bytes" and p.inputs == {taken: sha(b"video-bytes")}
+    assert p.argv[-4:] == ["--note", "Ben's Higgsfield draft, 30 credits", "--job-id", "77e96a52-9fd4-443f-ae05-050c12119a9c"]
+    with pytest.raises(ops.OpError):
+        prep(world, "shot_attach", shot_id="s1", take="take.mp4")                          # note required
+    with pytest.raises(ops.OpError):
+        prep(world, "shot_attach", shot_id="s1", take="take.mp4", note="n", job_id="--evil")
+    with pytest.raises(ops.OpError):
+        prep(world, "shot_attach", shot_id="s1", take="../checkpoint_headshots.json", note="n")   # work area only
+
+
 def test_case_changed_work_area_prefix_is_still_the_work_area(world):
     repo, film, work, snap = world
     probe = film / "ProbeCase"; probe.mkdir()

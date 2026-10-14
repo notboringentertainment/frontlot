@@ -10,13 +10,16 @@ def world(tmp_path):
     return repo, film, tmp_path / "meta"
 
 
-def test_native_tools_are_allow_listed_and_never_prompt(tmp_path):
+def test_claude_has_bens_reach_and_asks_for_the_rest(tmp_path):
     repo, film, meta = world(tmp_path)
     s = cs.build_settings(repo_root=repo, film_root=film, meta_root=meta, environ={})
     work, f, r = film.resolve() / "frontlot-work", film.resolve(), repo.resolve()
     p = s["permissions"]
-    assert p["defaultMode"] == "dontAsk"
-    assert p["allow"] == [cs.TOOL_NAME, f"Read(/{f}/**)", f"Read(/{r}/**)", f"Edit(/{work}/**)"]
+    assert p["defaultMode"] == "default"   # anything not allowed or denied asks Ben
+    for rule in (cs.TOOL_NAME, cs.CHROME_TOOLS, f"Read(/{f}/**)", f"Read(/{r}/**)", f"Edit(/{work}/**)",
+                 "Bash(blender:*)", "mcp__claude_ai_Higgsfield", "mcp__claude_ai_Google_Drive"):
+        assert rule in p["allow"], rule
+    assert cs.CHROME_TOOLS not in p["deny"]
     for name in (".claude/**", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md", ".git/**"):
         assert f"Edit(/{work}/{name})" in p["deny"]
     assert "Read(~/.openmontage/**)" in p["deny"] and f"Read(/{meta.resolve()}/**)" in p["deny"]
@@ -46,14 +49,41 @@ def test_nested_env_files_are_found_but_skipped_dirs_are_not_walked(tmp_path):
     assert not any("node_modules" in str(p) for p in found)
 
 
-def test_sandbox_is_enforced_and_fail_closed(tmp_path):
+def test_sandbox_is_enforced_with_the_open_internet(tmp_path):
     repo, film, meta = world(tmp_path)
     sb = cs.build_settings(repo_root=repo, film_root=film, meta_root=meta, environ={})["sandbox"]
     assert sb["enabled"] is True and sb["failIfUnavailable"] is True
-    assert sb["allowUnsandboxedCommands"] is False and sb["excludedCommands"] == []
     assert {"~/.openmontage", "~/.ssh", str(meta.resolve())} <= set(sb["filesystem"]["denyRead"])
-    assert sb["network"] == {"allowedDomains": ["127.0.0.1:5177"], "strictAllowlist": True,
-                             "allowUnixSockets": [], "allowLocalBinding": False}
+    assert sb["network"] == {"allowedDomains": ["*", "127.0.0.1:5177"],
+                             "allowUnixSockets": [], "allowLocalBinding": False}   # signer and broker sockets stay shut
+
+
+def test_only_blender_runs_outside_the_sandbox_without_asking(tmp_path):
+    repo, film, meta = world(tmp_path)
+    s = cs.build_settings(repo_root=repo, film_root=film, meta_root=meta, environ={})
+    assert s["sandbox"]["allowUnsandboxedCommands"] is True and s["sandbox"]["excludedCommands"] == []
+    assert [a for a in s["permissions"]["allow"] if a.startswith("Bash")] == ["Bash(blender:*)"]
+
+
+def test_higgsfield_spending_asks_ben(tmp_path):
+    repo, film, meta = world(tmp_path)
+    ask = cs.build_settings(repo_root=repo, film_root=film, meta_root=meta, environ={})["permissions"]["ask"]
+    for tool in ("generate_video", "generate_image", "upscale_video", "execute_preset"):
+        assert f"mcp__claude_ai_Higgsfield__{tool}" in ask
+    assert "mcp__claude_ai_Higgsfield__balance" not in ask
+
+
+def test_film_writes_outside_the_work_area_are_refused(tmp_path):
+    repo, film, meta = world(tmp_path)
+    (film / "frontlot-work").mkdir(); (film / "production").mkdir(); (film / ".gate-requests").mkdir()
+    (film / "approvals.jsonl").write_text(""); (film / "cost_log.json.lock").write_text("")
+    deny = cs.build_settings(repo_root=repo, film_root=film, meta_root=meta, environ={})["permissions"]["deny"]
+    f = film.resolve()
+    assert f"Edit(/{f}/*.jsonl)" in deny and f"Edit(/{f}/*.json)" in deny   # ledgers, even before they exist
+    assert f"Edit(/{f}/approvals.jsonl)" in deny and f"Edit(/{f}/cost_log.json.lock)" in deny
+    assert f"Edit(/{f}/production/**)" in deny and f"Edit(/{f}/.gate-requests/**)" in deny
+    assert f"Edit(/{f}/*)" not in deny                                 # would refuse the work area too
+    assert f"Edit(/{f}/frontlot-work/**)" not in deny and f"Edit(/{f}/frontlot-work)" not in deny
 
 
 def test_secrets_cover_every_env_file_and_named_credential_files(tmp_path):
@@ -83,7 +113,8 @@ def test_launch_argv_loads_no_setting_source_and_keeps_the_prompt(tmp_path):
     new = cs.launch_argv(resume=False, **common)
     assert new[:1] == ["/c"] and new[new.index("--session-id") + 1] == "u-1" and new[-1] == "hi"
     assert new[new.index("--setting-sources") + 1] == ""
-    assert new[new.index("--mcp-config") + 2].startswith("--")  # the variadic value is closed by an option
+    for flag in ("--no-chrome", "--strict-mcp-config", "--mcp-config"):   # Ben's connectors and Chrome load
+        assert flag not in new
     res = cs.launch_argv(resume=True, **common)
     assert "--resume" in res and "--session-id" not in res and res[-1] == "hi"
 
@@ -145,17 +176,18 @@ def test_selfcheck_needs_tool_level_evidence(tmp_path):
     assert argv[argv.index("--output-format") + 1] == "stream-json" and "--verbose" in argv
 
 
-def test_keychain_and_chrome_are_closed(tmp_path):
+def test_keychain_is_closed_and_chrome_is_open(tmp_path):
     repo, film, meta = world(tmp_path)
     s = cs.build_settings(repo_root=repo, film_root=film, meta_root=meta, environ={})
     assert "~/Library/Keychains" in s["sandbox"]["filesystem"]["denyRead"]
     assert "Read(~/Library/Keychains/**)" in s["permissions"]["deny"]
-    assert "mcp__claude-in-chrome" in s["permissions"]["deny"]
+    assert "mcp__claude-in-chrome" in s["permissions"]["allow"]
     common = dict(claude="/c", mod_dir=Path("/m"), settings_file=Path("/s.json"),
                   brief_file=Path("/b.md"), session_id="u-1", prompt="hi")
-    for argv in (cs.launch_argv(resume=False, **common), cs.launch_argv(resume=True, **common),
-                 cs.selfcheck_argv(claude="/c", settings_file=Path("/s.json"), prompt="p")):
-        assert "--no-chrome" in argv
+    for argv in (cs.launch_argv(resume=False, **common), cs.launch_argv(resume=True, **common)):
+        assert "--no-chrome" not in argv
+    # the sandbox self-check is a one-turn probe: it needs neither Chrome nor connectors
+    assert "--no-chrome" in cs.selfcheck_argv(claude="/c", settings_file=Path("/s.json"), prompt="p")
 
 
 def linked_film(tmp_path):
@@ -181,15 +213,17 @@ def test_unlinked_or_broken_film_has_no_package(tmp_path):
     (film / "project.yaml").write_text("writeros_package: relative/path\n")
     assert cs.writeros_package(film) is None                       # unusable link: no read grant
     allow = cs.build_settings(repo_root=repo, film_root=film, meta_root=meta, environ={})["permissions"]["allow"]
-    assert len(allow) == 4
+    f, r = film.resolve(), repo.resolve()
+    assert [a for a in allow if a.startswith("Read(")] == [f"Read(/{f}/**)", f"Read(/{r}/**)"]
 
 
 def test_brief_sends_claude_to_the_package_not_the_web(tmp_path):
     _, _, _, pkg = linked_film(tmp_path)
     b = cs.build_brief(film_title="Film", film_slug="film", writeros_package=pkg)
-    assert str(pkg) in b and "memory/exports/look-locks-" in b and "curl" not in b
+    assert str(pkg) in b and "memory/exports/look-locks-" in b
+    assert "do not try to reach WriterOS over the network" in b and cs.WRITEROS_HOST not in b
     unlinked = cs.build_brief(film_title="Film", film_slug="film")
-    assert "found no WriterOS project" in unlinked and "curl" not in unlinked
+    assert "found no WriterOS project" in unlinked and cs.WRITEROS_HOST not in unlinked
 
 
 def test_tool_events_skip_lines_whose_message_is_text():
