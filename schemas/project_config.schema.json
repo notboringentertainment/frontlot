@@ -96,6 +96,11 @@
           "type": "string",
           "minLength": 1,
           "description": "Absolute path of the story-wayfinder project directory whose wayfinder/resolved/ tickets carry look canon. Required for authored-film 1.2 projects (look_lock ingestion confines every ticket under it; symlinks rejected)."
+        },
+        "writeros_package": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path of the .writeros package whose memory/exports/look-locks-<revision>.json lists the looks promoted in WriterOS (look sessions, 2026-09-30). Optional; look_lock reads it as a second look source beside wayfinder_root (symlinks rejected)."
         }
       },
       "additionalProperties": false
@@ -188,6 +193,11 @@
           "type": "string",
           "minLength": 1,
           "description": "Absolute path of the story-wayfinder project directory whose wayfinder/resolved/ tickets carry look canon. Required for authored-film 1.2 projects (look_lock ingestion confines every ticket under it; symlinks rejected)."
+        },
+        "writeros_package": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path of the .writeros package whose memory/exports/look-locks-<revision>.json lists the looks promoted in WriterOS (look sessions, 2026-09-30). Optional; look_lock reads it as a second look source beside wayfinder_root (symlinks rejected)."
         },
         "qc": {
           "type": "object",
@@ -312,6 +322,11 @@
           "type": "string",
           "minLength": 1,
           "description": "Absolute path of the story-wayfinder project directory whose wayfinder/resolved/ tickets carry look canon. Required for authored-film 1.2 projects (look_lock ingestion confines every ticket under it; symlinks rejected)."
+        },
+        "writeros_package": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute path of the .writeros package whose memory/exports/look-locks-<revision>.json lists the looks promoted in WriterOS (look sessions, 2026-09-30). Optional; look_lock reads it as a second look source beside wayfinder_root (symlinks rejected)."
         },
         "qc": {
           "type": "object",

@@ -286,6 +286,9 @@ async def _lifespan(app: FastAPI):
         from backlot.tty import shutdown_tty
 
         await shutdown_tty(app)
+        from backlot.claude_live import shutdown_claude
+
+        await shutdown_claude(app)
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
@@ -306,6 +309,10 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
     from backlot.tty import install_tty
 
     install_tty(app)
+
+    from backlot.claude_live import install_claude
+
+    install_claude(app)
 
     # ---- API ----------------------------------------------------------
 

@@ -1,35 +1,6 @@
 import { el, fmtAgo, getJSON, subscribe, thumbURL } from "/ui/lib.js";
 
 const grid = document.getElementById("grid");
-const THEME_KEY = "backlot.theme";
-let currentTheme = localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark";
-
-function applyTheme(theme) {
-  currentTheme = theme === "light" ? "light" : "dark";
-  document.documentElement.dataset.theme = currentTheme;
-  document.querySelector('meta[name="theme-color"]').content = currentTheme === "light" ? "#efe4c9" : "#0a0a0c";
-  localStorage.setItem(THEME_KEY, currentTheme);
-}
-
-function renderThemeToggle() {
-  const next = currentTheme === "light" ? "dark" : "light";
-  return el("button", {
-    class: "theme-toggle",
-    type: "button",
-    title: `Switch to ${next} theme`,
-    "aria-label": `Switch to ${next} theme`,
-    "aria-pressed": currentTheme === "light" ? "true" : "false",
-    onclick: () => {
-      applyTheme(next);
-      const replacement = renderThemeToggle();
-      document.querySelector(".theme-toggle").replaceWith(replacement);
-    },
-  }, el("span", { class: "theme-toggle-icon", "aria-hidden": "true" }, currentTheme === "light" ? "☾" : "☀"));
-}
-
-applyTheme(currentTheme);
-document.getElementById("liveBadge").before(renderThemeToggle());
-
 function miniRail(states) {
   const rail = el("div", { class: "mini-rail" });
   for (const s of states) {
@@ -52,44 +23,67 @@ function card(p) {
       alt: "",
     }));
   } else {
-    poster.append(el("span", { class: "lp-txt" }, "NO MEDIA YET"));
+    poster.append(el("span", { class: "lp-txt" }, "Nothing on film yet"));
   }
-  if (p.live && p.active_stage) {
-    poster.append(el("span", { class: "lp-live" },
-      el("span", { class: "dot" }),
-      p.awaiting_human ? "◈ AWAITING YOU" : `LIVE · ${p.active_stage.toUpperCase()}`));
-  } else if (p.awaiting_human) {
-    poster.append(el("span", { class: "lp-live" }, "◈ AWAITING YOU"));
+  if (p.awaiting_human) {
+    poster.append(el("span", { class: "lp-live needs" }, "Needs you"));
+  } else if (p.live && p.active_stage) {
+    poster.append(el("span", { class: "lp-live" }, `Working · ${String(p.active_stage).replaceAll("_", " ")}`));
   }
 
   const meta = el("div", { class: "lb-meta" },
-    el("span", { class: "chip" }, p.pipeline_type || "unknown"),
-    p.scene_count ? el("span", { class: "chip" }, `${p.scene_count} scenes`) : null,
-    p.render_count ? el("span", { class: "chip" }, `${p.render_count} renders`) : null,
+    p.scene_count ? el("span", {}, `${p.scene_count} scenes`) : null,
+    p.render_count ? el("span", {}, `${p.render_count} cut${p.render_count === 1 ? "" : "s"}`) : null,
     el("span", { class: "when" }, fmtAgo(p.last_activity)),
   );
 
   const staticSuffix = new URLSearchParams(location.search).has("static") ? "?static=1" : "";
-  return el("a", { class: `lib-card${p.live ? " live-card" : ""}`, href: `/p/${p.project_id}${staticSuffix}`, style: "text-decoration:none;color:inherit" },
+  return el("a", { class: `lib-card${p.live ? " live-card" : ""}`, href: `/p/${p.project_id}${staticSuffix}` },
     poster,
     el("div", { class: "lib-body" },
-      el("h3", {}, (p.title || p.project_id).toUpperCase()),
+      el("h3", {}, p.title || p.project_id),
       meta,
       p.stage_states.length ? miniRail(p.stage_states) : null,
     ),
   );
 }
 
+function leadState(p) {
+  const states = p.stage_states || [];
+  const done = states.filter((s) => s.status === "completed").length;
+  const label = p.awaiting_human ? "Needs you" : p.live ? "Working" : "Up next";
+  const cls = p.awaiting_human ? "waiting" : p.live ? "running" : "";
+  const active = p.active_stage ? String(p.active_stage).replaceAll("_", " ") : null;
+  const line = p.awaiting_human
+    ? "Something is waiting for your approval."
+    : active ? `Working on ${active}.` : "Pick up where you left off.";
+  return el("div", { class: "lead-state" },
+    el("span", { class: `tape ${cls}`.trim() }, label),
+    el("p", {}, line),
+    states.length ? el("p", {}, `${done} of ${states.length} stages done`) : null);
+}
+
 async function render() {
   const projects = await getJSON("/api/projects");
-  document.getElementById("count").textContent = `${projects.length} projects`;
+  document.getElementById("count").textContent = `${projects.length} film${projects.length === 1 ? "" : "s"}`;
   const liveCount = projects.filter((p) => p.live).length;
   const badge = document.getElementById("liveBadge");
-  badge.classList.toggle("idle", liveCount === 0);
-  document.getElementById("liveText").textContent = liveCount ? `${liveCount} LIVE` : "IDLE";
+  badge.classList.toggle("running", liveCount > 0);
+  document.getElementById("liveText").textContent = liveCount ? `${liveCount} working` : "Idle";
   grid.innerHTML = "";
   document.getElementById("empty").hidden = Boolean(projects.length);
-  for (const p of projects) grid.append(card(p));
+  // One film leads: the one that needs you, else the most recently touched.
+  const lead = projects.find((p) => p.awaiting_human)
+    || [...projects].sort((a, b) => (b.last_activity || 0) - (a.last_activity || 0))[0];
+  const ordered = lead ? [lead, ...projects.filter((p) => p !== lead)] : projects;
+  ordered.forEach((p) => {
+    const node = card(p);
+    if (p === lead && projects.length > 1) {
+      node.classList.add("featured");
+      node.querySelector(".lib-body h3").after(leadState(p));
+    }
+    grid.append(node);
+  });
 }
 
 render().catch(console.error);

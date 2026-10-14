@@ -542,6 +542,108 @@ def _scan_media(project_dir: Path) -> dict[str, list[dict]]:
     return {"renders": renders, "snapshots": snapshots, "music": music}
 
 
+# ---------------------------------------------------------------------------
+# Supervised-production shots (production/shots/<id>/history.jsonl)
+# ---------------------------------------------------------------------------
+
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+_SHOT_LABEL_MAX = 120
+
+
+def _shot_label(direction: Any) -> str:
+    """The brief's first sentence, in Ben's words, short enough for a clip."""
+    text = " ".join(str(direction or "").split())
+    first = _SENTENCE_END.split(text, maxsplit=1)[0] if text else ""
+    if len(first) > _SHOT_LABEL_MAX:
+        first = first[:_SHOT_LABEL_MAX].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return first
+
+
+def _shot_take_path(project_dir: Path, raw: Any) -> Optional[str]:
+    """Project-relative path of a take file, only if it stays inside the film."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        root = project_dir.resolve()
+        target = (root / raw).resolve()
+        target.relative_to(root)
+        if not target.is_file():
+            return None
+        return target.relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def _shot_entry(project_dir: Path, shot_id: str) -> Optional[dict]:
+    from lib import supervised_production as sp
+
+    rows = sp.history(project_dir, shot_id)
+    brief = sp.read_brief(project_dir, shot_id)
+    if brief is None:
+        return None
+    revision = brief.get("revision_id")
+    selected_id = None
+    takes: list[dict] = []
+    for row in rows:
+        kind = row.get("kind")
+        if kind == "take":
+            path = _shot_take_path(project_dir, row.get("path"))
+            cost = row.get("cost_usd")
+            takes.append({
+                "take_id": row.get("take_id"),
+                "path": path,
+                "playable": path is not None,
+                "made_at": row.get("at"),
+                "cost_usd": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+                "duration_seconds": row.get("duration_seconds"),
+                "from_earlier_brief": bool(revision and row.get("brief_revision_id") != revision),
+            })
+        elif kind == "selection":
+            selected_id = row.get("take_id")
+    for take in takes:
+        take["selected"] = selected_id is not None and take["take_id"] == selected_id
+    first_brief = next((r for r in rows if r.get("kind") == "brief"), {})
+    if brief.get("stopped"):
+        shot_state = "stopped"
+    elif any(t["selected"] for t in takes):
+        shot_state = "selected"
+    elif takes:
+        shot_state = "has_takes"
+    else:
+        shot_state = "prepared"
+    return {
+        "id": shot_id,
+        "label": _shot_label(brief.get("direction")),
+        "direction": brief.get("direction"),
+        "state": shot_state,
+        "prepared_at": first_brief.get("at"),
+        "spend_allowance_usd": brief.get("spend_allowance_usd"),
+        "max_video_takes": brief.get("max_video_takes"),
+        "spent_usd": round(sum(t["cost_usd"] for t in takes if t["cost_usd"] is not None), 2),
+        "takes": takes,
+    }
+
+
+def _collect_shots(project_dir: Path) -> list[dict]:
+    """Every prepared supervised shot in the film. A shot whose record can't be
+    read (half-written, malformed) is left out rather than breaking the board."""
+    shots_dir = project_dir / "production" / "shots"
+    try:
+        candidates = sorted(p.name for p in shots_dir.iterdir() if p.is_dir() and not p.is_symlink())
+    except OSError:
+        return []
+    shots = []
+    for shot_id in candidates:
+        try:
+            entry = _shot_entry(project_dir, shot_id)
+        except Exception:
+            continue
+        if entry is not None:
+            shots.append(entry)
+    shots.sort(key=lambda s: (str(s.get("prepared_at") or ""), s["id"]))
+    return shots
+
+
 def _find_poster(project_dir: Path, state: dict) -> Optional[str]:
     """Best poster for the library card (image path, or a video path —
     the /thumb endpoint extracts a frame from videos)."""
@@ -550,6 +652,11 @@ def _find_poster(project_dir: Path, state: dict) -> Optional[str]:
         visual = card.get("visual")
         if visual and visual.get("exists") and visual.get("type") == "image":
             return visual["path"]
+    # Authored films: the first published canon headshot.
+    gates = state.get("gates") or {}
+    for entry in gates.get("canon") or []:
+        if entry.get("role") == "hero" and entry.get("object_rel"):
+            return entry["object_rel"]
     for snap in (state.get("media") or {}).get("snapshots", []):
         return snap["path"]
     # Common image homes, in order of how representative they usually are.
@@ -724,6 +831,25 @@ def _gate_public_field_error(request: dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _cast_keys(root: Path) -> Optional[list[str]]:
+    """``kind:id`` for everyone and everything in the approved trailer cast;
+    None when it can't be read (the board then lists the whole canon snapshot)."""
+    try:
+        from lib.cast_change import effective_cast
+        cast = effective_cast(root, project_id=root.name)
+    except Exception:  # noqa: BLE001
+        return None
+    return sorted([f"character:{c}" for c in cast["character_ids"]] + [f"location:{l}" for l in cast["location_ids"]])
+
+
+def _cast_location_ids(root: Path) -> set[str]:
+    try:
+        from lib.cast_change import effective_cast
+        return set(effective_cast(root, project_id=root.name)["location_ids"])
+    except Exception:  # noqa: BLE001  (an unreadable cast just means imports show under characters, as before)
+        return set()
+
+
 def _gate_rows(root: Path, slug: str, *, limit: Optional[int] = _MAX_GATE_ROWS) -> dict[str, Any]:
     """Read bounded request summaries; malformed files are simply not rows."""
     tree_error = _gate_tree_error(root)
@@ -751,6 +877,7 @@ def _gate_rows(root: Path, slug: str, *, limit: Optional[int] = _MAX_GATE_ROWS) 
             found.setdefault(request_id, []).append((state_name, path, request))
 
     rows: list[dict[str, Any]] = []
+    loc_ids: Optional[set[str]] = None
     for request_id, copies in sorted(found.items()):
         state_name, path, request = copies[0]
         row: dict[str, Any] = {
@@ -763,6 +890,13 @@ def _gate_rows(root: Path, slug: str, *, limit: Optional[int] = _MAX_GATE_ROWS) 
             "state": "conflict" if len(copies) > 1 else state_name,
             "mtime": _lstat(path).st_mtime if _lstat(path) else None,
         }
+        if request.get("kind") == "reference_import":
+            bound = (request.get("approval_record") or {}).get("entity_id") if isinstance(request.get("approval_record"), dict) else None
+            if isinstance(bound, str) and re.fullmatch(r"[a-z0-9-]{1,128}", bound):
+                row["bound_entity"] = bound
+                if loc_ids is None:
+                    loc_ids = _cast_location_ids(root)
+                row["bound_kind"] = "location" if bound in loc_ids else "character"
         if request.get("approval_receipt_id") is not None:
             row["approval_receipt_id"] = request.get("approval_receipt_id")
         if request.get("declined_note") is not None:
@@ -789,6 +923,7 @@ def _canon_summary(root: Path) -> list[dict[str, str]]:
     except Exception:
         return []
     allowed = {"hero", *CHARACTER_ROLES}
+    labels = _location_labels(root)
     rows: list[dict[str, str]] = []
     for link_rel, object_rel in plan:
         parts = Path(link_rel).parts
@@ -797,7 +932,25 @@ def _canon_summary(root: Path) -> list[dict[str, str]]:
         entity, role = parts[-2], Path(parts[-1]).stem
         if role in allowed:
             rows.append({"entity": entity, "role": role, "object_rel": object_rel})
+        elif role == "establishing" or re.fullmatch(r"angle_\d+", role):
+            # G10: an approved place's pictures, labelled the way Ben labelled them
+            row = {"entity": entity, "kind": "location", "role": role, "object_rel": object_rel}
+            if labels.get((entity, role)):
+                row["label"] = labels[(entity, role)]
+            rows.append(row)
     return rows
+
+
+def _location_labels(root: Path) -> dict[tuple[str, str], str]:
+    """``(location id, angle_N) -> Ben's label`` for approved location entries."""
+    out: dict[tuple[str, str], str] = {}
+    for loc in _bible(root).get("locations") or []:
+        if not isinstance(loc, dict) or loc.get("status") != "approved":
+            continue
+        for i, ref in enumerate(loc.get("angles") or [], start=1):
+            if isinstance(ref, dict) and isinstance(ref.get("role"), str):
+                out[(str(loc.get("id")), f"angle_{i}")] = ref["role"]
+    return out
 
 
 def _looks_summary(root: Path) -> list[dict[str, Any]]:
@@ -815,6 +968,7 @@ def _looks_summary(root: Path) -> list[dict[str, Any]]:
                 "entity_kind": entry.get("entity_kind"),
                 "look_hash": entry.get("look_hash"),
                 "source_ticket_ref": entry.get("source_ticket_ref"),
+                **({"source_ref": entry["source_ref"]} if entry.get("source_ref") else {}),
             })
     return out
 
@@ -881,6 +1035,24 @@ def _lease_summary(root: Path) -> dict[str, Any]:
     return {"held": held, "pid": record.get("pid"), "started": record.get("acquired_at")}
 
 
+def _canon_changes(root: Path) -> Any:
+    """Today's Story-drive canon against the approved snapshot (read-only).
+    None for a film with no Story-drive folder."""
+    from lib.canon_fresh import CanonReadError, read_canon_changes
+
+    try:
+        changes = read_canon_changes(root)
+    except CanonReadError as exc:
+        return {"error": str(exc)}
+    except Exception:
+        return {"error": "Front Lot couldn't read today's canon."}
+    if changes is None:
+        return None
+    out = changes.to_dict()
+    out["scoped_out"] = sorted(out["scoped_out"])
+    return out
+
+
 def _gates_state(project_dir: Path, checkpoint_cost: Any) -> Any:
     """The optional governed-project extension to BoardState."""
     if not (project_dir / "project.yaml").is_file():
@@ -897,6 +1069,8 @@ def _gates_state(project_dir: Path, checkpoint_cost: Any) -> Any:
         return gates
     gates.update({
         "canon": _canon_summary(root),
+        "cast": _cast_keys(root),
+        "canon_changes": _canon_changes(root),
         "looks": _looks_summary(root),
         "cost": _cost_summary(root, checkpoint_cost),
         "run_lease": _lease_summary(root),
@@ -1246,6 +1420,8 @@ def _render_look_lock(root: Path, req: dict[str, Any]) -> dict[str, Any]:
             return {"packet_error": True, "error": "active look unavailable"}
         return {"action": "retire", "source_ticket_ref": current.get("source_ticket_ref"),
                 "look_hash": current.get("look_hash"), "supersedes": current.get("look_hash")}
+    if req.get("source_promotion_id") is not None:
+        return _render_writeros_look_lock(root, req, entity_kind, entity_id, current)
     ticket = req.get("source_ticket_path")
     if not isinstance(ticket, str) or not ticket:
         return {"packet_error": True, "error": "look ticket unavailable"}
@@ -1274,7 +1450,25 @@ def _render_look_lock(root: Path, req: dict[str, Any]) -> dict[str, Any]:
         return {"packet_error": True, "error": "look ticket names another entity"}
     old = current
     return {"source_ticket_ref": look.source_ticket_ref, "look_hash": look.look_hash,
-            "supersedes": (old or {}).get("look_hash")}
+            "supersedes": (old or {}).get("look_hash"), "look_spec": look.payload}
+
+
+def _render_writeros_look_lock(root: Path, req: dict[str, Any], entity_kind: str, entity_id: str,
+                               current: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Authoritative source: the WriterOS package's current look export,
+    verified per record against its memory (text only)."""
+    try:
+        from lib.look_ingest import LookIngestError, writeros_look_for
+
+        look = writeros_look_for(root, str(req.get("source_promotion_id")))
+    except LookIngestError:
+        return {"packet_error": True, "error": "WriterOS look unavailable; re-export from WriterOS"}
+    except Exception:
+        return {"packet_error": True, "error": "WriterOS look unavailable"}
+    if (look.entity_kind, look.entity_id) != (entity_kind, entity_id):
+        return {"packet_error": True, "error": "WriterOS look names another entity"}
+    return {"source_ref": look.source_ref, "look_hash": look.look_hash,
+            "supersedes": (current or {}).get("look_hash"), "look_spec": look.payload}
 
 
 def _render_config(root: Path, req: dict[str, Any]) -> dict[str, Any]:
@@ -1311,6 +1505,67 @@ def _render_pipeline_migration(root: Path, req: dict[str, Any]) -> dict[str, Any
     return result
 
 
+def _render_cast_change(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative sources, read raw (no ledger replay): the proposal
+    checkpoint bytes and cast, the superseded cast_change row in
+    ``approvals.jsonl``, and the request's take-out/put-in lists. Shown in
+    the names Ben knows; the signer rebuilds and verifies everything."""
+    from lib.cast_change import (
+        CAST_KEYS,
+        apply_change,
+        base_cast,
+        canon_entities,
+        cast_from_record,
+        describe_cast,
+        name_of,
+    )
+
+    summary = req.get("summary")
+    change = req.get("cast_change") if isinstance(req.get("cast_change"), dict) else {}
+    remove = [i for i in change.get("remove") or [] if isinstance(i, str)]
+    add = [i for i in change.get("add") or [] if isinstance(i, str)]
+    proposal_path = root / "checkpoint_proposal.json"
+    info = _lstat(proposal_path)
+    if info is None or not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_GATE_DETAIL_JSON_BYTES:
+        return {"packet_error": True, "error": "approved proposal unavailable", "summary": summary}
+    try:
+        raw = proposal_path.read_bytes()
+        packet = ((json.loads(raw.decode("utf-8")) or {}).get("artifacts") or {}).get("proposal_packet") or {}
+    except (OSError, ValueError, AttributeError):
+        return {"packet_error": True, "error": "approved proposal unreadable", "summary": summary}
+    sha = hashlib.sha256(raw).hexdigest()
+    before = base_cast(packet)
+    prior_id = (req.get("envelope") or {}).get("supersedes_receipt_id")
+    lookup_error = None
+    if isinstance(prior_id, str):
+        rows, lookup_error = _raw_jsonl_targets(root / "approvals.jsonl", {prior_id})
+        prior = rows.get(prior_id) or {}
+        before = cast_from_record(prior.get("record") if isinstance(prior, dict) else None, sha) or before
+    names = canon_entities(root)
+    in_cast = {i: kind for kind, key in CAST_KEYS for i in before[key]}
+    kinds = {i: names[i][0] for i in add if i in names}
+    hint = req.get("approval_record") if isinstance(req.get("approval_record"), dict) else {}
+    kinds.update({e.get("id"): e.get("kind") for e in hint.get("added") or [] if isinstance(e, dict) and e.get("id") not in kinds})
+    removed = [{"kind": in_cast[i], "id": i} for i in remove if i in in_cast]
+    added = [{"kind": kinds[i], "id": i} for i in add if kinds.get(i) in ("character", "location")]
+    after = apply_change(before, removed, added)
+    result: dict[str, Any] = {
+        "summary": summary,
+        "cast_now": describe_cast(before, names),
+        "cast_after_signing": describe_cast(after, names),
+        "taking_out": ", ".join(name_of(i, names) for i in remove) or "nothing",
+        "putting_in": ", ".join(name_of(i, names) for i in add) or "nothing",
+    }
+    if lookup_error:
+        result.update({"packet_error": True, "error": lookup_error})
+    elif len(removed) != len(remove) or len(added) != len(add):
+        result.update({"packet_error": True, "error": "the approved trailer cast changed since this request was made"})
+    elif hint and (hint.get("base_proposal_sha256") != sha
+                   or any(hint.get(k) != after[k] for _, k in CAST_KEYS)):
+        result.update({"packet_error": True, "error": "the approved proposal or cast changed since this request was made"})
+    return result
+
+
 def _render_character(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     """Authoritative source: visual_bible character entry hero + sheet refs, as gate constructor uses."""
     entry = next((x for x in _bible(root).get("characters") or [] if isinstance(x, dict) and x.get("id") == req.get("entity_id")), None)
@@ -1321,9 +1576,21 @@ def _render_character(root: Path, req: dict[str, Any]) -> dict[str, Any]:
 
 
 def _render_location(root: Path, req: dict[str, Any]) -> dict[str, Any]:
-    """Authoritative source: visual_bible locations[].establishing and angles refs."""
+    """Authoritative source: visual_bible locations[].establishing and angles refs;
+    for a one-signature place set (G10), the staged pictures the signer checks."""
+    staged = (req.get("envelope") or {}).get("staged_pictures") if isinstance(req.get("envelope"), dict) else None
+    if isinstance(staged, list):
+        visuals = []
+        for p in staged:
+            h = p.get("pixel_hash") if isinstance(p, dict) else None
+            path = root / ".staging" / f"reference-{h}.png"
+            if not path.exists():  # signed and finished: the picture now lives in canon
+                path = root / "canon" / "visual" / "objects" / f"{h}.png"
+            visuals.append(_file_packet(root, h, path=path, label=str((p or {}).get("label") or "picture")))
+        return {"visuals": visuals, "packet_error": any(v.get("error") for v in visuals) or not visuals}
     entry = next((x for x in _bible(root).get("locations") or [] if isinstance(x, dict) and x.get("id") == req.get("entity_id")), None)
-    refs = [] if not isinstance(entry, dict) else [("establishing", entry.get("establishing"))] + [(f"angle_{i}", x) for i, x in enumerate(entry.get("angles") or [])]
+    refs = [] if not isinstance(entry, dict) else [("establishing", entry.get("establishing"))] + [
+        ((x.get("role") if isinstance(x, dict) and x.get("role") not in (None, "", "angle") else f"angle_{i}"), x) for i, x in enumerate(entry.get("angles") or [])]
     result = _visuals_from_refs(root, refs)
     result["packet_error"] |= not isinstance(entry, dict)
     return result
@@ -1384,7 +1651,9 @@ class _GateRendererMap(dict[str, Any]):
     ``reference_import``: ``reference_import.STAGING_DIR/reference-<pixel-hash>.png``.
     ``look_lock``: confined ``wayfinder/resolved`` ticket named by request.
     ``config``: ``project.yaml``; ``pipeline_migration``: request plus raw
-    ``approvals.jsonl`` superseded row; grandfather/artifact review: text-only.
+    ``approvals.jsonl`` superseded row; ``cast_change``: ``checkpoint_proposal.json``
+    bytes + cast, the raw superseded cast_change row, the request's lists;
+    grandfather/artifact review: text-only.
     """
 
 
@@ -1404,6 +1673,7 @@ GATE_RENDERERS = _GateRendererMap({
     "storyboard_batch": _render_storyboard,
     "headshot_grandfather": _render_text_only,
     "artifact_review": _render_text_only,
+    "cast_change": _render_cast_change,
 })
 assert set(GATE_RENDERERS) == set(APPROVAL_KINDS)
 
@@ -1526,6 +1796,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         "live": bool(last_activity and (now - last_activity) < LIVE_WINDOW_SECONDS),
     }
     state["gates"] = _gates_state(project_dir, cost)
+    state["shots"] = _collect_shots(project_dir)
     state["poster"] = _find_poster(project_dir, state)
     return state
 

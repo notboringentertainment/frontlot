@@ -360,6 +360,7 @@ def gate_world(tmp_path: Path, monkeypatch) -> dict[str, object]:
         "storyboard_batch": "storyboard-p-1",
         "headshot_grandfather": "grandfather-char-01-deadbeef-1",
         "artifact_review": "artifact-p-1",
+        "cast_change": "cast-change-1",
     }
     headshot_digest = hashlib.sha256((project / "checkpoint_headshots.json").read_bytes()).hexdigest()
     sheet_digest = hashlib.sha256((project / "checkpoint_visual_bible.json").read_bytes()).hexdigest()
@@ -416,6 +417,10 @@ def gate_world(tmp_path: Path, monkeypatch) -> dict[str, object]:
              preview_paths=["drafts/review-a.png", "/private/review-b.png"],
              envelope={"secret": "excluded"}, approval_record={"secret": "excluded"},
              artifact={"artifact_type": "script"})
+    _request(project, "pending", rids["cast_change"], "cast_change", stage="proposal", scope="cast:trailer",
+             entity_id="trailer_cast", summary="Take Loc A out of the approved trailer cast.", artifact=None,
+             cast_change={"remove": [LOC_ID], "add": []}, envelope={"supersedes_receipt_id": None},
+             source_checkpoint_digest=None, preview_paths=[])
     (project / ".gate-requests" / "nonregular.json").mkdir()
 
     return {
@@ -493,7 +498,7 @@ def test_gate_summary_rows_are_exact_unique_and_pending_only_actionable(gate_wor
     gates = state["gates"]
 
     assert set(gates) == {
-        "requests", "truncated", "total_requests", "canon", "looks", "cost", "run_lease",
+        "requests", "truncated", "total_requests", "canon", "cast", "canon_changes", "looks", "cost", "run_lease",
     }
     assert gates["truncated"] is False
     assert gates["total_requests"] == len(gates["requests"])
@@ -531,6 +536,8 @@ def test_gate_summary_rows_are_exact_unique_and_pending_only_actionable(gate_wor
 
     expected = [
         pending(rids["artifact_review"], "artifact_review", "visual_bible", f"character:{CHAR}", CHAR),
+        pending(rids["cast_change"], "cast_change", "proposal", "cast:trailer", "trailer_cast",
+                "Take Loc A out of the approved trailer cast."),
         pending(rids["config"], "config", "config", "project:config", "project-config",
                 "Review project configuration."),
         pending(rids["headshot_grandfather"], "headshot_grandfather", "visual_bible",
@@ -548,9 +555,11 @@ def test_gate_summary_rows_are_exact_unique_and_pending_only_actionable(gate_wor
             "state": "declined", "mtime": FIXED_MTIME, "declined_note": "Invented decline note.",
         },
         pending(rids["qc_override"], "qc_override", "visual_bible", f"character:{CHAR}", CHAR),
-        pending(rids["reference_import"], "reference_import", "look_lock",
-                f"reference:{gate_world['imported']['asset_id']}",
-                f"reference-{gate_world['imported']['asset_id'][:12]}"),
+        {**pending(rids["reference_import"], "reference_import", "look_lock",
+                   f"reference:{gate_world['imported']['asset_id']}",
+                   f"reference-{gate_world['imported']['asset_id'][:12]}"),
+         # G10: an import names the cast entity it is for, so the board files it under that character or place
+         "bound_entity": CHAR, "bound_kind": "character"},
         {
             "request_id": rids["done"], "kind": "sheet", "stage": "visual_bible",
             "scope": f"character:{CHAR}", "entity_id": CHAR, "summary": "Archived sheet request.",
@@ -797,7 +806,7 @@ def test_legacy_and_governed_non_authored_cost_behavior(tmp_path):
 
 def test_renderer_map_and_all_pending_packet_envelopes(gate_world):
     assert set(GATE_RENDERERS) == set(APPROVAL_KINDS)
-    assert len(GATE_RENDERERS) == 13
+    assert len(GATE_RENDERERS) == 14
     for kind in APPROVAL_KINDS:
         detail = load_gate_detail(gate_world["project"], gate_world["rids"][kind])
         assert detail["state"] == "pending"
@@ -1061,6 +1070,8 @@ def test_lazy_gate_detail_bounds_and_malformed_shapes_fail_closed(gate_world, mo
 def test_look_lock_uses_confined_wayfinder_ticket_and_exact_escape_text(gate_world, tmp_path):
     project = gate_world["project"]
     good = load_gate_detail(project, gate_world["rids"]["look_lock"])["packet"]
+    spec = good.pop("look_spec")  # the look's own words: the board shows them in place of pictures
+    assert isinstance(spec, dict) and spec.get("prompt_safe_description")
     assert good == {"source_ticket_ref": {"id": "wf-0badc0de"}, "look_hash": TICKET_LOOK_HASH,
                     "supersedes": "c" * 64}
 
@@ -1236,3 +1247,20 @@ def test_gate_detail_route_is_get_only_validated_hardened_and_project_confined(g
     with TestClient(server_mod.create_app()) as client:
         assert_hardened(client.get(f"/api/project/{PROJECT}/state"), 404)
         assert_hardened(client.get(f"/api/project/{PROJECT}/gate/unknown-id"), 404)
+
+
+def test_board_carries_canon_changes_without_failing(gate_world):
+    # Fresh canon read (2026-10-10): a film without a Story-drive folder has no canon_changes;
+    # the board never fails because today's canon can't be read.
+    gates = load_board_state(gate_world["project"])["gates"]
+    assert gates["canon_changes"] is None or isinstance(gates["canon_changes"], dict)
+
+
+def test_board_cast_lists_the_trailer_cast_only(gate_world):
+    """The canon snapshot keeps people Ben has since cut; the board's cast list is the trailer cast."""
+    from backlot.state import _cast_keys
+    from lib.cast_change import effective_cast
+
+    cast = effective_cast(gate_world["project"], project_id=gate_world["project"].name)
+    keys = _cast_keys(gate_world["project"])
+    assert keys == sorted([f"character:{c}" for c in cast["character_ids"]] + [f"location:{l}" for l in cast["location_ids"]])

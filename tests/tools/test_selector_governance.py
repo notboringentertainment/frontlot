@@ -86,6 +86,36 @@ def test_legacy_call_without_project_is_unchanged(video, image):
     assert ImageSelector().execute({"prompt": "fog"}).success and loose_i.calls and not bound_i.calls
 
 
+@pytest.mark.parametrize('selector_cls, fixture, provider', [
+    (VideoSelector, 'video', 'kling_reference_video'),
+    (ImageSelector, 'image', 'seedream_image'),
+])
+@pytest.mark.parametrize('allowance', [.05, .20])
+def test_supervised_selector_checks_chosen_provider_estimate(
+        env, verifiers, request, selector_cls, fixture, provider, allowance):
+    from lib.supervised_production import prepare
+    loose, bound = request.getfixturevalue(fixture)
+    bound.name = provider
+    # The unbound provider ranks higher and is cheaper: its estimate must not
+    # authorize the governed provider, which costs 10 cents.
+    loose.estimate_cost = lambda inputs: 0.0
+    (env / 'canon.md').write_text('Existing story.')
+    prepare(env, {'shot_id': 'supervised', 'direction': 'Turn toward the camera.',
+        'source_paths': ['canon.md'], 'spend_allowance_usd': allowance,
+        'max_video_takes': 1, 'allowed_tools': [provider],
+        'look_refs': [CHAR_REF], 'reference_manifest': []}, user_note='Try this shot.')
+    result = selector_cls().execute({'project_dir': str(env), 'shot_id': 'supervised',
+        'asset_class': 'supervised_shot', 'prompt': 'Turn toward the camera.',
+        'look_refs': [CHAR_REF], 'reference_manifest': []})
+    assert not loose.calls
+    if allowance < .1:
+        assert not result.success and 'allowance' in result.error
+        assert not bound.calls
+    else:
+        assert result.success, result.error
+        assert len(bound.calls) == 1
+
+
 def _governed_inputs(verifiers, selector_cls, **extra):
     """Video calls carry look_refs; image calls are builder renderings (round 2 #6)."""
     if selector_cls is VideoSelector:
