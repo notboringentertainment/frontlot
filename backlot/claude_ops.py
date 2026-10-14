@@ -476,6 +476,16 @@ def _shot(sub: str, paid: bool = False):
             if sub in ("request", "generate"):
                 s, _, digest = _snapshot(ctx, "settings", p.get("settings"))
                 argv.append(str(s)); inputs, snap = {s: digest}, {"settings": s}
+            if sub == "attach":
+                # a take made outside Front Lot (e.g. on Higgsfield): its cost is reported, never a receipt
+                s, _, digest = _snapshot(ctx, "take", p.get("take"))
+                argv += [str(s), "--note", _note(p)]; inputs, snap = {s: digest}, {"take": s}
+                job = p.get("job_id")
+                if job is not None:
+                    if not isinstance(job, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", job):
+                        raise OpError("job_id must be the provider's job id")
+                    argv += ["--job-id", job]
+                summary = f"Attach an outside take to shot {shot}"
             if sub == "generate":
                 tool = p.get("tool")
                 if tool not in SHOT_TOOLS:
@@ -512,6 +522,7 @@ OPERATIONS: dict[str, Operation] = {
     "shot_prepare": Operation(False, frozenset({"brief", "note"}), _shot("prepare")),
     "shot_request": Operation(False, frozenset({"shot_id", "settings"}), _shot("request")),
     "shot_generate": Operation(True, frozenset({"shot_id", "settings", "tool"}), _shot("generate", paid=True)),
+    "shot_attach": Operation(False, frozenset({"shot_id", "take", "note", "job_id"}), _shot("attach")),
     "shot_inspect": Operation(False, frozenset({"shot_id"}), _shot("inspect")),
     "shot_stop": Operation(False, frozenset({"shot_id", "note"}), _shot("stop")),
     "shot_select": Operation(False, frozenset({"shot_id", "take_id", "note"}), _shot("select")),
