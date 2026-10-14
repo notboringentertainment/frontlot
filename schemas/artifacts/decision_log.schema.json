@@ -40,7 +40,10 @@
               "voice_selection",
               "capability_extension",
               "playbook_override",
-              "visual_accuracy_check"
+              "visual_accuracy_check",
+              "canon_ruling",
+              "approval_policy",
+              "revision"
             ],
             "description": "What class of decision this is"
           },
@@ -93,9 +96,23 @@
             "minimum": 0,
             "maximum": 1,
             "description": "Agent's confidence in this decision (0 = uncertain, 1 = certain)"
+          },
+          "question_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "For category=canon_ruling: the canon_packet open_questions[].id this ruling resolves. The checkpoint writer uses this to release blocking questions — only when user_approved is true and selected matches an option."
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": { "category": { "const": "canon_ruling" } },
+              "required": ["category"]
+            },
+            "then": { "required": ["question_id", "user_approved"] }
+          }
+        ]
       }
     }
   },

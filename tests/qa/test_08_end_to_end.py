@@ -233,9 +233,27 @@ try:
 except Exception as e:
     check("Proposal packet validates against schema", False, str(e))
 
+proposal_decision_log = {
+    "version": "1.0",
+    "project_id": PROJECT_ID,
+    "decisions": [
+        {
+            "decision_id": "d-001",
+            "stage": "proposal",
+            "category": "concept_selection",
+            "subject": "Concept for the E2E run",
+            "options_considered": [
+                {"option_id": "c1", "label": "Concept 1", "score": 0.9, "reason": "Strongest hook"},
+            ],
+            "selected": "c1",
+            "reason": "Best fit for the brief",
+        }
+    ],
+}
+
 cp_path = write_checkpoint(
     PIPELINE_DIR, PROJECT_ID, "proposal", "completed", human_approved=True,
-    artifacts={"proposal_packet": proposal_packet},
+    artifacts={"proposal_packet": proposal_packet, "decision_log": proposal_decision_log},
     pipeline_type="animated-explainer",
     style_playbook="clean-professional",
 )
@@ -572,9 +590,29 @@ try:
 except Exception as e:
     check("Render report validates against schema", False, str(e))
 
+final_review = {
+    "version": "1.0",
+    "output_path": render_report["outputs"][0]["path"],
+    "status": "pass",
+    "checks": {
+        "technical_probe": {"valid_container": True},
+        "visual_spotcheck": {"frames_sampled": 4},
+        "audio_spotcheck": {"narration_present": True},
+        "promise_preservation": {"delivery_promise_honored": True},
+        "subtitle_check": {"subtitles_expected": False},
+    },
+    "recommended_action": "present_to_user",
+}
+
+try:
+    validate_artifact("final_review", final_review)
+    check("Final review validates against schema", True)
+except Exception as e:
+    check("Final review validates against schema", False, str(e))
+
 write_checkpoint(
     PIPELINE_DIR, PROJECT_ID, "compose", "completed",
-    artifacts={"render_report": render_report},
+    artifacts={"render_report": render_report, "final_review": final_review},
     pipeline_type="animated-explainer",
     cost_snapshot=tracker.cost_snapshot(),
 )
