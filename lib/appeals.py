@@ -275,7 +275,7 @@ def _step_line(text: str) -> str:
     return f"Front Lot uses the WriterOS version from today. Next, {next_step}."
 
 
-def apply_appeal(wayfinder_root: Path | str, ticket_name: str, today: str) -> tuple[Path, str]:
+def apply_appeal(wayfinder_root: Path | str, ticket_name: str, today: str, step: str | None = None) -> tuple[Path, str]:
     """Close an open appeal as applied: set ``resolved:`` to ``today``, replace
     the empty ``## Answer`` heading with ``## Answer — applied (in Front Lot)``
     plus a line naming the step that brings Front Lot's references up to date,
@@ -321,7 +321,7 @@ def apply_appeal(wayfinder_root: Path | str, ticket_name: str, today: str) -> tu
         raise ApplyAppealError(f"{ticket_name} already has text under '## Answer', so Front Lot left it alone.")
     nl = "\r\n" if lines[answer_at[0]].endswith("\r\n") else "\n"
     lines[resolved_at[0]] = f"resolved: {today}{nl}"
-    step_line = _step_line(original)
+    step_line = step or _step_line(original)
     lines[answer_at[0]] = f"## Answer — applied (in Front Lot){nl}{step_line}{nl}"
     tmp = resolved_dir / f".{ticket_name}.tmp"
     linked = False
@@ -345,3 +345,38 @@ def apply_appeal(wayfinder_root: Path | str, ticket_name: str, today: str) -> tu
                 pass
         raise ApplyAppealError(f"Front Lot could not close {ticket_name}: {exc}") from exc
     return target, step_line
+
+
+SIGNED_LOOK_STEP = "Front Lot ratified this look, so the WriterOS change is applied."
+
+
+def close_signed_look_appeals(project_root: Path | str, today: str) -> list[str]:
+    """Close every open appeal whose WriterOS record is a look Ben has already
+    signed in Front Lot (a look_lock activation naming that record). Signing
+    the look is applying the change, so the appeal has nothing left to ask.
+    Returns the closed ticket names. A project with no Story-drive folder is
+    skipped; read and close failures raise as in :func:`read_appeals` and
+    :func:`apply_appeal`."""
+    import yaml
+
+    from lib.look_ingest import look_lock_receipts
+
+    project_root = Path(project_root)
+    data = yaml.safe_load((project_root / "project.yaml").read_bytes())
+    value = data.get(WAYFINDER_ROOT_FIELD) if isinstance(data, dict) else None
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return []
+    root = wayfinder_root_for(project_root)
+    signed = {
+        str(ref.get("record_id"))
+        for row in look_lock_receipts(project_root)
+        if row.get("action") == "activate"
+        for ref in (row.get("promotion_refs") or [])
+        if ref.get("record_id")
+    }
+    closed: list[str] = []
+    for appeal in read_appeals(root, include_resolved=False):
+        if appeal.writeros_record in signed:
+            apply_appeal(root, appeal.path.name, today, step=SIGNED_LOOK_STEP)
+            closed.append(appeal.path.name)
+    return closed

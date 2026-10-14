@@ -455,3 +455,42 @@ def test_apply_failure_midway_leaves_open_ticket_and_retry_works(tmp_path, monke
     monkeypatch.setattr("lib.appeals.os.link", real_link)
     new, _ = apply_appeal(root, "appeal-1.md", "2026-10-10")
     assert new.exists() and list((wf / "tickets").iterdir()) == []
+
+
+# --- closing appeals for looks Ben already signed ---
+
+from lib.appeals import SIGNED_LOOK_STEP, close_signed_look_appeals  # noqa: E402
+
+
+def _signed(monkeypatch, rows):
+    import lib.look_ingest
+
+    monkeypatch.setattr(lib.look_ingest, "look_lock_receipts", lambda project_dir, **_: rows)
+
+
+def test_signed_look_closes_its_appeal(tmp_path, monkeypatch):
+    film = film_with_appeals(tmp_path, {"appeal-0123456789ab.md": OPEN})
+    _signed(monkeypatch, [{"action": "activate", "promotion_refs": [{"record_id": "mem_0123456789abcdef"}]}])
+    assert close_signed_look_appeals(film, "2026-10-13") == ["appeal-0123456789ab.md"]
+    closed = tmp_path / "writing" / "wayfinder" / "resolved" / "appeal-0123456789ab.md"
+    text = closed.read_text(encoding="utf-8")
+    assert "resolved: 2026-10-13" in text and SIGNED_LOOK_STEP in text
+    assert not (tmp_path / "writing" / "wayfinder" / "tickets" / "appeal-0123456789ab.md").exists()
+
+
+def test_unsigned_or_other_record_leaves_the_appeal_open(tmp_path, monkeypatch):
+    film = film_with_appeals(tmp_path, {"appeal-0123456789ab.md": OPEN})
+    _signed(monkeypatch, [
+        {"action": "activate", "promotion_refs": [{"record_id": "mem_somethingelse"}]},
+        {"action": "activate", "source_ticket_ref": {"id": "t"}},
+    ])
+    assert close_signed_look_appeals(film, "2026-10-13") == []
+    assert (tmp_path / "writing" / "wayfinder" / "tickets" / "appeal-0123456789ab.md").exists()
+
+
+def test_no_story_drive_folder_closes_nothing(tmp_path, monkeypatch):
+    film = tmp_path / "film"
+    film.mkdir()
+    (film / "project.yaml").write_text("budget_usd_cap: 1.0\n")
+    _signed(monkeypatch, [{"action": "activate", "promotion_refs": [{"record_id": "mem_0123456789abcdef"}]}])
+    assert close_signed_look_appeals(film, "2026-10-13") == []

@@ -468,6 +468,15 @@ def _finish_look(root, project_id, entity_id, state, out, bound: str) -> dict[st
               f"look_packet now carries {len(packet['looks'])} look(s), complete={packet['complete']}\n"
               f"Next: cd {REPO} && .venv/bin/python scripts/headshot_run.py --project {project_id} --entity {entity_id}")
     try:
+        from datetime import date
+
+        from lib.appeals import close_signed_look_appeals
+
+        for name in close_signed_look_appeals(root, date.today().isoformat()):
+            _log(out, f"closed appeal {name}: this look is signed, so the WriterOS change is applied")
+    except Exception as exc:  # the look is ratified either way; a stuck appeal is only a leftover
+        _log(out, f"note: could not close the look's WriterOS appeal: {exc}")
+    try:
         _f, look, _k, _o = _locate(root, str(state.get("source") or "wayfinder"), kind, entity_id)
         if look.look_hash != current.look_hash:
             what = "a newer look was promoted in WriterOS" if state.get("source") == "writeros" else "the ticket changed"
