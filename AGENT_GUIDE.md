@@ -4,6 +4,15 @@ Start here. This is the complete operating guide and agent contract for OpenMont
 
 For architecture, key files, and conventions see [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md).
 
+## Status page and finishing work
+
+- **Start of every session:** read [`STATUS.md`](STATUS.md) first. It says what is live, open and next.
+- **When work lands** (merged, and deployed where the app deploys), whoever finished it, Claude or Codex, does all three before calling it done:
+  1. **Rewrite `STATUS.md` in place:** Live, Open, Next, and the date. Plain language for Ben, readable in two minutes, no commit hashes or internal code names. Start from the current file so newer status isn't overwritten by an older view.
+  2. **Archive the work's notes:** move its plan, handoff and review notes into `docs/archive/` (moved, not deleted). Current plans and standing reference docs stay. This repository is public: notes that were never committed and mention Ben's stories, characters or places go to `~/Projects/housekeeping/archive/<date>/` instead, never into the repo.
+  3. **Remove the work's worktree** only when its exact commit is in the target branch, it has no uncommitted or untracked files, its ignored files hold nothing that exists only there, and nothing is running in it. Never force removal. Keep the branch.
+- Don't leave a new plan or handoff beside an old one for the same work; update or archive the old one.
+
 ## First Interaction — Onboarding
 
 When the user's first message is vague, exploratory, or asks what you can do ("make me a video", "what can you do?", "help me create something", "I want to make content"), read the onboarding skill **before** doing anything else:
