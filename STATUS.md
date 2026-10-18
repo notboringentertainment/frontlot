@@ -3,7 +3,7 @@
 Last rewritten: 2026-10-18. Rewrite this page in place when work lands; don't add to the bottom.
 
 Front Lot is the film-making app in this repository: it turns approved canon into pictures
-and shots. Its code is in `backlot/` and the `authored-film` pipeline.
+and shots.
 
 ## Live
 
