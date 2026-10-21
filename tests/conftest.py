@@ -15,3 +15,9 @@ def _isolated_gates_dir(tmp_path_factory, monkeypatch):
     monkeypatch.setenv(
         "OPENMONTAGE_GATES_DIR", str(tmp_path_factory.mktemp("gates"))
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_writeros_library(tmp_path_factory, monkeypatch):
+    # WriterOS package discovery reads WriterOS's library; never the real one in tests.
+    monkeypatch.setenv("WRITEROS_LIBRARY", str(tmp_path_factory.mktemp("writeros-library")))

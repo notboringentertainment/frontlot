@@ -46,13 +46,14 @@ Request file contract::
       "request_id": "...", "project_id": "...", "stage": "visual_bible",
       "scope": "character:<id>",
       "kind": "hero|sheet|location|poster|storyboard_batch|config|artifact_review|
-               look_lock|reference_import|pipeline_migration|headshot",
+               look_lock|reference_import|pipeline_migration|headshot|cast_change",
       "entity_id": "<id>" | null, "artifact": {...} | null,
       "approval_record": {...} | null,     # HINT — must equal the constructed record
       "envelope": {...} | null,            # HINT — must equal the constructed envelope
       "source_checkpoint_digest": "..." | null,
       "source_ticket_path": "...",         # look_lock: ticket path relative to the wayfinder root
       "pipeline_version": "1.2",           # pipeline_migration: the version the human is pinning
+      "cast_change": {"remove": [...], "add": [...]},  # cast_change: ids to take out of / put in the trailer cast
       "summary": "one paragraph for the human",
       "preview_paths": ["canon/visual/objects/<sha>.png", ...]
     }
@@ -95,6 +96,34 @@ _HEX = frozenset("0123456789abcdef")
 
 class GateHandlerError(RuntimeError):
     pass
+
+
+APP_PROMPTS_ENV = "FRONTLOT_SIGN_PROMPTS"   # names a pipe descriptor Front Lot's signing broker reads
+
+
+def _tell_app(**event: Any) -> None:
+    """Tell Front Lot's signing screen which question comes next (or how it
+    ended), one JSON line on a private pipe the broker passes in. The screen
+    draws buttons that type the same answers a person would; the answer is
+    still read from the interactive prompt. Never on the terminal itself, so
+    text a request carries can't pose as a question."""
+    fd = os.environ.get(APP_PROMPTS_ENV, "")
+    if not fd.isdigit():
+        return
+    try:
+        os.write(int(fd), (json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8"))
+    except OSError:
+        pass
+
+
+def _ask(kind: str, text: str, **extra: Any) -> str:
+    _tell_app(ask=kind, **extra)
+    return input(text)
+
+
+def _done(outcome: str, line: str) -> None:
+    print(line)
+    _tell_app(outcome=outcome, message=line)
 
 
 def require_tty(stdin=None) -> None:
@@ -359,6 +388,8 @@ def _construct_look_lock(root: Path, req: dict) -> Constructed:
         ))
     if action != "activate":
         raise GateHandlerError(f"look_lock action must be activate|retire, got {action!r}")
+    if req.get("source_promotion_id") is not None:
+        return _construct_writeros_look_lock(root, req, entity_kind, entity_id, current)
     ticket_rel = req.get("source_ticket_path")
     if not isinstance(ticket_rel, str) or not ticket_rel:
         raise GateHandlerError("look_lock request needs source_ticket_path (relative to the wayfinder root)")
@@ -386,6 +417,53 @@ def _construct_look_lock(root: Path, req: dict) -> Constructed:
     evidence = (
         f"ticket {ticket} (wayfinder root {wf_root})",
         f"source_ticket_ref {json.dumps(look.source_ticket_ref, sort_keys=True)}",
+        f"look_hash {look.look_hash}" + (f" supersedes {current.look_hash}" if current else " (first activation)"),
+    ) + tuple(f"heads up: {line}; signing locks the look as written" for line in look.changed_since)
+    return Constructed(look.payload, envelope, entity_id, evidence=evidence)
+
+
+def _construct_writeros_look_lock(root: Path, req: dict, entity_kind: str, entity_id: str, current) -> Constructed:
+    """A WriterOS-promoted look (look sessions, 2026-09-30): re-read the
+    package's CURRENT export, verify it per record against WriterOS memory,
+    and select the look by its promotion (record) id. The signed envelope
+    carries promotion_refs and no source_ticket_ref; the reference-image mode
+    is shown as evidence and never signed."""
+    from lib.look_ingest import (
+        LookIngestError,
+        latest_writeros_export,
+        writeros_envelope_refs,
+        writeros_evidence_line,
+        writeros_look_for,
+        writeros_package_for,
+    )
+
+    promotion_id = req.get("source_promotion_id")
+    if not isinstance(promotion_id, str) or not promotion_id:
+        raise GateHandlerError("look_lock request source_promotion_id must name a WriterOS record id")
+    if req.get("source_ticket_path") is not None:
+        raise GateHandlerError("look_lock request names both a wayfinder ticket and a WriterOS promotion — refused")
+    try:
+        package = writeros_package_for(root)
+        if package is None:
+            raise LookIngestError("project.yaml has no writeros_package")
+        export = latest_writeros_export(package)
+        look = writeros_look_for(root, promotion_id)
+    except LookIngestError as exc:
+        raise GateHandlerError(f"WriterOS look refused: {exc}") from exc
+    if look.key != (entity_kind, entity_id):
+        raise GateHandlerError(f"WriterOS promotion {promotion_id} describes {look.key}, not ({entity_kind}, {entity_id})")
+    if current is not None and current.look_hash == look.look_hash:
+        raise GateHandlerError(f"look {look.look_hash} is already the active look for ({entity_kind}, {entity_id})")
+    envelope = {
+        "action": "activate",
+        "entity_kind": entity_kind,
+        "look_hash": look.look_hash,
+        "supersedes_look_hash": current.look_hash if current else None,
+        "promotion_refs": writeros_envelope_refs(look),
+    }
+    evidence = (
+        writeros_evidence_line(look),
+        f"export {export} (WriterOS package {package})",
         f"look_hash {look.look_hash}" + (f" supersedes {current.look_hash}" if current else " (first activation)"),
     )
     return Constructed(look.payload, envelope, entity_id, evidence=evidence)
@@ -438,14 +516,17 @@ def _construct_reference_import(root: Path, req: dict) -> Constructed:
     if bound_entity is not None:
         if not isinstance(bound_entity, str) or not re.match(r"^[a-z0-9-]+$", bound_entity):
             raise GateHandlerError(f"reference_import entity_id {bound_entity!r} is not a cast entity slug")
-        proposal = _read_json_file(root / "checkpoint_proposal.json")
-        packet = ((proposal or {}).get("artifacts") or {}).get("proposal_packet") or {}
-        cast = packet.get("cast") or {}
-        known = set(cast.get("character_ids") or []) | set(cast.get("location_ids") or [])
+        from lib.cast_change import CastChangeError, effective_cast
+
+        try:
+            cast = effective_cast(root, project_id=req["project_id"])  # the proposal cast plus signed cast changes
+        except (CastChangeError, ReceiptError) as exc:
+            raise GateHandlerError(f"the approved trailer cast can't be read: {exc}") from exc
+        known = set(cast["character_ids"]) | set(cast["location_ids"])
         if bound_entity not in known:
             raise GateHandlerError(
-                f"reference_import binds entity {bound_entity!r}, which is not in the proposal cast "
-                f"(checkpoint_proposal.json); an import is for a cast entity or for nobody"
+                f"reference_import binds entity {bound_entity!r}, which is not in the approved trailer cast "
+                f"(checkpoint_proposal.json plus signed cast changes); an import is for a cast entity or for nobody"
             )
     try:
         record = validate_import_record(import_record(origin_class, pixel_hash, origin_tool=origin_tool, entity_id=bound_entity))
@@ -518,6 +599,58 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
 
     return Constructed(record, envelope, pipeline_name, evidence=evidence, extra={"pipeline_name": pipeline_name},
                        pre_commit_check=pre_commit)
+
+
+def _construct_cast_change(root: Path, req: dict) -> Constructed:
+    """Rebuild the cast change from disk: the current proposal bytes, the
+    current effective cast and chain tip, and the request's take-out/put-in
+    lists — never the agent's record. The pre-commit check refuses if the
+    proposal bytes or the chain tip moved after display."""
+    from lib.cast_change import (
+        ENTITY_ID,
+        CastChangeError,
+        build_cast_change,
+        chain_tip,
+        describe_cast,
+        name_of,
+        proposal_sha256,
+    )
+
+    if _require_entity(req) != ENTITY_ID:
+        raise GateHandlerError(f"cast_change request entity_id must be {ENTITY_ID!r}")
+    change = req.get("cast_change")
+    if not isinstance(change, dict) or set(change) - {"remove", "add"}:
+        raise GateHandlerError("cast_change request needs cast_change: {remove: [...], add: [...]}")
+    project_id = str(req["project_id"])
+    try:
+        built = build_cast_change(root, project_id, remove=change.get("remove") or [], add=change.get("add") or [])
+    except (CastChangeError, ReceiptError) as exc:
+        raise GateHandlerError(str(exc)) from exc
+    names = built.names
+    after = {k: built.record[k] for k in ("character_ids", "location_ids")}
+    evidence = (
+        built.summary,
+        f"Approved trailer cast now. {describe_cast(built.before, names)}",
+        f"After you sign. {describe_cast(after, names)}",
+        "Taking out: " + (", ".join(name_of(e["id"], names) for e in built.record["removed"]) or "nothing"),
+        "Putting in: " + (", ".join(name_of(e["id"], names) for e in built.record["added"]) or "nothing"),
+        "The proposal file itself is not edited; this signed change sits on top of it "
+        f"(proposal sha256 {built.record['base_proposal_sha256']}).",
+        f"Replaces the earlier signed cast change {built.tip_receipt_id}." if built.tip_receipt_id
+        else "First change to this film's approved trailer cast.",
+    )
+
+    def pre_commit() -> None:  # under the consumed token: nothing moved since display
+        if proposal_sha256(root) != built.record["base_proposal_sha256"]:
+            raise GateHandlerError("the approved proposal changed since this cast change was shown; re-run the request")
+        try:
+            tip = chain_tip(root, project_id=project_id)
+        except (CastChangeError, ReceiptError) as exc:
+            raise GateHandlerError(str(exc)) from exc
+        if (tip["receipt_id"] if tip else None) != built.tip_receipt_id:
+            raise GateHandlerError("the approved trailer cast changed since this request was shown; re-run the request")
+
+    return Constructed(built.record, built.envelope, ENTITY_ID, evidence=evidence, pre_commit_check=pre_commit)
 
 
 def _construct_config(root: Path, req: dict) -> Constructed:
@@ -930,8 +1063,13 @@ def _construct_qc_override(root: Path, req: dict) -> Constructed:
 def _construct_location(root: Path, req: dict) -> Constructed:
     from lib.canon_enforcement import location_approval_record
 
+    if (req.get("envelope") or {}).get("staged_pictures") is not None:
+        return _construct_location_set(root, req)
     entity_id = _require_entity(req)
-    bible, palette = _bible_and_palette(root, req)
+    bible, palette, path = _bible_palette_path(root, req)
+    # G10: a location request is bound to the checkpoint it was published
+    # against, like a sheet; the set Ben sees is the set he signs.
+    _bind_request_digest(req, path, required=True)
     entry = next((e for e in bible.get("locations") or [] if isinstance(e, dict) and e.get("id") == entity_id), None)
     if entry is None:
         raise GateHandlerError(f"location {entity_id!r} is not in the pending visual_bible")
@@ -942,6 +1080,95 @@ def _construct_location(root: Path, req: dict) -> Constructed:
             _verify_image_ref(root, ref, f"location {entity_id!r} {role}")
             evidence.append(f"{role}: {root / ref['path']} (sha256 {ref['asset_id']})")
     return Constructed(location_approval_record(entry, palette), None, entity_id, evidence=tuple(evidence))
+
+
+def _construct_location_set(root: Path, req: dict) -> Constructed:
+    """G10 one-signature place set: the writer's own pictures of a place,
+    staged by ``location_run --add-image``, signed ONCE. The record is the
+    exact ``location_approval_record`` the finished bible entry will carry;
+    the envelope signs the fixed likeness promise for every picture (the
+    same promise a per-picture reference_import signs)."""
+    from lib.canon_enforcement import location_approval_record
+    from lib.cast_change import CastChangeError, effective_cast
+    from lib.look_ingest import LookIngestError, active_look_for
+    from lib.pathsafe import PathSafetyError, resolve_input
+    from lib.reference_import import (
+        ORIGIN_IMPORTED_SYNTHETIC, STAGING_DIR, SYNTHETIC_ATTESTATION, ReferenceImportError, assert_untainted,
+        normalize_image_bytes, refuse_conflicting_origin,
+    )
+    from scripts.location_run import set_entry
+
+    entity_id = _require_entity(req)
+    hint = req.get("envelope") or {}
+    pics = hint.get("staged_pictures")
+    if not isinstance(pics, list) or not pics:
+        raise GateHandlerError("a location set needs at least one staged picture")
+    try:
+        cast = effective_cast(root, project_id=req["project_id"])
+    except (CastChangeError, ReceiptError) as exc:
+        raise GateHandlerError(f"the approved trailer cast can't be read: {exc}") from exc
+    if entity_id not in set(cast["location_ids"]):
+        raise GateHandlerError(f"{entity_id!r} is not a place in the approved trailer cast")
+    try:
+        look = active_look_for(root, "location", entity_id)
+    except LookIngestError as exc:
+        raise GateHandlerError(str(exc)) from exc
+    if look is None:
+        raise GateHandlerError(f"{entity_id!r} has no locked look")
+    evidence = [f"promise for every picture below: {SYNTHETIC_ATTESTATION!r}"]
+    clean: list[dict] = []
+    for p in pics:
+        if not isinstance(p, dict) or set(p) != {"pixel_hash", "label", "origin_tool"}:
+            raise GateHandlerError("each staged picture carries exactly pixel_hash, label, origin_tool")
+        h = p["pixel_hash"]
+        if not _sha256_hex(h):
+            raise GateHandlerError(f"staged picture hash {h!r} is not a 64-hex sha256")
+        try:
+            staged = resolve_input(STAGING_DIR / f"reference-{h}.png", root)
+        except PathSafetyError as exc:
+            raise GateHandlerError(f"staged picture {p['label']!r} is missing or not project-local: {exc}") from exc
+        data = staged.read_bytes()
+        if hashlib.sha256(data).hexdigest() != h:
+            raise GateHandlerError(f"staged picture {p['label']!r} does not hash to {h}")
+        try:
+            if normalize_image_bytes(data).sha256 != h:
+                raise GateHandlerError(f"staged picture {p['label']!r} is not in normalized form")
+            refuse_conflicting_origin(root, h, ORIGIN_IMPORTED_SYNTHETIC, project_id=req["project_id"])
+            assert_untainted(root, [h], project_id=req["project_id"], label=f"location picture {p['label']!r}")
+        except ReferenceImportError as exc:
+            raise GateHandlerError(str(exc)) from exc
+        clean.append({"pixel_hash": h, "label": str(p["label"]), "origin_tool": str(p["origin_tool"])})
+        evidence.append(f"{p['label']}: {staged} (sha256 {h}, made with {p['origin_tool']})")
+    revision = req.get("revision")
+    if not isinstance(revision, int) or revision < 1:
+        raise GateHandlerError("a location set request needs its revision")
+    bible = _pending_or_current_bible(root)
+    entry = set_entry(entity_id, clean, look, revision)
+    record = location_approval_record(entry, bible.get("palette") or {})
+
+    def recheck() -> None:
+        try:
+            for p in clean:
+                refuse_conflicting_origin(root, p["pixel_hash"], ORIGIN_IMPORTED_SYNTHETIC, project_id=req["project_id"])
+                assert_untainted(root, [p["pixel_hash"]], project_id=req["project_id"])
+        except ReferenceImportError as exc:
+            raise GateHandlerError(f"origin conflict detected at signing: {exc}") from exc
+
+    envelope = {"attestation_text": SYNTHETIC_ATTESTATION, "staged_pictures": clean}
+    return Constructed(record, envelope, entity_id, evidence=tuple(evidence), pre_commit_check=recheck)
+
+
+def _pending_or_current_bible(root: Path) -> dict:
+    """The visual bible on disk, whatever its status (a place set writes no draft)."""
+    path = root / "checkpoint_visual_bible.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() and not path.is_symlink() else {}
+    except (OSError, ValueError) as exc:
+        raise GateHandlerError(f"checkpoint_visual_bible.json is unreadable: {exc}") from exc
+    bible = (data.get("artifacts") or {}).get("visual_bible") if isinstance(data, dict) else None
+    if not isinstance(bible, dict):
+        raise GateHandlerError("there is no visual bible yet")
+    return bible
 
 
 def _construct_poster(root: Path, req: dict) -> Constructed:
@@ -1424,6 +1651,7 @@ CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
     "headshot": _construct_headshot,
     "qc_override": _construct_qc_override,
     "headshot_grandfather": _construct_headshot_grandfather,
+    "cast_change": _construct_cast_change,
 }
 assert set(CONSTRUCTORS) == set(APPROVAL_KINDS), "every approval kind needs a gate-side constructor"
 
@@ -1728,12 +1956,12 @@ def main(argv: list[str] | None = None) -> int:
             n = len(candidates)
             reject_all = False
             while True:
-                raw = input(f"Type a number 1-{n} to choose, r to reject all, or q to quit without deciding: ").strip().lower()
+                raw = _ask("choose", f"Type a number 1-{n} to choose, r to reject all, or q to quit without deciding: ", n=n).strip().lower()
                 if raw == "q":
-                    print("quit — nothing decided, request left pending")
+                    _done("left", "quit — nothing decided, request left pending")
                     return 0
                 if raw == "r":
-                    if input("Reject ALL candidates and regenerate? type 'reject' to confirm: ").strip().lower() == "reject":
+                    if _ask("reject_confirm", "Reject ALL candidates and regenerate? type 'reject' to confirm: ").strip().lower() == "reject":
                         reject_all = True
                         break
                     continue
@@ -1745,22 +1973,22 @@ def main(argv: list[str] | None = None) -> int:
                 shown = construct(root, req, selection=selection)
                 show_constructed(shown)
                 while True:
-                    a = input("Sign this record? y to sign, n to go back, q to quit: ").strip().lower()
+                    a = _ask("sign_choice", "Sign this record? y to sign, n to go back, q to quit: ").strip().lower()
                     if a in ("y", "n", "q"):
                         break
                     print("  enter y, n, or q")
                 if a == "q":
-                    print("quit — nothing decided, request left pending")
+                    _done("left", "quit — nothing decided, request left pending")
                     return 0
                 approved = a == "y"
                 if not approved:
-                    print("not signed — request left pending; run again to choose")
+                    _done("left", "not signed — request left pending; run again to choose")
                     return 0
-                note = input("Note (optional): ").strip() or None
+                note = _ask("note", "Note (optional): ", required=False).strip() or None
             else:
-                note = input("Note (required for reject-all): ").strip() or None
+                note = _ask("note", "Note (required for reject-all): ", required=True).strip() or None
                 if not note:
-                    print("a note is required to reject all — nothing decided, request left pending")
+                    _done("left", "a note is required to reject all — nothing decided, request left pending")
                     return 0
         else:
             if req["kind"] == "qc_override":
@@ -1772,9 +2000,9 @@ def main(argv: list[str] | None = None) -> int:
                     # anything is signed.
                     items = _show_batch_field(req)
                     while True:
-                        raw = input(f"Accept which failed items? (comma list from {items}, 'all', or q to quit): ").strip().lower()
+                        raw = _ask("accept_items", f"Accept which failed items? (comma list from {items}, 'all', or q to quit): ", items=list(items)).strip().lower()
                         if raw == "q":
-                            print("quit — nothing decided, request left pending")
+                            _done("left", "quit — nothing decided, request left pending")
                             return 0
                         chosen = sorted(items) if raw == "all" else sorted({p.strip() for p in raw.split(",") if p.strip()})
                         if chosen and set(chosen) <= set(items):
@@ -1783,9 +2011,9 @@ def main(argv: list[str] | None = None) -> int:
                     req["_chosen_items"] = chosen
                 # The reason is the human's, typed here — never the request's text.
                 while True:
-                    typed = input("Why is the judge wrong on these items? (10+ characters, or q to quit): ").strip()
+                    typed = _ask("why", "Why is the judge wrong on these items? (10+ characters, or q to quit): ", min=10).strip()
                     if typed.lower() == "q":
-                        print("quit — nothing decided, request left pending")
+                        _done("left", "quit — nothing decided, request left pending")
                         return 0
                     if len(typed) >= 10 and "REPLACE" not in typed:
                         break
@@ -1794,34 +2022,35 @@ def main(argv: list[str] | None = None) -> int:
             shown = construct(root, req)
             show_constructed(shown)
             while True:
-                a = input("Approve? y to sign, n to decline, q to quit without deciding: ").strip().lower()
+                a = _ask("approve", "Approve? y to sign, n to decline, q to quit without deciding: ").strip().lower()
                 if a in ("y", "n", "q"):
                     break
                 print("  enter y, n, or q")
             if a == "q":
-                print("quit — nothing decided, request left pending")
+                _done("left", "quit — nothing decided, request left pending")
                 return 0
             approved = a == "y"
             if not approved and req["kind"] == "qc_override" and req.get("batch"):
                 # Declining a batch waiver is a recorded decision (round-3 #8).
                 while True:
-                    note = input("Decline note (required, 10+ characters): ").strip()
+                    note = _ask("note", "Decline note (required, 10+ characters): ", required=True, min=10).strip()
                     if len(note) >= 10:
                         break
                     print("  declining the field needs a real note — it is the record that the writer chose the judge-approved faces only")
             else:
-                note = input("Note (optional): ").strip() or None
+                note = _ask("note", "Note (optional): ", required=False).strip() or None
         if approved and shown is not None:
             # The handler marker exists only for this call; minting is refused elsewhere.
             with gates.handler_context():
                 receipt = _decide(req, root, shown=shown, note=note, selection=selection)
-            print(f"approved — receipt {receipt['receipt_id']}")
+            _done("approved", f"approved — receipt {receipt['receipt_id']}")
         else:
             _decline_request(req, root, note)
-            print("declined — no receipt written")
+            _done("declined", "declined — no receipt written")
         return 0
     except GateHandlerError as e:
         print(f"error: {e}", file=sys.stderr)
+        _tell_app(outcome="error", message=str(e))
         return 2
 
 

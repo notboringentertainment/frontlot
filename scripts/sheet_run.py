@@ -36,8 +36,8 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from lib.run_common import (  # noqa: E402
-    REQUEST_DIRNAME, RunError, gate_command, read_request, request_id_for, request_paths, require_entity_id,
-    resolve_project_root, write_decision,
+    REQUEST_DIRNAME, EXIT_INPUT_CHANGED, Expectations, InputChanged, RunError, gate_command, parse_expectations, read_request, request_id_for,
+    request_paths, require_entity_id, resolve_project_root, write_decision,
 )
 from lib.sheet_qc.verify import MANDATORY_ROLES  # noqa: E402
 
@@ -45,6 +45,7 @@ STAGE = "visual_bible"
 EXIT_BLOCKED = 3
 EXIT_DECLINED = 4
 ABANDONED_DIRNAME = "abandoned"
+_EXPECT: Optional[Expectations] = None  # set by run_sheet at lease entry
 GENERATION_PRICE_USD = {"turnaround": 0.14, "expressions": 0.07, "wardrobe": 0.07}
 # Explicit sizes: the local pre-check enforces landscape 3:2 for the 2x3 expression grid, so ask for it.
 IMAGE_SIZE = {"turnaround": {"width": 2560, "height": 1600}, "expressions": {"width": 1536, "height": 1024}, "wardrobe": {"width": 1536, "height": 1024}}
@@ -110,11 +111,17 @@ def default_generate(root: Path, role: str, ctx: dict[str, Any]) -> tuple[str, s
 
 def _checkpoint(root: Path) -> dict[str, Any]:
     path = root / f"checkpoint_{STAGE}.json"
-    if path.is_symlink() or not path.is_file():
+    if (path.is_symlink() or (path.exists() and not path.is_file())) and not (_EXPECT is not None and _EXPECT.frozen(path)):
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        raw = _EXPECT.read(path) if _EXPECT is not None else (path.read_bytes() if path.is_file() else None)
+    except OSError as exc:
+        raise SheetRunError(f"{path} is unreadable: {exc}") from exc
+    if raw is None:
+        return {}
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except ValueError as exc:
         raise SheetRunError(f"{path} is unreadable: {exc}") from exc
     return data if isinstance(data, dict) else {}
 
@@ -191,6 +198,8 @@ def _write(root: Path, vb: dict[str, Any], *, status: str, run_state: Optional[d
         meta["rejected_sheets"] = hist
     path = write_checkpoint(root.parent, root.name, STAGE, status, {"visual_bible": vb},
                             pipeline_type="authored-film", human_approval_required=True, metadata=meta)
+    if _EXPECT is not None:
+        _EXPECT.thaw(path)  # from here the checkpoint holds this run's own bytes
     return checkpoint_digest(path)
 
 
@@ -206,8 +215,10 @@ def run_sheet(
     palette: Optional[list[str]] = None, resume: bool = False, finish: bool = False, abandon: bool = False,
     open_images: bool = False,
     generate: Optional[Callable[[Path, str, dict[str, Any]], tuple[str, str]]] = None,
-    judge_adapter: Any = None, out=None,
+    judge_adapter: Any = None, out=None, expectations: Optional[Expectations] = None,
 ) -> dict[str, Any]:
+    global _EXPECT
+    _EXPECT = None
     from lib import qc_receipts as qr, run_lease
     from lib.canon_enforcement import _is_qc_manifest
     from lib.config_model import BudgetMode
@@ -243,6 +254,12 @@ def run_sheet(
         raise SheetRunError("the signed config pins a different QC policy bundle than this checkout; re-sign the config")
 
     with run_lease.acquire(root, float(config.data.get("wall_time_minutes") or 60)):
+        _EXPECT = expectations
+        if expectations is not None:
+            expectations.check("config", config.digest)  # the project.yaml bytes this run verified and uses
+        _checkpoint(root)  # frozen checkpoint verified now, under the lease, before anything paid
+        if expectations is not None:
+            expectations.require_all_verified()  # a frozen path this run never reads must not pass silently
         resume_check(root)
         ctx: dict[str, Any] = {"root": root, "project_id": project_id, "entity_id": entity_id, "out": out, "config": config, "pin": pin}
         # D2: run state first; with it, every invocation resumes and generation flags are ignored.
@@ -264,9 +281,13 @@ def run_sheet(
         look = active_look_for(root, "character", entity_id)
         if look is None:
             raise SheetRunError(f"{entity_id!r} has no active look (ratify it at the look_lock gate first)")
+        if expectations is not None:
+            expectations.check("look", look.look_hash)
         head = active_headshots(root).get(entity_id)
         if head is None or head.look_hash != look.look_hash:
             raise SheetRunError(f"{entity_id!r} has no approved headshot for the active look")
+        if expectations is not None:
+            expectations.check("headshot", head.receipt_id)
 
         # existing bible (other entities' entries are preserved; this entity's entry is replaced)
         bible = _bible(root)
@@ -784,17 +805,31 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--finish", action="store_true", help="apply the signed sheet request (requires run state)")
     ap.add_argument("--abandon", action="store_true", help="retire a done request whose checkpoint changed after signing")
     ap.add_argument("--open", action="store_true")
+    ap.add_argument("--expect-input-sha", action="append", default=[],
+                    help="PATH=SHA256 (or PATH=absent) of an input that must be unchanged (set by Front Lot)")
+    ap.add_argument("--expect-look-hash", help="the active look this run was approved against (set by Front Lot)")
+    ap.add_argument("--expect-config-sha", help="the signed project.yaml digest this run was approved against")
+    ap.add_argument("--expect-headshot", help="the approved headshot receipt id this run was approved against")
     a = ap.parse_args(argv)
+    try:
+        expectations = Expectations(parse_expectations(a.expect_input_sha),
+                                    {"look": a.expect_look_hash, "config": a.expect_config_sha,
+                                     "headshot": a.expect_headshot})
+    except ValueError as exc:
+        ap.error(str(exc))
     load_env()
     try:
         root = resolve_project_root(a.project)
         run_sheet(root, a.entity, roles=a.roles.split(",") if a.roles else None, max_attempts=a.max_attempts,
                   palette=a.palette.split(",") if a.palette else None, resume=a.resume, finish=a.finish, abandon=a.abandon,
-                  open_images=a.open)
+                  open_images=a.open, expectations=expectations)
     except Blocked:
         return EXIT_BLOCKED
     except Declined:
         return EXIT_DECLINED
+    except InputChanged as exc:
+        print(f"sheet_run: {exc}", file=sys.stderr)
+        return EXIT_INPUT_CHANGED
     except RunError as exc:
         print(f"sheet_run: {exc}", file=sys.stderr)
         return 1
