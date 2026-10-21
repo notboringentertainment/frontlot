@@ -32,12 +32,19 @@ def _approve_predecessors(tmp_path, project_id, pipeline_type, *stages) -> None:
 
     for stage in stages:
         artifact_name = CANONICAL_STAGE_ARTIFACTS[stage]
+        artifacts = {artifact_name: sample_artifact(artifact_name)}
+        if stage == "proposal":
+            # The manifest declares decision_log as a proposal output;
+            # the checkpoint writer enforces the produces contract.
+            log = sample_artifact("decision_log")
+            log["project_id"] = project_id
+            artifacts["decision_log"] = log
         write_checkpoint(
             tmp_path,
             project_id,
             stage,
             "completed",
-            {artifact_name: sample_artifact(artifact_name)},
+            artifacts,
             pipeline_type=pipeline_type,
             human_approved=True,
         )

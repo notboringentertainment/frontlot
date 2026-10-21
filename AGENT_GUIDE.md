@@ -4,6 +4,15 @@ Start here. This is the complete operating guide and agent contract for OpenMont
 
 For architecture, key files, and conventions see [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md).
 
+## Status page and finishing work
+
+- **Start of every session:** read [`STATUS.md`](STATUS.md) first. It says what is live, open and next.
+- **When work lands** (merged, and deployed where the app deploys), whoever finished it, Claude or Codex, does all three before calling it done:
+  1. **Rewrite `STATUS.md` in place:** Live, Open, Next, and the date. Plain language for Ben, readable in two minutes, no commit hashes or internal code names. Start from the current file so newer status isn't overwritten by an older view.
+  2. **Archive the work's notes:** move its plan, handoff and review notes into `docs/archive/` (moved, not deleted). Current plans and standing reference docs stay. This repository is public: notes that were never committed and mention Ben's stories, characters or places go to `~/Projects/housekeeping/archive/<date>/` instead, never into the repo.
+  3. **Remove the work's worktree** only when its exact commit is in the target branch, it has no uncommitted or untracked files, its ignored files hold nothing that exists only there, and nothing is running in it. Never force removal. Keep the branch.
+- Don't leave a new plan or handoff beside an old one for the same work; update or archive the old one.
+
 ## First Interaction — Onboarding
 
 When the user's first message is vague, exploratory, or asks what you can do ("make me a video", "what can you do?", "help me create something", "I want to make content"), read the onboarding skill **before** doing anything else:
@@ -46,11 +55,22 @@ This is a first-class workflow in OpenMontage.
 
 If a model misses this distinction, it will often fall back to plain search + guesswork. That is incorrect for OpenMontage.
 
-## Rule Zero — All Production Goes Through a Pipeline
+## Supervised Front Lot shots
 
-**Every video production request MUST go through the pipeline system. No exceptions.**
+For a supervised shot test or revision using established story and references,
+read `skills/pipelines/authored-film/supervised-production.md` and use its saved
+brief and direct paid-tool route. This is the default for this bounded work.
+Ben's conversational production decision is recorded once. Keep signed project
+settings, upstream canon and look activation, reference lineage, and spending
+stops. No full-library completion, mandatory storyboard signature, take gate or
+pipeline migration is required. Existing full-pipeline contracts stay intact.
 
-When the user asks to make, create, produce, or generate any video content — a trailer, explainer, clip, animation, or any other video — the agent must:
+## Rule Zero — Pipeline production
+
+**Full pipeline productions go through the pipeline system. Supervised Front Lot
+shots use the route above and do not claim completed pipeline stages.**
+
+For video production outside the supervised Front Lot shot route above, the agent must:
 
 1. **Identify the pipeline.** Match the request to one of the pipelines in `pipeline_defs/`. If unclear, ask the user.
 2. **Read the pipeline manifest.** `pipeline_defs/<pipeline>.yaml` — know the stages, tools, and quality gates.
@@ -224,6 +244,8 @@ At pipeline initialization, before any stage runs:
 1. **Initialize the workspace**: `python -c "from lib.checkpoint import init_project; init_project('<project-id>', title='<Title>', pipeline_type='<pipeline>')"` — creates the layout above and writes `project.json` (the marker the Backlot board reads).
 2. **Open the board**: run `python -m backlot open <project-id>`. This starts the Backlot server if needed and opens the user's browser at the project's live board. If the command fails, continue the production — the board is an observer, never a blocker. This is the agent's ONLY board duty; the board derives everything else from disk.
 
+Authored-film gates are signed in the board's terminal or in your own; the command is the same either way.
+
 All tools and agents must write outputs to these paths — **always pass an explicit `output_path` under `projects/<project-id>/`**. Assets written to the repo root, cwd, or temp dirs are invisible to the user's board and violate the workspace contract.
 
 **This applies to atelier and HyperFrames-skill runs too**: hand-authored compositions still write the canonical artifacts they have (script or beats-plan, scene_plan-equivalent, asset manifest) plus checkpoints into `projects/<project-id>/`. The board is runtime-agnostic; only runs that skip the artifacts get a degraded board.
@@ -256,6 +278,7 @@ If the folder has tracks, the proposal and asset stages should present them as o
 | `hybrid` | Source footage plus support visuals | production |
 | `avatar-spokesperson` | Presenter-led avatar or lip-sync videos | production |
 | `localization-dub` | Subtitle, dub, and translated variants | beta |
+| `authored-film` | Produce a film from the writer's finished development assets (synopsis/treatment/outline/story bible, wayfinder decisions, canon atoms) — canon ingest replaces web research; story is locked, treatment is open | beta |
 | `framework-smoke` | Test: minimal 2-stage smoke test | test |
 
 > **Beta pipelines** have not been fully audited. They work, but expect rough edges. Mention this when the user selects one.
