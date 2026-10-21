@@ -2,7 +2,9 @@
 
 The watcher observes ``projects/`` with watchfiles; on any change it bumps a
 per-project version and wakes SSE subscribers, who tell the browser to
-refetch state. The server never writes to project directories.
+refetch state. The server writes to a project directory in one place only:
+Ben's approve or decline on a video take card, which needs the app's
+capability token and the app's own origin, so nothing else can press it.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import json
 import os
 import secrets
 import stat
+import threading
 import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -413,6 +416,34 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
             "X-Accel-Buffering": "no",
         })
 
+    # ---- Ben's decision on a video take -------------------------------
+
+    @app.post("/api/project/{project_id}/shot/{shot_id}/take/{take_id}/decision")
+    async def take_decision(project_id: str, shot_id: str, take_id: str, request: Request) -> dict:
+        port = app.state.server_port
+        if request.headers.get("origin") not in {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}:
+            raise HTTPException(status_code=403, detail="origin not allowed")
+        expected = app.state.capability_token
+        given = request.headers.get("x-frontlot-capability")
+        if not isinstance(expected, str) or not isinstance(given, str) or not secrets.compare_digest(given, expected):
+            raise HTTPException(status_code=401, detail="Front Lot couldn't confirm this came from you. Reload Front Lot and try again.")
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="bad request") from None
+        if not isinstance(body, dict) or body.get("decision") not in ("approve", "decline"):
+            raise HTTPException(status_code=400, detail="decision must be approve or decline")
+        note = body.get("note")
+        if note is None:
+            note = ""
+        if not isinstance(note, str) or len(note) > TAKE_NOTE_MAX:
+            raise HTTPException(status_code=400, detail=f"Keep the note under {TAKE_NOTE_MAX:,} characters.")
+        project_dir = _safe_project_dir(project_id)
+        result = await asyncio.to_thread(_decide_take, project_dir, shot_id, take_id, body["decision"], note.strip())
+        _invalidate_summary(project_id)
+        server_log(f"take decision project={project_id} shot={shot_id} decision={body['decision']}")
+        return result
+
     # ---- Thumbnails (downscaled, cached on disk) ------------------------
 
     @app.get("/thumb/{project_id}/{file_path:path}")
@@ -512,6 +543,50 @@ def _safe_project_dir(project_id: str) -> Path:
         # A syntactically valid but missing, unregistered, or symlinked
         # project is intentionally indistinguishable from an unknown project.
         raise HTTPException(status_code=404, detail=f"unknown project: {project_id}") from exc
+
+
+TAKE_NOTE_MAX = 2000
+_TAKE_NOTES = {"approve": "Approved on the take card.", "decline": "Declined on the take card."}
+_TAKE_DECISION_LOCK = threading.Lock()   # the waiting check and the write happen as one step
+
+
+def _decide_take(project_dir: Path, shot_id: str, take_id: str, decision: str, note: str) -> dict:
+    """Record Ben's press. Only a take still waiting on him can be decided."""
+    with _TAKE_DECISION_LOCK:
+        return _decide_take_locked(project_dir, shot_id, take_id, decision, note)
+
+
+def _decide_take_locked(project_dir: Path, shot_id: str, take_id: str, decision: str, note: str) -> dict:
+    from lib import supervised_production as sp
+
+    try:
+        sp.shot_dir(project_dir, shot_id)
+        if sp.read_brief(project_dir, shot_id) is None:
+            raise HTTPException(status_code=404, detail="That shot isn't in this film.")
+        waiting = {row["take_id"] for row in sp.waiting_takes(project_dir, shot_id)}
+        known = {row.get("take_id") for row in sp.history(project_dir, shot_id) if row.get("kind") == "take"}
+    except ValueError:
+        raise HTTPException(status_code=404, detail="That shot isn't in this film.") from None
+    if take_id not in known:
+        raise HTTPException(status_code=404, detail="That take isn't on this shot.")
+    if take_id not in waiting:
+        raise HTTPException(status_code=409, detail="This take is already decided. The card has been refreshed.")
+    note = note or _TAKE_NOTES[decision]
+    try:
+        if decision == "approve":
+            sp.select(project_dir, shot_id, take_id, user_note=note)
+        else:
+            sp.decline(project_dir, shot_id, take_id, user_note=note)
+    except Exception as exc:
+        # The shot record is written first; if a later step failed, Ben's press still counts.
+        if take_id not in {row["take_id"] for row in sp.waiting_takes(project_dir, shot_id)}:
+            server_log(f"take decision recorded with a follow-up error: {type(exc).__name__}")
+            return {"ok": True, "decision": decision}
+        if decision == "approve":
+            raise HTTPException(status_code=409, detail="This take's file is missing or has changed since it was made, "
+                                "so it can't be approved. You can still decline it.") from exc
+        raise HTTPException(status_code=409, detail="Front Lot couldn't record that. Nothing was changed.") from exc
+    return {"ok": True, "decision": decision}
 
 
 def _regular_gate_request_exists(project_dir: Path, request_id: str) -> bool:

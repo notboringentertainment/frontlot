@@ -217,6 +217,48 @@ def select(root, shot_id, take_id, *, user_note, start=None, end=None):
     return event
 
 
+def decline(root, shot_id, take_id, *, user_note):
+    """Set a take aside. Nothing is chosen, so no decision-log entry."""
+    if not any(row['kind'] == 'take' and row['take_id'] == take_id for row in history(root, shot_id)):
+        raise ValueError('Unknown take')
+    return _append(root, shot_id, {'kind': 'decline', 'take_id': take_id, 'user_note': _note(user_note)})
+
+
+def take_decisions(rows):
+    """Each take's standing: chosen, declined, passed_over or waiting.
+
+    A take waits until it is chosen or declined, or until Ben chooses another
+    take made after it: approving one take settles every take made before it.
+    A take made after the latest choice waits again, stopped shot or not.
+    """
+    chosen, last_choice, declined, order = None, -1, set(), {}
+    for index, row in enumerate(rows):
+        kind = row.get('kind')
+        if kind == 'take':
+            order.setdefault(row.get('take_id'), index)
+        elif kind == 'selection':
+            chosen, last_choice = row.get('take_id'), index
+        elif kind == 'decline':
+            declined.add(row.get('take_id'))
+    standing = {}
+    for take_id, index in order.items():
+        if take_id == chosen:
+            standing[take_id] = 'chosen'
+        elif take_id in declined:
+            standing[take_id] = 'declined'
+        elif index < last_choice:
+            standing[take_id] = 'passed_over'
+        else:
+            standing[take_id] = 'waiting'
+    return standing
+
+
+def waiting_takes(root, shot_id):
+    rows = history(root, shot_id)
+    standing = take_decisions(rows)
+    return [row for row in rows if row['kind'] == 'take' and standing.get(row['take_id']) == 'waiting']
+
+
 def propose_change(root, shot_id, text):
     """Local unratified input for the existing notes -> wayfinder process."""
     if read_brief(root, shot_id) is None:
@@ -232,19 +274,66 @@ def propose_change(root, shot_id, text):
                     'path': path.relative_to(root).as_posix(), 'text': note})
 
 
-def _source_warnings(root, brief):
-    warnings = []
-    for snapshot in brief['source_snapshots']:
+_HASHES = {}   # (path, size, mtime_ns) -> sha256, so a busy board doesn't re-hash unchanged sources
+
+
+def _current_hash(path):
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    key = (str(path), info.st_size, info.st_mtime_ns)
+    if key not in _HASHES:
+        _HASHES[key] = sha256_file(path)
+    return _HASHES[key]
+
+
+def _plain_stem(path):
+    words = path.stem.replace('-', ' ').replace('_', ' ')
+    # A pipeline record (checkpoint_visual_bible.json) reads as what it holds.
+    return 'the approved ' + words[len('checkpoint '):] if words.startswith('checkpoint ') else words
+
+
+def _title(path):
+    """A source's name for Ben: its first heading, else its file name."""
+    if path.suffix.lower() != '.md':
+        return _plain_stem(path)
+    try:
+        with path.open(encoding='utf-8', errors='replace') as text:
+            for _, line in zip(range(40), text):
+                if line.startswith('#'):
+                    heading = line.lstrip('#').strip()
+                    if heading:
+                        return heading[:120]
+    except OSError:
+        pass
+    return _plain_stem(path)
+
+
+def source_changes(root, brief):
+    """What the brief was made from that has changed since: [{kind, name|entity_id, missing}]."""
+    changes = []
+    for snapshot in brief.get('source_snapshots') or []:
         path = Path(snapshot['path'])
-        if not path.is_file() or sha256_file(path) != snapshot['sha256']:
-            warnings.append(f'Source changed; review this shot: {path}')
-    from lib.look_ingest import verify_look_refs
-    for ref in brief['look_refs']:
-        try:
-            verify_look_refs(root, [ref])
-        except Exception as exc:
-            warnings.append(f"Look {ref['entity_id']} needs review: {exc}")
-    return warnings
+        current = _current_hash(path) if path.is_file() else None
+        if current != snapshot['sha256']:
+            changes.append({'kind': 'source', 'name': _title(path) if current else _plain_stem(path),
+                            'missing': current is None,
+                            'path': str(path)})
+    refs = brief.get('look_refs') or []
+    if refs:
+        from lib.look_ingest import verify_look_refs
+        for ref in refs:
+            try:
+                verify_look_refs(root, [ref])
+            except Exception as exc:
+                changes.append({'kind': 'look', 'entity_id': ref.get('entity_id'), 'reason': str(exc)})
+    return changes
+
+
+def _source_warnings(root, brief):
+    return [f"Source changed; review this shot: {c['path']}" if c['kind'] == 'source'
+            else f"Look {c['entity_id']} needs review: {c['reason']}" for c in source_changes(root, brief)]
 
 
 def inspect_shot(root, shot_id):
@@ -254,9 +343,13 @@ def inspect_shot(root, shot_id):
     warnings = _source_warnings(root, brief)
     rows = history(root, shot_id)
     revisions = {r['event_id']: r['brief'] for r in rows if r['kind'] == 'brief'}
-    takes = [{**r, 'source_warnings': _source_warnings(root, revisions[r['brief_revision_id']])}
+    standing = take_decisions(rows)
+    takes = [{**r, 'standing': standing.get(r['take_id']),
+              'source_warnings': _source_warnings(root, revisions[r['brief_revision_id']])}
              for r in rows if r['kind'] == 'take']
     return {'brief': brief, 'warnings': warnings,
             'takes': takes,
+            'waiting_for_ben': [t['take_id'] for t in takes if t['standing'] == 'waiting'],
+            'declines': [r for r in rows if r['kind'] == 'decline'],
             'selections': [r for r in rows if r['kind'] == 'selection'],
             'proposals': [r for r in rows if r['kind'] == 'canon_proposal']}

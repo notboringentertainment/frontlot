@@ -582,13 +582,25 @@ def _shot_entry(project_dir: Path, shot_id: str) -> Optional[dict]:
     if brief is None:
         return None
     revision = brief.get("revision_id")
-    selected_id = None
+    standing = sp.take_decisions(rows)
+    briefs = {r.get("event_id"): r.get("brief") or {} for r in rows if r.get("kind") == "brief"}
+    changes: dict = {}   # brief revision -> what it was made from that has changed since
     takes: list[dict] = []
     for row in rows:
         kind = row.get("kind")
         if kind == "take":
             path = _shot_take_path(project_dir, row.get("path"))
             cost = row.get("cost_usd")
+            made_from = row.get("brief_revision_id")
+            if made_from not in changes:
+                try:
+                    found = sp.source_changes(project_dir, briefs.get(made_from) or {})
+                except Exception:
+                    found = []
+                # Names only: the board never shows paths or the checker's machine reasons.
+                changes[made_from] = [{"kind": c["kind"], "name": c.get("name"), "entity_id": c.get("entity_id"),
+                                       "missing": bool(c.get("missing"))} for c in found]
+            take_standing = standing.get(row.get("take_id"), "waiting")
             takes.append({
                 "take_id": row.get("take_id"),
                 "path": path,
@@ -596,14 +608,17 @@ def _shot_entry(project_dir: Path, shot_id: str) -> Optional[dict]:
                 "made_at": row.get("at"),
                 "cost_usd": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
                 "duration_seconds": row.get("duration_seconds"),
-                "from_earlier_brief": bool(revision and row.get("brief_revision_id") != revision),
+                "from_earlier_brief": bool(revision and made_from != revision),
+                "selected": take_standing == "chosen",
+                "declined": take_standing == "declined",
+                "waiting": take_standing == "waiting",
+                "source_changes": changes[made_from],
             })
-        elif kind == "selection":
-            selected_id = row.get("take_id")
-    for take in takes:
-        take["selected"] = selected_id is not None and take["take_id"] == selected_id
+    waiting_count = sum(1 for t in takes if t["waiting"])
     first_brief = next((r for r in rows if r.get("kind") == "brief"), {})
-    if brief.get("stopped"):
+    if waiting_count:
+        shot_state = "waiting"   # a stopped shot's unjudged take still needs Ben
+    elif brief.get("stopped"):
         shot_state = "stopped"
     elif any(t["selected"] for t in takes):
         shot_state = "selected"
@@ -619,6 +634,8 @@ def _shot_entry(project_dir: Path, shot_id: str) -> Optional[dict]:
         "prepared_at": first_brief.get("at"),
         "spend_allowance_usd": brief.get("spend_allowance_usd"),
         "max_video_takes": brief.get("max_video_takes"),
+        "stopped": bool(brief.get("stopped")),
+        "waiting_count": waiting_count,
         "spent_usd": round(sum(t["cost_usd"] for t in takes if t["cost_usd"] is not None), 2),
         "takes": takes,
     }

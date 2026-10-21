@@ -233,8 +233,13 @@ def test_flag_like_ids_are_refused(world):
     with pytest.raises(ops.OpError):
         prep(world, "sheet_finish", entity="--finish")
     with pytest.raises(ops.OpError):
-        prep(world, "shot_select", shot_id="s1", take_id="-h", note="n")
-    assert prep(world, "shot_select", shot_id="s1", take_id="take-1", note="n").argv[-4:-2] == ["s1", "take-1"]
+        prep(world, "shot_stop", shot_id="-h", note="n")
+
+
+def test_claude_cannot_choose_a_take():
+    # Ben approves or declines takes on the card under Needs you; Claude has no step for it.
+    assert "shot_select" not in ops.OPERATIONS
+    assert not any("take_id" in spec.allowed for spec in ops.OPERATIONS.values())
 
 
 def test_brief_lists_must_be_lists_of_strings(world):

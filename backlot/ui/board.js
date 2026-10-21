@@ -366,7 +366,7 @@ function renderStatus(s) {
   const awaiting = s.stages.find((x) => x.status === "awaiting_human");
   const inProgress = s.stages.find((x) => x.status === "in_progress");
   const stalled = s.stages.find((x) => x.stalled);
-  const needs = pendingGates(s).length || awaiting;
+  const needs = pendingGates(s).length || waitingShots(s).length || awaiting;
   let cls = "";
   let label = `Idle${s.last_activity ? ` · ${fmtAgo(s.last_activity)}` : ""}`;
   if (needs) { cls = "needs"; label = "Needs you"; }
@@ -2038,9 +2038,10 @@ function renderEntityViewer(s, e) {
 }
 
 // Supervised shots: each prepared shot and the takes made for it. Only a
-// chosen take is green; nothing here is yellow, because a shot never waits on
-// a signature in the board.
+// chosen take is green; a shot is yellow only while a take waits on Ben's
+// approve or decline on its card.
 const SHOT_TAPE = {
+  waiting: ["waiting", "Needs you"],
   prepared: ["", "Brief ready"],
   has_takes: ["", "Takes to review"],
   selected: ["done", "Take chosen"],
@@ -2058,8 +2059,11 @@ function shownTakeIndex(shot) {
 function takesSummary(shot) {
   const n = shot.takes.length;
   if (!n) return "No takes yet";
-  return `${n} take${n === 1 ? "" : "s"}${shot.state === "selected" ? ", one chosen" : ""}`;
+  if (shot.waiting_count) return `${shot.waiting_count} take${shot.waiting_count === 1 ? "" : "s"} to review`;
+  return `${n} take${n === 1 ? "" : "s"}${shot.takes.some((t) => t.selected) ? ", one chosen" : ""}`;
 }
+
+const waitingShots = (s) => shotsOf(s).filter((shot) => shot.waiting_count > 0);
 
 function selectShot(shot) {
   selectedEntity = shotKey(shot);
@@ -2119,6 +2123,136 @@ function renderTakeScreen(s, take, label, fallback) {
   return screen;
 }
 
+// Ben's video take card. Each tile plays the whole original take file, start
+// to end, with the video's own play, pause and scrub controls: approval
+// playback is never limited to a trimmed section. The nodes are kept across
+// live refreshes so a playing take never restarts and a half-written note is
+// never lost.
+const takeTiles = new Map();   // take_id -> {src, video, note}
+const takeBusy = new Set();
+const takeErrors = new Map();
+
+function takeTileNodes(s, take) {
+  const src = take.path ? mediaURL(s.project_id, take.path) : null;
+  let nodes = takeTiles.get(take.take_id);
+  if (!nodes || nodes.src !== src) {
+    nodes = {
+      src,
+      video: src ? el("video", { src, controls: "", preload: "metadata", playsinline: "", "aria-label": "Take playback" }) : null,
+      note: el("textarea", { class: "take-note", rows: "2", maxlength: "2000", placeholder: "Note (optional)", "aria-label": "Note" }),
+    };
+    takeTiles.set(take.take_id, nodes);
+  }
+  return nodes;
+}
+
+function lookName(s, entityId) {
+  const roster = hasAuthoredGates(s) ? buildRoster(s) : [];
+  return (roster.find((e) => e.id === entityId) || {}).name || titleCase(entityId);
+}
+
+function sourceChangeText(s, changes) {
+  if (!changes || !changes.length) return null;
+  const names = changes.map((c) => c.kind === "look"
+    ? `the look for ${lookName(s, c.entity_id)}`
+    : `${c.name || "a source document"}${c.missing ? " (no longer there)" : ""}`);
+  return `Something this shot was briefed from has changed since this take was made: ${names.join(", ")}.`;
+}
+
+async function decideTake(shot, take, decision) {
+  let token = null;
+  try { token = sessionStorage.getItem(CAPABILITY_TOKEN_KEY); } catch { token = null; }
+  if (!token) {
+    takeErrors.set(take.take_id, "Front Lot couldn't confirm this came from you. Close and reopen Front Lot, then try again.");
+    render();
+    return;
+  }
+  const nodes = takeTiles.get(take.take_id);
+  const note = nodes ? nodes.note.value.trim() : "";
+  takeBusy.add(take.take_id);
+  takeErrors.delete(take.take_id);
+  render();
+  try {
+    const res = await fetch(`/api/project/${encodedProjectId}/shot/${encodeURIComponent(shot.id)}/take/${encodeURIComponent(take.take_id)}/decision`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Frontlot-Capability": token },
+      body: JSON.stringify({ decision, note }),
+    });
+    if (!res.ok) {
+      let detail = "";
+      try { detail = (await res.json()).detail; } catch { detail = ""; }
+      takeErrors.set(take.take_id, typeof detail === "string" && detail ? detail : "Front Lot couldn't record that. Nothing was changed.");
+    } else {
+      if (nodes) nodes.note.value = "";
+      // Once the card settles, the viewer shows the take Ben just chose.
+      if (decision === "approve") selectedFrame = shot.takes.findIndex((t) => t.take_id === take.take_id);
+    }
+  } catch {
+    takeErrors.set(take.take_id, "Front Lot couldn't reach its server. Nothing was changed.");
+  } finally {
+    takeBusy.delete(take.take_id);
+    await refresh().catch(() => render());
+  }
+}
+
+function renderTakeTile(s, shot, take, { decidable, othersWaiting }) {
+  const number = shot.takes.indexOf(take) + 1;
+  const nodes = takeTileNodes(s, take);
+  const busy = takeBusy.has(take.take_id);
+  const facts = [
+    `Take ${number}`,
+    take.cost_usd != null ? fmtMoney(take.cost_usd) : "cost not recorded",
+    take.duration_seconds != null ? `${Math.round(take.duration_seconds)} seconds` : null,
+    take.made_at ? `made ${fmtGateTime(take.made_at)}` : null,
+  ].filter(Boolean).join(" · ");
+  const screen = el("figure", { class: `screen take-screen${nodes.video ? "" : " blank"}` },
+    nodes.video || el("div", {}, el("b", {}, "Take missing"), el("p", {}, "This take's file isn't in the film folder any more.")));
+  const changed = sourceChangeText(s, take.source_changes);
+  const tile = el("article", { class: `take-tile${decidable ? "" : " reference"}`, "aria-label": `Take ${number}` },
+    screen,
+    el("p", { class: "take-facts" }, facts, take.from_earlier_brief ? el("small", {}, " · from an earlier brief") : null),
+    changed ? el("p", { class: "take-warning", role: "note" }, changed) : null);
+  if (!decidable) {
+    tile.append(el("p", { class: "take-facts" }, tape("done", "Chosen now")));
+    return tile;
+  }
+  if (othersWaiting > 0) {
+    tile.append(el("p", { class: "take-aside" },
+      `Approving this take sets the other ${othersWaiting === 1 ? "one" : othersWaiting} aside.`));
+  }
+  const error = takeErrors.get(take.take_id);
+  tile.append(el("div", { class: "take-decide" }, nodes.note,
+    el("div", { class: "take-actions" },
+      el("button", {
+        type: "button", class: "gate-primary take-approve", disabled: busy || !take.playable ? "" : null,
+        title: take.playable ? null : "A missing take can't be approved",
+        onclick: () => decideTake(shot, take, "approve"),
+      }, busy ? "Saving…" : "Approve"),
+      el("button", {
+        type: "button", class: "quiet-btn take-decline", disabled: busy ? "" : null,
+        onclick: () => decideTake(shot, take, "decline"),
+      }, "Decline"))));
+  if (error) tile.append(el("p", { class: "take-error", role: "alert" }, error));
+  return tile;
+}
+
+function renderTakeReview(s, shot) {
+  const waiting = shot.takes.filter((t) => t.waiting);
+  const chosen = shot.takes.find((t) => t.selected);
+  const tiles = waiting.map((t) => renderTakeTile(s, shot, t, { decidable: true, othersWaiting: waiting.length - 1 }));
+  if (chosen) tiles.push(renderTakeTile(s, shot, chosen, { decidable: false }));
+  // The header already carries the brief's first sentence; the rest is a tap away.
+  const label = plain(shot.label);
+  const direction = plain(shot.direction);
+  return el("section", { class: "take-review", "aria-label": "Takes to review" },
+    direction && direction !== label
+      ? el("details", { class: "take-brief" }, el("summary", {}, "What the shot asked for, in full"), el("p", {}, direction)) : null,
+    el("p", { class: "take-lead" }, waiting.length === 1
+      ? "Watch the take, then approve it to make it this shot's chosen take, or decline it."
+      : `Watch the ${waiting.length} takes side by side. Approve the one you want; it becomes this shot's chosen take.`),
+    el("div", { class: `take-grid n${Math.min(tiles.length, 3)}` }, tiles));
+}
+
 function renderShotViewer(s, shot) {
   const name = shotName(s, shot);
   const frames = shot.takes.map((take, i) => ({
@@ -2155,16 +2289,17 @@ function renderShotViewer(s, shot) {
       el("button", {
         class: "text linkish", type: "button", style: "all:unset;cursor:pointer",
         onclick: () => { selectedFrame = i; render(); },
-      }, [`Take ${i + 1}`, t.selected ? ", chosen" : "", t.cost_usd != null ? `, ${fmtMoney(t.cost_usd)}` : "",
+      }, [`Take ${i + 1}`, t.selected ? ", chosen" : t.waiting ? ", waiting for you" : t.declined ? ", declined" : "", t.cost_usd != null ? `, ${fmtMoney(t.cost_usd)}` : "",
         t.duration_seconds != null ? `, ${Math.round(t.duration_seconds)} seconds` : ""].join("")),
       el("small", {}, `Made ${fmtGateTime(t.made_at)}${t.from_earlier_brief ? ", from an earlier brief" : ""}`))));
 
+  const reviewing = shot.waiting_count > 0;
   return el("div", { class: "viewer-inner" },
     head,
-    renderTakeScreen(s, take, frames[selectedFrame] && frames[selectedFrame].label, blank),
-    renderFrameStrip(s, frames, name),
+    reviewing ? renderTakeReview(s, shot) : renderTakeScreen(s, take, frames[selectedFrame] && frames[selectedFrame].label, blank),
+    reviewing ? null : renderFrameStrip(s, frames, name),
     el("div", { class: "notes" },
-      el("section", {},
+      reviewing ? null : el("section", {},
         el("h3", {}, "The direction"),
         el("p", {}, plain(shot.direction) || "No direction written.")),
       el("section", {},
@@ -2415,12 +2550,27 @@ function renderCanonChanges(s) {
 function renderLog(s, roster) {
   const needsBox = el("div", {});   // "Needs you", above the conversation
   const history = el("div", {});    // the log, decisions and machine room, below it
-  if (hasAuthoredGates(s)) {
+  const reviewShots = waitingShots(s);
+  if (hasAuthoredGates(s) || reviewShots.length) {
     const pending = pendingGates(s);
+    const count = pending.length + reviewShots.length;
     const needs = el("section", { class: "log-section", id: "gates", "aria-labelledby": "needs-heading" },
-      el("h2", { id: "needs-heading" }, "Needs you", pending.length ? el("span", { class: "count" }, String(pending.length)) : null));
-    if (!pending.length) {
+      el("h2", { id: "needs-heading" }, "Needs you", count ? el("span", { class: "count" }, String(count)) : null));
+    if (!count) {
       needs.append(el("p", { class: "log-quiet" }, "Nothing is waiting on you."));
+    }
+    for (const shot of reviewShots) {
+      const n = shot.waiting_count;
+      needs.append(el("button", {
+        class: "need take-need",
+        type: "button",
+        "aria-current": selectedEntity === shotKey(shot) && !selectedGateId ? "true" : null,
+        "aria-label": `Review ${n} video take${n === 1 ? "" : "s"} for ${shotName(s, shot)}`,
+        onclick: () => selectShot(shot),
+      },
+        el("span", { class: "what" }, "Video take"),
+        el("span", { class: "text" }, plain(shot.label) || shotName(s, shot)),
+        el("span", { class: "who" }, `${shotName(s, shot)} · ${n} take${n === 1 ? "" : "s"} to review`)));
     }
     for (const row of pending) {
       const key = entityKeyOf(row);
@@ -2436,12 +2586,12 @@ function renderLog(s, roster) {
         el("span", { class: "text" }, plain(row.summary) || gateWords(row.kind)),
         who ? el("span", { class: "who" }, who) : null));
     }
-    if (s.gates.error) needs.append(el("div", { class: "alert", role: "alert" }, el("b", {}, "Couldn't read the approvals"), el("span", {}, s.gates.error)));
+    if (s.gates && s.gates.error) needs.append(el("div", { class: "alert", role: "alert" }, el("b", {}, "Couldn't read the approvals"), el("span", {}, s.gates.error)));
     needsBox.append(needs);
     const canonBox = renderCanonChanges(s);
     if (canonBox) needsBox.append(canonBox);
 
-    const done = (s.gates.requests || []).filter((row) => row.state !== "pending")
+    const done = ((s.gates && s.gates.requests) || []).filter((row) => row.state !== "pending")
       .sort((x, y) => (y.mtime || 0) - (x.mtime || 0));
     if (done.length) {
       const shown = logShowAll ? done : done.slice(0, 8);
@@ -2647,6 +2797,17 @@ function tickReplay() {
 
 function render() {
   if (!state) return;
+  // A take note Ben is typing in survives the rebuild with its cursor.
+  const typing = document.activeElement && document.activeElement.classList.contains("take-note")
+    ? { node: document.activeElement, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
+  renderBoard();
+  if (typing && typing.node.isConnected) {
+    typing.node.focus({ preventScroll: true });
+    typing.node.setSelectionRange(typing.start, typing.end);
+  }
+}
+
+function renderBoard() {
   const s = replay ? stateAt(state, replay.t) : state;
   const authoredGates = hasAuthoredGates(s);
   if (hasAuthoredGates(state) && gateSession.socket && gateSession.requestId) {
@@ -2752,7 +2913,10 @@ function normalize(s) {
   s.media.music = Array.isArray(s.media.music) ? s.media.music : [];
   s.events = Array.isArray(s.events) ? s.events : [];
   s.shots = Array.isArray(s.shots) ? s.shots : [];
-  for (const shot of s.shots) shot.takes = Array.isArray(shot.takes) ? shot.takes : [];
+  for (const shot of s.shots) {
+    shot.takes = Array.isArray(shot.takes) ? shot.takes : [];
+    for (const take of shot.takes) take.source_changes = Array.isArray(take.source_changes) ? take.source_changes : [];
+  }
   if (s.storyboard && Array.isArray(s.storyboard.scenes)) {
     for (const c of s.storyboard.scenes) {
       c.takes = Array.isArray(c.takes) ? c.takes : [];
