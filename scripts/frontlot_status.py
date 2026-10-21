@@ -41,9 +41,11 @@ def status_lines(root: Path) -> list[str]:
     lines: list[str] = []
 
     waiting = [r for r in (_gates_state(root, None) or {}).get("requests") or [] if r.get("state") == "pending"]
-    if waiting:
+    takes = _waiting_take_lines(root)
+    if waiting or takes:
         lines.append("Waiting for Ben under Needs you:")
         lines += [f"- {r.get('summary') or r.get('request_id')}" for r in waiting]
+        lines += takes
     else:
         lines.append("Nothing is waiting for Ben under Needs you.")
 
@@ -66,6 +68,19 @@ def status_lines(root: Path) -> list[str]:
         elif where == "declined":
             lines.append(f"Look declined by Ben: {who}. The look op records his note.")
     lines += _location_lines(root, looks, names)
+    return lines
+
+
+def _waiting_take_lines(root: Path) -> list[str]:
+    """Shots with video takes Ben hasn't approved or declined yet (he decides on the card)."""
+    from backlot.state import _collect_shots
+
+    shots = _collect_shots(root)
+    lines = []
+    for number, shot in enumerate(shots, 1):
+        n = shot.get("waiting_count") or 0
+        if n:
+            lines.append(f"- Shot {number} ({shot.get('label')}): {n} video take{'s' if n != 1 else ''} to watch and approve or decline.")
     return lines
 
 

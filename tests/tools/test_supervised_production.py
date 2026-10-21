@@ -228,3 +228,34 @@ def test_request_makes_the_take_folder_so_the_paid_step_never_stops_on_it(shot):
     inputs = request(root, spec['shot_id'], prompt='p', output_path=f"production/shots/{spec['shot_id']}/takes/take-01.mp4")
     assert Path(inputs['output_path']).parent.is_dir()
     validate_output_parent(inputs['output_path'], root)    # the check that stopped the real run now passes
+
+
+def test_waiting_rule_over_a_shot_history():
+    from lib.supervised_production import take_decisions
+    take = lambda i: {'kind': 'take', 'take_id': i}
+    assert take_decisions([]) == {}
+    assert take_decisions([take('a')]) == {'a': 'waiting'}
+    assert take_decisions([take('a'), take('b'), take('c')]) == {'a': 'waiting', 'b': 'waiting', 'c': 'waiting'}
+    rows = [take('a'), take('b'), {'kind': 'selection', 'take_id': 'b'}]
+    assert take_decisions(rows) == {'a': 'passed_over', 'b': 'chosen'}
+    rows += [take('c')]
+    assert take_decisions(rows) == {'a': 'passed_over', 'b': 'chosen', 'c': 'waiting'}
+    rows += [{'kind': 'decline', 'take_id': 'c'}]
+    assert take_decisions(rows)['c'] == 'declined'
+    stopped = [take('a'), {'kind': 'stop'}]
+    assert take_decisions(stopped) == {'a': 'waiting'}
+
+
+def test_decline_records_the_note_and_refuses_unknown_takes(shot):
+    from lib.supervised_production import attach, decline, waiting_takes, inspect_shot
+    root, spec = shot
+    take = attach(root, spec['shot_id'], root / 'ace.png', user_note='External reference test.')
+    assert [t['take_id'] for t in waiting_takes(root, spec['shot_id'])] == [take['take_id']]
+    with pytest.raises(ValueError):
+        decline(root, spec['shot_id'], 'missing', user_note='no')
+    with pytest.raises(ValueError):
+        decline(root, spec['shot_id'], take['take_id'], user_note=' ')
+    decline(root, spec['shot_id'], take['take_id'], user_note='Too fast.')
+    assert waiting_takes(root, spec['shot_id']) == []
+    report = inspect_shot(root, spec['shot_id'])
+    assert report['waiting_for_ben'] == [] and report['takes'][0]['standing'] == 'declined'

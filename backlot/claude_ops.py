@@ -492,12 +492,7 @@ def _shot(sub: str, paid: bool = False):
                     raise OpError("tool must be seedream_image, seedance_video, or kling_reference_video")
                 argv += ["--tool", tool, "--expect-brief-revision", _brief_revision(ctx.film, shot)]
                 summary = f"Generate shot {shot}"   # estimate stays None: "cost unknown", Go still required
-            if sub == "select":
-                take = p.get("take_id")
-                if not isinstance(take, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", take):
-                    raise OpError("take_id must contain only letters, numbers, underscores and hyphens")
-                argv.append(take)
-            if sub in ("stop", "select", "propose"):
+            if sub in ("stop", "propose"):
                 argv += ["--note", _note(p)]
         return Prepared(ctx.op, paid, argv, inputs, snap, summary=summary, estimate_usd=estimate)
     return build
@@ -525,7 +520,6 @@ OPERATIONS: dict[str, Operation] = {
     "shot_attach": Operation(False, frozenset({"shot_id", "take", "note", "job_id"}), _shot("attach")),
     "shot_inspect": Operation(False, frozenset({"shot_id"}), _shot("inspect")),
     "shot_stop": Operation(False, frozenset({"shot_id", "note"}), _shot("stop")),
-    "shot_select": Operation(False, frozenset({"shot_id", "take_id", "note"}), _shot("select")),
     "shot_propose": Operation(False, frozenset({"shot_id", "note"}), _shot("propose")),
 }
 
