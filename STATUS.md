@@ -1,6 +1,6 @@
 # Front Lot status
 
-Last rewritten: 2026-10-18. Rewrite this page in place when work lands; don't add to the bottom.
+Last rewritten: 2026-10-21. Rewrite this page in place when work lands; don't add to the bottom.
 
 Front Lot is the film-making app in this repository: it turns approved canon into pictures
 and shots.
@@ -24,6 +24,9 @@ Front Lot runs on this Mac (port 4750) from the `authored-film` branch.
 - **Location pictures** come from your own images: add them, then one signature per place.
 - **Supervised shots:** each shot is a conversation with a saved brief and a spending limit.
   Each generate is exactly one paid call, with no automatic retries. Takes play in the viewer.
+- **Video take approval:** each new video take waits under Needs you. You watch the full take
+  and approve or decline it there, with an optional note. Approving picks it for the shot.
+  Front Lot's Claude no longer picks takes for you.
 - **Status check** is free and always available.
 
 ## Open
