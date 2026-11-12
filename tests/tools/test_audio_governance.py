@@ -14,8 +14,9 @@ def sign(root, kind, record, entity):
 
 @pytest.fixture
 def project(tmp_path,monkeypatch):
-    import lib.paths
+    import lib.paths, lib.events
     monkeypatch.setattr(lib.paths,'PROJECTS_DIR',tmp_path)
+    monkeypatch.setattr(lib.events,'PROJECTS_DIR',tmp_path)
     root=tmp_path/'invented';root.mkdir()
     data={'version':'1.3','budget_usd_cap':1,'wall_time_minutes':60,'cast_cap':{'characters':1,'locations':1},
           'default_video_endpoint':'invented-video','provider_egress':[{'provider':'elevenlabs','content_classes':['speech_text','music_prompt','effect_prompt']}],
@@ -271,3 +272,21 @@ def test_legacy_schema_definitions_are_unchanged():
     schema=json.loads(Path('schemas/project_config.schema.json').read_text())
     expected=json.loads(Path('tests/tools/fixtures/audio_legacy_config_hashes.json').read_text())
     assert {k:record_sha256(schema['$defs'][k]) for k in expected}==expected
+
+@pytest.mark.parametrize('mode',['timeout','download'])
+def test_existing_reconciler_never_sends_audio_to_footage_service(project,mode,monkeypatch):
+    import io
+    from scripts import reconcile_paid_calls as reconciler
+    r=prepare(project);approve(project,r);t=Transport(mode)
+    with pytest.raises((TimeoutError,OSError)):run(project,r,t)
+    calls=[]
+    def no_footage_poll(*args,**kwargs):
+        calls.append(1)
+        raise AssertionError('Audio must not be sent to the footage service.')
+    monkeypatch.setattr(reconciler,'fal_queue_status',no_footage_poll)
+    out=io.StringIO()
+    summary=reconciler.reconcile_project(project,api_key=None,out=out)
+    assert len(summary['manual'])==1 and 'ElevenLabs' in out.getvalue()
+    assert calls==[] and t.calls==1
+    assert t.downloads==(mode=='download')
+    assert list(load_reservations(project).values())[0]['state']=='pending_billing'
