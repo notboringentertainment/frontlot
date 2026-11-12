@@ -430,7 +430,8 @@ def paper_state(root):
         needs_review = changed or pending or bool(check and check['status'] == 'failed')
         history = [{'id': v['edit_revision_sha256'], 'number': n, 'saved_at': v.get('saved_at') or (current or {}).get('revision_times', {}).get(v['edit_revision_sha256']) or _legacy_time(root, v),
                     'time_source': 'recorded' if v.get('saved_at') else 'file', 'kind': 'Paper cut' if 'paper_cut' in v else 'Rough cut'} for n, v in enumerate(versions, 1)]
-        return {'sources': sources, 'current': current, 'needs_review': needs_review, 'inputs_changed': changed,
+        return {'target_frames': round(require_contract(root)['target_duration_seconds']*24),
+                'sources': sources, 'current': current, 'needs_review': needs_review, 'inputs_changed': changed,
                 'story_check': check, 'usable_downstream': bool(current and check and check['status'] == 'checked' and not needs_review),
                 'history': history}
     except (ValueError, OSError, KeyError, TypeError, AttributeError):

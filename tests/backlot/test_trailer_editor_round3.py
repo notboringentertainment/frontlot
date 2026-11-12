@@ -145,3 +145,18 @@ def test_saved_versions_update_without_page_reload(editor_world):
             expect(page.get_by_role('button',name='Open version 2',exact=False)).to_be_visible()
             assert len(edit.paper_state(root)['history'])==2
         finally:browser.close()
+
+
+def test_target_change_refreshes_timing_without_losing_draft(editor_world):
+    from lib.checkpoint import init_project
+    root=editor_world;edit.save_revision(root,collection_paper(),None)
+    with editor_server(root.parent) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=browser.new_page();page.goto(f'{url}/p/{root.name}#k=invented-browser-proof')
+            page.get_by_label('Hook',exact=True).fill('Keep this unsaved opening')
+            init_project(root.name,title='The Last Collection',pipeline_type='authored-film@1.6',pipeline_dir=root.parent,target_duration_seconds=29,review_target_change=True)
+            page.evaluate("async (slug)=>{const s=await fetch('/api/project/'+slug+'/state').then(r=>r.json());(await import('/ui/trailer.js')).renderPaperCut(s);}",root.name)
+            expect(page.get_by_text('Shots total 28.00 seconds; target 29.00 seconds. 24 frames short.',exact=True)).to_be_visible()
+            expect(page.get_by_label('Hook',exact=True)).to_have_value('Keep this unsaved opening')
+        finally:browser.close()

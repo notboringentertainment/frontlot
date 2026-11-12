@@ -51,6 +51,7 @@ export function renderPaperCut(s) {
     // Pending creation status can change through repair or signing.
     editor=null;return node;
   }
+  let targetFrames=Math.round(s.trailer.target_duration_seconds*24);
   let state=s.paper_cut || {}, revision=state.current?.edit_revision_sha256 || null;
   let draft=structuredClone(state.current?.paper_cut || emptyPaper()), dirty=false, preserved=null, playing=null;
   const api=`/api/project/${encodeURIComponent(s.project_id)}/paper-cut`;
@@ -91,14 +92,14 @@ export function renderPaperCut(s) {
     }
     rows("Exact spoken lines","lines");rows("Exact title cards","cards");rows("Timed shot list","shots",true);
     const timing=panel("Temporary timed sequence"), timingText=el("p",{}), preview=el("div",{class:"paper-preview"});
-    const cursor=el("input",{type:"range",min:0,max:Math.round(s.trailer.target_duration_seconds*24)-1,value:0,"aria-label":"Sequence frame"});
+    const cursor=el("input",{type:"range",min:0,max:targetFrames-1,value:0,"aria-label":"Sequence frame"});
     const show=()=>{
       let start=0;const frame=Number(cursor.value);const shot=draft.shots.find(x=>{const hit=frame>=start&&frame<start+x.duration_frames;start+=x.duration_frames;return hit;});
       const cards=draft.cards.filter(x=>frame>=x.start_frame&&frame<x.start_frame+x.duration_frames).map(x=>x.text);
       const lines=draft.lines.filter(x=>frame>=x.start_frame&&frame<x.start_frame+x.duration_frames).map(x=>x.text);
       preview.replaceChildren(el("strong",{},"UNFINISHED PLACEHOLDER"),el("p",{},shot?"Planned shot only — no footage":"No shot planned here"),el("p",{},cards.join(" · ")),el("p",{},lines.length?`Spoken text only: ${lines.join(" · ")}`:""),el("small",{},`Frame ${frame} · ${(frame/24).toFixed(2)} seconds`));
     };
-    updateTiming=()=>{const total=draft.shots.reduce((n,x)=>n+x.duration_frames,0),target=Math.round(s.trailer.target_duration_seconds*24);
+    updateTiming=()=>{const total=draft.shots.reduce((n,x)=>n+x.duration_frames,0),target=targetFrames;cursor.max=target-1;if(Number(cursor.value)>target-1)cursor.value=target-1;
       timingText.textContent=total===target?"The shots match the target length.":`Shots total ${(total/24).toFixed(2)} seconds; target ${(target/24).toFixed(2)} seconds. ${Math.abs(total-target)} frames ${total>target?"over":"short"}.`;show();};
     cursor.oninput=show;
     const play=button("Play placeholders",()=>{if(playing){clearInterval(playing);playing=null;play.textContent="Play placeholders";}else{play.textContent="Pause";playing=setInterval(()=>{cursor.value=(Number(cursor.value)+1)%(Number(cursor.max)+1);show();},1000/24);}});
@@ -123,6 +124,7 @@ export function renderPaperCut(s) {
   function update(next) {
     if(!next)return;
     state=next;
+    if(Number.isInteger(state.target_frames)){targetFrames=state.target_frames;updateTiming();}
     checks.replaceChildren();
     if(state.error)checks.append(el("p",{role:"alert"},state.error));
     if(state.needs_review)checks.append(el("p",{role:"alert"},state.current?.paper_cut_pending?"The paper cut changed. The saved rough-cut timing has been kept and needs a fresh look.":"The story, script or timing changed. Dependent work needs a fresh look."));
