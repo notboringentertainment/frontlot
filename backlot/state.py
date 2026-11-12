@@ -1752,6 +1752,16 @@ def _trailer_display_evidence(root: Path, marker: dict) -> bool:
     """
     if marker.get("production_kind") == "trailer" or marker.get("pipeline_type") == "authored-film@1.6":
         return True
+    # A stage's explicit manifest tuple is identity evidence, never approval.
+    # Older stage schema versions and prose mentioning trailers do not qualify.
+    for path in root.glob("checkpoint_*.json"):
+        try:
+            checkpoint = _read_json(path) or {}
+        except RecursionError:
+            continue
+        pipeline = checkpoint.get("pipeline")
+        if isinstance(pipeline, dict) and pipeline.get("name") == "authored-film" and pipeline.get("version") == "1.6":
+            return True
     from lib import gates
     path = root / "approvals.jsonl"
     info = _lstat(path)
@@ -1773,15 +1783,19 @@ def _trailer_display_evidence(root: Path, marker: dict) -> bool:
                     continue
                 try:
                     row = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):
                     continue
                 if not isinstance(row, dict) or row.get("project_id") != root.name:
                     continue
                 record = row.get("record")
                 if (row.get("kind") == "pipeline_migration" and row.get("entity_id") == "authored-film"
                         and isinstance(record, dict) and record.get("pipeline_name") == "authored-film"
-                        and record.get("version") == "1.6" and gates.verify_receipt(row)):
-                    return True
+                        and record.get("version") == "1.6"):
+                    try:
+                        if gates.verify_receipt(row):
+                            return True
+                    except (ValueError, TypeError, RecursionError):
+                        continue
     except (OSError, ValueError, TypeError):
         pass
     return False

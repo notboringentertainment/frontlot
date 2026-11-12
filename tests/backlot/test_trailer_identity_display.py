@@ -1,5 +1,5 @@
 """Unverifiable older productions retain their exact base presentation."""
-import copy,json,os,shutil,socket,subprocess,sys,time,urllib.request
+import json,os,shutil,socket,subprocess,sys,time,urllib.request
 from pathlib import Path
 from contextlib import contextmanager
 import pytest
@@ -20,10 +20,10 @@ def normalize(value):
 
 
 def base_projection(root,gates,tmp_path):
-    # Exact base source from local Git history, checked against its frozen digest.
-    code="""import hashlib,json,subprocess,sys,types
+    # Exact base source is a repository fixture, including in history-free archives.
+    code="""import hashlib,json,sys,types
 from pathlib import Path
-source=subprocess.check_output(['git','show','08b095a758c0e433ab5d462a5e2994b4ef4dd7a6:backlot/state.py'])
+source=Path(sys.argv[1]).with_name('base_board_state_source.py.txt').read_bytes()
 assert hashlib.sha256(source).hexdigest()==Path(sys.argv[1]).read_text().strip()
 m=types.ModuleType('base_board_state');m.__file__=str(Path.cwd()/'backlot/state.py')
 exec(compile(source,m.__file__,'exec'),m.__dict__)
@@ -95,7 +95,7 @@ def display_server(root,signing):
 def test_unverifiable_older_browser_matches_base_controls_and_cards(older_case,tmp_path):
     root,signing,_=older_case
     expected=base_projection(root,signing,tmp_path)
-    base_scripts={name:subprocess.check_output(['git','show',f'08b095a758c0e433ab5d462a5e2994b4ef4dd7a6:backlot/ui/{name}'],text=True) for name in ['board.js','library.js']}
+    base_scripts={name:(BASE_SOURCE.parent/('base_'+name+'.txt')).read_text() for name in ['board.js','library.js']}
     with display_server(root,signing) as url,sync_playwright() as pw:
         browser=pw.chromium.launch(headless=True)
         try:
