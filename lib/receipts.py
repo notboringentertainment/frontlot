@@ -55,7 +55,7 @@ QC_RECEIPTS_FILENAME = "qc-receipts.jsonl"
 
 APPROVAL_KINDS = frozenset(
     {
-        "hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review",
+        "hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review", "audio_spend",
         # Plan D10 (look locks) and Slice A' (headshots, reference import, manifest pins).
         "look_lock", "headshot", "reference_import", "pipeline_migration",
         # D19.4: a human accepting specific failed QC items of ONE verdict.
@@ -429,6 +429,11 @@ def validate_envelope(
     """Check the signed envelope of an approval kind against its record and
     return the fields to embed. Kinds without an envelope contract accept
     none (an unexpected envelope is an error, not ignored)."""
+    if kind == "audio_spend":
+        from tools.audio._governed import validate_request
+        validate_request(record)
+        if entity_id != record["request_id"]:
+            raise ValueError("audio approval request identity changed")
     spec = ENVELOPE_FIELDS.get(kind)
     env = dict(envelope or {})
     if spec is None:
@@ -788,6 +793,7 @@ def _build_generation_receipt(
     headshot_ref: Optional[dict] = None,
     import_receipt_id: Optional[str] = None,
     normalized_pixel_hash: Optional[str] = None,
+    audio_charge: Optional[dict] = None,
     prompt_recipe: Optional[dict] = None,
 ) -> dict:
     """Validate the fields and return a signed (not yet persisted) receipt.
@@ -866,6 +872,16 @@ def _build_generation_receipt(
         "started_at": started_at,
         "finished_at": finished_at,
     }
+    if audio_charge is not None:
+        import math
+        if set(audio_charge) != {"cash_usd", "credits_usd", "audio_approval_receipt_id"}:
+            raise ValueError("audio charge requires cash, replacement-value credits and its approval")
+        amounts = [audio_charge[k] for k in ("cash_usd", "credits_usd")]
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 for v in amounts):
+            raise ValueError("invalid audio charge")
+        if round(sum(amounts), 6) != round(float(cost_usd), 6):
+            raise ValueError("audio total must count cash and replacement-value credits exactly once")
+        receipt.update(audio_charge)
     receipt["signature"] = gates.sign_receipt(receipt)
     return receipt
 
