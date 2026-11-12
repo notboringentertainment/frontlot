@@ -50,6 +50,9 @@ def test_approved_music_posts_once_and_records_a_take(priced,http,route):
     assert result.success,result.error
     assert len(http)==1 and http[0][1]['json']['force_instrumental'] is True
     take=result.data['take'];assert take['approved_request_id']==record['request_id'] and take['release_note']==ws.TEST_ONLY
+    edited=dict(take,release_note='Cleared for release')
+    (priced/'.audio-workspace'/(take['id']+'.json')).write_text(json.dumps(edited))
+    assert ws.read(priced,take['id'])['release_note']==ws.TEST_ONLY
     assert ws.take_state(priced,take)=='Waiting for your decision'
     accepted=ws.decision_record(priced,take['id'],'accept');sign(priced,'audio_take',accepted,take['id'])
     assert ws.require_accepted(priced,take['id'])['id']==take['id']

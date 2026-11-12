@@ -37,6 +37,9 @@ def read(root,identity):
         with os.fdopen(os.dup(fd)) as f:record=json.load(f)
     finally:os.close(fd)
     if record.get('id')!=identity or record.get('project_id')!=Path(root).name:raise ValueError('Audio belongs to another production.')
+    # Release status is fixed by provenance, never editable take metadata.
+    if record.get('origin')=='generated' and record.get('kind')=='music':
+        record['release_note']=TEST_ONLY
     return record
 
 
