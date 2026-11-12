@@ -25,6 +25,11 @@ def base_projection(root,gates,tmp_path):
 from pathlib import Path
 source=Path(sys.argv[1]).with_name('base_board_state_source.py.txt').read_bytes()
 assert hashlib.sha256(source).hexdigest()==Path(sys.argv[1]).read_text().strip()
+# Freeze the historical dependency as well as the historical source.
+kinds=json.loads(Path(sys.argv[1]).with_name('base_approval_kinds.json').read_text())
+source=source.replace(b'from lib.receipts import APPROVAL_KINDS',
+    ('APPROVAL_KINDS = frozenset('+repr(kinds)+')').encode())
+
 m=types.ModuleType('base_board_state');m.__file__=str(Path.cwd()/'backlot/state.py')
 exec(compile(source,m.__file__,'exec'),m.__dict__)
 p=Path(sys.argv[2]);print(json.dumps({'board':m.load_board_state(p),'film':m.summarize_project(p)}))

@@ -806,7 +806,12 @@ def test_legacy_and_governed_non_authored_cost_behavior(tmp_path):
 
 def test_renderer_map_and_all_pending_packet_envelopes(gate_world):
     assert set(GATE_RENDERERS) == set(APPROVAL_KINDS)
-    assert len(GATE_RENDERERS) == 14
+    assert len(GATE_RENDERERS) == 15
+    # Keep every old packet check, and add the new audio kind locally.
+    rid = "audio-spend-packet"
+    _request(gate_world["project"], "pending", rid, "audio_spend",
+             stage="assets", scope="audio", entity_id="missing-audio-request")
+    gate_world["rids"]["audio_spend"] = rid
     for kind in APPROVAL_KINDS:
         detail = load_gate_detail(gate_world["project"], gate_world["rids"][kind])
         assert detail["state"] == "pending"

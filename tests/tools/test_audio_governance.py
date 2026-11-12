@@ -303,3 +303,10 @@ def test_existing_reconciler_never_sends_audio_to_footage_service(project,mode,m
     assert calls==[] and t.calls==1
     assert t.downloads==(mode=='download')
     assert list(load_reservations(project).values())[0]['state']=='pending_billing'
+
+def test_gate_packet_reads_only_saved_audio_material(project):
+    from backlot.state import _render_audio_spend, GATE_RENDERERS
+    r=prepare(project)
+    packet=_render_audio_spend(project,{'entity_id':r['request_id'],'approval_record':{'prompt':'wrong'}})
+    assert packet['record']==r and not packet.get('packet_error')
+    assert 'audio_spend' in GATE_RENDERERS
