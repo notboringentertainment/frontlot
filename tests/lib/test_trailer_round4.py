@@ -28,12 +28,13 @@ def test_synonyms_are_not_claimed_cleared(tmp_path,monkeypatch):
     assert 'cannot recognise every rewording' in value['story_check']['message']
     assert edit.paper_state(root)['protected_lines']
 
-@pytest.mark.parametrize('channel',['audio','cards','custom'])
+@pytest.mark.parametrize('channel',['audio','cards','custom','root-audio'])
 def test_later_timing_without_footage_is_kept(tmp_path,monkeypatch,channel):
     monkeypatch.setattr('scripts.gate_approve.require_tty',lambda:None)
     root=trailer(tmp_path);p=paper();p['cards']=[row('A TITLE',ref='')]
     a=edit.save_revision(root,p,None);later=json.loads(json.dumps(a))
     if channel=='cards':later['timeline']['cards'][0]['start_frame']=12
+    elif channel=='root-audio':later['audio']={'score':{'start_frame':12}}
     else:later['timeline'][channel]=[{'id':'score','start_frame':12,'duration_frames':24}]
     later['colour_notes']={'keep':'warm'}
     b=edit.save_edit_revision(root,later,a['edit_revision_sha256'])

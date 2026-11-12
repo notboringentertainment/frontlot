@@ -385,7 +385,8 @@ def _paper_value(root, paper, old, inputs):
                                  'start_frame':position,'duration_frames':shot['duration_frames']})
                 position += shot['duration_frames']
             baseline = {'fps':24,'picture':pictures,'audio':[],'cards':previous['cards']}
-        later = bool(old.get('cuts') or (old.get('timeline') or {}) != baseline)
+        bookkeeping = {'edit_revision_sha256','previous_revision','saved_at','revision_number','revision_history','revision_times','paper_cut_pending','restored_from'}
+        later = bool(old.get('cuts') or (old.get('timeline') or {}) != baseline or set(old)-set(value)-bookkeeping)
         owned = value
         value = copy.deepcopy(old)
         value.update(owned)
