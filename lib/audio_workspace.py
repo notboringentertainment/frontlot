@@ -141,7 +141,16 @@ def state(root):
         take['status']=take_state(root,take)
         if take['origin']=='generated' and take['kind']=='music':take['release_note']=TEST_ONLY
         takes.append(take)
-    return {'takes':takes,'price_message':PRICE_UNAVAILABLE}
+    from tools.cost_tracker import nonterminal_reservations
+    from tools.audio._governed import read_request
+    unresolved=[]
+    for reservation in nonterminal_reservations(root):
+        hint=reservation.get('output_hint') or {}
+        if hint.get('kind')!='audio':continue
+        try:request=read_request(root,hint.get('request_id'))
+        except (ValueError,OSError,TypeError):request=None
+        unresolved.append({'reservation':reservation,'request':request})
+    return {'takes':takes,'unresolved_requests':unresolved}
 
 
 def resolution_record(root,identity,charged,cash,credits,note):
@@ -199,7 +208,13 @@ def binding_source(root,binding):
     identity=binding.get('brief_id')
     if not isinstance(identity,str) or str(uuid.UUID(identity))!=identity:raise ValueError('Invalid music brief.')
     path=_checked_path(_directory(root)/'briefs'/(identity+'.json'))
-    return json.loads(path.read_text())
+    value=json.loads(path.read_text())
+    import math
+    if (not isinstance(value,dict) or value.get('instrumental') is not True or not isinstance(value.get('text'),str) or not value['text'].strip()
+        or type(value.get('duration_seconds')) not in (int,float) or not math.isfinite(value['duration_seconds'])
+        or not 3<=value['duration_seconds']<=120 or value['duration_seconds']*24!=round(value['duration_seconds']*24)):
+        raise ValueError('Music needs an instrumental brief and whole-frame timing.')
+    return value
 
 
 def check_binding(root,record):

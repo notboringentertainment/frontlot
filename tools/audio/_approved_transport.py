@@ -5,7 +5,7 @@ from pathlib import Path
 from tools.base_tool import ToolResult
 from tools.audio import _governed
 
-REFUSAL = 'Audio now needs your signed approval of each request. Open its spending card in Frontlot.'
+REFUSAL = 'Audio now needs your signed approval of each request. Audio controls in the app are not available yet.'
 
 
 def _execute_locked(inputs,kind):
@@ -83,3 +83,15 @@ def execute(inputs,kind):
             return _execute_locked(inputs,kind)
     except (ValueError,OSError,RuntimeError):
         return ToolResult(success=False,error='Audio is unavailable or still running. Check the production and its unresolved requests.')
+
+
+def estimate(inputs,kind):
+    if not isinstance(inputs,dict) or not inputs.get('project_dir') or not inputs.get('audio_request_id'):
+        raise ValueError('A firm approved price bound is required. Historical estimates are not spending permission.')
+    from lib.audio_workspace import check_price
+    root=_governed._root(Path(inputs['project_dir']).expanduser())
+    record=_governed.read_request(root,inputs['audio_request_id'])
+    if record['kind']!=kind:raise ValueError('This request is for a different kind of audio.')
+    _governed.check_current(root,record)
+    price=check_price(root,record)
+    return price['max_cash_usd']+price['max_credits_usd']

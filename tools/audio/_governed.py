@@ -35,7 +35,9 @@ def _money(value):
     return value
 
 def _payload(record):
-    return {k:record[k] for k in ('provider','kind','model','voice','prompt','duration_seconds')}
+    payload={k:record[k] for k in ('provider','kind','model','voice','prompt','duration_seconds')}
+    if record['kind']=='music' and 'binding' in record:payload['force_instrumental']=True
+    return payload
 
 def validate_request(record, *, check_expiry=True):
     if not isinstance(record,dict) or not FIELDS <= set(record) or set(record)-FIELDS-{'binding','price_basis_sha256'}:

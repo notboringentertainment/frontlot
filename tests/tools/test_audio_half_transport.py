@@ -230,3 +230,23 @@ def test_an_active_call_cannot_be_resolved(priced,http):
         with pytest.raises(ValueError,match='still running'):
             ws.request_resolution(priced,'invented',False,0,0,'Checked the account.')
     assert http==[]
+
+
+def test_other_network_audio_stops_for_unresolved_audio(priced,http,monkeypatch):
+    from tools.audio.music_gen import MusicGen
+    from tools.audio.google_music import GoogleMusic
+    from tools.cost_tracker import reserve_paid_call
+    from tools.audio._governed import _tracker
+    from lib.project_config import load_current_verified_project_config
+    import requests
+    tracker=_tracker(priced,load_current_verified_project_config(priced))
+    reserve_paid_call(tracker,priced,tool='elevenlabs_audio',endpoint='invented',normalized_inputs_hash='a'*64,reserved_usd=.1,output_hint={'kind':'audio'})
+    result=GoogleMusic().execute({'project_dir':str(priced),'prompt':'A quiet cue.','duration_seconds':3})
+    assert not result.success and 'unresolved' in result.error and http==[]
+
+
+def test_estimate_uses_signed_basis_and_never_contacts_service(priced,http):
+    from tools.audio.music_gen import MusicGen
+    r,_=music_request(priced)
+    assert MusicGen().estimate_cost({'project_dir':str(priced),'audio_request_id':r['request_id']})==.012
+    assert http==[]

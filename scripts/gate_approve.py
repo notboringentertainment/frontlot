@@ -1666,6 +1666,9 @@ def _construct_audio_spend(root: Path, req: dict) -> Constructed:
         f"Price bound expires: {datetime.fromtimestamp(record['price_expires_at'], timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}.",
         f"For the tools: input fingerprint {record['input_sha256']}.",
     )
+    if record['kind']=='music':
+        from lib.audio_workspace import TEST_ONLY
+        evidence += ("Instrumental only.",TEST_ONLY)
     return Constructed(record, None, record["request_id"], evidence=evidence, pre_commit_check=recheck)
 
 

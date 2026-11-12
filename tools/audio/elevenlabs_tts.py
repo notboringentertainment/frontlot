@@ -140,7 +140,8 @@ class ElevenLabsTTS(BaseTool):
         return ToolStatus.UNAVAILABLE
 
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
-        raise ValueError("A firm approved price bound is required. Historical estimates are not spending permission.")
+        from tools.audio._approved_transport import estimate
+        return estimate(inputs,'speech')
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         from tools.audio._approved_transport import execute
