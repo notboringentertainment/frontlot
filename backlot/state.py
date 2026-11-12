@@ -1642,6 +1642,17 @@ def _render_storyboard(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _render_audio_spend(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Raw saved .audio-requests/<entity_id>.json, never the request's hints."""
+    from tools.audio._governed import read_request, validate_request
+    try:
+        record = read_request(root, req.get("entity_id"))
+        validate_request(record, check_expiry=False)
+    except (OSError, ValueError, TypeError):
+        return {"packet_error": True, "error": "The saved audio request cannot be read."}
+    return {"summary": req.get("summary"), "record": record}
+
+
 def _render_text_only(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     """Text-only kinds: no constructor source cites a required visual asset id."""
     excluded = {"approval_record", "envelope"}
@@ -1670,7 +1681,7 @@ class _GateRendererMap(dict[str, Any]):
     ``config``: ``project.yaml``; ``pipeline_migration``: request plus raw
     ``approvals.jsonl`` superseded row; ``cast_change``: ``checkpoint_proposal.json``
     bytes + cast, the raw superseded cast_change row, the request's lists;
-    grandfather/artifact review: text-only.
+    audio_spend: .audio-requests/<entity_id>.json; grandfather/artifact review: text-only.
     """
 
 
@@ -1691,6 +1702,7 @@ GATE_RENDERERS = _GateRendererMap({
     "headshot_grandfather": _render_text_only,
     "artifact_review": _render_text_only,
     "cast_change": _render_cast_change,
+    "audio_spend": _render_audio_spend,
 })
 assert set(GATE_RENDERERS) == set(APPROVAL_KINDS)
 

@@ -640,13 +640,17 @@ def reservation_lock(project_root: Path):
     way round. The supervised brief and ledger are re-read under this lock;
     their updates use the same lock.
     """
-    path = reservations_path(project_root)
+    path = reservations_path(Path(project_root).resolve())
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_file = path.with_name(path.name + ".lock")
     held: dict = getattr(_reservation_locks, "held", None)
     if held is None:
         held = _reservation_locks.held = {}
-    key = str(lock_file)
+    # APFS can reach one directory using different letter case. Path.resolve
+    # retains that spelling, but the directory identity does not; all aliases
+    # must share this thread's re-entrant lock as well as the OS file lock.
+    identity = path.parent.stat()
+    key = (identity.st_dev, identity.st_ino)
     if key in held:
         held[key][1] += 1
         try:

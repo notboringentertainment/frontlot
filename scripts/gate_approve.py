@@ -67,6 +67,8 @@ enforcement before constructing the signed record (``lib.headshots.headshot_reco
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import argparse
 import hashlib
 import json
@@ -1637,11 +1639,37 @@ def _construct_headshot_grandfather(root: Path, req: dict) -> Constructed:
     return Constructed(record, envelope, entity_id, evidence=evidence, pre_commit_check=_verify)
 
 
+def _construct_audio_spend(root: Path, req: dict) -> Constructed:
+    from tools.audio._governed import read_request, check_current, _tracker
+    record = read_request(root, _require_entity(req))
+    config = check_current(root, record)
+    bound = record["max_cash_usd"] + record["max_credits_usd"]
+    if _tracker(root, config).budget_remaining_usd < round(bound, 4):
+        raise GateHandlerError("The remaining production budget no longer covers this audio request.")
+    def recheck():
+        check_current(root, record)
+        if _tracker(root, config).budget_remaining_usd < round(bound, 4):
+            raise GateHandlerError("The remaining production budget no longer covers this audio request.")
+    evidence = (
+        "Audio service: ElevenLabs.",
+        f"Audio kind: {record['kind']}. Model: {record['model']}. Voice: {record['voice'] or 'No voice requested'}.",
+        f"Exact words or description: {record['prompt']}",
+        f"Requested length: {record['duration_seconds']} seconds.",
+        f"Highest new cash charge: $ {record['max_cash_usd']:.4f}.",
+        f"Highest replacement value of account credits: $ {record['max_credits_usd']:.4f}.",
+        "One approval buys one call. There are no automatic retries or service changes.",
+        f"Price bound expires: {datetime.fromtimestamp(record['price_expires_at'], timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}.",
+        f"For the tools: input fingerprint {record['input_sha256']}.",
+    )
+    return Constructed(record, None, record["request_id"], evidence=evidence, pre_commit_check=recheck)
+
+
 CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
     "look_lock": _construct_look_lock,
     "reference_import": _construct_reference_import,
     "pipeline_migration": _construct_pipeline_migration,
     "config": _construct_config,
+    "audio_spend": _construct_audio_spend,
     "storyboard_batch": _construct_storyboard_batch,
     "artifact_review": _construct_artifact_review,
     "hero": _construct_character,

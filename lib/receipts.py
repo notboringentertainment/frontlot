@@ -55,7 +55,7 @@ QC_RECEIPTS_FILENAME = "qc-receipts.jsonl"
 
 APPROVAL_KINDS = frozenset(
     {
-        "hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review",
+        "hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review", "audio_spend",
         # Plan D10 (look locks) and Slice A' (headshots, reference import, manifest pins).
         "look_lock", "headshot", "reference_import", "pipeline_migration",
         # D19.4: a human accepting specific failed QC items of ONE verdict.
@@ -429,6 +429,11 @@ def validate_envelope(
     """Check the signed envelope of an approval kind against its record and
     return the fields to embed. Kinds without an envelope contract accept
     none (an unexpected envelope is an error, not ignored)."""
+    if kind == "audio_spend":
+        from tools.audio._governed import validate_request
+        validate_request(record)
+        if entity_id != record["request_id"]:
+            raise ValueError("audio approval request identity changed")
     spec = ENVELOPE_FIELDS.get(kind)
     env = dict(envelope or {})
     if spec is None:
@@ -788,6 +793,7 @@ def _build_generation_receipt(
     headshot_ref: Optional[dict] = None,
     import_receipt_id: Optional[str] = None,
     normalized_pixel_hash: Optional[str] = None,
+    audio_charge: Optional[dict] = None,
     prompt_recipe: Optional[dict] = None,
 ) -> dict:
     """Validate the fields and return a signed (not yet persisted) receipt.
@@ -866,6 +872,16 @@ def _build_generation_receipt(
         "started_at": started_at,
         "finished_at": finished_at,
     }
+    if audio_charge is not None:
+        import math
+        if set(audio_charge) != {"cash_usd", "credits_usd", "audio_approval_receipt_id"}:
+            raise ValueError("audio charge requires cash, replacement-value credits and its approval")
+        amounts = [audio_charge[k] for k in ("cash_usd", "credits_usd")]
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 for v in amounts):
+            raise ValueError("invalid audio charge")
+        if round(sum(amounts), 6) != round(float(cost_usd), 6):
+            raise ValueError("audio total must count cash and replacement-value credits exactly once")
+        receipt.update(audio_charge)
     receipt["signature"] = gates.sign_receipt(receipt)
     return receipt
 
@@ -1182,46 +1198,50 @@ def replay_generation_entry(project_root: Path | str, entry: dict, *, tracker: A
     """Complete one WAL entry idempotently: output present → receipt (skip if a
     signed row exists) → ledger (skip if present) → terminal reservation
     (skip if already terminal) → delete WAL. Returns the receipts."""
-    from tools.cost_tracker import TERMINAL_STATES, CostTracker, load_reservations, reconcile_paid_call
+    from tools.cost_tracker import reservation_lock
+    with reservation_lock(Path(project_root)):
+        from tools.cost_tracker import TERMINAL_STATES, CostTracker, load_reservations, reconcile_paid_call
 
-    root = Path(project_root).resolve()
-    execution_id = entry["execution_id"]
-    fields = dict(entry.get("receipt") or {})
-    receipts: list[dict] = []
-    seen: set[str] = set()
-    for out in entry.get("outputs") or []:
-        _ensure_wal_output(root, out)
-        sha = out["output_sha256"]
-        if sha in seen:
-            continue
-        seen.add(sha)
-        receipt = _signed_generation_row(root, execution_id, sha)
-        if receipt is None:
-            receipt = _build_generation_receipt(
-                root, execution_id=execution_id, output_sha256=sha,
-                finished_at=fields.pop("finished_at", None) or _now_iso(), **fields,
-            )
-        _commit_generation(root, receipt)
-        receipts.append(receipt)
-    reservation_id = entry.get("reservation_id")
-    if reservation_id:
-        reservation = load_reservations(root).get(reservation_id)
-        if reservation is None:
-            raise GenerationWalError(f"WAL entry {execution_id} names unknown reservation {reservation_id}")
-        if reservation.get("state") not in TERMINAL_STATES:
-            if tracker is None:
-                tracker = CostTracker(cost_log_path=root / "cost_log.json")
-            reconcile_paid_call(root, reservation_id, float(entry.get("actual_usd") or 0.0), "completed", tracker)
-    gates.generation_wal_delete(execution_id)
-    return receipts
+        root = Path(project_root).resolve()
+        execution_id = entry["execution_id"]
+        fields = dict(entry.get("receipt") or {})
+        receipts: list[dict] = []
+        seen: set[str] = set()
+        for out in entry.get("outputs") or []:
+            _ensure_wal_output(root, out)
+            sha = out["output_sha256"]
+            if sha in seen:
+                continue
+            seen.add(sha)
+            receipt = _signed_generation_row(root, execution_id, sha)
+            if receipt is None:
+                receipt = _build_generation_receipt(
+                    root, execution_id=execution_id, output_sha256=sha,
+                    finished_at=fields.pop("finished_at", None) or _now_iso(), **fields,
+                )
+            _commit_generation(root, receipt)
+            receipts.append(receipt)
+        reservation_id = entry.get("reservation_id")
+        if reservation_id:
+            reservation = load_reservations(root).get(reservation_id)
+            if reservation is None:
+                raise GenerationWalError(f"WAL entry {execution_id} names unknown reservation {reservation_id}")
+            if reservation.get("state") not in TERMINAL_STATES:
+                if tracker is None:
+                    tracker = CostTracker(cost_log_path=root / "cost_log.json")
+                reconcile_paid_call(root, reservation_id, float(entry.get("actual_usd") or 0.0), "completed", tracker)
+        gates.generation_wal_delete(execution_id)
+        return receipts
 
 
 def complete_generation(project_root: Path | str, execution_id: str, *, tracker: Any = None) -> list[dict]:
     """Finish the paid call staged under ``execution_id`` (see ``stage_generation_wal``)."""
-    entry = gates.generation_wal_read(execution_id)
-    if entry is None:
-        raise GenerationWalError(f"no generation WAL entry for execution {execution_id}")
-    return replay_generation_entry(project_root, entry, tracker=tracker)
+    from tools.cost_tracker import reservation_lock
+    with reservation_lock(Path(project_root)):
+        entry = gates.generation_wal_read(execution_id)
+        if entry is None:
+            raise GenerationWalError(f"no generation WAL entry for execution {execution_id}")
+        return replay_generation_entry(project_root, entry, tracker=tracker)
 
 
 def recover_generation_wal(project_root: Path | str) -> list[dict]:
@@ -1229,16 +1249,26 @@ def recover_generation_wal(project_root: Path | str) -> list[dict]:
     output is present are completed and removed; an entry whose output is
     missing or altered raises GenerationWalError (after the others are
     replayed) so callers block new paid calls until it is recovered."""
-    root = Path(project_root).resolve()
-    recovered: list[dict] = []
-    problems: list[str] = []
-    for entry in gates.generation_wal_entries():
-        if entry.get("project_root") != str(root) or not entry.get("execution_id"):
-            continue
-        try:
-            recovered.extend(replay_generation_entry(root, entry))
-        except GenerationWalError as exc:
-            problems.append(str(exc))
-    if problems:
-        raise GenerationWalError("; ".join(problems), recovered=recovered)
-    return recovered
+    from tools.cost_tracker import reservation_lock
+    with reservation_lock(Path(project_root)):
+        root = Path(project_root).resolve()
+        recovered: list[dict] = []
+        problems: list[str] = []
+        for entry in gates.generation_wal_entries():
+            saved_root = entry.get("project_root")
+            if not isinstance(saved_root, str) or not entry.get("execution_id"):
+                continue
+            try:
+                if not root.samefile(saved_root):
+                    continue
+            except (OSError, ValueError):
+                continue
+            try:
+                # Retain the spelling (and signed project id) from the saved
+                # record when the caller used another case on the same disk.
+                recovered.extend(replay_generation_entry(Path(saved_root), entry))
+            except GenerationWalError as exc:
+                problems.append(str(exc))
+        if problems:
+            raise GenerationWalError("; ".join(problems), recovered=recovered)
+        return recovered

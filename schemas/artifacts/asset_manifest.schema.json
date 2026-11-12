@@ -46,6 +46,54 @@
               }
             },
             "additionalProperties": false
+          },
+          "music_origin": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "approval_receipt_id",
+                  "generation_receipt_id"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "generated"
+                  },
+                  "approval_receipt_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "generation_receipt_id": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "licence_note",
+                  "file_sha256"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "imported"
+                  },
+                  "licence_note": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "file_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
           }
         }
       }
@@ -230,6 +278,54 @@
                   }
                 },
                 "additionalProperties": false
+              },
+              "music_origin": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "approval_receipt_id",
+                      "generation_receipt_id"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "generated"
+                      },
+                      "approval_receipt_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "generation_receipt_id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "licence_note",
+                      "file_sha256"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "imported"
+                      },
+                      "licence_note": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "file_sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
               }
             },
             "additionalProperties": false
@@ -512,6 +608,54 @@
               "model_endpoint": {
                 "type": "string",
                 "description": "Endpoint used; must equal the owning scene's model_endpoint for selected takes (enforced by the authored-canon profile)"
+              },
+              "music_origin": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "approval_receipt_id",
+                      "generation_receipt_id"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "generated"
+                      },
+                      "approval_receipt_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "generation_receipt_id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "licence_note",
+                      "file_sha256"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "imported"
+                      },
+                      "licence_note": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "file_sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
               }
             },
             "additionalProperties": false,
