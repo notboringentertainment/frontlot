@@ -93,8 +93,15 @@ def decision_record(root,identity,decision):
         request=read_request(root,take.get('approved_request_id'))
         approval=receipts.find_approval(root,'audio_spend',record_sha256=record_sha256(request),entity_id=request['request_id'])
         rows=receipts.verified_generation_receipts(root)
-        if not approval or record_sha256(request)!=take.get('approval_record_sha256') or not any(
-                r['receipt_id']==take.get('generation_receipt_id') and r['output_sha256']==take['sha256'] and r.get('audio_approval_receipt_id')==approval['receipt_id'] for r in rows):
+        if (not approval or record_sha256(request)!=take.get('approval_record_sha256')
+            or take['id']!=request['request_id'] or take['kind']!=request['kind']
+            or take.get('binding')!=request.get('binding')
+            or take.get('requested_duration_seconds')!=request['duration_seconds']
+            or take.get('path')!='assets/audio/'+request['request_id']+'.audio'
+            or not any(r['receipt_id']==take.get('generation_receipt_id') and r['output_sha256']==take['sha256']
+                and r.get('audio_approval_receipt_id')==approval['receipt_id']
+                and r.get('normalized_inputs_hash')==request['input_sha256']
+                and r.get('model_endpoint')==request['model'] and r.get('tool')=='elevenlabs_audio' for r in rows)):
             raise ValueError('The generated audio provenance cannot be verified.')
     elif take.get('origin')!='imported':raise ValueError('The audio origin cannot be verified.')
     path=_checked_path(Path(root)/take['path']);path.relative_to(Path(root).resolve())

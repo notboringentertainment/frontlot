@@ -303,3 +303,21 @@ def test_duplicate_live_confirmation_buys_one_call(priced,http,monkeypatch):
         finally:release.set()
         assert first.result(timeout=10).success
     assert len(http)==1
+
+
+def test_take_cannot_be_relabelled_as_another_spoken_line(priced,http):
+    from tools.audio.elevenlabs_tts import ElevenLabsTTS
+    from lib.trailer_contract import edit_digest
+    from lib.canonical_json import record_sha256
+    record=speech_request(priced);sign(priced,'audio_spend',record,record['request_id'])
+    result=ElevenLabsTTS().execute({'project_dir':str(priced),'audio_request_id':record['request_id']})
+    assert result.success
+    take=result.data['take']
+    path=priced/'artifacts/edit_decisions.json';edit=json.loads(path.read_text())
+    second={'text':'An entirely different line.','start_frame':72,'duration_frames':72}
+    edit['paper_cut']['lines'].append(second);edit['edit_revision_sha256']=edit_digest(edit);path.write_text(json.dumps(edit))
+    take['binding']={'kind':'speech','line_index':1,'source_sha256':record_sha256(second)}
+    (priced/'.audio-workspace'/(take['id']+'.json')).write_text(json.dumps(take))
+    with pytest.raises(ValueError,match='provenance'):
+        ws.decision_record(priced,take['id'],'accept')
+    assert len(http)==1
