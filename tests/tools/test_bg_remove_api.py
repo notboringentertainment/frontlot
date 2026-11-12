@@ -1,4 +1,8 @@
 import sys
+import pytest
+from tests.tools.conftest import generation_tmp_path as tmp_path
+
+pytestmark = pytest.mark.usefixtures('verified_generation_project')
 from unittest.mock import MagicMock
 
 from PIL import Image

@@ -9,14 +9,19 @@ not change the shot binding.
 
 The existing inspection operation reports whether the paper shot needs a fresh
 look. Its source warnings also reach the existing shot board. Removing a shot
-does not erase its notebook or its earlier takes. Declining a trailer take is
-final, including when a later history entry claims it was chosen. Older
-productions retain their existing selection behaviour.
+does not erase its notebook or its earlier takes. A trailer take can be accepted
+or declined only through a verifiable signed decision. That signing control is
+not available in this half, so both buttons are unavailable. Handwritten chosen
+or declined rows are kept as history and ignored when showing a take's standing.
+Older productions retain their existing selection behaviour.
 
-Trailer footage spending and take acceptance are deliberately unavailable in
+Trailer footage spending and take decisions are deliberately unavailable in
 this first half. The existing conversational spending approval is insufficient
-for the trailer's required signed footage request. The reservation boundary
-refuses trailer shot spending before recording a charge. An imported reference
+for the trailer's required signed footage request. Every image, video and avatar
+generation tool refuses a trailer before entering its provider code. The
+reservation boundary checks independently, even when no shot or brief is named.
+A missing, conflicting, linked or unverifiable production also refuses generation.
+An imported reference
 or old notebook entry cannot be accepted as trailer footage. Paper-cut
 placeholders stay placeholders, and no stage is completed.
 
@@ -37,6 +42,9 @@ The existing reference hash and look checks remain. `inspect_shot` adds
 `paper_binding` only for trailers. No second timeline or take store is introduced.
 
 The full user design is in the housekeeping trailer plan. This first half has
-zero review/fix rounds. The proportionality decision is to reuse the notebook
-and fail closed at its paid reservation boundary, rather than inventing another
-provider or approval system while implementing the paper binding.
+one review/fix round with three demonstrated defects: an incomplete spending
+refusal, unsigned take history treated as authority, and loss of older shots when
+their signatures cannot be verified. The
+proportionality decision is to close generation at the common tool entry and
+reservation boundaries and keep display evidence separate from spending
+permission. No new provider or approval system is introduced in this half.

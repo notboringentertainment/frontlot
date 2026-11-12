@@ -9,6 +9,7 @@ import sys
 from unittest.mock import MagicMock
 
 import pytest
+from tests.tools.conftest import generation_tmp_path as tmp_path
 
 
 @pytest.fixture()
@@ -289,7 +290,7 @@ def test_upscale_build_upsampler_skips_device_when_unsupported(monkeypatch):
 # face_restore.py — signature guard and device routing
 # ------------------------------------------------------------------
 
-def test_face_restore_uses_signature_guard(monkeypatch):
+def test_face_restore_uses_signature_guard(monkeypatch,verified_generation_project):
     """FaceRestore must use inspect to check if GFPGANer accepts device=."""
     import importlib
 
@@ -333,7 +334,8 @@ def test_face_restore_uses_signature_guard(monkeypatch):
     importlib.reload(face_restore)
 
     from pathlib import Path
-    monkeypatch.setattr(Path, "exists", lambda self: True)
+    original_exists=Path.exists
+    monkeypatch.setattr(Path, "exists", lambda self: True if self.name=='dummy.png' else original_exists(self))
     monkeypatch.setattr(Path, "mkdir", lambda self, *a, **kw: None)
 
     tool = face_restore.FaceRestore()

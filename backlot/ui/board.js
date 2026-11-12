@@ -2248,7 +2248,7 @@ function renderTakeTile(s, shot, take, { decidable, othersWaiting }) {
         onclick: () => decideTake(shot, take, "approve"),
       }, busy ? "Saving…" : "Approve"),
       el("button", {
-        type: "button", class: "quiet-btn take-decline", disabled: busy ? "" : null,
+        type: "button", class: "quiet-btn take-decline", disabled: busy || s.is_trailer ? "" : null,
         onclick: () => decideTake(shot, take, "decline"),
       }, "Decline"))));
   if (error) tile.append(el("p", { class: "take-error", role: "alert" }, error));
@@ -2267,7 +2267,7 @@ function renderTakeReview(s, shot) {
     direction && direction !== label
       ? el("details", { class: "take-brief" }, el("summary", {}, "What the shot asked for, in full"), el("p", {}, direction)) : null,
     el("p", { class: "take-lead" }, s.is_trailer
-      ? "Trailer take acceptance is not available yet. You can watch or decline this take; it cannot enter the cut."
+      ? "Signed take decisions are not available yet. You can watch this take, but accepting or declining it needs your signature; it cannot enter the cut."
       : waiting.length === 1
       ? "Watch the take, then approve it to make it this shot's chosen take, or decline it."
       : `Watch the ${waiting.length} takes side by side. Approve the one you want; it becomes this shot's chosen take.`),

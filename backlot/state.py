@@ -582,7 +582,7 @@ def _shot_entry(project_dir: Path, shot_id: str) -> Optional[dict]:
     if brief is None:
         return None
     revision = brief.get("revision_id")
-    standing = sp.take_standings(project_dir,shot_id,rows)
+    standing = sp.shot_take_decisions(project_dir,rows)
     briefs = {r.get("event_id"): r.get("brief") or {} for r in rows if r.get("kind") == "brief"}
     changes: dict = {}   # brief revision -> what it was made from that has changed since
     takes: list[dict] = []

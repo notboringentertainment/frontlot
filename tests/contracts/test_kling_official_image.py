@@ -1,6 +1,10 @@
 """Contract tests for the Kling official image provider."""
 
 from __future__ import annotations
+import pytest
+from tests.tools.conftest import generation_tmp_path as tmp_path, verified_generation_project
+
+pytestmark = pytest.mark.usefixtures('verified_generation_project')
 
 import base64
 import sys

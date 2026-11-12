@@ -327,7 +327,7 @@ def decision_record(root, shot_id, take_id, decision):
     take = _take(root,shot_id,take_id)
     subject = {'shot_id':shot_id,'take':take,'decision':decision}
     decisions = receipts.verified_approvals(root,'footage_take',entity_id=take_id)
-    declined = any(r.get('kind')=='decline' and r.get('take_id')==take_id for r in sp.history(root,shot_id))
+    declined = False
     for row in decisions:
         old = row['record']
         if old.get('shot_id') != shot_id or old.get('take') != take or old.get('decision') not in ('accept','decline'):
@@ -353,8 +353,6 @@ def request_decision(root, shot_id, take_id, decision):
 def take_state(root, shot_id, take_id):
     take = _take(root,shot_id,take_id)
     rows = receipts.verified_approvals(root,'footage_take',entity_id=take_id)
-    if any(r.get('kind')=='decline' and r.get('take_id')==take_id for r in sp.history(root,shot_id)):
-        return 'Declined'
     valid = [r['record'] for r in rows if isinstance(r.get('record'),dict) and r['record'].get('shot_id')==shot_id and r['record'].get('take')==take]
     if any(r.get('decision')=='decline' for r in valid):return 'Declined'
     if len(valid)!=len(rows):return 'Needs a fresh look'

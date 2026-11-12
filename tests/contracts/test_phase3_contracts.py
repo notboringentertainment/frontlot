@@ -14,6 +14,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests.tools.conftest import generation_tmp_path as tmp_path, verified_generation_project
+
+pytestmark = pytest.mark.usefixtures('verified_generation_project')
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))

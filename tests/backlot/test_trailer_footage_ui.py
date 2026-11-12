@@ -21,8 +21,8 @@ def test_trailer_acceptance_is_visibly_unavailable(linked, tmp_path):
             page.goto(f'{url}/p/{root.name}')
             page.locator('#gates .need.take-need').click(timeout=15000)
             assert page.locator('#viewer .take-approve').is_disabled()
-            assert 'Trailer take acceptance is not available yet' in page.locator('#viewer').inner_text()
-            assert page.locator('#viewer .take-decline').is_enabled()
+            assert 'Signed take decisions are not available yet' in page.locator('#viewer').inner_text()
+            assert page.locator('#viewer .take-decline').is_disabled()
             page.close()
         finally:
             browser.close()
