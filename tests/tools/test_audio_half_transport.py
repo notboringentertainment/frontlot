@@ -105,6 +105,8 @@ def test_voice_selector_never_substitutes_and_line_changes_need_review(priced,ht
     from lib.trailer_contract import edit_digest
     record=speech_request(priced);sign(priced,'audio_spend',record,record['request_id'])
     args={'project_dir':str(priced),'audio_request_id':record['request_id'],'preferred_provider':'elevenlabs'}
+    changed=TTSSelector().execute(dict(args,preferred_provider='openai'))
+    assert not changed.success and http==[]
     r=TTSSelector().execute(args);assert r.success,r.error
     assert len(http)==1 and http[0][0].endswith('/invented-voice')
     assert http[0][1]['json']=={'text':'The gallery is closed.','model_id':'eleven_multilingual_v2'}

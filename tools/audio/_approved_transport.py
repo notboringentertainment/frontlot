@@ -14,6 +14,8 @@ def _execute_locked(inputs,kind):
     try:
         if set(inputs)-{'project_dir','audio_request_id','output_path','preferred_provider','force_instrumental'}:
             raise ValueError('Audio inputs changed. Prepare a new request instead of overriding approved material.')
+        if inputs.get('preferred_provider','elevenlabs') not in ('auto','elevenlabs'):
+            raise ValueError('The approved request uses ElevenLabs. A different provider needs a new approved request.')
         from lib.audio_workspace import check_price,generated_take
         from lib.receipts import verified_generation_receipts, find_approval
         from lib.canonical_json import record_sha256
