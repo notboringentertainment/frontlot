@@ -33,6 +33,9 @@ class ShotGuard:
         return f"shot:{self.shot_id}"
 
     def check(self, project_root, estimated_usd, *, tool=None):
+        from lib.supervised_production import is_trailer
+        if is_trailer(project_root):
+            raise ShotAllowanceError('A signed footage request is required. Trailer footage spending is not available yet; nothing was sent.')
         from lib.supervised_production import read_brief, history
         from tools.cost_tracker import load_reservations
         brief = read_brief(project_root, self.shot_id)
