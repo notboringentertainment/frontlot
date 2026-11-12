@@ -88,7 +88,12 @@ def create_trailer(base, title, seconds, ceiling, request_key=None):
             marker.update(spending_ceiling_usd=ceiling, trailer_creation_pending=True,
                           creation_request_key=request_key, creation_completed_ns=time.time_ns())
             (root/'project.json').write_text(json.dumps(marker, indent=2))
-            (root/'project.yaml').write_text(f'pipeline: authored-film\nbudget_usd_cap: {ceiling}\n')
+            # Valid settings without granting consent or inventing a judge.
+            # Signed settings with provider consent remain a separate gate.
+            (root/'project.yaml').write_text(
+                f"version: '1.3'\nbudget_usd_cap: {ceiling}\n"
+                "wall_time_minutes: 60\ncast_cap: {characters: 1, locations: 1}\n"
+                "default_video_endpoint: not-selected\nprovider_egress: []\n")
             _creation_request(root)
             # Completion is stamped after the signing request exists.
             marker['creation_completed_ns'] = time.time_ns()
