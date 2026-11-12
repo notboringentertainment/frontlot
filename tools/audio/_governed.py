@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lib.canonical_json import record_sha256
-from lib.project_config import load_verified_project_config
+from lib.project_config import load_current_verified_project_config
 from lib.receipts import find_approval, stage_generation_wal, complete_generation
 from lib.run_common import resolve_project_root
 from lib.state_io import append_jsonl
@@ -94,7 +94,7 @@ def prepare(root, *, kind,model,voice,prompt,duration_seconds,max_cash_usd,max_c
     root=_root(root)
     # Bounds are validated even if the saved settings are damaged.
     _money(max_cash_usd);_money(max_credits_usd)
-    config=load_verified_project_config(root)
+    config=load_current_verified_project_config(root)
     r=dict(project_id=root.name,request_id=str(uuid.uuid4()),provider='elevenlabs',kind=kind,model=model,voice=voice,prompt=prompt,
            duration_seconds=duration_seconds,max_cash_usd=max_cash_usd,max_credits_usd=max_credits_usd,
            price_expires_at=price_expires_at,config_sha256=config.digest)
@@ -139,7 +139,7 @@ def read_request(root,request_id):
 def check_current(root,record):
     root=_root(root);validate_request(record)
     if read_request(root,record['request_id'])!=record:raise ValueError('Saved audio request changed.')
-    config=load_verified_project_config(root)
+    config=load_current_verified_project_config(root)
     config.require_egress('elevenlabs',CLASSES[record['kind']])
     if config.digest!=record['config_sha256']:raise ValueError('Signed project settings changed after audio approval.')
     return config

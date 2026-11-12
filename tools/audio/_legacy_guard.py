@@ -42,7 +42,7 @@ def _read_marker(path):
 
 def refusal(inputs):
     """No verification failure or missing attribution can authorize a POST."""
-    from lib.project_config import load_verified_project_config
+    from lib.project_config import load_current_verified_project_config
     from lib.trailer_contract import signed_trailer_pin
     if not isinstance(inputs, dict):
         return NO_PRODUCTION
@@ -79,7 +79,7 @@ def refusal(inputs):
                 return MESSAGE
         for name in ('project.yaml', 'approvals.jsonl'):
             _checked_path(root / name)
-        config = load_verified_project_config(root)
+        config = load_current_verified_project_config(root)
         if config.version == '1.3' or signed_trailer_pin(root) is not None:
             return MESSAGE
         if config.version not in ('1.0', '1.1', '1.2'):

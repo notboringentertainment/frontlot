@@ -206,3 +206,17 @@ def load_verified_project_config(project_root: Path | str) -> VerifiedProjectCon
             f"before any paid call or governed stage."
         )
     return VerifiedProjectConfig(project_root=root, digest=digest, data=data)
+
+
+def load_current_verified_project_config(project_root: Path | str) -> VerifiedProjectConfig:
+    """Audio spending requires the latest signed settings, never a restored
+    historical configuration. Other historical readers retain their contract."""
+    from lib.receipts import verified_approvals
+
+    config = load_verified_project_config(project_root)
+    approvals = verified_approvals(project_root, "config")
+    if not approvals or approvals[-1].get("record") != {"config_sha256": config.digest}:
+        raise ProjectConfigError(
+            "The production's settings do not match its latest signed approval. No audio can be sent."
+        )
+    return config

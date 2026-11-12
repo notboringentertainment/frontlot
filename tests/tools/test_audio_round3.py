@@ -215,3 +215,41 @@ def test_recovery_reentrant_lock_accepts_relative_project_path(project,monkeypat
     assert result.returncode==0 and 'recovered without a submission' in result.stdout
     assert (t.calls,t.downloads)==(1,1)
     assert len(receipts.verified_generation_receipts(project))==1
+
+def test_restoring_an_older_signed_settings_file_does_not_reactivate_legacy_audio(project,monkeypatch):
+    import hashlib,requests
+    from tools.audio.music_gen import MusicGen
+    _older_settings(project)
+    older=(project/'project.yaml').read_bytes()
+    data=yaml.safe_load(older);data['version']='1.3'
+    data['provider_egress']=[{'provider':'elevenlabs','content_classes':['speech_text','music_prompt','effect_prompt']}]
+    newer=yaml.safe_dump(data).encode();(project/'project.yaml').write_bytes(newer)
+    sign(project,'config',{'config_sha256':hashlib.sha256(newer).hexdigest()},'project_config')
+    (project/'project.yaml').write_bytes(older)
+    calls=[]
+    class Response:
+        content=b'invented audio'
+        def raise_for_status(self):pass
+    def post(*args,**kwargs):calls.append(1);return Response()
+    monkeypatch.setattr(requests,'post',post);monkeypatch.setenv('ELEVENLABS_API_KEY','invented-only')
+    r=MusicGen().execute({'project_dir':str(project),'output_path':str(project/'audio.mp3'),
+                         'prompt':'A quiet lock.','duration_seconds':3})
+    assert not r.success and calls==[]
+
+@pytest.mark.parametrize('route',['prepare','execute','signer'])
+def test_protected_audio_requires_the_latest_settings_approval(project,route):
+    import hashlib
+    from lib.project_config import ProjectConfigError
+    original=(project/'project.yaml').read_bytes()
+    r=prepare(project);approve(project,r);t=Transport()
+    data=yaml.safe_load(original);data['wall_time_minutes']=61
+    changed=yaml.safe_dump(data).encode();(project/'project.yaml').write_bytes(changed)
+    sign(project,'config',{'config_sha256':hashlib.sha256(changed).hexdigest()},'project_config')
+    (project/'project.yaml').write_bytes(original)
+    with pytest.raises(ProjectConfigError,match='latest signed'):
+        if route=='prepare':prepare(project)
+        elif route=='execute':run(project,r,t)
+        else:
+            from scripts.gate_approve import construct
+            construct(project,{'kind':'audio_spend','entity_id':r['request_id']})
+    assert (t.calls,t.downloads)==(0,0)
