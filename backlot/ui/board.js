@@ -2967,13 +2967,15 @@ async function refresh() {
         }),
     ]);
     if (generation !== refreshGeneration || controller.signal.aborted) return;
+    const creationJustSigned = state?.trailer_setup_pending && nextState.is_trailer && !nextState.trailer_setup_pending;
+    if(creationJustSigned){selectedGateId=null;gateDetail=null;}
     state = normalize(nextState);
     openGateSessions = Array.isArray(sessions) ? sessions : [];
     render();
     if (selectedGateId && gateRowById(state, selectedGateId)) {
       await selectGate(selectedGateId, { background: true });
     }
-    if (hasAuthoredGates(state) && !selectedGateId && openGateSessions.length) {
+    if (hasAuthoredGates(state) && !selectedGateId && openGateSessions.length && !(state.is_trailer && !state.trailer_setup_pending && openGateSessions.every(session=>gateRowById(state,session.request_id)?.state!=="pending"))) {
       selectGate(openGateSessions[0].request_id);
     }
   } catch (error) {

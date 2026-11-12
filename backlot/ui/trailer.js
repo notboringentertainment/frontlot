@@ -61,14 +61,16 @@ export function renderPaperCut(s) {
     el("p",{},"Approving the story happens outside these panels for now. The story approval control is not built yet. You can always save a draft here; later stages must wait for its story checks."),content);
   const button=(text,fn)=>el("button",{type:"button",onclick:fn},text);
   const panel=(title)=>{const n=el("section",{class:"paper-panel"},el("h3",{},title));content.append(n);return n;};
+  const protectedPanels=[];
   let updateTiming=()=>{};
   function draw() {
     if(playing){clearInterval(playing);playing=null;}
-    content.replaceChildren();
+    content.replaceChildren();protectedPanels.length=0;
     const beats=panel("Beat sequence");
     draft.beats.forEach((b,i)=>{const f=field(names[i],b.text,"textarea");f.input.oninput=()=>{b.text=f.input.value;dirty=true;};beats.append(f.node);});
     function rows(title,key,shot=false) {
       const box=panel(title), list=el("div",{});box.append(list);
+      if(!shot){const protectedBox=el("div",{});box.prepend(protectedBox);protectedPanels.push(protectedBox);}
       const drawRows=()=>{list.replaceChildren();draft[key].forEach((row,index)=>{
         const item=el("fieldset",{},el("legend",{},`${shot?"Shot":key==="lines"?"Line":"Card"} ${index+1}`));
         const fields=shot?[["Purpose (private plan)","purpose","textarea"],["Screen time in frames","duration_frames","number"],["References, separated by commas","references"],["Difficulty","difficulty"]]:[["Exact wording","text","textarea"],["Starts at frame","start_frame","number"],["Screen time in frames","duration_frames","number"],["Story material","source_ref"]];
@@ -125,9 +127,10 @@ export function renderPaperCut(s) {
     if(!next)return;
     state=next;
     if(Number.isInteger(state.target_frames)){targetFrames=state.target_frames;updateTiming();}
+    for(const box of protectedPanels)box.replaceChildren(el("h4",{},"Protected wording from the story"),el("p",{},"Mechanical comparison cannot recognise every rewording. Compare your lines and cards with these originals."),...(state.protected_lines||[]).map(text=>el("blockquote",{},text)));
     checks.replaceChildren();
     if(state.error)checks.append(el("p",{role:"alert"},state.error));
-    if(state.needs_review)checks.append(el("p",{role:"alert"},state.current?.paper_cut_pending?"The paper cut changed. The saved rough-cut timing has been kept and needs a fresh look.":"The story, script or timing changed. Dependent work needs a fresh look."));
+    if(state.needs_review)checks.append(el("p",{role:"alert"},state.current?.paper_cut_pending?state.current.timing_message:"The story, script or timing changed. Dependent work needs a fresh look."));
     if(state.story_check){checks.append(el("p",{},state.story_check.message));
       for(const text of [...state.story_check.errors,...state.story_check.warnings])checks.append(el("p",{role:"alert"},text));}
     conflict.replaceChildren();

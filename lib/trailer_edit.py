@@ -105,6 +105,11 @@ def create_trailer(base, title, seconds, ceiling, request_key=None):
 
 
 def creation_state(root):
+    try:
+        creation_facts(root)
+    except (ValueError, OSError, TypeError, KeyError, AttributeError):
+        return {'needs_repair': False, 'cannot_complete': True,
+                'message': 'This unfinished draft is missing or has damaged creation details and cannot be completed. Start a new trailer under another name from the film list.'}
     requests = Path(root)/'.gate-requests'
     present = False
     for p in requests.glob('*.json'):
@@ -125,7 +130,10 @@ def repair_creation(root):
         fcntl.flock(lock, fcntl.LOCK_EX)
         if signed_trailer_pin(root) is not None:
             raise ValueError('This trailer has already been signed.')
-        if creation_state(root)['needs_repair']:
+        state = creation_state(root)
+        if state.get('cannot_complete'):
+            raise ValueError(state['message'])
+        if state['needs_repair']:
             _creation_request(root)
     return creation_state(root)
 
@@ -239,7 +247,7 @@ def _story_check(root, paper):
                 'message': 'This draft is not yet checked against the approved story. Later stages cannot use it.'}
     errors, warnings = check_trailer_text(paper, canon)
     return {'status': 'failed' if errors else 'checked', 'errors': errors, 'warnings': warnings,
-            'message': 'Fix the story checks below before later stages can use this draft.' if errors else 'Checked against the approved story.'}
+            'message': 'Fix the story checks below before later stages can use this draft.' if errors else 'Compared with the protected lines for exact and near-exact wording and with recorded spoiler limits. This cannot recognise every rewording or reveal; review the protected wording beside your draft.'}
 
 
 def _validate_paper(root, paper):
@@ -366,11 +374,26 @@ def _paper_value(root, paper, old, inputs):
     value = {'version': '1.0', 'render_runtime': 'remotion', 'trailer': contract, 'cuts': [],
              'paper_cut': paper, 'timeline': timeline, 'unfinished': True, 'inputs': inputs,
              'story_check': check, 'timing_message': validate_timeline(timeline, round(contract['target_duration_seconds']*24))}
-    rough = old and (old.get('cuts') or any(x.get('kind') != 'placeholder' for x in old.get('timeline', {}).get('picture', [])))
-    if rough:
+    if old:
+        previous = old.get('paper_cut')
+        baseline = None
+        if previous:
+            position = 0
+            pictures = []
+            for shot in previous['shots']:
+                pictures.append({'id':shot['id'],'kind':'placeholder','label':'Unfinished placeholder',
+                                 'start_frame':position,'duration_frames':shot['duration_frames']})
+                position += shot['duration_frames']
+            baseline = {'fps':24,'picture':pictures,'audio':[],'cards':previous['cards']}
+        later = bool(old.get('cuts') or (old.get('timeline') or {}) != baseline)
+        owned = value
         value = copy.deepcopy(old)
-        value.update(paper_cut=paper, inputs=inputs, story_check=check, unfinished=True, paper_cut_pending=True,
-                     timing_message='The paper cut changed. The saved rough-cut timing has been kept and needs a fresh look.')
+        value.update(owned)
+        if later:
+            value['timeline'] = copy.deepcopy(old.get('timeline', timeline))
+            value['cuts'] = copy.deepcopy(old.get('cuts', []))
+            value['paper_cut_pending'] = True
+            value['timing_message'] = 'The paper cut changed. Later picture, sound, card timing and other edit work have been kept and need a fresh look. The version before this save is available in Saved versions.'
     return value
 
 
@@ -431,6 +454,7 @@ def paper_state(root):
         history = [{'id': v['edit_revision_sha256'], 'number': n, 'saved_at': v.get('saved_at') or (current or {}).get('revision_times', {}).get(v['edit_revision_sha256']) or _legacy_time(root, v),
                     'time_source': 'recorded' if v.get('saved_at') else 'file', 'kind': 'Paper cut' if 'paper_cut' in v else 'Rough cut'} for n, v in enumerate(versions, 1)]
         return {'target_frames': round(require_contract(root)['target_duration_seconds']*24),
+                'protected_lines': [x.get('line','') for x in canon.get('protected_lines',[]) if x.get('line')],
                 'sources': sources, 'current': current, 'needs_review': needs_review, 'inputs_changed': changed,
                 'story_check': check, 'usable_downstream': bool(current and check and check['status'] == 'checked' and not needs_review),
                 'history': history}

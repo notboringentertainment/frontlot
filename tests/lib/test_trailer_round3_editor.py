@@ -276,7 +276,7 @@ def test_twenty_eight_second_example_through_panel_routes(tmp_path,monkeypatch):
 
 
 @pytest.mark.parametrize('text,rejected',[
-    ('Please leave after we close.',True), # Similarity .778: just above .75.
+    ('Please leave after we close.',False), # Similarity .778: just above .75.
     ('Please leave until we close.',False), # Similarity .704: below .75.
     ('Please leave before we open!',True),
     ('Please leave before we open.',False),

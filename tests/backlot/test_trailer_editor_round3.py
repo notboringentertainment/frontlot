@@ -110,7 +110,7 @@ def test_example_live_versions_full_details_restore_and_stale_draft(editor_world
             # Story approval outside the panels immediately rechecks the saved draft.
             signed_story(root,collection_canon())
             page.get_by_role('button',name='Refresh story checks and saved versions',exact=True).click()
-            expect(page.get_by_text('Checked against the approved story.',exact=True)).to_be_visible()
+            expect(page.get_by_text('Compared with the protected lines',exact=False)).to_be_visible()
             assert page.get_by_text('Start a trailer',exact=True).count()==0
         finally:browser.close()
 
@@ -159,4 +159,19 @@ def test_target_change_refreshes_timing_without_losing_draft(editor_world):
             page.evaluate("async (slug)=>{const s=await fetch('/api/project/'+slug+'/state').then(r=>r.json());(await import('/ui/trailer.js')).renderPaperCut(s);}",root.name)
             expect(page.get_by_text('Shots total 28.00 seconds; target 29.00 seconds. 24 frames short.',exact=True)).to_be_visible()
             expect(page.get_by_label('Hook',exact=True)).to_have_value('Keep this unsaved opening')
+        finally:browser.close()
+
+
+def test_creation_signing_opens_editor_without_reload(tmp_path,monkeypatch):
+    monkeypatch.setattr('scripts.gate_approve.require_tty',lambda:None)
+    root=edit.create_trailer(tmp_path,'A new beginning',28,50)
+    req=json.loads(next((root/'.gate-requests').glob('*.json')).read_text())
+    with editor_server(tmp_path) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=browser.new_page();page.goto(f'{url}/p/{root.name}#k=invented-browser-proof')
+            page.locator('button.need').click()
+            expect(page.get_by_role('heading',name='Start this trailer',exact=True)).to_be_visible()
+            approve_request(req,root)
+            expect(page.get_by_role('heading',name='Story and paper cut',exact=True)).to_be_visible(timeout=15000)
         finally:browser.close()
