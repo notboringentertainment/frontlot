@@ -8,6 +8,9 @@ import copy
 import hashlib
 import json
 import math
+import os
+import stat
+from decimal import Decimal
 import time
 import uuid
 from datetime import datetime, timezone
@@ -23,7 +26,7 @@ from tools.cost_tracker import (CostTracker, reservation_lock, reserve_paid_call
     attach_request_id, reconcile_paid_call, resume_check, load_reservations)
 
 CLASSES = {'speech':'speech_text', 'music':'music_prompt', 'effect':'effect_prompt'}
-FIELDS = {'request_id','provider','kind','model','voice','prompt','duration_seconds',
+FIELDS = {'project_id','request_id','provider','kind','model','voice','prompt','duration_seconds',
           'max_cash_usd','max_credits_usd','price_expires_at','input_sha256','config_sha256'}
 
 def _money(value):
@@ -54,6 +57,8 @@ def validate_request(record, *, check_expiry=True):
     if isinstance(length,bool) or not isinstance(length,(int,float)) or not math.isfinite(length) or not 0 < length <= 120:
         raise ValueError('Audio length must be positive and no more than two minutes.')
     _money(record['max_cash_usd']);_money(record['max_credits_usd'])
+    if record['max_cash_usd'] + record['max_credits_usd'] <= 0:
+        raise ValueError('A positive upper charge bound is required for audio.')
     expiry=record['price_expires_at']
     if isinstance(expiry,bool) or not isinstance(expiry,(int,float)) or not math.isfinite(expiry):
         raise ValueError('A firm price expiry is required.')
@@ -69,8 +74,19 @@ def _root(root):
         raise ValueError('Audio requires a registered production.')
     return root
 
+class AudioCostTracker(CostTracker):
+    @property
+    def budget_remaining_usd(self):
+        remaining = Decimal(str(self.budget_total_usd))
+        for entry in self.entries:
+            if entry["status"] == "reserved":
+                remaining -= Decimal(str(entry.get("reserved_usd", 0)))
+            elif entry["status"] in ("completed", "failed"):
+                remaining -= Decimal(str(entry.get("actual_usd", 0)))
+        return float(remaining)
+
 def _tracker(root,config):
-    return CostTracker(budget_total_usd=config.budget_usd_cap,reserve_pct=0,
+    return AudioCostTracker(budget_total_usd=config.budget_usd_cap,reserve_pct=0,
         single_action_approval_usd=float('inf'),require_approval_for_new_paid_tool=False,
         mode=BudgetMode.CAP,cost_log_path=root/'cost_log.json')
 
@@ -79,13 +95,15 @@ def prepare(root, *, kind,model,voice,prompt,duration_seconds,max_cash_usd,max_c
     # Bounds are validated even if the saved settings are damaged.
     _money(max_cash_usd);_money(max_credits_usd)
     config=load_verified_project_config(root)
-    r=dict(request_id=str(uuid.uuid4()),provider='elevenlabs',kind=kind,model=model,voice=voice,prompt=prompt,
+    r=dict(project_id=root.name,request_id=str(uuid.uuid4()),provider='elevenlabs',kind=kind,model=model,voice=voice,prompt=prompt,
            duration_seconds=duration_seconds,max_cash_usd=max_cash_usd,max_credits_usd=max_credits_usd,
            price_expires_at=price_expires_at,config_sha256=config.digest)
     r['input_sha256']=record_sha256(_payload(r))
     # Expired quotes may be saved for inspection but cannot be signed or submitted.
     validate_request(r,check_expiry=False)
     directory=root/'.audio-requests';directory.mkdir(exist_ok=True)
+    if directory.is_symlink():
+        raise ValueError('Audio request links are not permitted.')
     with (directory/(r['request_id']+'.json')).open('x') as stream:json.dump(r,stream,sort_keys=True)
     return r
 
@@ -94,7 +112,29 @@ def read_request(root,request_id):
         if str(uuid.UUID(request_id))!=request_id:raise ValueError()
     except (ValueError,TypeError,AttributeError):
         raise ValueError('Invalid audio request identity.')
-    return json.loads((Path(root)/'.audio-requests'/(request_id+'.json')).read_text())
+    root = Path(root)
+    descriptors = []
+    try:
+        if root.is_symlink():
+            raise ValueError('Audio request links are not permitted.')
+        parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptors.append(parent)
+        directory = os.open('.audio-requests', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+        descriptors.append(directory)
+        fd = os.open(request_id+'.json', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+        descriptors.append(fd)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError('Audio request must be a regular file.')
+        with os.fdopen(os.dup(fd), 'r') as stream:
+            record = json.load(stream)
+        if not isinstance(record, dict):
+            raise ValueError('The saved audio request is invalid.')
+        if record.get('project_id') != root.name or record.get('request_id') != request_id:
+            raise ValueError('The saved audio request belongs to another production.')
+        return record
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)
 
 def check_current(root,record):
     root=_root(root);validate_request(record)
@@ -120,6 +160,10 @@ def execute(root,record, *, submit,download):
         resume_check(root)
         tracker=_tracker(root,config)
         bound=round(record['max_cash_usd']+record['max_credits_usd'],4)
+        remaining = tracker.budget_remaining_usd
+        if bound > remaining:
+            from tools.cost_tracker import BudgetExceededError
+            raise BudgetExceededError(f'This audio request needs ${bound:.4f}; only ${remaining:.4f} remains.')
         reservation=reserve_paid_call(tracker,root,tool='elevenlabs_audio',endpoint=record['model'],
             normalized_inputs_hash=record['input_sha256'],reserved_usd=bound,
             output_hint={'kind':'audio','audio_approval_receipt_id':approval['receipt_id'],'request_id':record['request_id']})
@@ -138,13 +182,19 @@ def execute(root,record, *, submit,download):
         if not isinstance(data,bytes) or not data:raise ValueError('The audio download is empty or invalid.')
         output=root/'assets'/'audio'/(record['request_id']+'.audio')
         output.parent.mkdir(parents=True,exist_ok=True)
-        with output.open('xb') as stream:stream.write(data)
+        from lib.pathsafe import staging_file, validate_output_parent
+        output = validate_output_parent(output, root)
+        staging = staging_file(root, '.audio')
+        with staging.open('wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
         total=round(cash+credits,4)
         stage_generation_wal(root,execution_id=reservation,
-            outputs=[{'output_path':str(output),'output_sha256':hashlib.sha256(data).hexdigest()}],
+            outputs=[{'staging_path':str(staging),'output_path':str(output),'output_sha256':hashlib.sha256(data).hexdigest()}],
             reservation_id=reservation,actual_usd=total,
             receipt={'tool':'elevenlabs_audio','normalized_inputs_hash':record['input_sha256'],
-                'parameters_hash':record_sha256(record),'model_endpoint':record['model'],
+                'parameters_hash':record['input_sha256'],'model_endpoint':record['model'],
                 'provider_request_id':result['request_id'],'cost_usd':total,'started_at':started,
                 'audio_charge':{'cash_usd':cash,'credits_usd':credits,'audio_approval_receipt_id':approval['receipt_id']}})
         return complete_generation(root,reservation,tracker=tracker)

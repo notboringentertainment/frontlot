@@ -29,3 +29,19 @@ The later app operation must prepare its existing gate request with the audio re
 The transport contract is submit(payload, reservation_id), returning request_id, cash_usd and credits_usd; download(result) returns nonempty bytes. These functions are trusted server adapters, not unrestricted browser callbacks. They must not retry. The payload contains provider, kind, model, voice, prompt and duration. Additional generation options require an explicit extension of this signed contract.
 
 Successful outputs use the existing generation write-ahead recovery and signed receipt ledger. Audio charge fields are additive and absent on older receipts. Uncertainty stays in the existing reservation ledger and blocks new paid calls through resume_check.
+
+## Closing protections
+
+The older ElevenLabs voice and music tools now refuse to submit for a trailer or a production whose current verified settings use the new audio configuration. The refusal is: “Audio for this production goes only through an approved request.” This applies to their public entry points and their internal generation methods. Registry and voice-selector dispatch reach the same refusal. A trailer is still protected if its marker is missing but a signed trailer record or a trailer stage file survives.
+
+Productions that are neither trailers nor signed with the new audio settings keep the older tools' existing behavior. That remains an unapproved audio route for those productions until the later audio integration piece. An unattributed legacy call also retains its old behavior; calls belonging to a production must carry its directory or an output path inside it. The tool can also recognize the production from its current working directory.
+
+The pinned trailer definition is unchanged because editing it would invalidate signatures. Its stage list still names the older music tool. That listing cannot override the tool's refusal. There is no executable general stage runner in this repository; the operating assistant reads the manifest and calls registered tools.
+
+Saved audio requests identify their production and are read without following linked folders or linked files. A copied request from a different production is refused too. Requests saved before this identity field was added need to be prepared and approved afresh; this work does not rewrite their signatures.
+
+Downloaded bytes are saved in a temporary staging file. The recovery record is written before the file can be published to its final place. Existing recovery then publishes it and finishes the receipt. Content provenance uses the generation input fingerprint, while the spending approval retains its own separate identity. Two independently approved calls may therefore produce identical bytes without contradicting one another's provenance.
+
+A zero-total charge bound is always refused for ElevenLabs audio. A credit-funded request can still have no new cash charge, provided its replacement-credit bound is positive. Audio budget arithmetic preserves four-decimal amounts, including the last fraction of a cent, without changing older tools' tracker behavior. The signer displays price expiry as a UTC date and time and keeps the original numerical value in the signed record.
+
+Unresolved audio still freezes every paid request in the production. There is no resolution control yet. The later integration must add an honest account-review and reconciliation flow. The remaining limits also include raw transport errors reaching their caller, reliance on the protected production reservation file for consumption history, and no upper limit on a future adapter's expiry date. These are recorded limits, not new permissions to expose credentials, edit spending history or claim an unverified price.

@@ -224,7 +224,7 @@ def test_all_audio_classes_use_one_receipted_call(project,kind,voice):
     row=receipts.verified_generation_receipts(project)[0]
     assert row['normalized_inputs_hash']==r['input_sha256']
     assert row['audio_approval_receipt_id']
-    assert row['parameters_hash']==record_sha256(r)
+    assert row['parameters_hash']==r['input_sha256']
 
 def test_successful_charge_failed_download_keeps_known_breakdown(project):
     r=prepare(project);approve(project,r);t=Transport('download')
