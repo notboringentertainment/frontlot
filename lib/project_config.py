@@ -6,9 +6,9 @@ provider-egress consent and (1.1) the sheet-QC judge. It refuses to return a
 config that is not bound to a human-approved ``config`` receipt for the exact
 file digest, so a caller can never act on an edited-but-unapproved ``project.yaml``.
 
-Four schema versions are accepted and normalised to ONE in-memory shape
+Five schema versions are accepted and normalised to ONE in-memory shape
 (D19 R2#2): 1.0 carries a single FAL ``provider_egress`` object; 1.1 carries a
-list of per-provider entries plus a ``qc`` block; 1.3 adds ElevenLabs audio consent; 1.2 (D20) adds the hero QC
+list of per-provider entries plus a ``qc`` block; 1.3 adds ElevenLabs audio consent; 1.4 adds signed audio price rates; 1.2 (D20) adds the hero QC
 fields ``qc.hero_policy_sha256`` and ``qc.max_hero_attempts``. Consumers read
 only the normalised accessors (``egress_for``, ``require_egress``, ``qc``,
 ``require_qc``, ``require_hero_qc``), never the raw fields. Hero runs need

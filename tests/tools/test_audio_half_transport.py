@@ -63,7 +63,10 @@ def test_approved_music_posts_once_and_records_a_take(priced,http,route):
 def test_no_contact_for_unsigned_or_changed_material(priced,http,case):
     from tools.audio.music_gen import MusicGen
     record,brief=music_request(priced)
-    if case!='unsigned':sign(priced,'audio_spend',record,record['request_id'])
+    if case=='unsigned':
+        bare=MusicGen().execute({'project_dir':str(priced),'output_path':str(priced/'audio.mp3')})
+        assert not bare.success and 'each request' in bare.error and 'cannot be verified' not in bare.error
+    else:sign(priced,'audio_spend',record,record['request_id'])
     if case=='changed':ws.save_music_brief(priced,'Changed words.',3,brief)
     if case in ('expired','no-basis'):
         data=yaml.safe_load((priced/'project.yaml').read_text())
@@ -193,7 +196,9 @@ def test_uncertain_service_results_keep_budget_reserved(priced,http,monkeypatch,
         if mode!='missing-cost':headers['character-cost']='100000' if mode=='overcharge' else '1'
         def raise_for_status(self):pass
         @property
-        def content(self):raise OSError('invented interrupted download')
+        def content(self):
+            if mode=='bad-download':raise OSError('invented interrupted download')
+            return wav_bytes()
     def post(*args,**kwargs):
         http.append((args,kwargs))
         if mode=='timeout':raise TimeoutError('invented timeout')
@@ -243,6 +248,16 @@ def test_other_network_audio_stops_for_unresolved_audio(priced,http,monkeypatch)
     reserve_paid_call(tracker,priced,tool='elevenlabs_audio',endpoint='invented',normalized_inputs_hash='a'*64,reserved_usd=.1,output_hint={'kind':'audio'})
     result=GoogleMusic().execute({'project_dir':str(priced),'prompt':'A quiet cue.','duration_seconds':3})
     assert not result.success and 'unresolved' in result.error and http==[]
+    from tools.base_tool import BaseTool,ToolRuntime,ToolResult
+    class CountedAudio(BaseTool):
+        name='invented_network_audio'
+        capability='tts'
+        runtime=ToolRuntime.API
+        def execute(self,inputs):
+            requests.post('https://invented.invalid/audio')
+            return ToolResult(success=True)
+    result=CountedAudio().execute({'project_dir':str(priced)})
+    assert not result.success and 'unresolved' in result.error and http==[]
 
 
 def test_estimate_uses_signed_basis_and_never_contacts_service(priced,http):
@@ -265,3 +280,26 @@ def test_price_expiring_during_reservation_sends_nothing(priced,http,monkeypatch
     monkeypatch.setattr(audio,'reserve_paid_call',reserve)
     result=MusicGen().execute({'project_dir':str(priced),'audio_request_id':record['request_id']})
     assert not result.success and http==[]
+
+
+def test_duplicate_live_confirmation_buys_one_call(priced,http,monkeypatch):
+    import threading,requests
+    from concurrent.futures import ThreadPoolExecutor
+    from tools.audio.music_gen import MusicGen
+    record,_=music_request(priced);sign(priced,'audio_spend',record,record['request_id'])
+    args={'project_dir':str(priced),'audio_request_id':record['request_id']}
+    submitted=threading.Event();release=threading.Event()
+    original=requests.post
+    def post(*a,**k):
+        submitted.set()
+        assert release.wait(10)
+        return original(*a,**k)
+    monkeypatch.setattr(requests,'post',post)
+    with ThreadPoolExecutor(2) as pool:
+        first=pool.submit(MusicGen().execute,args)
+        assert submitted.wait(10)
+        second=pool.submit(MusicGen().execute,args)
+        try:assert not second.result(timeout=10).success
+        finally:release.set()
+        assert first.result(timeout=10).success
+    assert len(http)==1
