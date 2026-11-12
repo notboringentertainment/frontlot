@@ -58,11 +58,10 @@ def read(root,identity):
 
 
 def line(root,index):
-    require_checked_paper(root)
     from lib.trailer_contract import edit_digest
     path=Path(root)/'artifacts/edit_decisions.json'
     _checked_path(path)
-    edit=json.loads(path.read_text())
+    edit=require_checked_paper(root)['current']
     if edit.get('edit_revision_sha256')!=edit_digest(edit):raise ValueError('The saved paper cut cannot be verified.')
     if type(index) is not int or index<0:raise ValueError('Choose a spoken line from the paper cut.')
     rows=edit.get('paper_cut',{}).get('lines',[])

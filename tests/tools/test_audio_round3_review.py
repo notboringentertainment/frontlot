@@ -151,3 +151,19 @@ def test_missing_event_layer_cannot_open_an_audio_route(priced,http,monkeypatch)
     result=GoogleTTS().execute({'project_dir':str(priced),'output_path':str(priced/'voice.wav'),'text':'The gallery closes.'})
     assert not result.success and 'approved request' in result.error
     assert http==[]
+
+
+def test_voice_reads_the_exact_snapshot_that_passed_story_checks(priced,http,monkeypatch):
+    from lib import trailer_edit
+    from lib.trailer_contract import edit_digest
+    speech_request(priced)
+    real=trailer_edit.paper_state
+    def concurrent_save(root):
+        checked=real(root)
+        path=root/'artifacts/edit_decisions.json';changed=json.loads(path.read_text())
+        changed['paper_cut']['lines'][0]['text']='Keep the light on tomorrow.'
+        changed['edit_revision_sha256']=edit_digest(changed);path.write_text(json.dumps(changed))
+        return checked
+    monkeypatch.setattr(trailer_edit,'paper_state',concurrent_save)
+    assert ws.line(priced,0)['text']=='The gallery is closed.'
+    assert http==[]
