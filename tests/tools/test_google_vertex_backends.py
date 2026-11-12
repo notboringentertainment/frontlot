@@ -12,6 +12,8 @@ def test_blank_google_location_uses_documented_default(monkeypatch) -> None:
 
 
 def test_google_music_requests_the_global_vertex_location(monkeypatch, tmp_path) -> None:
+    from tests.contracts.test_kling_tts import verified_older_audio_production
+    root = verified_older_audio_production.__wrapped__(tmp_path, monkeypatch)
     monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
     import tools.google_credentials as credentials
 
@@ -27,7 +29,7 @@ def test_google_music_requests_the_global_vertex_location(monkeypatch, tmp_path)
 
     result = GoogleMusic().execute({
         "prompt": "solo piano",
-        "output_path": str(tmp_path / "music.mp3"),
+        "output_path": str(root / "music.mp3"),
     })
 
     assert result.success is False
