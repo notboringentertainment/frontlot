@@ -271,6 +271,14 @@ def _trailer_spoiler(text, refs, lock):
     stop = {'a','an','the','is','are','was','were','has','have','had','been','be','it','she','he','they','that','this','since','of','on','in','to','and'}
     a = set(_trailer_words(text)) - stop
     b = set(_trailer_words(fact)) - stop
+    # Shared setting words alone are not the reveal. For a near-paraphrase,
+    # require the meaningful description after the fact's linking verb too.
+    # Without a clear description, retain exact wording/reference checks only.
+    words = _trailer_words(fact)
+    linking = next((i for i,w in enumerate(words) if w in {'is','are','was','were','be','been'}), None)
+    reveal = next((w for w in words[linking+1:] if w not in stop), None) if linking is not None else None
+    if reveal is None or reveal not in a:
+        return False
     shared = a & b
     return len(shared) >= 2 and len(shared) / max(1, len(a)) >= 2/3 and len(shared) / max(1, len(b)) >= .5
 

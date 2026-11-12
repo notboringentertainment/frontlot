@@ -294,6 +294,8 @@ def test_protected_matching_boundary_and_honest_words(tmp_path,text,rejected):
     ('SHE DIED THE NIGHT IT CLOSED.',True),
     ('The caretaker has been dead since the museum closed.',True),
     ('THE MUSEUM CLOSED YEARS AGO.',False),
+    ('THE MUSEUM IS CLOSED.',False),
+    ('They closed the museum.',False),
     ('THIS WINTER',False),
 ])
 def test_spoiler_near_paraphrase_and_honest_cards(tmp_path,text,rejected):
