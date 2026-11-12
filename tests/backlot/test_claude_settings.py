@@ -135,7 +135,7 @@ def test_brief_lists_every_operation_with_its_parameters_and_cost():
     # Early real run: without the list Claude guessed "status", "help", "look_run" and was refused.
     from backlot.claude_ops import OPERATIONS
 
-    b = cs.build_brief(film_title="Film", film_slug="film")
+    b = cs.build_brief(film_title="Film", film_slug="film", trailer=True)
     assert '{"op": ' in b and '"params"' in b
     for name, spec in OPERATIONS.items():
         line = next(l for l in b.splitlines() if l.startswith(f"- {name} "))

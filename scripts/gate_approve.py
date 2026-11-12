@@ -574,10 +574,20 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
             f"pipeline_migration needs a version in {manifest_versions(pipeline_name)}, got {version!r}"
         )
     digest = manifest_digest(f"{pipeline_name}@{version}")
+    creation = "trailer_creation" in hint
+    from lib.trailer_edit import creation_facts
+    try:
+        facts = creation_facts(root) if creation else None
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        raise GateHandlerError("The trailer name, length or spending ceiling is missing or invalid. Repair those settings before signing.") from exc
+    if creation and (version != "1.6" or pipeline_name != "authored-film" or facts != hint["trailer_creation"]):
+        raise GateHandlerError("The trailer settings changed. Start signing again after reviewing them.")
     bound = checkpoint_digests_on_disk(root)
     try:
-        require_migration_coverage(root, pipeline_name, version)  # D20.7: legacy heroes must be grandfathered
+        require_migration_coverage(root, pipeline_name, version, trailer_creation=creation)  # D20.7: legacy heroes must be grandfathered
         record = migration_record(pipeline_name, version, digest, bound)
+        if creation:
+            record["trailer_creation"] = facts
         tip = _chain_tip(
             verified_approvals(root, MIGRATION_KIND, entity_id=pipeline_name, project_id=req["project_id"]),
             pipeline_name,
@@ -585,7 +595,7 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
     except PipelinePinError as exc:
         raise GateHandlerError(str(exc)) from exc
     envelope = {"supersedes_receipt_id": tip["receipt_id"] if tip else None}
-    evidence = (
+    evidence = ((f"Start {facts['title']}: {facts['trailer']['target_duration_seconds']} seconds; total ceiling ${facts['spending_ceiling_usd']:.2f}. No stage approval or spending permission.",) if creation else ()) + (
         f"manifest pipeline_defs/{pipeline_name}@{version}.yaml digest {digest}",
         f"binds {len(bound)} checkpoint file(s) on disk: " + ", ".join(f"{b['stage']}={b['checkpoint_digest'][:12]}…" for b in bound),
         f"supersedes migration receipt {tip['receipt_id']}" if tip else "first pin for this project",
@@ -593,9 +603,14 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
 
     def pre_commit() -> None:  # re-derived under the consumed token (R3#4)
         try:
-            require_migration_coverage(root, pipeline_name, version)
+            require_migration_coverage(root, pipeline_name, version, trailer_creation=creation)
         except PipelinePinError as exc:
             raise GateHandlerError(str(exc)) from exc
+        try:
+            if creation and creation_facts(root) != facts:
+                raise GateHandlerError("The trailer settings changed while signing.")
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            raise GateHandlerError("The trailer settings changed or became invalid while signing.") from exc
         if checkpoint_digests_on_disk(root) != bound:
             raise GateHandlerError("checkpoint files changed between request and signing; re-run the migration request")
 
@@ -1714,6 +1729,12 @@ def canonical_text(obj: Any) -> str:
 
 def show_request(req: dict, root: Path, out=None, built: Optional[Constructed] = None) -> None:
     out = out or sys.stdout
+    if 'trailer_creation' in (req.get('approval_record') or {}):
+        print("\nReview trailer creation", file=out)
+        print(req['summary'], file=out)
+        if built is not None:
+            show_constructed(built, out)
+        return
     print(f"\n=== Gate request {req['request_id']} ===", file=out)
     print(f"stage: {req['stage']}   scope: {req['scope']}   kind: {req['kind']}", file=out)
     print(f"\n{req['summary']}\n", file=out)
@@ -1728,6 +1749,13 @@ def show_constructed(built: Constructed, out=None) -> None:
     """Print exactly what will be signed: the canonical record JSON, its
     sha256, the envelope, the key and the evidence it was built from."""
     out = out or sys.stdout
+    if 'trailer_creation' in built.record:
+        facts = built.record['trailer_creation']
+        print(f"\nTrailer title: {facts['title']}", file=out)
+        print(f"Target length: {facts['trailer']['target_duration_seconds']:g} seconds", file=out)
+        print(f"Total spending ceiling: ${facts['spending_ceiling_usd']:.2f}", file=out)
+        print("Signing starts this trailer. It approves no stage and permits no spending. Separate signed spending settings are still required before paid work.", file=out)
+        return
     print("\n--- record to be signed (constructed by the gate from authoritative inputs) ---", file=out)
     print(canonical_text(built.record), file=out)
     print(f"record sha256: {built.digest}", file=out)
