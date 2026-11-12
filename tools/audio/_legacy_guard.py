@@ -43,6 +43,7 @@ def _read_marker(path):
 def refusal(inputs):
     """No verification failure or missing attribution can authorize a POST."""
     from lib.project_config import load_current_verified_project_config
+    from lib.run_common import resolve_project_root
     from lib.trailer_contract import signed_trailer_pin
     if not isinstance(inputs, dict):
         return NO_PRODUCTION
@@ -67,6 +68,13 @@ def refusal(inputs):
         for path in (explicit, output):
             if path is not None:
                 path.relative_to(root)
+        # Signed files copied under the same name still verify. Only the
+        # registered direct child of PROJECTS_DIR can use the legacy route,
+        # and not even a configured registry may hide an enclosing production.
+        if _enclosing_root(root.parent) is not None:
+            return BAD_PATH
+        if _checked_path(resolve_project_root(root.name)) != root:
+            return BAD_PATH
     except (OSError, ValueError, TypeError, RuntimeError):
         return BAD_PATH
     try:

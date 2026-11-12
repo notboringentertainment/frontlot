@@ -646,7 +646,11 @@ def reservation_lock(project_root: Path):
     held: dict = getattr(_reservation_locks, "held", None)
     if held is None:
         held = _reservation_locks.held = {}
-    key = str(lock_file)
+    # APFS can reach one directory using different letter case. Path.resolve
+    # retains that spelling, but the directory identity does not; all aliases
+    # must share this thread's re-entrant lock as well as the OS file lock.
+    identity = path.parent.stat()
+    key = (identity.st_dev, identity.st_ino)
     if key in held:
         held[key][1] += 1
         try:

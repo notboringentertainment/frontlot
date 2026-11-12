@@ -45,9 +45,12 @@ def _install_fake_requests(
 
 
 @pytest.fixture
-def legacy_music_root(tmp_path):
+def legacy_music_root(tmp_path, monkeypatch):
     import hashlib, yaml
+    import lib.paths, lib.events
     from tests.tools.test_audio_governance import sign
+    monkeypatch.setattr(lib.paths, 'PROJECTS_DIR', tmp_path)
+    monkeypatch.setattr(lib.events, 'PROJECTS_DIR', tmp_path)
     root = tmp_path / "older-music"
     root.mkdir()
     data = {"version": "1.0", "budget_usd_cap": 10, "wall_time_minutes": 10,

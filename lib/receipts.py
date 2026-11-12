@@ -1255,10 +1255,18 @@ def recover_generation_wal(project_root: Path | str) -> list[dict]:
         recovered: list[dict] = []
         problems: list[str] = []
         for entry in gates.generation_wal_entries():
-            if entry.get("project_root") != str(root) or not entry.get("execution_id"):
+            saved_root = entry.get("project_root")
+            if not isinstance(saved_root, str) or not entry.get("execution_id"):
                 continue
             try:
-                recovered.extend(replay_generation_entry(root, entry))
+                if not root.samefile(saved_root):
+                    continue
+            except (OSError, ValueError):
+                continue
+            try:
+                # Retain the spelling (and signed project id) from the saved
+                # record when the caller used another case on the same disk.
+                recovered.extend(replay_generation_entry(Path(saved_root), entry))
             except GenerationWalError as exc:
                 problems.append(str(exc))
         if problems:
