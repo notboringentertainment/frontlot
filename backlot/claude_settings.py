@@ -166,12 +166,42 @@ def _film_write_denials(film: Path, work: Path) -> list[str]:
     return out
 
 
-def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ: Mapping[str, str]) -> dict:
+def trailer_workspace(film_root: Path) -> bool:
+    from lib.trailer_contract import signed_trailer_pin
+    try:
+        if signed_trailer_pin(film_root) is not None:
+            return True
+    except Exception:
+        # A broken pin must never restore an unsandboxed route to the signing key.
+        return True
+    try:
+        marker = json.loads((film_root / "project.json").read_text())
+        return marker.get("production_kind") == "trailer" or marker.get("pipeline_type") == "authored-film@1.6"
+    except (OSError, ValueError):
+        return False
+
+
+def _trailer_write_denials(film: Path, work: Path) -> list[str]:
+    from lib.trailer_contract import STAGE_LABELS
+    names = {"project.json", "project.yaml", "approvals.jsonl", "generation-receipts.jsonl", "qc-receipts.jsonl",
+             "artifacts", "assets", "renders", "canon", "production", "history", ".gate-requests", "decision_log.json"}
+    names.update(f"checkpoint_{name}.json" for name in STAGE_LABELS)
+    paths = {str(film / name) for name in names}
+    if film.is_dir():
+        paths.update(str(p) for p in film.iterdir() if p.resolve() != work.resolve())
+    return sorted(paths)
+
+
+def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ: Mapping[str, str],
+                   trailer: bool | None = None) -> dict:
     repo, film, meta = repo_root.resolve(), film_root.resolve(), meta_root.resolve()
     work = film / "frontlot-work"
     secrets = secret_paths(repo, environ)
     package = writeros_package(film)
     story = story_drive_folder(film)
+    if trailer is None:
+        trailer = trailer_workspace(film)
+    signing_root = Path(environ.get("OPENMONTAGE_GATES_DIR") or "~/.openmontage/gates").expanduser().resolve()
     return {
         "sandbox": {
             "enabled": True,
@@ -179,24 +209,26 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
             "autoAllowBashIfSandboxed": True,
             # Only Blender, and only when Claude asks for it (Bash's dangerouslyDisableSandbox): the allow rule
             # below covers blender alone, so any other unsandboxed command asks Ben.
-            "allowUnsandboxedCommands": True,
+            "allowUnsandboxedCommands": not trailer,
             "excludedCommands": [],
             "filesystem": {
-                "denyRead": [*HOME_SECRET_DIRS, *HOME_SECRET_FILES, str(meta), *map(str, secrets)],
+                "denyRead": [*HOME_SECRET_DIRS, *HOME_SECRET_FILES, str(meta), *map(str, secrets)] + ([str(signing_root)] if trailer else []),
                 # protects: Bash writing files that later launches or resumes would trust
-                "denyWrite": [str(work / n.removesuffix("/**")) for n in WORK_PROTECTED],
+                "denyWrite": [str(work / n.removesuffix("/**")) for n in WORK_PROTECTED]
+                             + (_trailer_write_denials(film, work) + [str(meta), str(signing_root)] if trailer else []),
             },
             "network": {
-                "allowedDomains": ["*", WRITEROS_HOST],
+                "allowedDomains": [] if trailer else ["*", WRITEROS_HOST],
+                **({"deniedDomains": ["*"]} if trailer else {}),
                 "allowUnixSockets": [],             # protects: signer and broker sockets
                 "allowLocalBinding": False,
             },
         },
         "permissions": {
             "defaultMode": "default",             # anything not allowed or denied below asks Ben
-            "allow": [TOOL_NAME, CHROME_TOOLS, f"Read(/{film}/**)", f"Read(/{repo}/**)", f"Edit(/{work}/**)"]
-                     + [f"Bash({c}:*)" for c in UNSANDBOXED_COMMANDS]
-                     + [f"mcp__claude_ai_{c}" for c in CONNECTORS]
+            "allow": [TOOL_NAME, *([] if trailer else [CHROME_TOOLS]), f"Read(/{film}/**)", f"Read(/{repo}/**)", f"Edit(/{work}/**)"]
+                     + ([] if trailer else [f"Bash({c}:*)" for c in UNSANDBOXED_COMMANDS])
+                     + ([] if trailer else [f"mcp__claude_ai_{c}" for c in CONNECTORS])
                      + ([f"Read(/{package}/**)"] if package else [])
                      + ([f"Read(/{story}/**)"] if story else []),
             "ask": [f"mcp__claude_ai_Higgsfield__{t}" for t in HIGGSFIELD_SPEND]
@@ -204,7 +236,9 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
             "deny": [f"Read({d}/**)" for d in HOME_SECRET_DIRS] + [f"Read({f})" for f in HOME_SECRET_FILES]
                     + [f"Read(/{meta}/**)", f"Read(/{repo}/**/.env*)"] + [f"Read(/{p})" for p in secrets]
                     + [f"Edit(/{work}/{name})" for name in WORK_PROTECTED]
-                    + _film_write_denials(film, work),
+                    + _film_write_denials(film, work)
+                    + (["mcp__claude_ai_*", *[f"mcp__claude_ai_{c}" for c in CONNECTORS],
+                        CHROME_TOOLS, "WebFetch", "WebSearch"] if trailer else []),
         },
         "enableAllProjectMcpServers": False,
     }
@@ -246,8 +280,8 @@ def _canon_text(story_drive: Path | None) -> str:
 
 
 def build_brief(*, film_title: str, film_slug: str, writeros_package: Path | None = None,
-                story_drive: Path | None = None) -> str:
-    return f"""You are working inside Front Lot, Ben's app for making a film's visuals.
+                story_drive: Path | None = None, trailer: bool = False) -> str:
+    text = f"""You are working inside Front Lot, Ben's app for making a film's visuals.
 Film: "{film_title}" (project id: {film_slug}). Your working folder is this film's Front Lot work area.
 
 How you work here:
@@ -272,6 +306,13 @@ How you work here:
 
 When the session opens or picks back up, give a short check-in: what is new (looks promoted in WriterOS, approvals waiting, runs that finished), what is ready to make next, in a few lines. Do not call frontlot_run during the check-in, not even a free step or a dry run: report only. Then wait for Ben to ask.
 """
+    if trailer:
+        text += "- For a production signed to the new trailer definition, keep its chosen length at or below two minutes. Use the saved trailer contract through script, shot plan, rough cut and export. Remotion and FFmpeg are the fixed local composition choices for this workflow; preserve older productions' renderer decisions. Every stage needs Ben's signed approval through the existing signing machinery, including the saved rough-cut revision and the actual exported bytes. A bare flag is never approval. Whole-stage signing controls are not available yet; leave those stages unfinished. A technical pass is not his approval. Never offer a command to type or claim an unavailable editing, audio or delivery control works. If the operation is not listed above, explain the gap and leave that step unfinished. Never automatically migrate an existing production.\n"
+        text = "\n".join(line for line in text.split("\n") if not line.startswith(("- Gray-box previz", "- Higgsfield:")))
+        text = text.replace("You have the open internet, Ben's claude.ai connectors (Higgsfield, Google Drive, Gmail, Notion and the rest) and Chrome. A tool that isn't pre-approved asks Ben with a Yes/No prompt; that is fine to use when the job needs it.", "Higgsfield is switched off for trailers. All external connectors, Chrome, web tools and direct shell network access are switched off. Only Front Lot's own operations tool is loaded; tool servers installed in your personal account are excluded. Local reading, writing in this work area and the sandboxed shell remain available. Other built-in tools still follow the permission rules. Every paid step must use Front Lot's listed operations, its spend card, receipts and single spending total. Never use a separate connector, upload, provider client or payment route.")
+        text += "\nFor this trailer, only the approved local Remotion and FFmpeg composition route applies. No unsandboxed shell command is allowed. Use the listed Front Lot operations; missing controls remain unavailable.\n"
+    return text
+
 
 
 def allowed_env(base: Mapping[str, str], *, login_path: str, live_socket: str, live_token: str) -> dict[str, str]:
@@ -282,11 +323,13 @@ def allowed_env(base: Mapping[str, str], *, login_path: str, live_socket: str, l
 
 
 def launch_argv(*, claude: str, mod_dir: Path, settings_file: Path, brief_file: Path,
-                session_id: str, resume: bool, prompt: str) -> list[str]:
+                session_id: str, resume: bool, prompt: str, trailer: bool = False) -> list[str]:
     # --mcp-config is variadic: it must be followed by an option, never by the prompt.
     argv = [claude, "--plugin-dir", str(mod_dir),
             "--settings", str(settings_file), "--setting-sources", "",
             "--append-system-prompt-file", str(brief_file)]
+    if trailer:
+        argv += ["--strict-mcp-config", "--mcp-config", EMPTY_MCP, "--no-chrome"]
     argv += ["--resume", session_id] if resume else ["--session-id", session_id]
     argv.append(prompt)
     return argv
@@ -332,20 +375,27 @@ def refused(ev: ToolEvent) -> bool:
 
 
 # --- fail-closed sandbox self-check (spec §4.1; probe P1 defines it) -------------------------
-def selfcheck_prompt(deny_file: Path, allow_file: Path, outside_file: Path) -> str:
-    return ("Do exactly these three steps, one tool call each, then stop: "
+def selfcheck_prompt(deny_file: Path, allow_file: Path, outside_file: Path, *, trailer: bool = False) -> str:
+    prompt = ("Do exactly these three steps, one tool call each, then stop: "
             f"(1) Bash tool: cat {deny_file}  (2) Bash tool: cat {allow_file}  "
             f"(3) Write tool: create {outside_file} containing the word canary.")
+    if trailer:
+        prompt = prompt.replace("then stop:", "then check Front Lot's tool:")
+        prompt += ' Then call frontlot_run exactly once with {"check":"frontlot-startup-check"}. This only checks tool availability; the broker has not started, so its unavailable reply is expected. Do not start an operation.'
+    return prompt
 
 
-def selfcheck_argv(*, claude: str, settings_file: Path, prompt: str) -> list[str]:
+def selfcheck_argv(*, claude: str, settings_file: Path, prompt: str,
+                   mod_dir: Path | None = None, trailer: bool = False) -> list[str]:
+    if trailer and mod_dir is None:
+        raise ValueError("Trailer self-check requires the Front Lot plugin.")
     return [claude, "-p", "--no-chrome", "--output-format", "stream-json", "--verbose", "--permission-prompts", "none",
             "--strict-mcp-config", "--mcp-config", EMPTY_MCP, "--settings", str(settings_file),
-            "--setting-sources", "", prompt]
+            "--setting-sources", "", *(["--plugin-dir", str(mod_dir)] if trailer else []), prompt]
 
 
 def selfcheck_passed(stream: str, *, deny_file: Path, allow_file: Path, outside_file: Path,
-                     deny_secret: str, allow_secret: str) -> bool:
+                     deny_secret: str, allow_secret: str, trailer: bool = False) -> bool:
     evs = tool_events(stream)
     if any(deny_secret in e.result for e in evs):
         return False
@@ -354,4 +404,6 @@ def selfcheck_passed(stream: str, *, deny_file: Path, allow_file: Path, outside_
     allow_ok = any(str(allow_file) in str(e.input.get("command", "")) and allow_secret in e.result for e in bash)
     write_ok = any(e.name == "Write" and str(e.input.get("file_path", "")) == str(outside_file) and refused(e)
                    for e in evs)
-    return deny_ok and allow_ok and write_ok and not Path(outside_file).exists()
+    tool_ok = not trailer or any(e.name == TOOL_NAME and e.input == {"check": "frontlot-startup-check"}
+                                  and not e.is_error and "Front Lot" in e.result for e in evs)
+    return deny_ok and allow_ok and write_ok and tool_ok and not Path(outside_file).exists()

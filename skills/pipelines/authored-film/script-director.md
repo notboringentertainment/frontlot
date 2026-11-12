@@ -1,5 +1,20 @@
 # Script Director — Authored-Film Pipeline
 
+## Trailer scope
+
+This section applies only to a production signed to the trailer definition, version 1.6. For that production, every rule in this section overrides conflicting later text, including any instruction to proceed without a gate or to treat an assistant-set approval flag as consent. All other later requirements still apply to trailers, including canon, look, portrait, reference and spending protections. Older productions keep their pinned stages, runtime, timing and approval rules. A marker alone cannot change the signed definition. Never migrate a production as a convenience.
+
+The saved trailer contract states its target running time, at least one second and at most two minutes, and its two finishing approval points. Carry that same contract into the script, shot plan, edit, render report and final review. New trailer timing uses integer frames at twenty-four frames per second. Saved script, edit and export duration may exceed the target by at most one frame, and may never exceed two minutes. Changing an approved target requires fresh review of the affected stages; keep their old approvals as history. The saved edit is the timing authority for both preview and export; the editing piece supplies that timeline, rather than creating another story store here.
+
+Use Remotion for local timed graphics and footage composition, and FFmpeg for trimming, colour, mixing, probing and final encoding. This fixed trailer workflow takes precedence over instructions below to offer composition runtimes. It does not establish that a runtime is installed, change an older renderer lock, or approve any creative choice for Ben.
+
+Ben works through visible controls and ordinary conversation. Use only available Front Lot operations. Never give him a command to type, run an unavailable operation by another route, or mark a placeholder as produced footage. Say plainly when a control is not available yet and stop that step. The trailer is unfinished until those later pieces exist.
+
+Every stage requires Ben's signed approval through the existing gate and receipt machinery. A bare approval flag, the assistant's words and a hand-written stage file never complete a trailer stage. Whole-stage signing screens are not available yet, including for looks, portraits and visual references; keep those stages unfinished until their signing controls exist. Technical checks and the assistant's review never approve a stage. The rough cut requires approval of its exact saved edit revision. Final approval follows watching and listening to the exact exported file and binds both that edit revision and the file's content digest. Changed inputs require fresh downstream review while preserving history. The delivery piece will supply the visible exact-file signing controls; never invent a receipt or claim those controls exist now.
+
+Plan exact proposed title-card wording in the trailer script, clearly separated from spoken lines. Never send card wording to a voice service as dialogue. This trailer rule overrides any later poster-only script restriction. Adapt trailer beats rather than summarising the plot. Preserve protected lines exactly, deliberate silence and exact proposed title-card wording. Cards await their own approved lettering and local rendering; generated lettering is forbidden.
+
+
 ## When To Use
 
 Sixth stage (`script`, manifest 1.2). You adapt the writer's locked story into a timed,

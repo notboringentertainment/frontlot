@@ -119,15 +119,25 @@ def canary_paths(slug: str, work: Path) -> tuple[Path, Path, Path]:
     return paths(slug)["canary"], work / ".frontlot-canary", work.parent / ".frontlot-canary-write"
 
 
+def startup_trailer(film: Path) -> bool:
+    """An unreadable startup classification receives the strict trailer policy."""
+    try:
+        return cs.trailer_workspace(film)
+    except Exception:
+        return True
+
+
 def sandbox_selfcheck(slug: str, claude: str, version: str, settings_file: Path, work: Path, env: dict,
-                      on_spawn=None) -> bool:
+                      on_spawn=None, trailer: bool = False) -> bool:
     """Fail closed (spec §4.1): the session starts only if, by tool-level evidence, sandboxed Bash can read an
     allowed canary, is refused the one under the denied metadata root, and the Write tool is refused outside the
     work area (and nothing was written). One short Claude turn, cached per Claude version + settings."""
     p = paths(slug)
     want = {"version": version, "settings_sha256": hashlib.sha256(settings_file.read_bytes()).hexdigest()}
+    if trailer:
+        want["frontlot_tool_check"] = 1
     try:
-        if json.loads(p["sandbox_ok"].read_text()) == want:
+        if not trailer and json.loads(p["sandbox_ok"].read_text()) == want:
             return True
     except (OSError, ValueError):
         pass
@@ -139,7 +149,8 @@ def sandbox_selfcheck(slug: str, claude: str, version: str, settings_file: Path,
         # Its own process group, and the handle goes to the broker (on_spawn), so a shutdown mid-check can kill
         # the whole check and remove the canaries even though this runs in an executor thread.
         proc = subprocess.Popen(cs.selfcheck_argv(claude=claude, settings_file=settings_file,
-                                                  prompt=cs.selfcheck_prompt(p["canary"], allow_file, outside)),
+                                                  prompt=cs.selfcheck_prompt(p["canary"], allow_file, outside, trailer=trailer),
+                                                  mod_dir=REPO / "backlot" / "claude_mod", trailer=trailer),
                                 cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, text=True, start_new_session=True)
         if on_spawn is not None:
@@ -147,7 +158,7 @@ def sandbox_selfcheck(slug: str, claude: str, version: str, settings_file: Path,
         stdout, _ = proc.communicate(timeout=180)
         passed = proc.returncode is not None and cs.selfcheck_passed(
             stdout, deny_file=p["canary"], allow_file=allow_file, outside_file=outside,
-            deny_secret=deny_secret, allow_secret=allow_secret)
+            deny_secret=deny_secret, allow_secret=allow_secret, trailer=trailer)
     except (OSError, ValueError, subprocess.TimeoutExpired):
         passed = False
         if proc is not None:
@@ -217,6 +228,7 @@ def _log(msg: str) -> None:
 
 class Broker:
     def __init__(self, slug: str, resume: bool):
+        self.trailer = None
         self.slug = slug
         self.p = paths(slug)
         self.film = PROJECTS_DIR / slug
@@ -351,13 +363,16 @@ class Broker:
         claude, version = await loop.run_in_executor(None, resolve_claude)
         self._check()
         self.claude_path, self.claude_version = claude, version
-        write_private(self.p["settings"], json.dumps(cs.build_settings(
-            repo_root=REPO, film_root=self.film, meta_root=metadata_root(), environ=os.environ), indent=2))
-        write_private(self.p["brief"], cs.build_brief(film_title=self.title, film_slug=self.slug,
-                                                       writeros_package=cs.writeros_package(self.film),
-                                                       story_drive=cs.story_drive_folder(self.film)))
         login_path = (await loop.run_in_executor(None, _login_environment))["PATH"]
         self._check()
+        self.trailer = startup_trailer(self.film)
+        write_private(self.p["settings"], json.dumps(cs.build_settings(
+            repo_root=REPO, film_root=self.film, meta_root=metadata_root(), environ=os.environ,
+            trailer=self.trailer), indent=2))
+        write_private(self.p["brief"], cs.build_brief(film_title=self.title, film_slug=self.slug,
+                                                       writeros_package=cs.writeros_package(self.film),
+                                                       story_drive=cs.story_drive_folder(self.film),
+                                                       trailer=self.trailer))
         env = cs.allowed_env(os.environ, login_path=login_path, live_socket=str(self.p["live"]), live_token=self.token)
         # 5. fail-closed sandbox self-check
         if not os.environ.get("FRONTLOT_SKIP_PREFLIGHT"):
@@ -367,7 +382,7 @@ class Broker:
                     with contextlib.suppress(ProcessLookupError, PermissionError):
                         os.killpg(proc.pid, signal.SIGKILL)
             passed = await loop.run_in_executor(None, lambda: sandbox_selfcheck(
-                self.slug, claude, version, self.p["settings"], self.work, env, on_spawn=remember))
+                self.slug, claude, version, self.p["settings"], self.work, env, on_spawn=remember, trailer=self.trailer))
             self._check()                                       # a killed check reads as failed: never report it
             if not passed:
                 raise Unavailable("sandbox", version)
@@ -392,6 +407,8 @@ class Broker:
 
     def spawn_gated(self, claude: str, env: dict) -> None:
         """Recoverable at every instant: the child waits on a pipe and runs Claude only after `go`."""
+        if self.trailer is None or startup_trailer(self.film) != self.trailer:
+            raise Unavailable("startup-changed", self.claude_version)
         self.master, slave = pty.openpty()
         os.set_blocking(self.master, False)
         fcntl.ioctl(self.master, termios.TIOCSWINSZ, struct.pack("HHHH", *INITIAL_SIZE, 0, 0))
@@ -399,7 +416,8 @@ class Broker:
         prompt = ("Picking back up. Give Ben the short check-in now." if self.resume
                   else "Give Ben the short check-in now.")
         argv = cs.launch_argv(claude=claude, mod_dir=REPO / "backlot" / "claude_mod", settings_file=self.p["settings"],
-                              brief_file=self.p["brief"], session_id=self.session_id, resume=self.resume, prompt=prompt)
+                              brief_file=self.p["brief"], session_id=self.session_id, resume=self.resume, prompt=prompt,
+                              trailer=self.trailer)
         try:
             self._check()
             self.claude = subprocess.Popen(

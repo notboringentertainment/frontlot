@@ -314,6 +314,27 @@ def require_migration_coverage(project_dir: Path | str, pipeline_name: str, vers
     every active hero of a cast character is a 1.1 record or carries a valid
     headshot_grandfather attestation. Run at request time, at gate
     construction and again inside the gate's pre-commit check."""
+    from lib.receipts import verified_approvals
+    history = verified_approvals(project_dir, MIGRATION_KIND)
+    was_trailer = any(r.get("record", {}).get("pipeline_name") == "authored-film"
+                      and r.get("record", {}).get("version") == "1.6" for r in history)
+    if was_trailer and (pipeline_name != "authored-film" or version != "1.6"):
+        raise PipelinePinError("A signed trailer cannot leave the trailer definition.")
+    if pipeline_name == "authored-film" and version == "1.6":
+        from lib.trailer_contract import require_contract
+        from lib.receipts import verified_approvals
+        marker = _read_marker(Path(project_dir))
+        if not was_trailer and marker.get("production_kind") == "trailer":
+            raise PipelinePinError("Starting a trailer requires signed trailer creation. That control is not available yet.")
+        if marker.get("production_kind") != "trailer":
+            raise PipelinePinError("Only a production created as a trailer can use the trailer definition.")
+        try:
+            require_contract(Path(project_dir))
+        except ValueError as exc:
+            raise PipelinePinError(str(exc)) from exc
+        old = verified_approvals(project_dir, MIGRATION_KIND, entity_id=pipeline_name)
+        if any(r["record"].get("version") != "1.6" for r in old):
+            raise PipelinePinError("Only a production created as a trailer can use the trailer definition.")
     if pipeline_name != "authored-film" or version != "1.4":
         return
     from lib.headshot_verify import hero_migration_blockers

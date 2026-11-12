@@ -1743,6 +1743,64 @@ def load_gate_detail(project_dir: Path, request_id: str) -> dict[str, Any]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _trailer_display_evidence(root: Path, marker: dict) -> bool:
+    """Identity evidence only, never authority to complete a stage.
+
+    An independently signed, ledgered creation row can identify a trailer
+    even when its history projection is broken. Ordinary or unknown films
+    retain the base presentation; their writer still refuses broken history.
+    """
+    if marker.get("production_kind") == "trailer" or marker.get("pipeline_type") == "authored-film@1.6":
+        return True
+    # A stage's explicit manifest tuple is identity evidence, never approval.
+    # Older stage schema versions and prose mentioning trailers do not qualify.
+    for path in root.glob("checkpoint_*.json"):
+        try:
+            checkpoint = _read_json(path) or {}
+        except RecursionError:
+            continue
+        pipeline = checkpoint.get("pipeline")
+        if isinstance(pipeline, dict) and pipeline.get("name") == "authored-film" and pipeline.get("version") == "1.6":
+            return True
+    from lib import gates
+    path = root / "approvals.jsonl"
+    info = _lstat(path)
+    if info is None or not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_LEDGER_LOOKUP_BYTES:
+        return False
+    try:
+        if not (gates.gates_dir() / "key").is_file():
+            return False
+        with path.open("rb") as stream:
+            total = 0
+            for _ in range(_MAX_LEDGER_LOOKUP_ROWS):
+                line = stream.readline(_MAX_LEDGER_LINE_BYTES + 1)
+                if not line:
+                    break
+                total += len(line)
+                if total > _MAX_LEDGER_LOOKUP_BYTES:
+                    break
+                if len(line) > _MAX_LEDGER_LINE_BYTES:
+                    continue
+                try:
+                    row = json.loads(line)
+                except (ValueError, RecursionError):
+                    continue
+                if not isinstance(row, dict) or row.get("project_id") != root.name:
+                    continue
+                record = row.get("record")
+                if (row.get("kind") == "pipeline_migration" and row.get("entity_id") == "authored-film"
+                        and isinstance(record, dict) and record.get("pipeline_name") == "authored-film"
+                        and record.get("version") == "1.6"):
+                    try:
+                        if gates.verify_receipt(row):
+                            return True
+                    except (ValueError, TypeError, RecursionError):
+                        continue
+    except (OSError, ValueError, TypeError):
+        pass
+    return False
+
+
 def load_board_state(project_dir: Path) -> dict[str, Any]:
     """Full BoardState for one project. Never raises."""
     project_dir = Path(project_dir)
@@ -1763,12 +1821,59 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
                 break
     pipeline_meta = _load_pipeline_meta(pipeline_type)
 
+    # A signed trailer stays a trailer even when its marker is damaged.
+    trailer = None
+    trailer_damaged = None
+    trailer_pin = None
+    trailer_setup_pending = False
+    from lib.trailer_contract import signed_trailer_pin, require_contract, project_checkpoint, DAMAGED, HISTORY_DAMAGED
+    try:
+        trailer_pin = signed_trailer_pin(project_dir)
+        if trailer_pin is not None:
+            pipeline_meta = _load_pipeline_meta(trailer_pin.ref)
+            try:
+                trailer = require_contract(project_dir)
+            except ValueError:
+                trailer_damaged = DAMAGED
+            checkpoints = {name: project_checkpoint(project_dir, trailer_pin, dict(cp, stage=name) if cp.get("stage") == name else dict(cp, pipeline=None)) for name, cp in checkpoints.items()}
+    except Exception:
+        # Display identity needs evidence; broken history alone is not trailer identity.
+        if _trailer_display_evidence(project_dir, marker):
+            trailer_damaged = HISTORY_DAMAGED
+            pipeline_meta = _load_pipeline_meta("authored-film@1.6")
+
+    if trailer_pin is None and not trailer_damaged and marker.get("production_kind") == "trailer" and marker.get("pipeline_type") == "authored-film@1.6":
+        from lib.pipeline_pin import pinned_pipeline
+        try:
+            # Display a draft, not a production pin. An older signed production cannot enter this state.
+            existing = pinned_pipeline(project_dir, "authored-film")
+            if existing.receipt_id is None:
+                trailer = require_contract(project_dir)
+                trailer_setup_pending = True
+                pipeline_meta = _load_pipeline_meta("authored-film@1.6")
+                if checkpoints:
+                    trailer_damaged = DAMAGED
+        except Exception:
+            trailer_damaged = DAMAGED
+
     artifacts = _collect_artifacts(project_dir, checkpoints)
     events = read_events(project_dir, limit=250)
     storyboard = _build_storyboard(project_dir, artifacts, events)
     media = _scan_media(project_dir)
 
     stages = _build_stage_rail(pipeline_meta, checkpoints, history)
+    if trailer_pin is not None or trailer_damaged or trailer_setup_pending:
+        from lib.trailer_contract import STAGE_LABELS, STAGE_LIMITS
+        for entry in stages:
+            entry["label"] = STAGE_LABELS.get(entry["name"], entry["name"])
+            entry["availability_message"] = "" if entry["status"] == "completed" else STAGE_LIMITS.get(entry["name"], "Signed stage approval controls are not available yet.")
+            if trailer_setup_pending:
+                entry["availability_message"] = "Starting a trailer without commands is not available yet. This draft has not been signed; no production stage can begin."
+            if trailer_damaged:
+                entry["status"] = "failed"
+                entry["human_approved"] = False
+                entry["availability_message"] = trailer_damaged
+            entry["approval_error"] = (checkpoints.get(entry["name"]) or {}).get("approval_error")
 
     # Cost: latest checkpoint snapshot wins; fall back to manifest total.
     cost = None
@@ -1799,6 +1904,9 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         "project_id": project_id,
         "title": marker.get("title") or meta_json.get("name") or project_id.replace("-", " ").title(),
         "pipeline": pipeline_meta,
+        **({"trailer": trailer} if trailer else {}),
+        **({"is_trailer": True, "trailer_damaged": trailer_damaged} if trailer_pin is not None or trailer_damaged or trailer_setup_pending else {}),
+        **({"trailer_setup_pending": True} if trailer_setup_pending else {}),
         "style_playbook": marker.get("style_playbook"),
         "created_at": marker.get("created_at"),
         "has_marker": bool(marker),
@@ -1810,7 +1918,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         "events": events,
         "cost": cost,
         "last_activity": last_activity,
-        "live": bool(last_activity and (now - last_activity) < LIVE_WINDOW_SECONDS),
+        "live": bool(not trailer_damaged and last_activity and (now - last_activity) < LIVE_WINDOW_SECONDS),
     }
     state["gates"] = _gates_state(project_dir, cost)
     state["shots"] = _collect_shots(project_dir)
@@ -1826,6 +1934,9 @@ def summarize_project(project_dir: Path) -> dict[str, Any]:
     return {
         "project_id": state["project_id"],
         "title": state["title"],
+        **({"trailer_setup_pending": True} if state.get("trailer_setup_pending") else {}),
+        **({"is_trailer": True} if state.get("is_trailer") else {}),
+        **({"active_stage_label": active.get("label")} if active and state.get("is_trailer") else {}),
         "pipeline_type": state["pipeline"]["pipeline_type"],
         "has_pipeline_state": state["has_pipeline_state"],
         "poster": state["poster"],
@@ -1834,7 +1945,7 @@ def summarize_project(project_dir: Path) -> dict[str, Any]:
         "active_stage": active["name"] if active else None,
         "awaiting_human": bool(active and active["status"] == "awaiting_human"),
         "stage_states": [
-            {"name": s["name"], "status": s["status"]}
+            {"name": s["name"], "status": s["status"], **({"label": s.get("label")} if state.get("is_trailer") else {})}
             for s in state["stages"] if not s.get("undeclared")
         ],
         "completed_count": len(done),

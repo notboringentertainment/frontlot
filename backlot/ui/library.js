@@ -7,7 +7,7 @@ function miniRail(states) {
     const cls = s.status === "completed" ? "d"
       : s.status === "in_progress" ? "a"
       : s.status === "awaiting_human" ? "w" : "";
-    rail.append(el("i", { class: cls, title: `${s.name}: ${s.status}` }));
+    rail.append(el("i", { class: cls, title: `${s.label || s.name}: ${s.label ? ({completed:"Approved",awaiting_human:"Waiting for your approval",pending:"Not started",in_progress:"In progress",failed:"Needs attention"})[s.status] || "Needs attention" : s.status}` }));
   }
   return rail;
 }
@@ -28,10 +28,11 @@ function card(p) {
   if (p.awaiting_human) {
     poster.append(el("span", { class: "lp-live needs" }, "Needs you"));
   } else if (p.live && p.active_stage) {
-    poster.append(el("span", { class: "lp-live" }, `Working · ${String(p.active_stage).replaceAll("_", " ")}`));
+    poster.append(el("span", { class: "lp-live" }, `Working · ${p.active_stage_label || String(p.active_stage).replaceAll("_", " ")}`));
   }
 
   const meta = el("div", { class: "lb-meta" },
+    p.is_trailer ? el("span", {}, p.trailer_setup_pending ? "Draft trailer" : "Trailer") : null,
     p.scene_count ? el("span", {}, `${p.scene_count} scenes`) : null,
     p.render_count ? el("span", {}, `${p.render_count} cut${p.render_count === 1 ? "" : "s"}`) : null,
     el("span", { class: "when" }, fmtAgo(p.last_activity)),
@@ -53,7 +54,7 @@ function leadState(p) {
   const done = states.filter((s) => s.status === "completed").length;
   const label = p.awaiting_human ? "Needs you" : p.live ? "Working" : "Up next";
   const cls = p.awaiting_human ? "waiting" : p.live ? "running" : "";
-  const active = p.active_stage ? String(p.active_stage).replaceAll("_", " ") : null;
+  const active = p.active_stage ? p.active_stage_label || String(p.active_stage).replaceAll("_", " ") : null;
   const line = p.awaiting_human
     ? "Something is waiting for your approval."
     : active ? `Working on ${active}.` : "Pick up where you left off.";
