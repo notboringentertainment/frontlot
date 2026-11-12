@@ -180,9 +180,8 @@ def test_positively_verified_older_audio_still_posts(project,monkeypatch,version
     for index,tool in enumerate([ElevenLabsTTS(),MusicGen()]):
         r=tool.execute({'project_dir':str(project),'text':'Closed tonight.','prompt':'A quiet lock.',
             'duration_seconds':3,'output_path':str(project/(str(index)+'.mp3'))})
-        assert r.success
-    assert len(calls)==2
-    assert calls[0]['text']=='Closed tonight.' and calls[1]['prompt']=='A quiet lock.'
+        assert not r.success and 'each request' in r.error
+    assert len(calls)==0
 
 @pytest.mark.parametrize('kind',['outside','linked','root_link'])
 def test_verified_older_production_cannot_authorize_an_escaping_path(project,tmp_path,monkeypatch,kind):

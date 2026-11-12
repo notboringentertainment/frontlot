@@ -8,10 +8,12 @@ from tools.audio import _governed
 REFUSAL = 'Audio now needs your signed approval of each request. Open its spending card in Frontlot.'
 
 
-def execute(inputs,kind):
+def _execute_locked(inputs,kind):
     if not inputs.get('project_dir') or not inputs.get('audio_request_id'):
         return ToolResult(success=False,error=REFUSAL)
     try:
+        if set(inputs)-{'project_dir','audio_request_id','output_path','preferred_provider','force_instrumental'}:
+            raise ValueError('Audio inputs changed. Prepare a new request instead of overriding approved material.')
         from lib.audio_workspace import check_price,generated_take
         from lib.receipts import verified_generation_receipts, find_approval
         from lib.canonical_json import record_sha256
@@ -31,6 +33,9 @@ def execute(inputs,kind):
             if approval and row.get('audio_approval_receipt_id')==approval['receipt_id']:
                 return ToolResult(success=True,data={'take':generated_take(root,record,row)})
         check_price(root,record)
+        import re
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',record['model']) or (kind=='speech' and not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',record['voice'])):
+            raise ValueError('The approved model or voice identifier is invalid.')
         def submit(payload,reservation):
             import requests
             key=os.environ.get('ELEVENLABS_API_KEY')
@@ -42,8 +47,11 @@ def execute(inputs,kind):
                 url='https://api.elevenlabs.io/v1/music'
                 body={'prompt':payload['prompt'],'model_id':payload['model'],
                       'music_length_ms':round(payload['duration_seconds']*1000),'force_instrumental':True}
-            response=requests.post(url,headers={'xi-api-key':key,'Content-Type':'application/json'},json=body,timeout=120,allow_redirects=False)
-            response.raise_for_status()
+            try:
+                response=requests.post(url,headers={'xi-api-key':key,'Content-Type':'application/json'},json=body,timeout=120,allow_redirects=False)
+                response.raise_for_status()
+            except Exception:
+                raise RuntimeError('The service outcome is unknown; the reservation is held.') from None
             if not 200<=response.status_code<300:raise ValueError('The audio service did not return a successful response. Billing needs review.')
             # ElevenLabs reports consumed credits as character-cost. Missing or
             # invalid billing evidence leaves the durable reservation pending.
@@ -60,3 +68,18 @@ def execute(inputs,kind):
         from tools.cost_tracker import IndeterminatePaidCallError
         message=str(exc) if isinstance(exc,(ValueError,IndeterminatePaidCallError)) else 'The audio request did not finish. Its charge may still be reserved. Check the request before trying another.'
         return ToolResult(success=False,error=message)
+
+
+def execute(inputs,kind):
+    if kind=='music' and isinstance(inputs,dict) and inputs.get('force_instrumental') is False:
+        return ToolResult(success=False,error='Music requests are always instrumental. No request was sent.')
+    if not isinstance(inputs,dict) or not inputs.get('project_dir') or not inputs.get('audio_request_id'):
+        from tools.audio._legacy_guard import refusal
+        message=refusal(inputs) if isinstance(inputs,dict) else None
+        return ToolResult(success=False,error=(message or 'Audio for this production goes only through an approved request.')+' '+REFUSAL)
+    from lib.audio_workspace import call_lock
+    try:
+        with call_lock(Path(inputs['project_dir']).expanduser()):
+            return _execute_locked(inputs,kind)
+    except (ValueError,OSError,RuntimeError):
+        return ToolResult(success=False,error='Audio is unavailable or still running. Check the production and its unresolved requests.')

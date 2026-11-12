@@ -168,6 +168,16 @@ class TTSSelector(BaseTool):
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         if inputs.get("operation") == "rank":
             return ToolResult(success=True, data={"rankings": [], "explanation": "Voice requests use the explicitly approved ElevenLabs account only."})
+        preferred = inputs.get("preferred_provider", "auto")
+        if preferred not in ("auto", "elevenlabs") and not inputs.get("audio_request_id"):
+            candidates = [t for t in self._providers() if t.provider == preferred]
+            tool, score = self._select_best_tool(inputs, candidates, self._prepare_task_context(inputs))
+            if tool is None:
+                return ToolResult(success=False,error="The selected voice provider is unavailable. No other provider was substituted.")
+            result = tool.execute(inputs)
+            if result.success:
+                result.data.update(selected_tool=tool.name,selected_provider=tool.provider)
+            return result
         from tools.audio.elevenlabs_tts import ElevenLabsTTS
         return ElevenLabsTTS().execute(inputs)
 

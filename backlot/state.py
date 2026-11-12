@@ -1774,6 +1774,8 @@ def _trailer_display_evidence(root: Path, marker: dict) -> bool:
         except RecursionError:
             continue
         pipeline = checkpoint.get("pipeline")
+        if pipeline == "authored-film@1.6":
+            return True
         if isinstance(pipeline, dict) and pipeline.get("name") == "authored-film" and pipeline.get("version") == "1.6":
             return True
     from lib import gates

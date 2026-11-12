@@ -92,9 +92,8 @@ class TestElevenLabsTTS:
 
     def test_cost_estimate(self):
         tool = ElevenLabsTTS()
-        cost = tool.estimate_cost({"text": "Hello world, this is a test."})
-        assert cost > 0
-        assert cost < 0.01  # short text should be cheap
+        with pytest.raises(ValueError, match="firm approved price"):
+            tool.estimate_cost({"text": "Hello world, this is a test."})
 
     def test_capabilities(self):
         tool = ElevenLabsTTS()
@@ -150,7 +149,7 @@ class TestGoogleTTS:
         tool = GoogleTTS()
         cost = tool.estimate_cost({"text": "Hello world, this is a test."})
         assert cost > 0
-        assert cost < 0.01  # short text should be cheap
+        assert cost < 0.01
 
     def test_capabilities(self):
         tool = GoogleTTS()
@@ -170,9 +169,9 @@ class TestMusicGen:
 
     def test_cost_estimate_scales_with_duration(self):
         tool = MusicGen()
-        cost_30 = tool.estimate_cost({"prompt": "ambient", "duration_seconds": 30})
-        cost_60 = tool.estimate_cost({"prompt": "ambient", "duration_seconds": 60})
-        assert cost_60 > cost_30
+        for seconds in (30,60):
+            with pytest.raises(ValueError, match="firm approved price"):
+                tool.estimate_cost({"prompt": "ambient", "duration_seconds": seconds})
 
     def test_capabilities(self):
         tool = MusicGen()

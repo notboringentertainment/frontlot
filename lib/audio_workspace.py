@@ -78,14 +78,11 @@ def import_music(root,source,origin,licence):
     target=directory/(identity+path.suffix.lower())
     if path.suffix.lower() not in ('.mp3','.wav','.m4a','.aiff','.flac'):raise ValueError('Choose a supported audio file.')
     with target.open('xb') as f:f.write(data)
-    # Probe the saved bytes, never an unconfined path supplied by a page.
-    import subprocess
-    result=subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','json',str(target)],capture_output=True,text=True,check=True,timeout=15)
-    seconds=float(json.loads(result.stdout)['format']['duration'])
-    if not __import__('math').isfinite(seconds) or not 0<seconds<=120:raise ValueError('Music must last no more than two minutes.')
+    measured=probe_audio(target,maximum=None)
+    seconds=measured['duration_seconds']
     return _save(root,{'id':identity,'project_id':Path(root).name,'kind':'music','origin':'imported',
         'source':origin.strip(),'licence_note':licence.strip(),'sha256':hashlib.sha256(data).hexdigest(),
-        'path':str(target.relative_to(root)),'duration_seconds':seconds})
+        'path':str(target.relative_to(root)),'duration_seconds':seconds,'codec':measured['codec']})
 
 
 def decision_record(root,identity,decision):
@@ -104,7 +101,7 @@ def decision_record(root,identity,decision):
     if hashlib.sha256(path.read_bytes()).hexdigest()!=take['sha256']:raise ValueError('The audio file changed. Nothing was approved.')
     if take['origin']=='imported' and not take.get('licence_note','').strip():raise ValueError('A licence note is required.')
     if take.get('binding') is not None:
-        check_binding(root,dict(kind=take['kind'],prompt=binding_source(root,take['binding'])['text'],duration_seconds=take['duration_seconds'],binding=take['binding']))
+        check_binding(root,dict(kind=take['kind'],prompt=binding_source(root,take['binding'])['text'],duration_seconds=take.get('requested_duration_seconds',take['duration_seconds']),binding=take['binding']))
     if take.get('line_index') is not None and record_sha256(line(root,take['line_index']))!=take.get('line_sha256'):
         raise ValueError('The spoken line changed. This take needs a fresh look.')
     return {'take':take,'decision':decision}
@@ -164,7 +161,7 @@ def resolve_charge(root,identity,charged,cash,credits,note):
     from tools.cost_tracker import reservation_lock,reconcile_paid_call
     from tools.audio._governed import _tracker
     from lib.project_config import load_current_verified_project_config
-    with reservation_lock(root):
+    with call_lock(root), reservation_lock(root):
         record=resolution_record(root,identity,charged,cash,credits,note)
         approval=receipts.find_approval(root,'audio_resolution',record_sha256=record_sha256(record),entity_id=identity)
         if approval is None:raise ValueError("This resolution needs Ben's signed approval.")
@@ -219,6 +216,10 @@ def check_binding(root,record):
 def prepare_request(root,kind,model,*,line_index=None,voice=None,brief_id=None):
     from lib.audio_prices import quote
     from tools.audio import _governed
+    import re
+    if not isinstance(model,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',model):raise ValueError('Choose an explicit audio model.')
+    if kind=='speech' and (not isinstance(voice,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',voice)):
+        raise ValueError('Choose an explicit voice from the intended account.')
     binding={'kind':kind}
     if kind=='speech':binding['line_index']=line_index
     elif kind=='music':binding['brief_id']=brief_id
@@ -250,10 +251,11 @@ def generated_take(root,record,row):
     _checked_path(path)
     sha=hashlib.sha256(path.read_bytes()).hexdigest()
     if sha!=row['output_sha256']:raise ValueError('The saved audio no longer matches its receipt.')
+    measured=probe_audio(path)
     take={'id':identity,'project_id':Path(root).name,'kind':record['kind'],'origin':'generated',
           'approved_request_id':identity,'approval_record_sha256':record_sha256(record),
           'generation_receipt_id':row['receipt_id'],'sha256':sha,'path':str(path.relative_to(root)),
-          'duration_seconds':record['duration_seconds'],'binding':record['binding']}
+          'duration_seconds':measured['duration_seconds'],'requested_duration_seconds':record['duration_seconds'],'codec':measured['codec'],'binding':record['binding']}
     if record['kind']=='music':take['release_note']=TEST_ONLY
     return _save(root,take)
 
@@ -262,3 +264,32 @@ def require_accepted(root,identity):
     take=read(root,identity)
     if take_state(root,take)!='Accepted':raise ValueError('Only an accepted, unchanged audio take can be used.')
     return take
+
+
+from contextlib import contextmanager
+@contextmanager
+def call_lock(root):
+    """One live service owner; signed recovery never settles that owner's call."""
+    import fcntl
+    path=_root(root)/'.audio-call.lock'
+    fd=os.open(path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    try:
+        try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:raise ValueError('An audio call is still running. Wait for its result before account review.')
+        yield
+    finally:os.close(fd)
+
+
+def request_resolution(root,identity,charged,cash,credits,note):
+    with call_lock(root):
+        record=resolution_record(root,identity,charged,cash,credits,note)
+        return gate_request(root,'audio_resolution',identity,record,'After checking your ElevenLabs account, sign this charge outcome. No request will be submitted again.')
+
+
+def probe_audio(path,maximum=120):
+    import math,subprocess
+    r=subprocess.run(['ffprobe','-v','error','-select_streams','a:0','-show_entries','stream=codec_name:format=duration','-of','json',str(path)],capture_output=True,text=True,check=True,timeout=15)
+    info=json.loads(r.stdout);seconds=float(info['format']['duration'])
+    if not info.get('streams') or not math.isfinite(seconds) or seconds<=0 or (maximum is not None and seconds>maximum):
+        raise ValueError('The take is not supported playable audio within its duration limit.')
+    return {'duration_seconds':seconds,'codec':info['streams'][0]['codec_name']}

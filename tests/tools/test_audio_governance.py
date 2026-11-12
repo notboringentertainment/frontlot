@@ -120,7 +120,9 @@ def test_config_consent_and_unbounded_price_refuse_zero_contact(project):
 
 def test_signer_rebuilds_saved_request_and_rechecks_before_signing(project):
     from scripts.gate_approve import construct
-    r=prepare(project)
+    from tests.tools.test_audio_half_transport import priced, music_request
+    priced.__wrapped__(project)
+    r,_=music_request(project)
     req={'kind':'audio_spend','entity_id':r['request_id'],'project_id':project.name,
          'stage':'assets','scope':'audio','request_id':r['request_id']}
     built=construct(project,req)
@@ -264,10 +266,12 @@ def test_crash_after_output_recovers_without_another_submission(project,monkeypa
 def test_real_signing_handler_and_no_terminal_shortcut(project,monkeypatch):
     import json
     from scripts import gate_approve as signer
-    r=prepare(project)
+    from tests.tools.test_audio_half_transport import priced, music_request
+    priced.__wrapped__(project)
+    r,_=music_request(project)
     req={'kind':'audio_spend','entity_id':r['request_id'],'project_id':project.name,
          'stage':'assets','scope':'audio','request_id':r['request_id'],'summary':'Approve this exact invented audio request.'}
-    directory=project/'.gate-requests';directory.mkdir()
+    directory=project/'.gate-requests';directory.mkdir(exist_ok=True)
     (directory/(r['request_id']+'.json')).write_text(json.dumps(req))
     shown=signer.construct(project,req);t=Transport()
     with pytest.raises(signer.GateHandlerError,match='terminal'):
@@ -276,6 +280,10 @@ def test_real_signing_handler_and_no_terminal_shortcut(project,monkeypatch):
     monkeypatch.setattr(signer,'require_tty',lambda:None)
     with gates.handler_context():row=signer._decide(req,project,shown=shown,note=None)
     assert row['record']==r and row['kind']=='audio_spend'
+    original=t.submit
+    def submit(payload,key):
+        result=original(payload,key);result.update(cash_usd=0,credits_usd=.0002);return result
+    t.submit=submit
     run(project,r,t)
     assert (t.calls,t.downloads)==(1,1)
 

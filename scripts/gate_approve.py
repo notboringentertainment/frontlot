@@ -670,6 +670,9 @@ def _construct_config(root: Path, req: dict) -> Constructed:
         f"budget_usd_cap {data.get('budget_usd_cap')}  default_video_endpoint {data.get('default_video_endpoint')}",
         f"provider_egress {json.dumps(data.get('provider_egress'), sort_keys=True)}",
     )
+    if "audio_price_basis" in data:
+        evidence += ("Audio prices you are signing (values, date set and expiry): " + json.dumps(data["audio_price_basis"], sort_keys=True),
+                     "These are your approved maximum rates, not a provider quote. Expired rates refuse audio approval.")
     return Constructed(record, None, str(entity_id), evidence=evidence)
 
 
