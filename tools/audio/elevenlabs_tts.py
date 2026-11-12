@@ -143,6 +143,10 @@ class ElevenLabsTTS(BaseTool):
         return round(len(inputs.get("text", "")) * 0.0003, 4)
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
+        from tools.audio._legacy_guard import refusal
+        message = refusal(inputs)
+        if message:
+            return ToolResult(success=False, error=message)
         api_key = os.environ.get("ELEVENLABS_API_KEY")
         if not api_key:
             return ToolResult(success=False, error="No ElevenLabs API key. " + self.install_instructions)
@@ -158,6 +162,10 @@ class ElevenLabsTTS(BaseTool):
         return result
 
     def _generate(self, inputs: dict[str, Any], api_key: str) -> ToolResult:
+        from tools.audio._legacy_guard import refusal
+        message = refusal(inputs)
+        if message:
+            return ToolResult(success=False, error=message)
         import requests
 
         text = inputs["text"]

@@ -111,6 +111,10 @@ class MusicGen(BaseTool):
         return round(duration / 30 * 0.05, 4)
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
+        from tools.audio._legacy_guard import refusal
+        message = refusal(inputs)
+        if message:
+            return ToolResult(success=False, error=message)
         api_key = os.environ.get("ELEVENLABS_API_KEY")
         if not api_key:
             return ToolResult(
@@ -130,6 +134,10 @@ class MusicGen(BaseTool):
         return result
 
     def _generate(self, inputs: dict[str, Any], api_key: str) -> ToolResult:
+        from tools.audio._legacy_guard import refusal
+        message = refusal(inputs)
+        if message:
+            return ToolResult(success=False, error=message)
         import logging
         import requests
 
