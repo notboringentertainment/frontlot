@@ -1743,6 +1743,50 @@ def load_gate_detail(project_dir: Path, request_id: str) -> dict[str, Any]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _trailer_display_evidence(root: Path, marker: dict) -> bool:
+    """Identity evidence only, never authority to complete a stage.
+
+    An independently signed, ledgered creation row can identify a trailer
+    even when its history projection is broken. Ordinary or unknown films
+    retain the base presentation; their writer still refuses broken history.
+    """
+    if marker.get("production_kind") == "trailer" or marker.get("pipeline_type") == "authored-film@1.6":
+        return True
+    from lib import gates
+    path = root / "approvals.jsonl"
+    info = _lstat(path)
+    if info is None or not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_LEDGER_LOOKUP_BYTES:
+        return False
+    try:
+        if not (gates.gates_dir() / "key").is_file():
+            return False
+        with path.open("rb") as stream:
+            total = 0
+            for _ in range(_MAX_LEDGER_LOOKUP_ROWS):
+                line = stream.readline(_MAX_LEDGER_LINE_BYTES + 1)
+                if not line:
+                    break
+                total += len(line)
+                if total > _MAX_LEDGER_LOOKUP_BYTES:
+                    break
+                if len(line) > _MAX_LEDGER_LINE_BYTES:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict) or row.get("project_id") != root.name:
+                    continue
+                record = row.get("record")
+                if (row.get("kind") == "pipeline_migration" and row.get("entity_id") == "authored-film"
+                        and isinstance(record, dict) and record.get("pipeline_name") == "authored-film"
+                        and record.get("version") == "1.6" and gates.verify_receipt(row)):
+                    return True
+    except (OSError, ValueError, TypeError):
+        pass
+    return False
+
+
 def load_board_state(project_dir: Path) -> dict[str, Any]:
     """Full BoardState for one project. Never raises."""
     project_dir = Path(project_dir)
@@ -1779,9 +1823,10 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
                 trailer_damaged = DAMAGED
             checkpoints = {name: project_checkpoint(project_dir, trailer_pin, dict(cp, stage=name) if cp.get("stage") == name else dict(cp, pipeline=None)) for name, cp in checkpoints.items()}
     except Exception:
-        # Unverifiable history cannot authorize completion, even with no editable marker.
-        trailer_damaged = HISTORY_DAMAGED
-        pipeline_meta = _load_pipeline_meta("authored-film@1.6")
+        # Display identity needs evidence; broken history alone is not trailer identity.
+        if _trailer_display_evidence(project_dir, marker):
+            trailer_damaged = HISTORY_DAMAGED
+            pipeline_meta = _load_pipeline_meta("authored-film@1.6")
 
     if trailer_pin is None and not trailer_damaged and marker.get("production_kind") == "trailer" and marker.get("pipeline_type") == "authored-film@1.6":
         from lib.pipeline_pin import pinned_pipeline
