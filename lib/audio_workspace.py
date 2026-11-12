@@ -88,7 +88,30 @@ def import_music(root,source,origin,licence):
         'path':str(target.relative_to(root)),'duration_seconds':seconds,'codec':measured['codec']})
 
 
+def _take_decisions(root,take):
+    """Verify the subject of every signature, not just the ledger's entity label."""
+    rows=receipts.verified_approvals(root,'audio_take',entity_id=take['id'])
+    records=[row['record'] for row in rows]
+    declines=[record for record in records if isinstance(record,dict)
+              and record.get('take')==take and record.get('decision')=='decline']
+    if declines:return declines
+    if any(not isinstance(record,dict) or record.get('decision') not in ('accept','decline')
+           or record.get('take')!=take for record in records):
+        raise ValueError('The audio decision history cannot be verified. Nothing can be used.')
+    return records
+
+
 def decision_record(root,identity,decision):
+    take=read(root,identity)
+    records=_take_decisions(root,take)
+    if any(record['decision']=='decline' for record in records):
+        raise ValueError('This take was declined. Ask for a new take with its own request and approval.')
+    if decision=='accept' and records:
+        raise ValueError('This take is already accepted. No second acceptance can be signed.')
+    return _decision_material(root,identity,decision)
+
+
+def _decision_material(root,identity,decision):
     if decision not in ('accept','decline'):raise ValueError('Accept or decline this take.')
     take=read(root,identity)
     if take.get('origin')=='generated':
@@ -135,13 +158,14 @@ def gate_request(root,kind,entity,record,summary):
 
 
 def take_state(root,take):
-    rows=receipts.verified_approvals(root,'audio_take',entity_id=take['id'])
-    if not rows:return 'Waiting for your decision'
-    newest=rows[-1]['record']
-    try:current=decision_record(root,take['id'],newest['decision'])
+    try:records=_take_decisions(root,take)
+    except ValueError:return 'Needs a fresh look'
+    if not records:return 'Waiting for your decision'
+    if any(record['decision']=='decline' for record in records):return 'Declined'
+    try:current=_decision_material(root,take['id'],'accept')
     except (ValueError,OSError):return 'Needs a fresh look'
-    if newest!=current:return 'Needs a fresh look'
-    return 'Accepted' if newest['decision']=='accept' else 'Declined'
+    if any(record!=current for record in records):return 'Needs a fresh look'
+    return 'Accepted'
 
 
 def state(root):
@@ -174,6 +198,12 @@ def reservation_request(root,reservation):
 
 
 def resolution_record(root,identity,charged,cash,credits,note):
+    if receipts.verified_approvals(root,'audio_resolution',entity_id=identity):
+        raise ValueError('This request already has a signed account outcome. Apply that outcome; nothing was changed.')
+    return _resolution_material(root,identity,charged,cash,credits,note)
+
+
+def _resolution_material(root,identity,charged,cash,credits,note):
     from tools.cost_tracker import load_reservations
     from tools.audio._governed import _money
     if type(charged) is not bool:raise ValueError('Say whether this request was charged.')
@@ -191,7 +221,10 @@ def resolve_charge(root,identity,charged,cash,credits,note):
     from tools.audio._governed import _tracker
     from lib.project_config import load_current_verified_project_config
     with call_lock(root), reservation_lock(root):
-        record=resolution_record(root,identity,charged,cash,credits,note)
+        record=_resolution_material(root,identity,charged,cash,credits,note)
+        rows=receipts.verified_approvals(root,'audio_resolution',entity_id=identity)
+        if len(rows)>1:
+            raise ValueError('This request has conflicting signed account outcomes. Nothing was resolved.')
         approval=receipts.find_approval(root,'audio_resolution',record_sha256=record_sha256(record),entity_id=identity)
         if approval is None:raise ValueError("This resolution needs Ben's signed approval.")
         tracker=_tracker(root,load_current_verified_project_config(root))

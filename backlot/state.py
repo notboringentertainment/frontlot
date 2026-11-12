@@ -1009,7 +1009,10 @@ def _cost_summary(root: Path, checkpoint_cost: Any) -> Any:
     if not authored:
         for checkpoint in root.glob("checkpoint_*.json"):
             data = _read_json(checkpoint) or {}
-            authored = data.get("pipeline_type") == "authored-film" or (data.get("pipeline") or {}).get("name") == "authored-film"
+            pipeline = data.get("pipeline")
+            authored = (data.get("pipeline_type") == "authored-film"
+                        or isinstance(pipeline, dict) and pipeline.get("name") == "authored-film"
+                        or isinstance(pipeline, str) and pipeline.split("@", 1)[0] == "authored-film")
             if authored:
                 break
     if not authored:
@@ -1768,16 +1771,9 @@ def _trailer_display_evidence(root: Path, marker: dict) -> bool:
         return True
     # A stage's explicit manifest tuple is identity evidence, never approval.
     # Older stage schema versions and prose mentioning trailers do not qualify.
-    for path in root.glob("checkpoint_*.json"):
-        try:
-            checkpoint = _read_json(path) or {}
-        except RecursionError:
-            continue
-        pipeline = checkpoint.get("pipeline")
-        if pipeline == "authored-film@1.6":
-            return True
-        if isinstance(pipeline, dict) and pipeline.get("name") == "authored-film" and pipeline.get("version") == "1.6":
-            return True
+    from lib.trailer_contract import checkpoint_trailer_evidence
+    if checkpoint_trailer_evidence(root):
+        return True
     from lib import gates
     path = root / "approvals.jsonl"
     info = _lstat(path)
@@ -1871,6 +1867,12 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
                     trailer_damaged = DAMAGED
         except Exception:
             trailer_damaged = DAMAGED
+
+    # Explicit checkpoint evidence matters even with absent or valid non-trailer
+    # history. It cannot create a signed pin or authorize any saved completion.
+    if trailer_pin is None and not trailer_damaged and not trailer_setup_pending and _trailer_display_evidence(project_dir, marker):
+        trailer_damaged = DAMAGED
+        pipeline_meta = _load_pipeline_meta("authored-film@1.6")
 
     artifacts = _collect_artifacts(project_dir, checkpoints)
     events = read_events(project_dir, limit=250)
