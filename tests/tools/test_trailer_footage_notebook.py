@@ -29,6 +29,8 @@ def shot(tmp_path, monkeypatch):
 def linked(tmp_path, monkeypatch, shot):
     monkeypatch.setattr('scripts.gate_approve.require_tty', lambda: None)
     root = trailer(tmp_path / 'trailers')
+    monkeypatch.setattr('lib.paths.PROJECTS_DIR',root.parent)
+    monkeypatch.setattr('lib.events.PROJECTS_DIR',root.parent)
     value = paper()
     value['shots'][0]['references'] = ['reference.png']
     revision = save_revision(root, value, None)
@@ -98,21 +100,23 @@ def test_real_reservation_boundary_refuses_before_recording_money(linked):
     assert not load_reservations(root)
 
 
-def test_decline_is_final_even_if_later_history_claims_selection(linked):
+def test_unsigned_decline_and_later_choice_are_both_ignored(linked):
     root, spec, _ = linked
     sp.prepare(root, spec, user_note='Prepare an invented shot.')
     take = sp.attach(root, spec['shot_id'], root/'reference.png', user_note='An external reference.')
-    sp.decline(root, spec['shot_id'], take['take_id'], user_note='Decline this reference.')
-    with pytest.raises(ValueError, match='declined'):
+    with pytest.raises(ValueError,match='signature'):
+        sp.decline(root, spec['shot_id'], take['take_id'], user_note='Decline this reference.')
+    sp._append(root,spec['shot_id'],{'kind':'decline','take_id':take['take_id']})
+    with pytest.raises(ValueError, match='signature'):
         sp.select(root, spec['shot_id'], take['take_id'], user_note='Attempt to choose it.')
     sp._append(root, spec['shot_id'], {'kind':'selection','take_id':take['take_id']})
-    assert sp.inspect_shot(root, spec['shot_id'])['takes'][0]['standing'] == 'declined'
+    assert sp.inspect_shot(root, spec['shot_id'])['takes'][0]['standing'] == 'waiting'
 
 
 def test_invalid_choice_of_declined_take_does_not_settle_other_takes():
     rows = [{'kind':'take','take_id':'a'}, {'kind':'take','take_id':'b'},
             {'kind':'decline','take_id':'a'}, {'kind':'selection','take_id':'a'}]
-    assert sp.take_decisions(rows, final_declines=True) == {'a':'declined', 'b':'waiting'}
+    assert sp.take_decisions(rows, final_declines=True) == {'a':'waiting', 'b':'waiting'}
 
 
 def test_older_notebook_still_allows_its_existing_selection_rule(shot):

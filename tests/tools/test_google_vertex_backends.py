@@ -2,6 +2,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.tools.conftest import generation_tmp_path as tmp_path
+
+pytestmark = pytest.mark.usefixtures('verified_generation_project')
 
 
 def test_blank_google_location_uses_documented_default(monkeypatch) -> None:

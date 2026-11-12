@@ -23,11 +23,20 @@ SUPPORTED_TOOLS = {'kling_reference_video', 'seedance_video', 'seedream_image'}
 def is_trailer(root):
     """The signed pin remains authoritative even if the marker is edited."""
     from lib.trailer_contract import signed_trailer_pin
-    if signed_trailer_pin(root) is not None:
-        return True
+    try:
+        if signed_trailer_pin(root) is not None:return True
+    except Exception:
+        # Identity evidence is not spending authority. The generation guard
+        # separately requires verified settings and the complete history.
+        pass
     marker = Path(root) / 'project.json'
-    data = json.loads(marker.read_text()) if marker.is_file() else {}
-    return data.get('production_kind') == 'trailer' or 'trailer' in data
+    try:data = json.loads(marker.read_text()) if marker.is_file() else {}
+    except (ValueError,OSError):data={}
+    if not isinstance(data,dict):data={}
+    if data.get('production_kind')=='trailer' or 'trailer' in data:return True
+    from backlot.state import _trailer_display_evidence
+    try:return _trailer_display_evidence(Path(root),data)
+    except Exception:return False
 
 
 def _paper_shot(root, shot_id):
@@ -242,12 +251,9 @@ def select(root, shot_id, take_id, *, user_note, start=None, end=None):
         return _select(root, shot_id, take_id, user_note=user_note, start=start, end=end)
     from tools.cost_tracker import reservation_lock
     with reservation_lock(Path(root)):
-        rows = history(root, shot_id)
-        if any(r.get('kind') == 'decline' and r.get('take_id') == take_id for r in rows):
-            raise ValueError('This take was declined. Declining is final; choose a different take.')
         # Acceptance and cut insertion belong to the signed footage lifecycle.
         # Do not turn an imported image or an old notebook entry into footage.
-        raise ValueError('Trailer take acceptance is not available yet. Nothing was approved.')
+        raise ValueError(TRAILER_DECISIONS_UNAVAILABLE)
 
 
 def _select(root, shot_id, take_id, *, user_note, start=None, end=None):
@@ -272,6 +278,7 @@ def _select(root, shot_id, take_id, *, user_note, start=None, end=None):
 
 def decline(root, shot_id, take_id, *, user_note):
     """Set a take aside. Nothing is chosen, so no decision-log entry."""
+    if is_trailer(root):raise ValueError(TRAILER_DECISIONS_UNAVAILABLE)
     from tools.cost_tracker import reservation_lock
     with reservation_lock(Path(root)):
         return _decline(root, shot_id, take_id, user_note=user_note)
@@ -290,6 +297,9 @@ def take_decisions(rows, *, final_declines=False):
     take made after it: approving one take settles every take made before it.
     A take made after the latest choice waits again, stopped shot or not.
     """
+    # This first half has no verifiable trailer decision kind. A caller of
+    # this low-level reader cannot promote unsigned rows either.
+    if final_declines:rows=[r for r in rows if r.get('kind') not in ('selection','decline')]
     chosen, last_choice, declined, order = None, -1, set(), {}
     if final_declines:
         declined = {r.get('take_id') for r in rows if r.get('kind') == 'decline'}
@@ -318,9 +328,28 @@ def take_decisions(rows, *, final_declines=False):
     return standing
 
 
+TRAILER_DECISIONS_UNAVAILABLE = 'Trailer take decisions require your signature. Signed take decisions are not available yet; nothing was decided.'
+
+
+def decision_rows(root, rows):
+    """Only older films still use conversational notebook decisions.
+
+    No signed trailer take lifecycle exists in this half. Even rows carrying
+    invented receipt identifiers or signature fields are historical notes,
+    never authority. The signed lifecycle must verify receipts before enabling
+    trailer decisions; it cannot infer consent from these rows.
+    """
+    if not is_trailer(root):return rows
+    return [r for r in rows if r.get('kind') not in ('selection','decline')]
+
+
+def shot_take_decisions(root, rows):
+    return take_decisions(decision_rows(root,rows),final_declines=is_trailer(root))
+
+
 def waiting_takes(root, shot_id):
     rows = history(root, shot_id)
-    standing = take_decisions(rows, final_declines=is_trailer(root))
+    standing = shot_take_decisions(root,rows)
     return [row for row in rows if row['kind'] == 'take' and standing.get(row['take_id']) == 'waiting']
 
 
@@ -412,7 +441,7 @@ def inspect_shot(root, shot_id):
     rows = history(root, shot_id)
     revisions = {r['event_id']: r['brief'] for r in rows if r['kind'] == 'brief'}
     trailer = is_trailer(root)
-    standing = take_decisions(rows, final_declines=trailer)
+    standing = shot_take_decisions(root,rows)
     takes = [{**r, 'standing': standing.get(r['take_id']),
               'source_warnings': _source_warnings(root, revisions[r['brief_revision_id']])}
              for r in rows if r['kind'] == 'take']
@@ -420,6 +449,6 @@ def inspect_shot(root, shot_id):
             'brief': brief, 'warnings': warnings,
             'takes': takes,
             'waiting_for_ben': [t['take_id'] for t in takes if t['standing'] == 'waiting'],
-            'declines': [r for r in rows if r['kind'] == 'decline'],
-            'selections': [r for r in rows if r['kind'] == 'selection'],
+            'declines': [r for r in decision_rows(root,rows) if r['kind'] == 'decline'],
+            'selections': [r for r in decision_rows(root,rows) if r['kind'] == 'selection'],
             'proposals': [r for r in rows if r['kind'] == 'canon_proposal']}

@@ -393,7 +393,12 @@ class BaseTool(ABC):
         super().__init_subclass__(**kwargs)
         impl = cls.__dict__.get("execute")
         if impl is not None and not getattr(impl, "__isabstractmethod__", False):
-            cls.execute = _instrument_execute(impl)
+            from tools._generation_guard import protect
+            cls.execute = protect(_instrument_execute(impl))
+        for name,impl in list(cls.__dict__.items()):
+            if (name=='_generate' or name.startswith('_generate_') or name=='_execute') and inspect.isfunction(impl):
+                from tools._generation_guard import protect
+                setattr(cls,name,protect(impl))
 
     # --- Identity (override in subclasses) ---
     name: str = ""

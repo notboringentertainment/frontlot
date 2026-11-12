@@ -148,11 +148,11 @@ def test_unregistered_or_unapproved_project_rejected(env, tmp_path, monkeypatch)
     (stray / "project.yaml").write_bytes((env / "project.yaml").read_bytes())
     with patch.object(_shared, "fal_queue_submit") as submit:
         r = SeedreamImage().execute({"prompt": "p", "project_dir": str(stray), "cost_tracker": object(), "budget_usd_cap": 99})
-        assert not r.success and "registered project" in r.error
+        assert not r.success and "registered production" in r.error
         unapproved = make_verified_project(tmp_path, monkeypatch, "proj-unbound")
         (unapproved / "project.yaml").write_text((unapproved / "project.yaml").read_text() + "# edited\n")
         r = SeedreamImage().execute({"prompt": "p", "project_dir": str(unapproved)})
-        assert not r.success and "approval receipt" in r.error
+        assert not r.success and "verifiable signed settings" in r.error
     submit.assert_not_called()
 
 
