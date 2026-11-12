@@ -388,8 +388,7 @@
         "wall_time_minutes",
         "cast_cap",
         "provider_egress",
-        "default_video_endpoint",
-        "qc"
+        "default_video_endpoint"
       ],
       "properties": {
         "version": {
@@ -431,7 +430,7 @@
         },
         "provider_egress": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 0,
           "description": "1.1: one consent entry per provider (uniqueness by provider is enforced by the loader). Each entry lists the content classes that may leave the machine for that provider.",
           "items": {
             "type": "object",
@@ -522,7 +521,23 @@
           }
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "provider_egress": {
+                "minItems": 1
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "qc"
+            ]
+          }
+        }
+      ]
     },
     "v1_4": {
       "type": "object",

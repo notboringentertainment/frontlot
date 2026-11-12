@@ -444,6 +444,78 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
         server_log(f"take decision project={project_id} shot={shot_id} decision={body['decision']}")
         return result
 
+    def require_writer(request):
+        port = app.state.server_port
+        expected = app.state.capability_token
+        given = request.headers.get("x-frontlot-capability")
+        if request.headers.get("origin") not in {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}:
+            raise HTTPException(403, "This action must come from Front Lot.")
+        if not expected or not given or not secrets.compare_digest(expected, given):
+            raise HTTPException(401, "Reload Front Lot from its app icon before saving.")
+
+    @app.post("/api/trailers")
+    async def start_trailer(request: Request):
+        require_writer(request)
+        from lib.trailer_edit import create_trailer
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Fill in the trailer name, target length and spending ceiling.")
+            root = await asyncio.to_thread(create_trailer, PROJECTS_DIR, body.get("title"), body.get("seconds"), body.get("ceiling"), body.get("request_key"))
+            return {"project_id": root.name}
+        except (ValueError, TypeError, AttributeError) as exc:
+            message = "The start request could not be read. Please fill in the panel and try again." if isinstance(exc, json.JSONDecodeError) else str(exc)
+            raise HTTPException(400, message) from None
+
+    @app.post("/api/project/{project_id}/trailer-creation-request")
+    async def repair_trailer_request(project_id: str, request: Request):
+        require_writer(request)
+        from lib.trailer_edit import repair_creation
+        try:
+            result = await asyncio.to_thread(repair_creation, _safe_project_dir(project_id))
+            _invalidate_summary(project_id)
+            return result
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc) if isinstance(exc, ValueError) else "The signing request could not be made. Please try again.") from None
+
+    @app.post("/api/project/{project_id}/paper-cut/restore")
+    async def restore_paper(project_id: str, request: Request):
+        require_writer(request)
+        from lib.trailer_edit import restore_revision
+        try:
+            body = await request.json()
+            result = await asyncio.to_thread(restore_revision, _safe_project_dir(project_id), body.get("revision"), body.get("expected_revision"))
+            _invalidate_summary(project_id)
+            return result
+        except (ValueError, TypeError, KeyError, AttributeError, OSError) as exc:
+            raise HTTPException(400, str(exc) if isinstance(exc, ValueError) else "The restore did not finish. Your saved versions are safe.") from None
+
+    @app.post("/api/project/{project_id}/paper-cut")
+    async def save_paper(project_id: str, request: Request):
+        require_writer(request)
+        from lib.trailer_edit import save_revision
+        try:
+            body = await request.json()
+            result = await asyncio.to_thread(save_revision, _safe_project_dir(project_id), body.get("paper"), body.get("expected_revision"))
+            _invalidate_summary(project_id)
+            return result
+        except (ValueError, TypeError, KeyError, AttributeError, OSError) as exc:
+            message = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else "The save did not finish. Your previous version is safe. Check the panel and try again."
+            raise HTTPException(400, message) from None
+
+    @app.get("/api/project/{project_id}/paper-cut")
+    async def paper_status(project_id: str):
+        from lib.trailer_edit import paper_state
+        return await asyncio.to_thread(paper_state, _safe_project_dir(project_id))
+
+    @app.get("/api/project/{project_id}/paper-cut/{revision}")
+    async def paper_version(project_id: str, revision: str):
+        from lib.trailer_edit import read_revision
+        try:
+            return read_revision(_safe_project_dir(project_id), revision)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
     # ---- Thumbnails (downscaled, cached on disk) ------------------------
 
     @app.get("/thumb/{project_id}/{file_path:path}")

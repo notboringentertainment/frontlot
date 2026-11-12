@@ -1064,3 +1064,22 @@ details.log-more[open] > summary { margin-bottom: 12px; }
   .table.trailer-board { --bar-h: 210px; }
   .trailer-board .counter { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
+
+/* The trailer editor is confined to trailer boards and the library form. */
+.paper-editor { padding:24px; width:100%; max-width:1000px; margin:auto; }
+.paper-panel { padding:18px; margin:14px 0; border:1px solid var(--rule, #888); border-radius:6px; background:var(--paper, #e9e6dc); color:var(--ink, #222); }
+.paper-panel h3 { margin:0 0 14px; }
+.paper-panel label { display:flex; flex-direction:column; gap:6px; margin:12px 0; font-size:15px; }
+.paper-panel input:not([type=range]), .paper-panel textarea { padding:10px; font:inherit; border:1px solid #777; border-radius:4px; width:100%; box-sizing:border-box; background:#fffdf7; color:#222; }
+.paper-panel textarea { min-height:75px; resize:vertical; }
+.paper-panel fieldset { margin:15px 0; padding:12px; }
+.paper-panel button, .paper-editor > button { padding:10px 15px; margin:6px 8px 6px 0; cursor:pointer; }
+.paper-preview { background:#242722; color:#f4f0df; padding:28px; min-height:160px; text-align:center; }
+.paper-preview strong { color:#f5cf7b; letter-spacing:2px; }
+.paper-panel input[type=range] { width:100%; margin:16px 0; }
+
+.paper-panel, .paper-panel h3, .paper-panel label span, .paper-panel legend { color:#252a24; }
+
+.paper-panel select { width:100%; padding:10px; background:#fffdf7; color:#252a24; font:inherit; }
+.paper-panel button { background:#353e34; color:#fffdf7; border:1px solid #596653; border-radius:4px; }
+.paper-panel button:disabled { background:#d5d5cc; color:#666; cursor:default; }
