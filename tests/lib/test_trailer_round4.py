@@ -10,7 +10,7 @@ def test_honest_words(text):
     canon=collection_canon();canon['protected_lines'] += [{'line':x} for x in ['Stay.','Run.','Not yet.','Go home.']]
     assert not check_trailer_text({'lines':[row(text,ref='')]},canon)[0]
 
-@pytest.mark.parametrize('parts', [['Before we open, please leave.'],['Please leave.'],['Please leave','before we open.'],['Tonight please leave before we open now.']])
+@pytest.mark.parametrize('parts', [['Before we open, please leave.'],['We','please','before','open','leave'],['Please leave.'],['Please leave','before we open.'],['Tonight please leave before we open now.']])
 def test_mechanical_versions(parts):
     errors,_=check_trailer_text({'lines':[row(t,ref='') for t in parts]},collection_canon())
     assert errors and 'Please leave before we open.' in errors[0]

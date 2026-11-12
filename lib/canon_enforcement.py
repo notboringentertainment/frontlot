@@ -321,8 +321,9 @@ def check_trailer_text(paper, canon):
             for order,(key,label) in enumerate((('lines','Line'),('cards','Card')))
             for n,r in enumerate(paper.get(key,[]),1)]
     rows.sort(key=lambda x:(x[0],x[1]))
+    protected_span = max([3]+[len(_protected_words(x.get('line',''))) for x in canon.get('protected_lines',[])])
     for start in range(len(rows)):
-        for size in range(2, min(3,len(rows)-start)+1):
+        for size in range(2, min(protected_span,len(rows)-start)+1):
             group = rows[start:start+size]
             text = ' '.join(x[3].get('text','') for x in group)
             label = ' and '.join(x[2] for x in group)
@@ -334,7 +335,7 @@ def check_trailer_text(paper, canon):
             for lock in canon.get('locks',[]):
                 fact = _protected_words(lock.get('decision',''))
                 words = _protected_words(text)
-                if lock.get('spoiler') and len(fact)>1 and any(words[i:i+len(fact)]==fact for i in range(len(words)-len(fact)+1)):
+                if size <= 3 and lock.get('spoiler') and len(fact)>1 and any(words[i:i+len(fact)]==fact for i in range(len(words)-len(fact)+1)):
                     errors.append(f'{label} together reveal protected story material. Keep that reveal out of the trailer.')
     errors = list(dict.fromkeys(errors))
     for key, label, field in (('beats', 'Beat', 'text'), ('shots', 'Shot', 'purpose')):
