@@ -1763,12 +1763,30 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
                 break
     pipeline_meta = _load_pipeline_meta(pipeline_type)
 
+    # Resolve the trailer rail through the signed pin, never marker version caches.
+    trailer = None
+    try:
+        from lib.pipeline_pin import pinned_pipeline
+        pin = pinned_pipeline(project_dir, pipeline_type) if pipeline_type and pipeline_type.startswith("authored-film") else None
+        if pin and pin.version == "1.6":
+            pipeline_meta = _load_pipeline_meta(pin.ref)
+            from lib.trailer_contract import make_contract
+            trailer = make_contract((marker.get("trailer") or {}).get("target_duration_seconds"))
+    except Exception:
+        # A pending or invalid pin never advertises trailer readiness.
+        pass
+
     artifacts = _collect_artifacts(project_dir, checkpoints)
     events = read_events(project_dir, limit=250)
     storyboard = _build_storyboard(project_dir, artifacts, events)
     media = _scan_media(project_dir)
 
     stages = _build_stage_rail(pipeline_meta, checkpoints, history)
+    if trailer:
+        from lib.trailer_contract import STAGE_LABELS, STAGE_LIMITS
+        for entry in stages:
+            entry["label"] = STAGE_LABELS.get(entry["name"], entry["name"])
+            entry["availability_message"] = STAGE_LIMITS.get(entry["name"], "")
 
     # Cost: latest checkpoint snapshot wins; fall back to manifest total.
     cost = None
@@ -1799,6 +1817,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         "project_id": project_id,
         "title": marker.get("title") or meta_json.get("name") or project_id.replace("-", " ").title(),
         "pipeline": pipeline_meta,
+        **({"trailer": trailer} if trailer else {}),
         "style_playbook": marker.get("style_playbook"),
         "created_at": marker.get("created_at"),
         "has_marker": bool(marker),

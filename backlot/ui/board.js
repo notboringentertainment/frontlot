@@ -393,6 +393,7 @@ function renderMeter(s) {
 }
 
 function stageSub(st) {
+  if (st.availability_message) return st.availability_message;
   if (st.status === "awaiting_human") return "waiting for your approval";
   if (st.status === "in_progress" && st.stalled) return `no activity for ${st.stalled_minutes} minutes`;
   if (st.status === "in_progress" && st.partial_progress) {
@@ -419,16 +420,17 @@ function renderBar(s) {
       : st.status === "failed" ? "failed" : "";
     counter.append(el("div", {
       class: `stage ${cls}${selectedStage === st.name ? " selected" : ""}`.trim(),
-      title: `${humanize(st.name)}: ${stageSub(st)}${st.undeclared ? " (not part of this pipeline's plan)" : ""}`,
+      title: `${(st.label || humanize(st.name))}: ${stageSub(st)}${st.undeclared ? " (not part of this pipeline's plan)" : ""}`,
     },
       el("button", {
         class: "stage-select",
         type: "button",
         "aria-expanded": selectedStage === st.name ? "true" : "false",
-        "aria-label": `${humanize(st.name)}: ${stageSub(st)}. Show details`,
+        "aria-label": `${(st.label || humanize(st.name))}: ${stageSub(st)}. Show details`,
         onclick: () => toggleDrawer(st.name),
       },
-        el("span", { class: "name" }, humanize(st.name)),
+        el("span", { class: "name" }, (st.label || humanize(st.name)),
+          st.availability_message ? el("small", {}, " · Not available yet") : null),
         el("span", { class: "tick", "aria-hidden": "true" }))));
   }
   const maker = el("a", { class: "maker", href: "/", "aria-label": "All films" });
@@ -442,7 +444,7 @@ function renderBar(s) {
     maker,
     el("div", { class: "title-plate" },
       el("h1", {}, s.title),
-      kind ? el("span", { class: "kind" }, kind) : null),
+      s.trailer ? el("span", { class: "kind" }, `Trailer · Target: ${fmtDuration(s.trailer.target_duration_seconds)}`) : (kind ? el("span", { class: "kind" }, kind) : null)),
     s.stages.length ? counter : el("span", { style: "margin-left:auto" }),
     renderMeter(s),
     renderStatus(s));
@@ -501,6 +503,8 @@ function renderDrawer(s) {
   if (!st) return null;
 
   const body = el("div", { class: "drawer-body" });
+  if (st.availability_message) body.append(el("p", {}, st.availability_message));
+  if (s.trailer && st.gated) body.append(el("p", {}, "Your approval is required."));
 
   if (st.review) {
     const metrics = reviewMetrics(st.review);
@@ -531,7 +535,7 @@ function renderDrawer(s) {
 
   return el("div", { class: "drawer" },
     el("div", { class: "drawer-head" },
-      el("h3", {}, `${humanize(st.name)} — ${humanize(st.status)}`),
+      el("h3", {}, `${(st.label || humanize(st.name))} — ${humanize(st.status)}`),
       st.gate_skipped ? el("span", { class: "gate-chip" }, "Approval skipped") : null,
       st.versions > 1 ? el("span", { class: "ver-chip" }, `v${st.versions}`) : null,
       st.timestamp ? el("span", { class: "meta" }, readableTime(st.timestamp)) : null,

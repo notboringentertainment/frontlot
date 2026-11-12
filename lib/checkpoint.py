@@ -330,6 +330,7 @@ def init_project(
     pipeline_type: str,
     pipeline_dir: Optional[Path] = None,
     style_playbook: Optional[str] = None,
+    target_duration_seconds: Optional[float] = None,
 ) -> Path:
     """Initialize a project workspace with the canonical layout + marker file.
 
@@ -340,6 +341,12 @@ def init_project(
     Idempotent: re-running preserves the original created_at and merges fields.
     Returns the project directory.
     """
+    from lib.trailer_contract import make_contract
+    trailer = None
+    if pipeline_type == "authored-film@1.6":
+        trailer = make_contract(target_duration_seconds)
+    elif target_duration_seconds is not None:
+        raise ValueError("A trailer target requires the trailer pipeline definition.")
     _validate_style_playbook(style_playbook)
     base = pipeline_dir or PROJECTS_DIR
     project_dir = base / project_id
@@ -367,6 +374,8 @@ def init_project(
     marker["project_id"] = project_id
     marker["title"] = title
     marker["pipeline_type"] = pipeline_type
+    if trailer is not None:
+        marker["trailer"] = trailer
     if style_playbook is not None:
         marker["style_playbook"] = style_playbook
 
@@ -864,6 +873,13 @@ def write_checkpoint(
     # previously the cumulative decision log was merged before validation,
     # so rejected checkpoints could still corrupt the audit trail.
     validate_checkpoint(checkpoint)
+    if pin is not None and pin.name == "authored-film" and pin.version == "1.6" and status in {"awaiting_human", "completed"}:
+        from lib.trailer_contract import validate_stage_contract
+        marker_data = json.loads(marker_path.read_text()) if marker_path.exists() else {}
+        try:
+            validate_stage_contract(marker_data.get("trailer"), stage, artifacts)
+        except ValueError as exc:
+            raise CheckpointValidationError(str(exc)) from exc
 
     if manifest is not None and manifest.get("validation_profile") == "authored-canon":
         from lib.canon_enforcement import enforce_authored_canon

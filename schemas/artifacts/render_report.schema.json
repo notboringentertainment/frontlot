@@ -5,7 +5,11 @@
   "description": "Output report produced by the Composer agent after rendering.",
   "type": "object",
   "required": ["version", "outputs"],
+  "allOf": [{"if": {"required": ["trailer"]}, "then": {"required": ["edit_revision_sha256", "export_sha256"], "properties": {"outputs": {"items": {"properties": {"duration_seconds": {"maximum": 120}}}}}}}],
   "properties": {
+    "trailer": {"type": "object", "required": ["kind", "target_duration_seconds", "fps", "approval_points"], "properties": {"kind": {"const": "trailer"}, "target_duration_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 120}, "fps": {"const": 24}, "approval_points": {"const": {"edit": "rough_cut", "compose": "final_export"}}}, "additionalProperties": false},
+    "edit_revision_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "export_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "version": { "type": "string", "const": "1.0" },
     "outputs": {
       "type": "array",

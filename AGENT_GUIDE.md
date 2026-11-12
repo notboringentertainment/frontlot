@@ -140,6 +140,10 @@ The `decision_log` is the board's Decisions rail and the run's audit trail. It i
 
 Editing only a downstream artifact (the `asset_manifest`, a prop) while leaving the old decision in the log is a defect: the board keeps showing the stale choice (e.g. `voice → openai_onyx` after the user moved to Chirp3). The board identifies a decision by its **(category, subject) pair** and renders the latest entry for that pair as current (tagged "revised") — so the fix is to append the new entry with an identical `subject`, never to silently mutate the old one or reword the subject (a reworded subject reads as a different decision and both will show). Keeping distinct decisions in one category (e.g. TTS vs image `provider_selection`) is exactly why the pair, not the category alone, is the key. This applies at every stage, not just `idea`.
 
+### Fixed trailer workflow
+
+For a new production signed to authored-film version 1.6 only, the approved trailer plan fixes Remotion for local timed composition and FFmpeg for finishing. Explain that choice and check availability; do not offer HyperFrames or silently substitute another engine. The runtime-choice and authoring-mode discussions below still apply to older productions. Trailer creative choices and spending still require Ben's consent. Every trailer stage requires explicit approval, including the rough cut and the exact final exported file. Use visible controls and the embedded assistant, never ask Ben to type commands. If a required control is missing, say so and leave the stage unfinished.
+
 ### Present Both Composition Runtimes (HARD RULE)
 
 When both Remotion and HyperFrames are available on the machine (check `video_compose.get_info()["render_engines"]`), the agent **MUST present both options to the user** before locking `render_runtime` at the proposal stage. The agent MAY recommend one with rationale — but silently picking a "default" is forbidden even when the pipeline manifest or a director skill suggests one.
