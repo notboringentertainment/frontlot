@@ -190,17 +190,27 @@ def state(root):
 def reservation_request(root,reservation):
     """Account review uses the original signature, never an editable draft."""
     hint=reservation.get('output_hint') or {}
-    for row in receipts.verified_approvals(root,'audio_spend',entity_id=hint.get('request_id')):
+    footage = bool(hint.get('footage_request_id'))
+    kind = 'footage_spend' if footage else 'audio_spend'
+    identity = hint.get('footage_request_id') if footage else hint.get('request_id')
+    approval_id = hint.get('footage_approval_receipt_id') if footage else hint.get('audio_approval_receipt_id')
+    for row in receipts.verified_approvals(root,kind,entity_id=identity):
         record=row['record']
-        if row['receipt_id']==hint.get('audio_approval_receipt_id') and record.get('input_sha256')==reservation.get('normalized_inputs_hash'):
+        if footage:
+            from lib.footage_requests import tool_inputs
+            from tools.base_tool import normalized_inputs_hash
+            fingerprint = normalized_inputs_hash(tool_inputs(root,record))
+        else:fingerprint = record.get('input_sha256')
+        if row['receipt_id']==approval_id and fingerprint==reservation.get('normalized_inputs_hash'):
             return record
-    raise ValueError('The original signed audio request cannot be verified. Nothing was resolved.')
+    raise ValueError('The original signed request cannot be verified. Nothing was resolved.')
 
 
 def resolution_record(root,identity,charged,cash,credits,note):
-    if receipts.verified_approvals(root,'audio_resolution',entity_id=identity):
-        raise ValueError('This request already has a signed account outcome. Apply that outcome; nothing was changed.')
-    return _resolution_material(root,identity,charged,cash,credits,note)
+    with call_lock(root):
+        if receipts.verified_approvals(root,'audio_resolution',entity_id=identity):
+            raise ValueError('This request already has a signed account outcome. Apply that outcome; nothing was changed.')
+        return _resolution_material(root,identity,charged,cash,credits,note)
 
 
 def _resolution_material(root,identity,charged,cash,credits,note):
@@ -208,10 +218,12 @@ def _resolution_material(root,identity,charged,cash,credits,note):
     from tools.audio._governed import _money
     if type(charged) is not bool:raise ValueError('Say whether this request was charged.')
     _money(cash);_money(credits)
-    if not isinstance(note,str) or not note.strip():raise ValueError('Record what you checked in your ElevenLabs account.')
+    if not isinstance(note,str) or not note.strip():raise ValueError('Record what you checked in the service account.')
     if not charged and (cash or credits):raise ValueError('An uncharged request must have no cash or credit charge.')
     reservation=load_reservations(root).get(identity)
-    if not reservation or (reservation.get('output_hint') or {}).get('kind')!='audio':raise ValueError('Choose an unresolved audio request.')
+    hint = (reservation or {}).get('output_hint') or {}
+    if not reservation or not (hint.get('kind')=='audio' or hint.get('footage_request_id')):
+        raise ValueError('Choose an unresolved signed audio or footage request.')
     if reservation['state'] in ('completed','failed'):raise ValueError('This charge has already been resolved.')
     return {'reservation_id':identity,'reservation':reservation,'request':reservation_request(root,reservation),'charged':charged,'cash_usd':cash,'credits_usd':credits,'note':note.strip()}
 
@@ -335,23 +347,43 @@ def require_accepted(root,identity):
 
 
 from contextlib import contextmanager
+import threading
+_call_owners = threading.local()
+
+
+from tools.cost_tracker import IndeterminatePaidCallError
+class PaidCallBusy(ValueError, IndeterminatePaidCallError):
+    def __init__(self):
+        self.reservations=[]
+        ValueError.__init__(self,'An audio or footage operation is still running. Wait for it to finish.')
+
+
 @contextmanager
 def call_lock(root):
     """One live service owner; signed recovery never settles that owner's call."""
     import fcntl
-    path=_root(root)/'.audio-call.lock'
+    root = _root(root)
+    info = root.stat();identity = (info.st_dev,info.st_ino)
+    held = getattr(_call_owners,'held',None)
+    if held is None:held=_call_owners.held=set()
+    if identity in held:
+        yield
+        return
+    path=root/'.audio-call.lock'
     fd=os.open(path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:raise ValueError('An audio call is still running. Wait for its result before account review.')
-        yield
+        except BlockingIOError:raise PaidCallBusy() from None
+        held.add(identity)
+        try:yield
+        finally:held.discard(identity)
     finally:os.close(fd)
 
 
 def request_resolution(root,identity,charged,cash,credits,note):
     with call_lock(root):
         record=resolution_record(root,identity,charged,cash,credits,note)
-        return gate_request(root,'audio_resolution',identity,record,'After checking your ElevenLabs account, sign this charge outcome. No request will be submitted again.')
+        return gate_request(root,'audio_resolution',identity,record,'After checking the service account, sign this charge outcome. No request will be submitted again.')
 
 
 def probe_audio(path,maximum=120):

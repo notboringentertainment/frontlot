@@ -1703,6 +1703,35 @@ def _construct_audio_workspace(root: Path, req: dict) -> Constructed:
     return Constructed(record, None, identity, evidence=evidence, pre_commit_check=recheck)
 
 
+def _construct_footage(root: Path, req: dict) -> Constructed:
+    from lib import footage_requests as footage
+    identity = _require_entity(req)
+    supplied = req.get('approval_record') or {}
+    def build():
+        if req['kind']=='footage_spend':
+            return footage.approval_material(root,footage._read(root,identity))
+        return footage.decision_record(root,supplied.get('shot_id'),identity,supplied.get('decision'))
+    record = build()
+    def recheck():
+        if build()!=record:raise GateHandlerError('The footage material changed. Nothing was approved.')
+    if req['kind']=='footage_spend':
+        evidence = (
+            'Service: Fal. Model: '+record['model']+'.',
+            'Exact outgoing shot description: '+record['prompt'],
+            f"Clip length: {record['duration_seconds']} seconds. Silent widescreen footage.",
+            f"Highest cash charge: ${record['max_cash_usd']:.4f}. Replacement value of credits: ${record['max_credits_usd']:.4f}.",
+            f"Money left in the production ceiling: ${record['remaining_usd']:.4f}.",
+            'Reference pictures sent: '+', '.join(Path(r['path']).name for r in record['references']),
+            'Approved looks used to verify those pictures: '+', '.join(r['entity_id'].replace('-',' ') for r in record['look_refs']),
+            'One signature buys one clip. A retake needs a new request and signature.',
+            'For the tools: input fingerprint '+record['input_sha256'],
+        )
+    else:
+        evidence = ('Decision: '+record['decision']+'.', 'Watch the whole clip before signing. Declining is final.',
+                    'This decision completes no stage.','For the tools: take fingerprint '+record['take']['sha256'])
+    return Constructed(record,None,identity,evidence=evidence,pre_commit_check=recheck)
+
+
 CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
     "look_lock": _construct_look_lock,
     "reference_import": _construct_reference_import,
@@ -1711,6 +1740,8 @@ CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
     "audio_spend": _construct_audio_spend,
     "audio_take": _construct_audio_workspace,
     "audio_resolution": _construct_audio_workspace,
+    "footage_spend": _construct_footage,
+    "footage_take": _construct_footage,
     "storyboard_batch": _construct_storyboard_batch,
     "artifact_review": _construct_artifact_review,
     "hero": _construct_character,

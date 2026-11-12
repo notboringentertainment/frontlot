@@ -1046,6 +1046,11 @@ def paid_call_context(
         raise PaidCallContextError(f"{project_root} is not under {PROJECTS_DIR}") from exc
     if project_root.is_symlink() or not project_root.is_dir():
         raise PaidCallContextError(f"registered project directory missing or a symlink: {project_root}")
+    if media == 'video':
+        from lib.supervised_production import is_trailer
+        if is_trailer(project_root):
+            from lib.footage_requests import authorization
+            authorization(project_root,inputs)
 
     # Any nonterminal reservation (submitting / pending_billing) means a prior
     # paid call has no known outcome; refuse to spend again before a human runs

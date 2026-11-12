@@ -194,6 +194,7 @@ def attach(root, shot_id, source, *, user_note, cost_usd=None, provider_job_id=N
         _number(cost_usd, 'cost_usd')
     _note(user_note)
     digest = sha256_file(source)
+    approved_footage = None
     duration = None
     if source.suffix.lower() in {'.mp4', '.mov', '.webm', '.mkv'}:
         probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
@@ -213,6 +214,14 @@ def attach(root, shot_id, source, *, user_note, cost_usd=None, provider_job_id=N
                 or reservation.get('state') != 'completed'):
             raise ValueError('reservation_id must name a completed paid call for this shot')
         hint = reservation.get('output_hint') or {}
+        if hint.get('footage_request_id'):
+            from lib.footage_requests import _read
+            approved_footage = _read(root,hint['footage_request_id'])
+            if approved_footage['shot_id']!=shot_id:raise ValueError('The footage request belongs to another shot.')
+            original = next((r for r in history(root,shot_id) if r.get('kind')=='brief'
+                             and r['event_id']==approved_footage['brief_revision_id']),None)
+            if original is None:raise ValueError('The approved shot brief is missing.')
+            brief = {**original['brief'],'revision_id':original['event_id']}
         if hint.get('kind') == 'image':
             # A batch stores content-addressed outputs, not one output_path.
             # Bind each image through its existing verified generation receipt.
@@ -229,6 +238,7 @@ def attach(root, shot_id, source, *, user_note, cost_usd=None, provider_job_id=N
     _copy(source, destination)
     return _append(root, shot_id, {
         'kind': 'take', 'take_id': uuid.uuid4().hex, 'path': destination.relative_to(root).as_posix(),
+        **({'shot_id':shot_id,'footage_request_id':approved_footage['request_id']} if approved_footage else {}),
         'sha256': digest, 'duration_seconds': duration, 'cost_usd': cost_usd,
         'provider_job_id': provider_job_id, 'reservation_id': reservation_id,
         'provenance': 'reservation' if reservation_id else 'external_reported',
@@ -240,14 +250,14 @@ def attach(root, shot_id, source, *, user_note, cost_usd=None, provider_job_id=N
 def select(root, shot_id, take_id, *, user_note, start=None, end=None):
     if not is_trailer(root):
         return _select(root, shot_id, take_id, user_note=user_note, start=start, end=end)
-    from tools.cost_tracker import reservation_lock
-    with reservation_lock(Path(root)):
+    if start is not None or end is not None:raise ValueError('Set trims in the cutting view; this decision accepts the whole take.')
+    from lib.audio_workspace import call_lock
+    with call_lock(root):
         rows = history(root, shot_id)
         if any(r.get('kind') == 'decline' and r.get('take_id') == take_id for r in rows):
             raise ValueError('This take was declined. Declining is final; choose a different take.')
-        # Acceptance and cut insertion belong to the signed footage lifecycle.
-        # Do not turn an imported image or an old notebook entry into footage.
-        raise ValueError('Trailer take acceptance is not available yet. Nothing was approved.')
+        from lib.footage_requests import apply_decision
+        return apply_decision(root,shot_id,take_id,'accept')
 
 
 def _select(root, shot_id, take_id, *, user_note, start=None, end=None):
@@ -273,6 +283,9 @@ def _select(root, shot_id, take_id, *, user_note, start=None, end=None):
 def decline(root, shot_id, take_id, *, user_note):
     """Set a take aside. Nothing is chosen, so no decision-log entry."""
     from tools.cost_tracker import reservation_lock
+    if is_trailer(root):
+        from lib.footage_requests import apply_decision
+        return apply_decision(root,shot_id,take_id,'decline')
     with reservation_lock(Path(root)):
         return _decline(root, shot_id, take_id, user_note=user_note)
 
@@ -320,8 +333,24 @@ def take_decisions(rows, *, final_declines=False):
 
 def waiting_takes(root, shot_id):
     rows = history(root, shot_id)
-    standing = take_decisions(rows, final_declines=is_trailer(root))
+    standing = take_standings(root,shot_id,rows)
     return [row for row in rows if row['kind'] == 'take' and standing.get(row['take_id']) == 'waiting']
+
+
+def take_standings(root,shot_id,rows):
+    if not is_trailer(root):return take_decisions(rows)
+    from lib import footage_requests as footage, receipts
+    decisions=receipts.verified_approvals(root,'footage_take')
+    latest=next((r['record']['take'].get('take_id') for r in reversed(decisions)
+                 if isinstance(r.get('record'),dict) and r['record'].get('shot_id')==shot_id
+                 and r['record'].get('decision')=='accept' and isinstance(r['record'].get('take'),dict)),None)
+    result={}
+    for row in rows:
+        if row.get('kind')!='take':continue
+        status=footage.take_state(root,shot_id,row['take_id'])
+        result[row['take_id']] = {'Declined':'declined','Waiting for your decision':'waiting',
+            'Needs a fresh look':'needs_review','Accepted':'chosen' if row['take_id']==latest else 'passed_over'}[status]
+    return result
 
 
 def propose_change(root, shot_id, text):
@@ -412,7 +441,7 @@ def inspect_shot(root, shot_id):
     rows = history(root, shot_id)
     revisions = {r['event_id']: r['brief'] for r in rows if r['kind'] == 'brief'}
     trailer = is_trailer(root)
-    standing = take_decisions(rows, final_declines=trailer)
+    standing = take_standings(root,shot_id,rows)
     takes = [{**r, 'standing': standing.get(r['take_id']),
               'source_warnings': _source_warnings(root, revisions[r['brief_revision_id']])}
              for r in rows if r['kind'] == 'take']

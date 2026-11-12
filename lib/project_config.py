@@ -25,7 +25,7 @@ PROJECT_CONFIG_FILENAME = "project.yaml"
 EGRESS_CLASS_PROMPTS = "prompts"
 EGRESS_CLASS_REFERENCE_IMAGES = "reference_images"
 EGRESS_CLASS_GENERATED_SHEET_IMAGES = "generated_sheet_images"
-SUPPORTED_VERSIONS = ("1.0", "1.1", "1.2", "1.3", "1.4")
+SUPPORTED_VERSIONS = ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5")
 HERO_QC_VERSION = "1.2"
 
 
@@ -134,7 +134,7 @@ class VerifiedProjectConfig:
         """D20: hero judging needs a 1.2 config naming the hero bundle and the
         hero budget. A 1.1 config is sheet-only; nothing about it changes."""
         qc = self.require_qc()
-        if not qc.has_hero or self.version not in (HERO_QC_VERSION, "1.3", "1.4"):
+        if not qc.has_hero or self.version not in (HERO_QC_VERSION, "1.3", "1.4", "1.5"):
             raise ProjectConfigError(
                 f"{PROJECT_CONFIG_FILENAME} {self.version} carries no hero QC policy; headshot judging needs a "
                 f"{HERO_QC_VERSION} config with qc.hero_policy_sha256 and qc.max_hero_attempts approved through the human gate."

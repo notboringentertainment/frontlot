@@ -290,6 +290,15 @@ class KlingReferenceVideo(BaseTool):
     # ---- execute ----
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
+        if isinstance(inputs,dict) and inputs.get('footage_request_id'):
+            try:
+                from lib.footage_requests import provider_entry
+                return ToolResult(success=True,data={'take':provider_entry(inputs)})
+            except Exception as exc:
+                return ToolResult(success=False,error=str(exc))
+        return self._execute(inputs)
+
+    def _execute(self, inputs: dict[str, Any]) -> ToolResult:
         api_key = self._get_api_key()
         if not api_key:
             return ToolResult(success=False, error="FAL_KEY not set. " + self.install_instructions)
@@ -313,7 +322,9 @@ class KlingReferenceVideo(BaseTool):
             # Look governance (look_refs verified before any upload) and the
             # per-shot allowance (C2) both run inside paid_call_context, which
             # needs this call's own estimate to measure the shot's dollars.
-            estimate = self.estimate_cost(inputs)
+            from lib import footage_requests as footage
+            signed_bound = footage.bound_for(inputs)
+            estimate = signed_bound if signed_bound is not None else self.estimate_cost(inputs)
             project_root, tracker, config = _shared.paid_call_context(
                 inputs, governance=governance, media="video", estimated_usd=estimate,
             )
@@ -326,8 +337,11 @@ class KlingReferenceVideo(BaseTool):
                 config.require_egress("fal", "prompts", "reference_images")
             references_applied = _shared.bind_reference_manifest(inputs, project_root, local_refs)
             output_path = pathsafe.validate_output_parent(inputs["output_path"], project_root)
+            if signed_bound is not None:
+                reservation_id = footage.reserve_before_upload(project_root,tracker,inputs)
             image_urls = list(inputs.get("reference_image_urls") or [])
-            uploaded = [_shared.upload_image_fal(str(resolved)) for resolved in local_refs]
+            uploaded = [_shared.upload_image_fal(str(footage.frozen_reference(project_root,inputs,resolved)
+                        if signed_bound is not None else resolved)) for resolved in local_refs]
             elements: list[dict[str, Any]] = []
             if inputs.get("reference_form") == "elements":
                 elements = self._build_elements(references_applied, uploaded, inputs.get("reference_video_url"))
@@ -343,7 +357,8 @@ class KlingReferenceVideo(BaseTool):
                     "shot_id": str(inputs["shot_id"]),
                 })
             payload = self._build_payload(inputs, image_urls, elements)
-            reservation_id = reserve_paid_call(
+            if signed_bound is None:
+                reservation_id = reserve_paid_call(
                 tracker,
                 project_root,
                 tool=self.name,
@@ -367,6 +382,7 @@ class KlingReferenceVideo(BaseTool):
         execution_id = current_execution_id() or f"kling-{reservation_id}"
         prompt_text = inputs.get("prompt") or " | ".join(s["prompt"] for s in inputs.get("multi_prompt") or [])
         try:
+            if signed_bound is not None:footage.before_submit(project_root,inputs)
             submitted = _shared.fal_queue_submit(self.MODEL_ID, payload, api_key=api_key)
             request_id = str(submitted["request_id"])
             attach_request_id(project_root, reservation_id, request_id)
@@ -380,6 +396,7 @@ class KlingReferenceVideo(BaseTool):
                 deadline_s=float(inputs.get("deadline_s", self.DEFAULT_DEADLINE_S)),
                 poll_s=float(inputs.get("poll_s", 5.0)),
             )
+            if signed_bound is not None:actual_usd = footage.actual_charge(inputs,data)
             video_url = data["video"]["url"]
             staging = pathsafe.staging_file(project_root, ".mp4")
             _shared.fal_download(

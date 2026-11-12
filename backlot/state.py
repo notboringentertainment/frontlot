@@ -582,7 +582,7 @@ def _shot_entry(project_dir: Path, shot_id: str) -> Optional[dict]:
     if brief is None:
         return None
     revision = brief.get("revision_id")
-    standing = sp.take_decisions(rows, final_declines=sp.is_trailer(project_dir))
+    standing = sp.take_standings(project_dir,shot_id,rows)
     briefs = {r.get("event_id"): r.get("brief") or {} for r in rows if r.get("kind") == "brief"}
     changes: dict = {}   # brief revision -> what it was made from that has changed since
     takes: list[dict] = []
@@ -1708,6 +1708,8 @@ GATE_RENDERERS = _GateRendererMap({
     "audio_spend": _render_audio_spend,
     "audio_take": _render_text_only,
     "audio_resolution": _render_text_only,
+    "footage_spend": _render_text_only,
+    "footage_take": _render_text_only,
 })
 assert set(GATE_RENDERERS) == set(APPROVAL_KINDS)
 

@@ -94,6 +94,7 @@ def _tracker(root,config):
 
 def prepare(root, *, kind,model,voice,prompt,duration_seconds,max_cash_usd,max_credits_usd,price_expires_at,binding=None,price_basis_sha256=None):
     root=_root(root)
+    resume_check(root)
     # Bounds are validated even if the saved settings are damaged.
     _money(max_cash_usd);_money(max_credits_usd)
     config=load_current_verified_project_config(root)
@@ -152,6 +153,11 @@ def check_current(root,record):
     return config
 
 def execute(root,record, *, submit,download):
+    from lib.audio_workspace import call_lock
+    with call_lock(root):return _execute_locked(root,record,submit=submit,download=download)
+
+
+def _execute_locked(root,record, *, submit,download):
     """Transport callbacks run only after a durable reservation. Any ambiguous
     failure leaves billing pending; only the existing reconciler may resolve it.
     """

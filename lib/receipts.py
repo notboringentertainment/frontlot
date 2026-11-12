@@ -55,7 +55,7 @@ QC_RECEIPTS_FILENAME = "qc-receipts.jsonl"
 
 APPROVAL_KINDS = frozenset(
     {
-        "hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review", "audio_spend", "audio_take", "audio_resolution",
+        "hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review", "audio_spend", "audio_take", "audio_resolution", "footage_spend", "footage_take",
         # Plan D10 (look locks) and Slice A' (headshots, reference import, manifest pins).
         "look_lock", "headshot", "reference_import", "pipeline_migration",
         # D19.4: a human accepting specific failed QC items of ONE verdict.
@@ -434,6 +434,10 @@ def validate_envelope(
         validate_request(record)
         if entity_id != record["request_id"]:
             raise ValueError("audio approval request identity changed")
+    if kind == 'footage_spend':
+        from lib.footage_requests import validate_request
+        validate_request(record)
+        if entity_id != record['request_id']:raise ValueError('Footage approval request identity changed.')
     spec = ENVELOPE_FIELDS.get(kind)
     env = dict(envelope or {})
     if spec is None:
