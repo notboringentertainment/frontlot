@@ -275,6 +275,20 @@ def signed_trailer_pin(root):
     return None
 
 
+def checkpoint_trailer_evidence(root):
+    """An explicit trailer manifest identifies damage; it never grants approval."""
+    for path in Path(root).glob('checkpoint_*.json'):
+        try:
+            checkpoint=json.loads(path.read_text())
+        except (OSError,ValueError,RecursionError):
+            continue
+        if not isinstance(checkpoint,dict):continue
+        pipeline=checkpoint.get('pipeline')
+        if pipeline=='authored-film@1.6':return True
+        if isinstance(pipeline,dict) and pipeline.get('name')=='authored-film' and pipeline.get('version')=='1.6':return True
+    return False
+
+
 def refuse_demo_overwrite(root):
     try:
         marker = json.loads((Path(root) / "project.json").read_text())

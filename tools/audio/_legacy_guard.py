@@ -83,12 +83,14 @@ def refusal(inputs):
             return MESSAGE
         for path in root.glob('checkpoint_*.json'):
             pin = _read_marker(path).get('pipeline') or {}
+            if pin == 'authored-film@1.6':
+                return MESSAGE
             if isinstance(pin, dict) and pin.get('name') == 'authored-film' and pin.get('version') == '1.6':
                 return MESSAGE
         for name in ('project.yaml', 'approvals.jsonl'):
             _checked_path(root / name)
         config = load_current_verified_project_config(root)
-        if config.version == '1.3' or signed_trailer_pin(root) is not None:
+        if config.version not in ('1.0','1.1','1.2') or signed_trailer_pin(root) is not None:
             return MESSAGE
         if config.version not in ('1.0', '1.1', '1.2'):
             return UNVERIFIED

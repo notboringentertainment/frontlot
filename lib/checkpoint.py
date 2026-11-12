@@ -172,9 +172,18 @@ def _pin_mismatch(
 def _ref_from_checkpoint(checkpoint: dict[str, Any]) -> Optional[str]:
     """Standalone validation reads the tuple from the checkpoint itself."""
     pipeline_type = checkpoint.get("pipeline_type")
+    tuple_ = checkpoint.get("pipeline")
+    if isinstance(tuple_, str):
+        from lib.pipeline_loader import parse_pipeline_ref
+        try:
+            parse_pipeline_ref(tuple_)
+        except ValueError:
+            return None
+        return tuple_
+    if not pipeline_type and isinstance(tuple_, dict):
+        pipeline_type = tuple_.get("name")
     if not pipeline_type or pipeline_type == "unknown":
         return None
-    tuple_ = checkpoint.get("pipeline")
     if isinstance(tuple_, dict) and tuple_.get("version"):
         from lib.pipeline_loader import manifest_versions, parse_pipeline_ref
 
@@ -784,6 +793,10 @@ def write_checkpoint(
     # {name, version, manifest_digest} rides alongside it.
     from lib.trailer_contract import signed_trailer_pin
     trailer_pin = signed_trailer_pin(pipeline_dir / project_id)
+    if trailer_pin is None:
+        from lib.trailer_contract import checkpoint_trailer_evidence
+        if checkpoint_trailer_evidence(pipeline_dir / project_id):
+            raise CheckpointValidationError("This trailer setup has not been signed. No stage can begin.")
     if trailer_pin is not None:
         pipeline_type = trailer_pin.ref
     pin = _pin_for(pipeline_dir, project_id, pipeline_type)

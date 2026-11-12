@@ -55,7 +55,7 @@ QC_RECEIPTS_FILENAME = "qc-receipts.jsonl"
 
 APPROVAL_KINDS = frozenset(
     {
-        "hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review", "audio_spend",
+        "hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review", "audio_spend", "audio_take", "audio_resolution",
         # Plan D10 (look locks) and Slice A' (headshots, reference import, manifest pins).
         "look_lock", "headshot", "reference_import", "pipeline_migration",
         # D19.4: a human accepting specific failed QC items of ONE verdict.

@@ -315,6 +315,19 @@ def _instrument_execute(fn: Callable) -> Callable:
         except Exception:
             return fn(self, inputs, *args, **kwargs)
 
+        # A pending audio bill freezes further network audio, including a
+        # direct provider call that does not pass through the voice selector.
+        # This stop never supplies spending permission for any tool.
+        runtime = getattr(self, "runtime", None)
+        protected_audio = getattr(self, "name", "") in {"elevenlabs_tts", "music_gen"} or (getattr(self, "name", "") == "tts_selector" and isinstance(inputs,dict) and inputs.get("audio_request_id"))
+        if not protected_audio and getattr(runtime, "value", runtime) == "api" and getattr(self, "capability", "") in {"tts", "music_generation", "sfx", "sound_effects", "audio_generation", "speech_to_text"}:
+            audio_root = infer_project_dir(inputs)
+            if audio_root is not None:
+                from tools.cost_tracker import nonterminal_reservations
+                pending = nonterminal_reservations(audio_root)
+                if any((r.get("output_hint") or {}).get("kind") == "audio" for r in pending):
+                    return ToolResult(success=False, error="An audio charge is unresolved. Check and sign its account outcome before any more audio calls.")
+
         tool_name = getattr(self, "name", "") or self.__class__.__name__
         scene_id = inputs.get("scene_id") if isinstance(inputs, dict) else None
         output_path = inputs.get("output_path") if isinstance(inputs, dict) else None
