@@ -59,7 +59,7 @@ def test_contract_saved_and_board_is_honest(tmp_path):
 @pytest.mark.parametrize('stage', ['canon_ingest', 'proposal', 'look_lock', 'headshots',
                                     'visual_bible', 'script', 'scene_plan', 'assets', 'edit', 'compose'])
 def test_no_stage_can_complete_without_human_approval(tmp_path, stage):
-    p = init_project('p', title='Night Window', pipeline_type='authored-film', pipeline_dir=tmp_path)
+    p = init_project('p', title='Night Window', pipeline_type='authored-film@1.6', pipeline_dir=tmp_path, target_duration_seconds=28)
     pin_project(p, '1.6')
     with pytest.raises(CheckpointValidationError, match='GATE VIOLATION'):
         write_checkpoint(tmp_path, 'p', stage, 'completed', {})
@@ -92,4 +92,4 @@ def test_new_trailer_requires_target(tmp_path):
 def test_trailer_contract_cannot_disappear_between_stages(tmp_path):
     from lib.trailer_contract import validate_stage_contract
     with pytest.raises(ValueError, match='saved trailer contract'):
-        validate_stage_contract({'target_duration_seconds':28}, 'script', {'script':{}})
+        validate_stage_contract(__import__('lib.trailer_contract', fromlist=['make_contract']).make_contract(28), 'script', {'script':{}})

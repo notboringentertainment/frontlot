@@ -393,6 +393,8 @@ function renderMeter(s) {
 }
 
 function stageSub(st) {
+  if (st.status === "completed") return st.gated && st.human_approved ? "done, approved by you" : "done";
+  if (st.status === "awaiting_human") return `waiting for your approval${st.availability_message ? ". " + st.availability_message : ""}`;
   if (st.availability_message) return st.availability_message;
   if (st.status === "awaiting_human") return "waiting for your approval";
   if (st.status === "in_progress" && st.stalled) return `no activity for ${st.stalled_minutes} minutes`;
@@ -430,7 +432,7 @@ function renderBar(s) {
         onclick: () => toggleDrawer(st.name),
       },
         el("span", { class: "name" }, (st.label || humanize(st.name)),
-          st.availability_message ? el("small", {}, " · Not available yet") : null),
+          st.availability_message && st.status !== "completed" ? el("small", {}, st.status === "awaiting_human" ? "Waiting for you · Not available yet" : "Not available yet") : null),
         el("span", { class: "tick", "aria-hidden": "true" }))));
   }
   const maker = el("a", { class: "maker", href: "/", "aria-label": "All films" });
@@ -444,7 +446,7 @@ function renderBar(s) {
     maker,
     el("div", { class: "title-plate" },
       el("h1", {}, s.title),
-      s.trailer ? el("span", { class: "kind" }, `Trailer · Target: ${fmtDuration(s.trailer.target_duration_seconds)}`) : (kind ? el("span", { class: "kind" }, kind) : null)),
+      s.is_trailer ? el("span", { class: "kind" }, s.trailer ? `${s.trailer_setup_pending ? "Draft trailer" : "Trailer"} · Target: ${fmtDuration(s.trailer.target_duration_seconds)}` : "Trailer · Needs attention") : (kind ? el("span", { class: "kind" }, kind) : null)),
     s.stages.length ? counter : el("span", { style: "margin-left:auto" }),
     renderMeter(s),
     renderStatus(s));
@@ -504,7 +506,8 @@ function renderDrawer(s) {
 
   const body = el("div", { class: "drawer-body" });
   if (st.availability_message) body.append(el("p", {}, st.availability_message));
-  if (s.trailer && st.gated) body.append(el("p", {}, "Your approval is required."));
+  if (s.is_trailer && st.approval_error) body.append(el("p", {role:"alert"}, st.approval_error));
+  if (s.is_trailer && st.gated) body.append(el("p", {}, st.status === "completed" ? "Approved by you." : "Your approval is required."));
 
   if (st.review) {
     const metrics = reviewMetrics(st.review);
@@ -524,18 +527,18 @@ function renderDrawer(s) {
     if (!artifact) continue;
     shown = true;
     body.append(
-      el("div", { class: "d-cat" }, humanize(name)),
+      el("div", { class: "d-cat" }, artifactWords(s, name)),
       readableRecord(artifact, { strip: true }),
     );
   }
   if (!shown) {
     body.append(el("div", { class: "hint" },
-      st.status === "pending" ? "This stage hasn't run yet." : "No canonical artifact found on disk for this stage."));
+      s.is_trailer ? (st.status === "pending" ? "This step has not started." : "No saved material for this step was found.") : (st.status === "pending" ? "This stage hasn't run yet." : "No canonical artifact found on disk for this stage.")));
   }
 
   return el("div", { class: "drawer" },
     el("div", { class: "drawer-head" },
-      el("h3", {}, `${(st.label || humanize(st.name))} — ${humanize(st.status)}`),
+      el("h3", {}, `${(st.label || humanize(st.name))} — ${s.is_trailer ? stageWords(st.status) : humanize(st.status)}`),
       st.gate_skipped ? el("span", { class: "gate-chip" }, "Approval skipped") : null,
       st.versions > 1 ? el("span", { class: "ver-chip" }, `v${st.versions}`) : null,
       st.timestamp ? el("span", { class: "meta" }, readableTime(st.timestamp)) : null,
@@ -588,13 +591,20 @@ function renderScriptCard(s) {
     stamp,
     el("div", { class: "sp-title" }, script.title || s.title),
     el("div", { class: "sp-meta" },
-      `script · ${fmtDuration(script.total_duration_seconds)} · ${(script.sections || []).length} sections`),
+      `${s.is_trailer ? "Lines and title cards" : "script"} · ${fmtDuration(script.total_duration_seconds)} · ${(script.sections || []).length} sections`),
     ...scriptSections(script, 4),
     el("span", { class: "sp-expand" }, icon("expand"), "Read the whole script"),
   );
   return card;
 }
 
+function stageWords(status) {
+  return ({awaiting_human: "Waiting for your approval", in_progress: "In progress", completed: "Approved", failed: "Needs attention", pending: "Not started"})[status] || "Needs attention";
+}
+function stageName(s, stage) { return s.is_trailer ? (stage.label || "Production step") : humanize(stage.name); }
+function artifactWords(s, name) {
+  return s.is_trailer ? ({canon_packet:"Story", proposal_packet:"Treatment", look_packet:"Looks", headshot_packet:"Cast portraits", visual_bible:"Visual references", script:"Lines and title cards", scene_plan:"Shot list", asset_manifest:"Footage and sound", edit_decisions:"Rough cut", render_report:"Export details", final_review:"Final viewing", decision_log:"Decisions"})[name] || "Production notes" : humanize(name);
+}
 function humanize(value) {
   return String(value || "artifact").replaceAll("_", " ");
 }
@@ -799,7 +809,7 @@ function genericArtifactSummary(artifact) {
   return [reviewFacts(facts), ...items].filter(Boolean);
 }
 
-function artifactReviewContent(name, artifact) {
+function artifactReviewContent(name, artifact, trailer = false) {
   if (name === "brief") {
     return [
       artifact.hook ? el("p", { class: "approval-lead" }, artifact.hook) : null,
@@ -869,12 +879,12 @@ function artifactReviewContent(name, artifact) {
     const types = [...new Set(assets.map((asset) => asset.type).filter(Boolean))];
     return [
       reviewFacts([
-        reviewFact("assets", assets.length),
+        reviewFact(trailer ? "takes and sounds" : "assets", assets.length),
         reviewFact("types", types.join(", ")),
         reviewFact("generation cost", artifact.total_cost_usd != null ? fmtMoney(artifact.total_cost_usd) : null),
       ]),
       titledItems(assets),
-      el("p", { class: "approval-guidance" }, "Inspect every generated take in the filmstrip below before approving compose."),
+      el("p", { class: "approval-guidance" }, trailer ? "Watch each take before reviewing the final assembly." : "Inspect every generated take in the filmstrip below before approving compose."),
     ].filter(Boolean);
   }
   if (name === "edit_decisions") {
@@ -940,17 +950,17 @@ function renderApprovalReview(s) {
     class: "approval-artifact",
     "data-artifact": name,
   },
-    el("div", { class: "approval-artifact-kicker" }, humanize(name)),
-    el("h2", {}, artifactReviewTitle(name, artifact, s)),
-    ...artifactReviewContent(name, artifact),
+    el("div", { class: "approval-artifact-kicker" }, artifactWords(s, name)),
+    el("h2", {}, s.is_trailer ? artifactWords(s, name) : artifactReviewTitle(name, artifact, s)),
+    ...artifactReviewContent(name, artifact, s.is_trailer),
   ));
 
   if (!artifacts.length) {
     artifacts.push(el("div", { class: "approval-missing", role: "alert" },
       el("b", {}, "Nothing reviewable was found. "),
       names.length
-        ? `The ${awaiting.name} checkpoint declares ${names.map(humanize).join(", ")}, but Front Lot could not load it.`
-        : `The ${awaiting.name} checkpoint does not declare an artifact.`,
+        ? s.is_trailer ? "Front Lot could not load the saved material for this step." : `The ${awaiting.name} checkpoint declares ${names.map(humanize).join(", ")}, but Front Lot could not load it.`
+        : s.is_trailer ? "No saved material is attached to this step." : `The ${awaiting.name} checkpoint does not declare an artifact.`,
     ));
   }
 
@@ -958,10 +968,10 @@ function renderApprovalReview(s) {
     el("div", { class: "approval-review-head" },
       el("div", {},
         el("div", { class: "approval-eyebrow" }, "REVIEW GATE"),
-        el("h2", {}, `${humanize(awaiting.name)} is ready for your review`),
+        el("h2", {}, `${stageName(s, awaiting)} is ready for your review`),
         el("p", {},
-          "Review the artifact here. ",
-          hasAuthoredGates(s) ? gatesCTA("GO TO GATES") : "Continue with your agent when the review is complete."),
+          s.is_trailer ? "Review the saved material here. Signed approval controls are not available yet. " : "Review the artifact here. ",
+          s.is_trailer ? "" : (hasAuthoredGates(s) ? gatesCTA("GO TO GATES") : "Continue with your agent when the review is complete.")),
       ),
       el("span", { class: "approval-status" }, "PENDING APPROVAL"),
     ),
@@ -970,9 +980,9 @@ function renderApprovalReview(s) {
     el("div", { class: "approval-artifacts" }, artifacts),
     el("div", { class: "approval-review-foot" },
       el("span", {}, nextStage
-        ? `Approval unlocks ${humanize(nextStage.name)}.`
+        ? s.is_trailer ? `Next comes ${stageName(s, nextStage)}. Signed approval controls are not available yet.` : `Approval unlocks ${humanize(nextStage.name)}.`
         : "This is the final approval gate."),
-      el("button", { type: "button", onclick: () => toggleDrawer(awaiting.name) }, "OPEN FULL ARTIFACT"),
+      el("button", { type: "button", onclick: () => toggleDrawer(awaiting.name) }, s.is_trailer ? "READ THE SAVED MATERIAL" : "OPEN FULL ARTIFACT"),
     ),
   );
 }
@@ -987,7 +997,7 @@ function openScriptModal() {
       el("div", { class: "script-card", style: "cursor:default" },
         el("div", { class: "sp-title" }, script.title || state.title),
         el("div", { class: "sp-meta" },
-          `script · ${fmtDuration(script.total_duration_seconds)} · ${(script.sections || []).length} sections`),
+          `${s.is_trailer ? "Lines and title cards" : "script"} · ${fmtDuration(script.total_duration_seconds)} · ${(script.sections || []).length} sections`),
         ...scriptSections(script, 0),
         el("div", { class: "sp-fade" }, "END"),
       )),
@@ -1317,7 +1327,10 @@ function renderFoundMedia(s) {
 }
 
 function renderNoState(s) {
+  if (s.is_trailer && s.trailer_damaged) return el("div", {class:"notice", role:"alert"}, s.trailer_damaged);
+  if (s.trailer_setup_pending) return el("div", {class:"notice"}, "Starting a trailer without commands is not available yet. This draft has not been signed; no production stage can begin.");
   if (s.has_pipeline_state) return null;
+  if (s.is_trailer) return el("div", {class:"notice"}, "This trailer has not started. Signed stage approval controls are not available yet.");
   return el("div", { class: "notice", style: "border-color:#2b2b33;background:var(--surface-2);color:var(--text-3)" },
     el("span", { style: "font-size:15px" }, "◌"),
     el("span", {},
@@ -1332,9 +1345,9 @@ function renderAwaitingNotice(s) {
   return el("div", { class: "notice" },
     
     el("span", {},
-      el("b", {}, `The ${awaiting.name} stage is waiting for your review. `),
-      "The agent is paused at this gate. ",
-      hasAuthoredGates(s) ? gatesCTA("OPEN GATES TO REVIEW AND SIGN") : "Continue the review with your agent."));
+      el("b", {}, s.is_trailer ? `${stageName(s, awaiting)} is waiting for your review. ` : `The ${awaiting.name} stage is waiting for your review. `),
+      s.is_trailer && awaiting.approval_error ? `${awaiting.approval_error} ` : "The agent is paused at this gate. ",
+      s.is_trailer ? "Signed stage approval controls are not available yet." : (hasAuthoredGates(s) ? gatesCTA("OPEN GATES TO REVIEW AND SIGN") : "Continue the review with your agent.")));
 }
 
 // ---------------------------------------------------------------------------
@@ -2625,7 +2638,7 @@ function renderLog(s, roster) {
     needsBox.append(el("section", { class: "log-section", "aria-labelledby": "needs-heading" },
       el("h2", { id: "needs-heading" }, "Needs you"),
       awaiting
-        ? el("p", { class: "log-quiet", style: "color:var(--ink)" }, `${titleCase(awaiting.name)} is ready for your review. It's open in the viewer.`)
+        ? el("p", { class: "log-quiet", style: "color:var(--ink)" }, `${s.is_trailer ? stageName(s, awaiting) : titleCase(awaiting.name)} is ready for your review. It's open in the viewer.`)
         : el("p", { class: "log-quiet" }, "Nothing is waiting on you.")));
   }
   const decisions = renderDecisions(s);
@@ -2850,6 +2863,7 @@ function renderBoard() {
   const shot = !selectedGateId && shots.find((sh) => shotKey(sh) === selectedEntity);
   tableEl.classList.toggle("no-bin", !withBin);
 
+  tableEl.classList.toggle("trailer-board", Boolean(s.is_trailer));
   app.innerHTML = "";
   app.append(renderBar(s));
   if (withBin) app.append(renderBin(s, roster));

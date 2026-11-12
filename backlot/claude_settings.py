@@ -166,12 +166,40 @@ def _film_write_denials(film: Path, work: Path) -> list[str]:
     return out
 
 
+def trailer_workspace(film_root: Path) -> bool:
+    from lib.trailer_contract import signed_trailer_pin
+    try:
+        if signed_trailer_pin(film_root) is not None:
+            return True
+    except Exception:
+        # A broken pin must never restore an unsandboxed route to the signing key.
+        return True
+    try:
+        marker = json.loads((film_root / "project.json").read_text())
+        return marker.get("production_kind") == "trailer" or marker.get("pipeline_type") == "authored-film@1.6"
+    except (OSError, ValueError):
+        return False
+
+
+def _trailer_write_denials(film: Path, work: Path) -> list[str]:
+    from lib.trailer_contract import STAGE_LABELS
+    names = {"project.json", "project.yaml", "approvals.jsonl", "generation-receipts.jsonl", "qc-receipts.jsonl",
+             "artifacts", "assets", "renders", "canon", "production", "history", ".gate-requests", "decision_log.json"}
+    names.update(f"checkpoint_{name}.json" for name in STAGE_LABELS)
+    paths = {str(film / name) for name in names}
+    if film.is_dir():
+        paths.update(str(p) for p in film.iterdir() if p.resolve() != work.resolve())
+    return sorted(paths)
+
+
 def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ: Mapping[str, str]) -> dict:
     repo, film, meta = repo_root.resolve(), film_root.resolve(), meta_root.resolve()
     work = film / "frontlot-work"
     secrets = secret_paths(repo, environ)
     package = writeros_package(film)
     story = story_drive_folder(film)
+    trailer = trailer_workspace(film)
+    signing_root = Path(environ.get("OPENMONTAGE_GATES_DIR") or "~/.openmontage/gates").expanduser().resolve()
     return {
         "sandbox": {
             "enabled": True,
@@ -179,12 +207,13 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
             "autoAllowBashIfSandboxed": True,
             # Only Blender, and only when Claude asks for it (Bash's dangerouslyDisableSandbox): the allow rule
             # below covers blender alone, so any other unsandboxed command asks Ben.
-            "allowUnsandboxedCommands": True,
+            "allowUnsandboxedCommands": not trailer,
             "excludedCommands": [],
             "filesystem": {
-                "denyRead": [*HOME_SECRET_DIRS, *HOME_SECRET_FILES, str(meta), *map(str, secrets)],
+                "denyRead": [*HOME_SECRET_DIRS, *HOME_SECRET_FILES, str(meta), *map(str, secrets)] + ([str(signing_root)] if trailer else []),
                 # protects: Bash writing files that later launches or resumes would trust
-                "denyWrite": [str(work / n.removesuffix("/**")) for n in WORK_PROTECTED],
+                "denyWrite": [str(work / n.removesuffix("/**")) for n in WORK_PROTECTED]
+                             + (_trailer_write_denials(film, work) + [str(meta), str(signing_root)] if trailer else []),
             },
             "network": {
                 "allowedDomains": ["*", WRITEROS_HOST],
@@ -195,7 +224,7 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
         "permissions": {
             "defaultMode": "default",             # anything not allowed or denied below asks Ben
             "allow": [TOOL_NAME, CHROME_TOOLS, f"Read(/{film}/**)", f"Read(/{repo}/**)", f"Edit(/{work}/**)"]
-                     + [f"Bash({c}:*)" for c in UNSANDBOXED_COMMANDS]
+                     + ([] if trailer else [f"Bash({c}:*)" for c in UNSANDBOXED_COMMANDS])
                      + [f"mcp__claude_ai_{c}" for c in CONNECTORS]
                      + ([f"Read(/{package}/**)"] if package else [])
                      + ([f"Read(/{story}/**)"] if story else []),
@@ -246,8 +275,8 @@ def _canon_text(story_drive: Path | None) -> str:
 
 
 def build_brief(*, film_title: str, film_slug: str, writeros_package: Path | None = None,
-                story_drive: Path | None = None) -> str:
-    return f"""You are working inside Front Lot, Ben's app for making a film's visuals.
+                story_drive: Path | None = None, trailer: bool = False) -> str:
+    text = f"""You are working inside Front Lot, Ben's app for making a film's visuals.
 Film: "{film_title}" (project id: {film_slug}). Your working folder is this film's Front Lot work area.
 
 How you work here:
@@ -266,13 +295,18 @@ How you work here:
 - Only when Ben asks to change the approved trailer cast (for example to take out a place Story-drive scoped out, or put a newly locked one in), call frontlot_run {{"op": "cast", "params": {{"remove": ["<id>"], "add": ["<id>"]}}}} with the ids he means; either list may be left out. It only files the request; nothing changes until Ben signs it. Then tell him in a sentence what you asked for and that he can sign it under Needs you. Never file one on your own initiative, not even to clear a canon mismatch.
 - Location pictures: once a place's look is locked, it gets reference pictures from Ben's own images, never ones you choose or make. When Ben says which pictures he means, copy each file into your work area (cp in Bash; you can read his Story-drive folder) and call location_add_image with the copy's path in your work area, the place's id, origin_tool (the tool that made it, for example midjourney; ask Ben if you don't know) and, for any picture after the first, a short lowercase label such as aftermath. The first picture is the establishing picture; a place holds at most three more. Adding asks Ben for nothing. As soon as you have added the pictures he named, call location_seal in the same turn (unless he said he has more): Ben then signs once, for the whole set, under Needs you. To change the set before he signs, use location_remove_image or add another picture. When Ben says he signed (or status says signed but not finished), call location_finish (free) and tell him it's done. If he declined, location_finish records his note and the pictures stay added, so he can change the set and seal again. Never crop, edit or retouch his images.
 - If frontlot_run says it didn't confirm receipt, check it with frontlot_run {{"check": "<key>"}}. Never resubmit. If Front Lot says it can't tell whether something ran, tell Ben plainly and do not retry.
-- For a production signed to the new trailer definition, keep its chosen length at or below two minutes. Use the saved trailer contract through script, shot plan, rough cut and export. Remotion and FFmpeg are the fixed local composition choices for this workflow; preserve older productions' renderer decisions. Every stage needs Ben's approval, including the saved rough-cut revision and the exact final exported file. A technical pass is not his approval. Never offer a command to type or claim an unavailable editing, audio or delivery control works. If the operation is not listed above, explain the gap and leave that step unfinished. Never automatically migrate an existing production.
+- For a production signed to the new trailer definition, keep its chosen length at or below two minutes. Use the saved trailer contract through script, shot plan, rough cut and export. Remotion and FFmpeg are the fixed local composition choices for this workflow; preserve older productions' renderer decisions. Every stage needs Ben's signed approval through the existing signing machinery, including the saved rough-cut revision and the actual exported bytes. A bare flag is never approval. Whole-stage signing controls are not available yet; leave those stages unfinished. A technical pass is not his approval. Never offer a command to type or claim an unavailable editing, audio or delivery control works. If the operation is not listed above, explain the gap and leave that step unfinished. Never automatically migrate an existing production.
 - Signing approvals is Ben's alone. Never attempt it, never ask for a way around it. Point him to "Needs you".
 - Choosing a video take is Ben's alone too: he watches each take on its card under Needs you and approves or declines it there. When a take is made or attached, tell him it's waiting for him under Needs you. Never choose, approve or decline a take for him.
 - Speak plainly: no hashes, ids, file paths, or command lines unless Ben asks.
 
 When the session opens or picks back up, give a short check-in: what is new (looks promoted in WriterOS, approvals waiting, runs that finished), what is ready to make next, in a few lines. Do not call frontlot_run during the check-in, not even a free step or a dry run: report only. Then wait for Ben to ask.
 """
+    if trailer:
+        text = "\n".join(line for line in text.split("\n") if not line.startswith(("- Gray-box previz", "- Higgsfield:")))
+        text += "\nFor this trailer, only the approved local Remotion and FFmpeg composition route applies. No unsandboxed shell command is allowed. Use the listed Front Lot operations; missing controls remain unavailable.\n"
+    return text
+
 
 
 def allowed_env(base: Mapping[str, str], *, login_path: str, live_socket: str, live_token: str) -> dict[str, str]:

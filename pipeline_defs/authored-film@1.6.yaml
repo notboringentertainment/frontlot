@@ -20,7 +20,7 @@
 name: authored-film
 version: "1.6"
 description: >
-  Trailer production, up to 120 seconds, with explicit rough-cut and exact-file final approval.
+  Trailer production, up to 120 seconds, requiring signed approval for every stage. Whole-stage signing controls are not available yet; a bare flag cannot complete a stage.
   Produce a film from the writer's finished development assets (synopsis,
   treatment, outline, story bible, wayfinder decisions, canon atoms). Canon
   ingest replaces web research; proposal offers visual treatments of the locked

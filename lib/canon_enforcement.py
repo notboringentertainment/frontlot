@@ -54,10 +54,7 @@ CHARACTER_APPROVAL_KINDS = ("sheet", "hero")
 LOOK_LOCK_MANIFEST = ("authored-film", "1.2")
 # D19: 1.3 keeps the whole 1.2 look-lock contract and adds sheet QC.
 # D20: 1.4 keeps all of 1.3 and adds hero QC (judged headshot candidates).
-LOOK_LOCK_MANIFESTS = frozenset({("authored-film", "1.2"), ("authored-film", "1.3"), ("authored-film", "1.4"), ("authored-film", "1.5")})
 QC_MANIFEST = ("authored-film", "1.3")
-QC_MANIFESTS = frozenset({("authored-film", "1.3"), ("authored-film", "1.4"), ("authored-film", "1.5")})
-HERO_QC_MANIFESTS = frozenset({("authored-film", "1.4"), ("authored-film", "1.5")})
 HERO_QC_MANIFEST = ("authored-film", "1.4")  # kept for callers that name 1.4 exactly
 # Batch hero overrides (field-bound qc_override 1.1, headshot_packet 1.2,
 # up-to-cap presentation) exist only from 1.5; a 1.4 pin keeps 1.0-only
@@ -1500,25 +1497,36 @@ def _check_assets_v11(
 # authored-film 1.2: look_lock, headshots, look_ref / headshot_ref / lineage
 # ---------------------------------------------------------------------------
 
+def _inherits_protection(pin: Any, introduced: str) -> bool:
+    """Later authored-film versions inherit protections, including tool admission."""
+    if getattr(pin, "name", None) != "authored-film":
+        return False
+    version = str(getattr(pin, "version", ""))
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", version):
+        # Only explicitly older versions may relax an authored-film protection.
+        return True
+    return tuple(map(int, version.split("."))) >= tuple(map(int, introduced.split(".")))
+
+
 def _is_look_lock_manifest(pin: Any) -> bool:
-    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) in LOOK_LOCK_MANIFESTS
+    return _inherits_protection(pin, "1.2")
 
 
 def _is_qc_manifest(pin: Any) -> bool:
-    """Sheet QC applies (1.3 and 1.4)."""
-    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) in QC_MANIFESTS
+    """Sheet QC applies from 1.3 onward."""
+    return _inherits_protection(pin, "1.3")
 
 
 def _is_hero_qc_manifest(pin: Any) -> bool:
     """Hero QC applies: every headshot candidate carries a hero verdict (1.4+)."""
-    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) in HERO_QC_MANIFESTS
+    return _inherits_protection(pin, "1.4")
 
 
 def _is_hero_batch_manifest(pin: Any) -> bool:
-    """Field-bound batch overrides and the up-to-cap packet apply (1.5 only).
+    """Field-bound batch overrides and the up-to-cap packet apply (1.5 and later).
     Every batch/packet-1.2 branch keys off THIS predicate; under 1.4 the
     behavior stays 1.0-override, four-candidate — tested behaviorally."""
-    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) == HERO_BATCH_MANIFEST
+    return _inherits_protection(pin, "1.5")
 
 
 def _cast_keys(proposal: dict[str, Any]) -> list[tuple[str, str]]:

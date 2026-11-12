@@ -1763,18 +1763,40 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
                 break
     pipeline_meta = _load_pipeline_meta(pipeline_type)
 
-    # Resolve the trailer rail through the signed pin, never marker version caches.
+    # A signed trailer stays a trailer even when its marker is damaged.
     trailer = None
+    trailer_damaged = None
+    trailer_pin = None
+    trailer_setup_pending = False
+    from lib.trailer_contract import signed_trailer_pin, require_contract, project_checkpoint, DAMAGED
     try:
-        from lib.pipeline_pin import pinned_pipeline
-        pin = pinned_pipeline(project_dir, pipeline_type) if pipeline_type and pipeline_type.startswith("authored-film") else None
-        if pin and pin.version == "1.6":
-            pipeline_meta = _load_pipeline_meta(pin.ref)
-            from lib.trailer_contract import make_contract
-            trailer = make_contract((marker.get("trailer") or {}).get("target_duration_seconds"))
+        trailer_pin = signed_trailer_pin(project_dir)
+        if trailer_pin is not None:
+            pipeline_meta = _load_pipeline_meta(trailer_pin.ref)
+            try:
+                trailer = require_contract(project_dir)
+            except ValueError:
+                trailer_damaged = DAMAGED
+            checkpoints = {name: project_checkpoint(project_dir, trailer_pin, dict(cp, stage=name) if cp.get("stage") == name else dict(cp, pipeline=None)) for name, cp in checkpoints.items()}
     except Exception:
-        # A pending or invalid pin never advertises trailer readiness.
-        pass
+        # A marker cannot grant trailer status, but a known trailer with broken signatures is damaged.
+        if marker.get("production_kind") == "trailer" or marker.get("pipeline_type") == "authored-film@1.6":
+            trailer_damaged = DAMAGED
+            pipeline_meta = _load_pipeline_meta("authored-film@1.6")
+
+    if trailer_pin is None and not trailer_damaged and marker.get("production_kind") == "trailer" and marker.get("pipeline_type") == "authored-film@1.6":
+        from lib.pipeline_pin import pinned_pipeline
+        try:
+            # Display a draft, not a production pin. An older signed production cannot enter this state.
+            existing = pinned_pipeline(project_dir, "authored-film")
+            if existing.receipt_id is None:
+                trailer = require_contract(project_dir)
+                trailer_setup_pending = True
+                pipeline_meta = _load_pipeline_meta("authored-film@1.6")
+                if checkpoints:
+                    trailer_damaged = DAMAGED
+        except Exception:
+            trailer_damaged = DAMAGED
 
     artifacts = _collect_artifacts(project_dir, checkpoints)
     events = read_events(project_dir, limit=250)
@@ -1782,11 +1804,18 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
     media = _scan_media(project_dir)
 
     stages = _build_stage_rail(pipeline_meta, checkpoints, history)
-    if trailer:
+    if trailer_pin is not None or trailer_damaged or trailer_setup_pending:
         from lib.trailer_contract import STAGE_LABELS, STAGE_LIMITS
         for entry in stages:
             entry["label"] = STAGE_LABELS.get(entry["name"], entry["name"])
-            entry["availability_message"] = STAGE_LIMITS.get(entry["name"], "")
+            entry["availability_message"] = "" if entry["status"] == "completed" else STAGE_LIMITS.get(entry["name"], "Signed stage approval controls are not available yet.")
+            if trailer_setup_pending:
+                entry["availability_message"] = "Starting a trailer without commands is not available yet. This draft has not been signed; no production stage can begin."
+            if trailer_damaged:
+                entry["status"] = "failed"
+                entry["human_approved"] = False
+                entry["availability_message"] = trailer_damaged
+            entry["approval_error"] = (checkpoints.get(entry["name"]) or {}).get("approval_error")
 
     # Cost: latest checkpoint snapshot wins; fall back to manifest total.
     cost = None
@@ -1818,6 +1847,8 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         "title": marker.get("title") or meta_json.get("name") or project_id.replace("-", " ").title(),
         "pipeline": pipeline_meta,
         **({"trailer": trailer} if trailer else {}),
+        **({"is_trailer": True, "trailer_damaged": trailer_damaged} if trailer_pin is not None or trailer_damaged or trailer_setup_pending else {}),
+        **({"trailer_setup_pending": True} if trailer_setup_pending else {}),
         "style_playbook": marker.get("style_playbook"),
         "created_at": marker.get("created_at"),
         "has_marker": bool(marker),
@@ -1845,6 +1876,9 @@ def summarize_project(project_dir: Path) -> dict[str, Any]:
     return {
         "project_id": state["project_id"],
         "title": state["title"],
+        **({"trailer_setup_pending": True} if state.get("trailer_setup_pending") else {}),
+        **({"is_trailer": True} if state.get("is_trailer") else {}),
+        **({"active_stage_label": active.get("label")} if active and state.get("is_trailer") else {}),
         "pipeline_type": state["pipeline"]["pipeline_type"],
         "has_pipeline_state": state["has_pipeline_state"],
         "poster": state["poster"],
@@ -1853,7 +1887,7 @@ def summarize_project(project_dir: Path) -> dict[str, Any]:
         "active_stage": active["name"] if active else None,
         "awaiting_human": bool(active and active["status"] == "awaiting_human"),
         "stage_states": [
-            {"name": s["name"], "status": s["status"]}
+            {"name": s["name"], "status": s["status"], **({"label": s.get("label")} if state.get("is_trailer") else {})}
             for s in state["stages"] if not s.get("undeclared")
         ],
         "completed_count": len(done),
