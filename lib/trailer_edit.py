@@ -248,11 +248,12 @@ def _story_check(root, paper):
     cp = read_checkpoint(root.parent, root.name, 'canon_ingest')
     canon = (cp or {}).get('artifacts', {}).get('canon_packet')
     if not cp or cp.get('status') != 'completed' or not isinstance(canon, dict):
-        return {'status': 'unchecked', 'errors': [], 'warnings': [],
+        warnings = check_trailer_text(paper, canon)[1] if isinstance(canon, dict) else []
+        return {'status': 'unchecked', 'errors': [], 'warnings': warnings,
                 'message': 'This draft is not yet checked against the approved story. Later stages cannot use it.'}
     errors, warnings = check_trailer_text(paper, canon)
     return {'status': 'failed' if errors else 'checked', 'errors': errors, 'warnings': warnings,
-            'message': 'Fix the story checks below before later stages can use this draft.' if errors else 'Compared with the protected lines for exact and near-exact wording and with recorded spoiler limits. This cannot recognise every rewording or reveal; review the protected wording beside your draft.'}
+            'message': 'Fix the story checks below before later stages can use this draft.' if errors else 'Compared with the protected lines for exact and near-exact wording and with recorded spoiler limits. Short phrases matching part of a protected line are shown as warnings, not clearance. This cannot recognise every rewording or reveal; review the protected wording beside your draft.'}
 
 
 def _validate_paper(root, paper):
