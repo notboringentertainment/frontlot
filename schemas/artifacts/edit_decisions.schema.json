@@ -7,6 +7,13 @@
   "required": ["version", "cuts", "render_runtime"],
   "allOf": [{"if": {"required": ["trailer"]}, "then": {"required": ["edit_revision_sha256"], "properties": {"render_runtime": {"const": "remotion"}}}}],
   "properties": {
+    "revision_history": {"type": "array", "items": {"type": "object"}},
+    "revision_times": {"type": "object", "additionalProperties": {"type": "string"}},
+    "saved_at": {"type": "string"},
+    "revision_number": {"type": "integer", "minimum": 1},
+    "restored_from": {"type": "string"},
+    "story_check": {"type": "object"},
+    "paper_cut_pending": {"type": "boolean"},
     "paper_cut": {"type": "object"},
     "timeline": {"type": "object"},
     "unfinished": {"type": "boolean"},

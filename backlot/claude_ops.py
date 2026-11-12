@@ -505,19 +505,21 @@ def _trailer_paper(ctx, p):
     except ValueError:
         raise OpError("The paper cut must be a saved document.") from None
     if not isinstance(value,dict): raise OpError("The paper cut must contain the editing panels.")
-    from lib.trailer_edit import read_revision
-    previous=read_revision(ctx.film)
-    revision=(previous or {}).get("edit_revision_sha256")
+    if 'expected_revision' not in p:
+        raise OpError("Supply the saved version you started from, or null for the first save.")
+    revision = p['expected_revision']
+    if revision is not None and (not isinstance(revision, str) or len(revision) != 64 or any(c not in '0123456789abcdef' for c in revision)):
+        raise OpError("The saved version you started from is invalid.")
     argv=[PY,"-m","scripts.trailer_run","--project",ctx.slug,"--paper",str(path)]
     if revision: argv += ["--expected-revision", revision]
     target=ctx.film/"artifacts"/"edit_decisions.json"
     inputs={path:digest,target:input_digest(target)}
-    inputs.update({f:input_digest(f) for f in [ctx.film/"project.json",*ctx.film.glob("checkpoint_*.json")]})
+    inputs.update({f:input_digest(f) for f in [ctx.film/"project.json",*[ctx.film/f"checkpoint_{stage}.json" for stage in ("canon_ingest", "proposal", "script")],*ctx.film.glob("checkpoint_*.json")]})
     return Prepared(ctx.op,False,argv,inputs,{"paper":path},summary="Save a new paper-cut version; no spending or approval")
 
 
 OPERATIONS: dict[str, Operation] = {
-    "trailer_paper_save": Operation(False, frozenset({"paper"}), _trailer_paper),
+    "trailer_paper_save": Operation(False, frozenset({"paper", "expected_revision"}), _trailer_paper),
     "look": Operation(False, frozenset({"entity", "kind", "source", "supersede", "dry_run"}), _look),
     "appeal_apply": Operation(False, frozenset({"ticket"}), _appeal_apply),
     "canon_check": Operation(False, frozenset(), _canon_check),

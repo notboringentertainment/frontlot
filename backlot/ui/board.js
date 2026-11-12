@@ -1330,7 +1330,7 @@ function renderFoundMedia(s) {
 
 function renderNoState(s) {
   if (s.is_trailer && s.trailer_damaged) return el("div", {class:"notice", role:"alert"}, s.trailer_damaged);
-  if (s.trailer_setup_pending) return el("div", {class:"notice"}, "Review the trailer name, length and ceiling under Needs you, then sign creation. No stage or spending is approved.");
+  if (s.trailer_setup_pending) return el("div", {class:"notice"}, s.trailer_creation?.message || "This trailer is an unsigned draft.");
   if (s.has_pipeline_state) return null;
   if (s.is_trailer) return el("div", {class:"notice"}, "This trailer has not started. Signed stage approval controls are not available yet.");
   return el("div", { class: "notice", style: "border-color:#2b2b33;background:var(--surface-2);color:var(--text-3)" },
@@ -2465,7 +2465,8 @@ function renderGateViewer(s) {
     (roster.find((e) => e.id === id) || {}).name || titleCase(id));
   const firstSentence = (named.match(/^.*?[.!?](?=\s|$)/) || [named])[0];
 
-  const facts = [
+  const trailerCreation = Boolean(s.trailer_setup_pending && header.kind === "pipeline_migration");
+  const facts = trailerCreation ? [["What you are signing", "Trailer creation"], ["Stage approval", "None"], ["Spending permission", "None"]] : [
     ["what", gateWords(header.kind)], ["kind", header.kind], ["stage", header.stage], ["scope", header.scope],
     ["entity", header.entity_id], ["snapshot", fmtGateTime(gateDetail.snapshot_at)],
   ];
@@ -2476,14 +2477,14 @@ function renderGateViewer(s) {
     header.summary ? textEvidence("the full request", header.summary) : null,
     el("dl", { class: "gate-meta-strip gate-detail-facts" }, facts.map(([label, value]) =>
       el("div", { class: "gate-meta-chip" }, el("dt", {}, label), el("dd", {}, value || "—")))),
-    gateDetail.packet
+    trailerCreation ? el("p", {}, "Signing creates this trailer only. No stage or spending is approved. Separate signed spending settings are still required before any paid work.") : gateDetail.packet
       ? renderPacketEvidence(s, gateDetail.packet, { visuals: false })
       : el("div", {},
         textEvidence("request", gateDetail.request || {}),
         gateDetail.approval_receipt_id ? textEvidence("approval receipt id", gateDetail.approval_receipt_id) : null,
         gateDetail.declined_note ? textEvidence("declined note", gateDetail.declined_note) : null,
         gateDetail.unverified_ledger_row ? textEvidence(gateDetail.ledger_label || "unverified ledger row", gateDetail.unverified_ledger_row) : null),
-    command ? el("div", { class: "gate-command" },
+    command && !trailerCreation ? el("div", { class: "gate-command" },
       el("p", { class: "source" }, "Prefer your own Terminal? This command does the same signing."),
       el("code", {}, command),
       el("button", { type: "button", onclick: () => copyCommand(command) }, "Copy command"),
@@ -2872,7 +2873,7 @@ function renderBoard() {
 
   const viewer = el("main", { class: "viewer", id: "viewer", tabindex: "-1", "aria-label": "Viewer" });
   const drawer = renderDrawer(s);
-  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderPaperCut(s));
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(renderPaperCut(s));
 
   if (shot) {
     const inner = renderShotViewer(s, shot);
@@ -2899,6 +2900,7 @@ function renderBoard() {
     }
     viewer.append(inner);
   }
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId && shot) viewer.append(renderPaperCut(s));
   app.append(viewer);
 
   const { needs, history } = renderLog(s, roster);

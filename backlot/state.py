@@ -1856,6 +1856,11 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         except Exception:
             trailer_damaged = DAMAGED
 
+    trailer_creation = None
+    if trailer_setup_pending:
+        from lib.trailer_edit import creation_state
+        trailer_creation = creation_state(project_dir)
+
     artifacts = _collect_artifacts(project_dir, checkpoints)
     events = read_events(project_dir, limit=250)
     storyboard = _build_storyboard(project_dir, artifacts, events)
@@ -1868,7 +1873,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
             entry["label"] = STAGE_LABELS.get(entry["name"], entry["name"])
             entry["availability_message"] = "" if entry["status"] == "completed" else STAGE_LIMITS.get(entry["name"], "Signed stage approval controls are not available yet.")
             if trailer_setup_pending:
-                entry["availability_message"] = ("Review the trailer name, length and ceiling under Needs you, then sign creation. No stage or spending is approved." if marker.get("trailer_creation_pending") else "Starting a trailer without commands is not available yet. This draft has not been signed; no production stage can begin.")
+                entry["availability_message"] = trailer_creation['message']
             if trailer_damaged:
                 entry["status"] = "failed"
                 entry["human_approved"] = False
@@ -1906,7 +1911,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         "pipeline": pipeline_meta,
         **({"trailer": trailer} if trailer else {}),
         **({"is_trailer": True, "trailer_damaged": trailer_damaged} if trailer_pin is not None or trailer_damaged or trailer_setup_pending else {}),
-        **({"trailer_setup_pending": True} if trailer_setup_pending else {}),
+        **({"trailer_setup_pending": True, "trailer_creation": trailer_creation} if trailer_setup_pending else {}),
         "style_playbook": marker.get("style_playbook"),
         "created_at": marker.get("created_at"),
         "has_marker": bool(marker),

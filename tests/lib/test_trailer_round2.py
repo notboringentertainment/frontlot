@@ -257,7 +257,8 @@ def test_unsigned_new_trailer_is_a_draft_not_a_ready_production(tmp_path):
     assert state['trailer_setup_pending']
     assert state['trailer']['target_duration_seconds']==28
     assert all(s.get('label') and s.get('availability_message') for s in state['stages'])
-    assert 'Starting a trailer without commands is not available yet' in state['stages'][0]['availability_message']
+    assert state['trailer_creation']['needs_repair']
+    assert 'creation signing request is missing' in state['stages'][0]['availability_message']
     assert summarize_project(p)['trailer_setup_pending']
     for ref in ['authored-film','cinematic']:
         with pytest.raises(checkpoint.CheckpointValidationError):

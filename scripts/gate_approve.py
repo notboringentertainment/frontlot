@@ -574,7 +574,10 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
     digest = manifest_digest(f"{pipeline_name}@{version}")
     creation = "trailer_creation" in hint
     from lib.trailer_edit import creation_facts
-    facts = creation_facts(root) if creation else None
+    try:
+        facts = creation_facts(root) if creation else None
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        raise GateHandlerError("The trailer name, length or spending ceiling is missing or invalid. Repair those settings before signing.") from exc
     if creation and (version != "1.6" or pipeline_name != "authored-film" or facts != hint["trailer_creation"]):
         raise GateHandlerError("The trailer settings changed. Start signing again after reviewing them.")
     bound = checkpoint_digests_on_disk(root)
@@ -601,8 +604,11 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
             require_migration_coverage(root, pipeline_name, version, trailer_creation=creation)
         except PipelinePinError as exc:
             raise GateHandlerError(str(exc)) from exc
-        if creation and creation_facts(root) != facts:
-            raise GateHandlerError("The trailer settings changed while signing.")
+        try:
+            if creation and creation_facts(root) != facts:
+                raise GateHandlerError("The trailer settings changed while signing.")
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            raise GateHandlerError("The trailer settings changed or became invalid while signing.") from exc
         if checkpoint_digests_on_disk(root) != bound:
             raise GateHandlerError("checkpoint files changed between request and signing; re-run the migration request")
 
@@ -1695,6 +1701,12 @@ def canonical_text(obj: Any) -> str:
 
 def show_request(req: dict, root: Path, out=None, built: Optional[Constructed] = None) -> None:
     out = out or sys.stdout
+    if 'trailer_creation' in (req.get('approval_record') or {}):
+        print("\nReview trailer creation", file=out)
+        print(req['summary'], file=out)
+        if built is not None:
+            show_constructed(built, out)
+        return
     print(f"\n=== Gate request {req['request_id']} ===", file=out)
     print(f"stage: {req['stage']}   scope: {req['scope']}   kind: {req['kind']}", file=out)
     print(f"\n{req['summary']}\n", file=out)
@@ -1709,6 +1721,13 @@ def show_constructed(built: Constructed, out=None) -> None:
     """Print exactly what will be signed: the canonical record JSON, its
     sha256, the envelope, the key and the evidence it was built from."""
     out = out or sys.stdout
+    if 'trailer_creation' in built.record:
+        facts = built.record['trailer_creation']
+        print(f"\nTrailer title: {facts['title']}", file=out)
+        print(f"Target length: {facts['trailer']['target_duration_seconds']:g} seconds", file=out)
+        print(f"Total spending ceiling: ${facts['spending_ceiling_usd']:.2f}", file=out)
+        print("Signing starts this trailer. It approves no stage and permits no spending. Separate signed spending settings are still required before paid work.", file=out)
+        return
     print("\n--- record to be signed (constructed by the gate from authoritative inputs) ---", file=out)
     print(canonical_text(built.record), file=out)
     print(f"record sha256: {built.digest}", file=out)

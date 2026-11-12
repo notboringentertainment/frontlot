@@ -116,3 +116,18 @@ def test_probe():
     assert result.returncode != 0, result.stdout + result.stderr
     assert 'A test tried to start the board with real app folders' in result.stdout + result.stderr
     assert not marker.exists()
+
+
+def test_generic_python_child_with_stripped_home_is_refused(tmp_path):
+    marker = tmp_path / 'child-ran'
+    result = run_probe(tmp_path, f'''import os, subprocess, sys
+
+def test_probe():
+    env=dict(os.environ)
+    env.pop('HOME', None)
+    env.pop('OPENMONTAGE_GATES_DIR', None)
+    subprocess.run([sys.executable, '-c', "from pathlib import Path; Path({str(marker)!r}).write_text('ran')"], env=env, check=True)
+''')
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert 'A test tried to start a Python child with real app folders' in result.stdout + result.stderr
+    assert not marker.exists()

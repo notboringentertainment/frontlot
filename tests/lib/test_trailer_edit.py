@@ -61,7 +61,8 @@ def test_interruption_and_concurrent_saves(tmp_path,monkeypatch):
     real=edit.os.replace
     def fail(*args): raise OSError('interrupted')
     monkeypatch.setattr(edit.os,'replace',fail)
-    with pytest.raises(OSError): save_revision(root,paper(),a['edit_revision_sha256'])
+    interrupted=paper();interrupted['beats'][0]['text']='A different hook'
+    with pytest.raises(OSError): save_revision(root,interrupted,a['edit_revision_sha256'])
     assert read_revision(root)==a
     monkeypatch.setattr(edit.os,'replace',real)
     p=paper();p['shots'][0]['purpose']='Changed'
@@ -82,12 +83,12 @@ def test_placeholder_never_completes(tmp_path):
         validate_stage_contract(require_contract(root),'edit',{'edit_decisions':a})
 
 
-def signed_story(root):
+def signed_story(root, canon=None):
     from lib.pipeline_pin import pinned_pipeline
     from lib.trailer_contract import approval_record
     from lib.canonical_json import record_sha256
     from lib import gates,receipts
-    canon={'version':'1.0','project_title':'Night Window','format':'trailer','source_documents':[{'path':'invented.md','doc_type':'outline','authority':'writing_document','sha256':'a'*64}], 'tone':{'tone_words':['tense']},'open_questions':[], 'locks':[{'id':'ending','decision':'The keeper is the thief','spoiler':True,'source_path':'invented.md','source_type':'writer_statement'}],
+    canon=canon or {'version':'1.0','project_title':'Night Window','format':'trailer','source_documents':[{'path':'invented.md','doc_type':'outline','authority':'writing_document','sha256':'a'*64}], 'tone':{'tone_words':['tense']},'open_questions':[], 'locks':[{'id':'ending','decision':'The keeper is the thief','spoiler':True,'source_path':'invented.md','source_type':'writer_statement'}],
            'structure':{'beats':[{'id':'opening','summary':'A light in the tower.'}]}, 'protected_lines':[{'line':'Keep the light on.','source_path':'invented.md'}]}
     artifacts={'canon_packet':canon}
     pin=pinned_pipeline(root,'authored-film')

@@ -60,11 +60,21 @@ def _refuse(message):
 def _audit_test_locations(event, args):
     if event == 'subprocess.Popen':
         _executable, argv, _cwd, environment = args
+        # An invalid environment cannot spawn a process. Preserve the existing
+        # application's TypeError handling for this negative launch test.
+        if environment is not None and any(not isinstance(v, (str, bytes, os.PathLike)) for v in environment.values()):
+            return
         words = argv if isinstance(argv, (list, tuple)) else [argv]
         command = ' '.join(str(word) for word in words)
         board_child = ('-m backlot' in command or any(name in command for name in
                        ('backlot/__main__.py', 'gate_sign.py', 'gate_approve.py', 'claude_session.py',
                         'scripts.gate_sign', 'scripts.gate_approve', 'scripts.claude_session')))
+        python_child = 'python' in Path(str(_executable)).name.lower()
+        # Pytest children install this same guard before collection; probes
+        # deliberately start them with unsafe inputs to prove startup refusal.
+        pytest_child = '-m pytest' in command
+        if python_child and not board_child and not pytest_child and _unsafe_locations(os.environ if environment is None else environment):
+            _refuse('A test tried to start a Python child with real app folders. Use a temporary home and signing folder.')
         if board_child and _unsafe_locations(os.environ if environment is None else environment):
             _refuse('A test tried to start the board with real app folders. Use a temporary home and signing folder.')
         return

@@ -129,7 +129,7 @@ def validate_stage_contract(marker_contract, stage, artifacts, *, partial=False)
 
 
 def edit_digest(edit):
-    return record_sha256({k:v for k,v in edit.items() if k != 'edit_revision_sha256'})
+    return record_sha256({k:v for k,v in edit.items() if k not in {'edit_revision_sha256', 'revision_history', 'revision_times'}})
 
 
 def _local_file(root, value):
@@ -171,8 +171,8 @@ def approval_record(root, pin, stage, artifacts):
         if 'paper_cut' in paper and stage in {'script','scene_plan','assets','edit','compose'}:
             from lib.trailer_edit import paper_state
             state = paper_state(root)
-            if state.get('needs_review'):
-                raise ValueError('The paper cut needs a fresh look because its story or timing changed.')
+            if state.get('needs_review') or not state.get('usable_downstream'):
+                raise ValueError('The paper cut needs a fresh look and must be checked against the approved story before this stage can use it.')
             record['paper_cut_revision'] = paper['edit_revision_sha256']
     # A changed earlier checkpoint invalidates this approval as well.
     from lib.pipeline_loader import get_stage_order, load_pipeline
