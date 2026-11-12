@@ -28,7 +28,7 @@ class TTSSelector(BaseTool):
     ]
     supports = {
         "user_preference_routing": True,
-        "offline_fallback": True,
+        "offline_fallback": False,
         "multilingual": True,
     }
     best_for = [
@@ -132,6 +132,10 @@ class TTSSelector(BaseTool):
         },
     }
 
+    input_schema["required"] = []
+    input_schema["anyOf"] = [{"required":["project_dir","audio_request_id"]}, {"required":["text","preferred_provider"]}]
+    input_schema["properties"].update({"project_dir":{"type":"string"},"audio_request_id":{"type":"string"}})
+
     def _providers(self) -> list[BaseTool]:
         """Auto-discover TTS providers from the registry."""
         from tools.tool_registry import registry
@@ -141,8 +145,8 @@ class TTSSelector(BaseTool):
 
     @property
     def fallback_tools(self) -> list[str]:
-        """Dynamically built from discovered providers."""
-        return [t.name for t in self._providers()]
+        """A selected account is never replaced by an automatic fallback."""
+        return []
 
     @property
     def provider_matrix(self) -> dict[str, dict[str, str]]:

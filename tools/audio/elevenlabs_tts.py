@@ -115,6 +115,18 @@ class ElevenLabsTTS(BaseTool):
         },
     }
 
+    # The protected route consumes a saved request, not mutable generation
+    # fields. Retain deprecated field descriptions for older readers only.
+    input_schema["required"] = ["project_dir", "audio_request_id"]
+    input_schema["properties"].update({
+        "project_dir": {"type":"string", "description":"The registered production folder."},
+        "audio_request_id": {"type":"string", "description":"The saved request that needs Ben's individual signature."},
+    })
+    for _field, _spec in input_schema["properties"].items():
+        if _field not in {"project_dir", "audio_request_id", "output_path", "force_instrumental"}:
+            _spec["deprecated"] = True
+            _spec["description"] = "Legacy input; generation material now comes only from the approved saved request."
+
     resource_profile = ResourceProfile(
         cpu_cores=1, ram_mb=256, vram_mb=0, disk_mb=50, network_required=True
     )
