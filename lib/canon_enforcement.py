@@ -316,6 +316,14 @@ def _check_script(
             f"the writer, they never ride along silently."
         )
 
+    if script.get("trailer_paper_cut"):
+        for lock in canon.get("locks", []):
+            if not lock.get("spoiler"):
+                continue
+            for section in script.get("sections", []):
+                if lock.get("id") in _split_refs(section.get("source_ref", "")) or (lock.get("decision") and lock["decision"].casefold() in section.get("text", "").casefold()):
+                    _fail("This line or title card reveals protected story material. Keep it out of the trailer.")
+
     joined = "\n".join(
         str(section.get("text", "")) for section in script.get("sections", [])
     )

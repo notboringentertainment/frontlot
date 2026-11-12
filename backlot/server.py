@@ -444,6 +444,46 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
         server_log(f"take decision project={project_id} shot={shot_id} decision={body['decision']}")
         return result
 
+    def require_writer(request):
+        port = app.state.server_port
+        expected = app.state.capability_token
+        given = request.headers.get("x-frontlot-capability")
+        if request.headers.get("origin") not in {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}:
+            raise HTTPException(403, "This action must come from Front Lot.")
+        if not expected or not given or not secrets.compare_digest(expected, given):
+            raise HTTPException(401, "Reload Front Lot from its app icon before saving.")
+
+    @app.post("/api/trailers")
+    async def start_trailer(request: Request):
+        require_writer(request)
+        from lib.trailer_edit import create_trailer
+        try:
+            body = await request.json()
+            root = await asyncio.to_thread(create_trailer, PROJECTS_DIR, body.get("title"), body.get("seconds"), body.get("ceiling"))
+            return {"project_id": root.name}
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.post("/api/project/{project_id}/paper-cut")
+    async def save_paper(project_id: str, request: Request):
+        require_writer(request)
+        from lib.trailer_edit import save_revision
+        try:
+            body = await request.json()
+            result = await asyncio.to_thread(save_revision, _safe_project_dir(project_id), body.get("paper"), body.get("expected_revision"))
+            _invalidate_summary(project_id)
+            return result
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.get("/api/project/{project_id}/paper-cut/{revision}")
+    async def paper_version(project_id: str, revision: str):
+        from lib.trailer_edit import read_revision
+        try:
+            return read_revision(_safe_project_dir(project_id), revision)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
     # ---- Thumbnails (downscaled, cached on disk) ------------------------
 
     @app.get("/thumb/{project_id}/{file_path:path}")

@@ -1,5 +1,8 @@
 import { el, fmtAgo, getJSON, subscribe, thumbURL } from "/ui/lib.js";
 
+import { startTrailerForm } from "/ui/trailer.js";
+document.querySelector(".vault-head").after(startTrailerForm());
+
 const grid = document.getElementById("grid");
 function miniRail(states) {
   const rail = el("div", { class: "mini-rail" });

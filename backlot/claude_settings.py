@@ -244,11 +244,11 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
     }
 
 
-def _operations_text() -> str:
+def _operations_text(*, trailer: bool = False) -> str:
     from backlot.claude_ops import OPERATIONS   # deferred: claude_ops pulls in the pipeline scripts
 
     return "\n".join(f"- {name} ({'paid' if spec.paid else 'free'}): {', '.join(sorted(spec.allowed))}"
-                     for name, spec in OPERATIONS.items())
+                     for name, spec in OPERATIONS.items() if trailer or name != "trailer_paper_save")
 
 
 def _writeros_text(package: Path | None) -> str:
@@ -292,7 +292,7 @@ How you work here:
 {_canon_text(story_drive)}
 - You never run pipeline scripts yourself. Every pipeline step goes through the frontlot_run tool with an operation name and parameters. Front Lot runs it.
   Call it as {{"op": "<name>", "params": {{...}}}}. These are the only operations; each line gives its cost and the parameters it accepts:
-{_operations_text()}
+{_operations_text(trailer=trailer)}
 - Free steps run right away. Paid steps show Ben a spend card; wait for his answer. "Not now" is a decision: do not ask again unless he brings it up.
 - If a paid step fails with a message saying WriterOS changed canon the job uses (it ends "Apply the change before generating? Nothing is spent until you answer." and names an appeal ticket file), nothing was spent. Quote it to Ben in plain words, then ask exactly "Apply the change before generating?" and never ask him which version to use: WriterOS already decided. On yes, call frontlot_run {{"op": "appeal_apply", "params": {{"ticket": "<the ticket file name from the message>"}}}}, relay to Ben in plain words the step line that appeal_apply prints, and do not retry the paid step: wait for Ben. Bringing Front Lot's references up to date (for example ratifying the updated look) is Ben's own signed step; never run it yourself. On not yet, spend nothing and leave the ticket open.
 - Before you tell Ben what is waiting under Needs you, what he has signed, which looks are locked or finished, or who and what is in the trailer cast, call frontlot_run {{"op": "status", "params": {{}}}} in that same turn and answer from what it prints. Never answer those from earlier in the conversation, from what you filed before, or from your own reads of checkpoint or proposal files: they go stale and a proposal lists people it leaves out. If status says a look is signed but not finished, finish it with the look op right away (it is free and only records what Ben signed), then tell him it is done.

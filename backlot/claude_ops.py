@@ -498,7 +498,26 @@ def _shot(sub: str, paid: bool = False):
     return build
 
 
+def _trailer_paper(ctx, p):
+    path, data, digest = _snapshot(ctx, "paper", p.get("paper"))
+    try:
+        value=json.loads(data)
+    except ValueError:
+        raise OpError("The paper cut must be a saved document.") from None
+    if not isinstance(value,dict): raise OpError("The paper cut must contain the editing panels.")
+    from lib.trailer_edit import read_revision
+    previous=read_revision(ctx.film)
+    revision=(previous or {}).get("edit_revision_sha256")
+    argv=[PY,"-m","scripts.trailer_run","--project",ctx.slug,"--paper",str(path)]
+    if revision: argv += ["--expected-revision", revision]
+    target=ctx.film/"artifacts"/"edit_decisions.json"
+    inputs={path:digest,target:input_digest(target)}
+    inputs.update({f:input_digest(f) for f in [ctx.film/"project.json",*ctx.film.glob("checkpoint_*.json")]})
+    return Prepared(ctx.op,False,argv,inputs,{"paper":path},summary="Save a new paper-cut version; no spending or approval")
+
+
 OPERATIONS: dict[str, Operation] = {
+    "trailer_paper_save": Operation(False, frozenset({"paper"}), _trailer_paper),
     "look": Operation(False, frozenset({"entity", "kind", "source", "supersede", "dry_run"}), _look),
     "appeal_apply": Operation(False, frozenset({"ticket"}), _appeal_apply),
     "canon_check": Operation(False, frozenset(), _canon_check),

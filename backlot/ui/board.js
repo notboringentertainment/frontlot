@@ -1,5 +1,6 @@
 // Front Lot film board (the cutting room) — renders BoardState and stays live via SSE.
 
+import { renderPaperCut } from "/ui/trailer.js";
 import { mountSession } from "/ui/session.js";
 import {
   CAPABILITY_TOKEN_KEY, el, fmtAgo, fmtClock, fmtDuration, fmtMoney,
@@ -1329,7 +1330,7 @@ function renderFoundMedia(s) {
 
 function renderNoState(s) {
   if (s.is_trailer && s.trailer_damaged) return el("div", {class:"notice", role:"alert"}, s.trailer_damaged);
-  if (s.trailer_setup_pending) return el("div", {class:"notice"}, "Starting a trailer without commands is not available yet. This draft has not been signed; no production stage can begin.");
+  if (s.trailer_setup_pending) return el("div", {class:"notice"}, "Review the trailer name, length and ceiling under Needs you, then sign creation. No stage or spending is approved.");
   if (s.has_pipeline_state) return null;
   if (s.is_trailer) return el("div", {class:"notice"}, "This trailer has not started. Signed stage approval controls are not available yet.");
   return el("div", { class: "notice", style: "border-color:#2b2b33;background:var(--surface-2);color:var(--text-3)" },
@@ -1758,7 +1759,7 @@ const GATE_WORDS = {
   cast_change: "Change the trailer cast",
   location: "Approve location pictures",
 };
-const gateWords = (kind) => GATE_WORDS[kind] || titleCase(kind);
+const gateWords = (kind) => state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : GATE_WORDS[kind] || titleCase(kind);
 
 const SLOT_OF_KIND = {
   look_lock: "look",
@@ -2871,6 +2872,7 @@ function renderBoard() {
 
   const viewer = el("main", { class: "viewer", id: "viewer", tabindex: "-1", "aria-label": "Viewer" });
   const drawer = renderDrawer(s);
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderPaperCut(s));
 
   if (shot) {
     const inner = renderShotViewer(s, shot);

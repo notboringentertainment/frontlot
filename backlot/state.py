@@ -1868,7 +1868,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
             entry["label"] = STAGE_LABELS.get(entry["name"], entry["name"])
             entry["availability_message"] = "" if entry["status"] == "completed" else STAGE_LIMITS.get(entry["name"], "Signed stage approval controls are not available yet.")
             if trailer_setup_pending:
-                entry["availability_message"] = "Starting a trailer without commands is not available yet. This draft has not been signed; no production stage can begin."
+                entry["availability_message"] = ("Review the trailer name, length and ceiling under Needs you, then sign creation. No stage or spending is approved." if marker.get("trailer_creation_pending") else "Starting a trailer without commands is not available yet. This draft has not been signed; no production stage can begin.")
             if trailer_damaged:
                 entry["status"] = "failed"
                 entry["human_approved"] = False
@@ -1923,6 +1923,9 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
     state["gates"] = _gates_state(project_dir, cost)
     state["shots"] = _collect_shots(project_dir)
     state["poster"] = _find_poster(project_dir, state)
+    if trailer_pin is not None and not trailer_damaged:
+        from lib.trailer_edit import paper_state
+        state["paper_cut"] = paper_state(project_dir)
     return state
 
 

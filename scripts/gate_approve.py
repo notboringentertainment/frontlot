@@ -572,10 +572,17 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
             f"pipeline_migration needs a version in {manifest_versions(pipeline_name)}, got {version!r}"
         )
     digest = manifest_digest(f"{pipeline_name}@{version}")
+    creation = "trailer_creation" in hint
+    from lib.trailer_edit import creation_facts
+    facts = creation_facts(root) if creation else None
+    if creation and (version != "1.6" or pipeline_name != "authored-film" or facts != hint["trailer_creation"]):
+        raise GateHandlerError("The trailer settings changed. Start signing again after reviewing them.")
     bound = checkpoint_digests_on_disk(root)
     try:
-        require_migration_coverage(root, pipeline_name, version)  # D20.7: legacy heroes must be grandfathered
+        require_migration_coverage(root, pipeline_name, version, trailer_creation=creation)  # D20.7: legacy heroes must be grandfathered
         record = migration_record(pipeline_name, version, digest, bound)
+        if creation:
+            record["trailer_creation"] = facts
         tip = _chain_tip(
             verified_approvals(root, MIGRATION_KIND, entity_id=pipeline_name, project_id=req["project_id"]),
             pipeline_name,
@@ -583,7 +590,7 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
     except PipelinePinError as exc:
         raise GateHandlerError(str(exc)) from exc
     envelope = {"supersedes_receipt_id": tip["receipt_id"] if tip else None}
-    evidence = (
+    evidence = ((f"Start {facts['title']}: {facts['trailer']['target_duration_seconds']} seconds; total ceiling ${facts['spending_ceiling_usd']:.2f}. No stage approval or spending permission.",) if creation else ()) + (
         f"manifest pipeline_defs/{pipeline_name}@{version}.yaml digest {digest}",
         f"binds {len(bound)} checkpoint file(s) on disk: " + ", ".join(f"{b['stage']}={b['checkpoint_digest'][:12]}…" for b in bound),
         f"supersedes migration receipt {tip['receipt_id']}" if tip else "first pin for this project",
@@ -591,9 +598,11 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
 
     def pre_commit() -> None:  # re-derived under the consumed token (R3#4)
         try:
-            require_migration_coverage(root, pipeline_name, version)
+            require_migration_coverage(root, pipeline_name, version, trailer_creation=creation)
         except PipelinePinError as exc:
             raise GateHandlerError(str(exc)) from exc
+        if creation and creation_facts(root) != facts:
+            raise GateHandlerError("The trailer settings changed while signing.")
         if checkpoint_digests_on_disk(root) != bound:
             raise GateHandlerError("checkpoint files changed between request and signing; re-run the migration request")
 

@@ -105,6 +105,8 @@ def validate_stage_contract(marker_contract, stage, artifacts, *, partial=False)
         for section in artifact.get('sections', []) + artifact.get('scenes', []):
             _duration(section.get('end_seconds'), target)
         if name == 'edit_decisions':
+            if artifact.get('unfinished') or any(e.get('kind') == 'placeholder' for e in (artifact.get('timeline') or {}).get('picture', [])):
+                raise ValueError('This sequence is unfinished. Placeholders cannot complete a stage.')
             if artifact.get('render_runtime') != 'remotion':
                 raise ValueError('Trailer edits must use Remotion for timed composition.')
             # Existing second-based cut contract; the later cutting view supplies frame timelines.
@@ -163,6 +165,15 @@ def approval_record(root, pin, stage, artifacts):
     validate_stage_contract(contract, stage, artifacts)
     record = {'stage': stage, 'pipeline': pin.to_dict(), 'trailer': contract,
               'artifacts_sha256': record_sha256(artifacts)}
+    paper_path = Path(root)/'artifacts'/'edit_decisions.json'
+    if paper_path.is_file():
+        paper = json.loads(paper_path.read_text())
+        if 'paper_cut' in paper and stage in {'script','scene_plan','assets','edit','compose'}:
+            from lib.trailer_edit import paper_state
+            state = paper_state(root)
+            if state.get('needs_review'):
+                raise ValueError('The paper cut needs a fresh look because its story or timing changed.')
+            record['paper_cut_revision'] = paper['edit_revision_sha256']
     # A changed earlier checkpoint invalidates this approval as well.
     from lib.pipeline_loader import get_stage_order, load_pipeline
     predecessors = get_stage_order(load_pipeline(pin.ref))
