@@ -225,8 +225,11 @@ def test_signed_resolution_is_exact_and_cannot_resubmit(priced,http,monkeypatch,
     monkeypatch.setattr(requests,'post',post)
     args={'project_dir':str(priced),'audio_request_id':r['request_id']}
     assert not MusicGen().execute(args).success
+    edited=dict(r,prompt='These words were never submitted.')
+    (priced/'.audio-requests'/(r['request_id']+'.json')).write_text(json.dumps(edited))
     identity=next(iter(load_reservations(priced)))
     req=ws.request_resolution(priced,identity,charged,cash,credits,'Checked the invented account ledger.')
+    assert req['approval_record']['request']==r
     built=construct(priced,req);built.pre_commit_check();sign(priced,'audio_resolution',built.record,identity)
     with pytest.raises(ValueError,match='signed'):
         ws.resolve_charge(priced,identity,charged,cash,credits,'Checked a different account record.')

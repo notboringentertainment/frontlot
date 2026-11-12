@@ -157,10 +157,20 @@ def state(root):
     for reservation in nonterminal_reservations(root):
         hint=reservation.get('output_hint') or {}
         if hint.get('kind')!='audio':continue
-        try:request=read_request(root,hint.get('request_id'))
+        try:request=reservation_request(root,reservation)
         except (ValueError,OSError,TypeError):request=None
         unresolved.append({'reservation':reservation,'request':request})
     return {'takes':takes,'unresolved_requests':unresolved}
+
+
+def reservation_request(root,reservation):
+    """Account review uses the original signature, never an editable draft."""
+    hint=reservation.get('output_hint') or {}
+    for row in receipts.verified_approvals(root,'audio_spend',entity_id=hint.get('request_id')):
+        record=row['record']
+        if row['receipt_id']==hint.get('audio_approval_receipt_id') and record.get('input_sha256')==reservation.get('normalized_inputs_hash'):
+            return record
+    raise ValueError('The original signed audio request cannot be verified. Nothing was resolved.')
 
 
 def resolution_record(root,identity,charged,cash,credits,note):
@@ -173,7 +183,7 @@ def resolution_record(root,identity,charged,cash,credits,note):
     reservation=load_reservations(root).get(identity)
     if not reservation or (reservation.get('output_hint') or {}).get('kind')!='audio':raise ValueError('Choose an unresolved audio request.')
     if reservation['state'] in ('completed','failed'):raise ValueError('This charge has already been resolved.')
-    return {'reservation_id':identity,'reservation':reservation,'charged':charged,'cash_usd':cash,'credits_usd':credits,'note':note.strip()}
+    return {'reservation_id':identity,'reservation':reservation,'request':reservation_request(root,reservation),'charged':charged,'cash_usd':cash,'credits_usd':credits,'note':note.strip()}
 
 
 def resolve_charge(root,identity,charged,cash,credits,note):
