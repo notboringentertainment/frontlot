@@ -187,11 +187,13 @@ def test_historical_signed_trailer_without_marker_still_refuses(project,monkeypa
     data=yaml.safe_load((project/'project.yaml').read_text());data['version']='1.2'
     data['provider_egress']=[{'provider':'fal','content_classes':['prompts']}]
     (project/'project.yaml').write_text(yaml.safe_dump(data))
+    import hashlib
+    sign(project,'config',{'config_sha256':hashlib.sha256((project/'project.yaml').read_bytes()).hexdigest()},'project_config')
     calls=[]
     def post(*args,**kwargs):calls.append(1);raise AssertionError('Not approved')
     monkeypatch.setattr(requests,'post',post);monkeypatch.setenv('ELEVENLABS_API_KEY','invented-test-only')
     inputs={'prompt':'A quiet lock.','duration_seconds':3}
-    if attribution=='project':inputs['project_dir']=str(project)
+    if attribution=='project':inputs.update(project_dir=str(project),output_path=str(project/'music.mp3'))
     elif attribution=='output':inputs['output_path']=str(project/'music.mp3')
     else:monkeypatch.chdir(project)
     result=MusicGen().execute(inputs)

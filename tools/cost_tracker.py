@@ -640,7 +640,7 @@ def reservation_lock(project_root: Path):
     way round. The supervised brief and ledger are re-read under this lock;
     their updates use the same lock.
     """
-    path = reservations_path(project_root)
+    path = reservations_path(Path(project_root).resolve())
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_file = path.with_name(path.name + ".lock")
     held: dict = getattr(_reservation_locks, "held", None)

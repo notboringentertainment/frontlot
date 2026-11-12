@@ -1,53 +1,91 @@
-"""Refuse legacy ElevenLabs submissions for identified protected productions."""
+"""Legacy audio is allowed only for one positively verified older production."""
 import json
+import os
 from pathlib import Path
 
 MESSAGE = 'Audio for this production goes only through an approved request.'
+NO_PRODUCTION = 'Audio now needs an identified production with verified signed settings.'
+UNVERIFIED = 'This production\'s signed settings or approval history cannot be verified. No audio was sent.'
+BAD_PATH = 'Audio paths must stay inside one production and must not use links.'
+
+def _checked_path(value):
+    if not isinstance(value, (str, Path)) or not str(value):
+        raise ValueError(BAD_PATH)
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    cursor = Path(path.anchor)
+    for part in path.parts[1:]:
+        cursor = cursor.parent if part == '..' else cursor / part
+        if cursor.is_symlink():
+            # macOS system aliases are not production-controlled links.
+            allowed = {Path('/tmp'): Path('/private/tmp'), Path('/var'): Path('/private/var')}
+            if cursor not in allowed or cursor.resolve() != allowed[cursor]:
+                raise ValueError(BAD_PATH)
+    return Path(os.path.abspath(path)).resolve()
+
+def _enclosing_root(path):
+    directory = path if path.is_dir() else path.parent
+    for candidate in (directory, *directory.parents):
+        if any((candidate / name).exists() for name in ('project.json', 'project.yaml', 'approvals.jsonl')):
+            return candidate
+    return None
+
+def _read_marker(path):
+    _checked_path(path)
+    if not path.exists():
+        return {}
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict):
+        raise ValueError(UNVERIFIED)
+    return value
 
 def refusal(inputs):
-    from lib.events import infer_project_dir
-    from lib import gates
-    from lib.project_config import read_project_config, load_verified_project_config
-    root = infer_project_dir(inputs)
-    if root is None and inputs.get('project_dir'):
-        root = Path(inputs['project_dir'])
-    if root is None:
-        root = infer_project_dir({'output_path': str(Path.cwd() / 'audio-output')})
-    if root is None:
-        return None  # Unattributed legacy calls retain their existing behavior.
-    root = Path(root)
-    def read(path):
-        try:
-            value = json.loads(path.read_text())
-            return value if isinstance(value, dict) else {}
-        except (OSError, ValueError, RecursionError):
-            return {}
-    marker = read(root/'project.json')
-    if marker.get('production_kind') == 'trailer' or marker.get('pipeline_type') == 'authored-film@1.6':
-        return MESSAGE
-    for path in root.glob('checkpoint_*.json'):
-        pin = read(path).get('pipeline') or {}
-        if isinstance(pin,dict) and pin.get('name')=='authored-film' and pin.get('version')=='1.6':
-            return MESSAGE
-    # A surviving signed trailer record remains identity evidence even when
-    # its local history is broken. It supplies no spending authority.
+    """No verification failure or missing attribution can authorize a POST."""
+    from lib.project_config import load_verified_project_config
+    from lib.trailer_contract import signed_trailer_pin
+    if not isinstance(inputs, dict):
+        return NO_PRODUCTION
     try:
-        for line in (root/'approvals.jsonl').read_text().splitlines():
-            try:
-                row = json.loads(line)
-                record = row.get('record') or {}
-                if (row.get('project_id')==root.name and row.get('kind')=='pipeline_migration'
-                    and record.get('pipeline_name')=='authored-film' and record.get('version')=='1.6'
-                    and gates.verify_receipt(row)):
-                    return MESSAGE
-            except (ValueError, TypeError, AttributeError, RecursionError):
+        explicit = _checked_path(inputs['project_dir']) if inputs.get('project_dir') else None
+        output = _checked_path(inputs.get('output_path') or (Path.cwd() / 'legacy-audio'))
+        cwd = _checked_path(Path.cwd())
+        roots = set()
+        for path in (explicit, output, cwd):
+            if path is None:
                 continue
-    except OSError:
-        pass
+            found = _enclosing_root(path)
+            if path == explicit and found is None:
+                return NO_PRODUCTION
+            if found is not None:
+                roots.add(found)
+        if not roots:
+            return NO_PRODUCTION
+        if len(roots) != 1:
+            return BAD_PATH
+        root = roots.pop()
+        for path in (explicit, output):
+            if path is not None:
+                path.relative_to(root)
+    except (OSError, ValueError, TypeError, RuntimeError):
+        return BAD_PATH
     try:
-        data,_ = read_project_config(root)
-        if data.get('version')=='1.3' and load_verified_project_config(root).version=='1.3':
+        marker = _read_marker(root / 'project.json')
+        if marker.get('production_kind') == 'trailer' or marker.get('pipeline_type') == 'authored-film@1.6':
             return MESSAGE
-    except (OSError, ValueError, RuntimeError):
-        pass
+        for path in root.glob('checkpoint_*.json'):
+            pin = _read_marker(path).get('pipeline') or {}
+            if isinstance(pin, dict) and pin.get('name') == 'authored-film' and pin.get('version') == '1.6':
+                return MESSAGE
+        for name in ('project.yaml', 'approvals.jsonl'):
+            _checked_path(root / name)
+        config = load_verified_project_config(root)
+        if config.version == '1.3' or signed_trailer_pin(root) is not None:
+            return MESSAGE
+        if config.version not in ('1.0', '1.1', '1.2'):
+            return UNVERIFIED
+    except Exception:
+        # Never convert a missing signature, damaged chain or unreadable
+        # configuration into permission to use the old paid route.
+        return UNVERIFIED
     return None

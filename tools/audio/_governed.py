@@ -190,17 +190,19 @@ def execute(root,record, *, submit,download):
             stream.flush()
             os.fsync(stream.fileno())
         total=round(cash+credits,4)
-        stage_generation_wal(root,execution_id=reservation,
-            outputs=[{'staging_path':str(staging),'output_path':str(output),'output_sha256':hashlib.sha256(data).hexdigest()}],
-            reservation_id=reservation,actual_usd=total,
-            receipt={'tool':'elevenlabs_audio','normalized_inputs_hash':record['input_sha256'],
-                'parameters_hash':record['input_sha256'],'model_endpoint':record['model'],
-                'provider_request_id':result['request_id'],'cost_usd':total,'started_at':started,
-                'audio_charge':{'cash_usd':cash,'credits_usd':credits,'audio_approval_receipt_id':approval['receipt_id']}})
-        return complete_generation(root,reservation,tracker=tracker)
+        with reservation_lock(root):
+            stage_generation_wal(root,execution_id=reservation,
+                outputs=[{'staging_path':str(staging),'output_path':str(output),'output_sha256':hashlib.sha256(data).hexdigest()}],
+                reservation_id=reservation,actual_usd=total,
+                receipt={'tool':'elevenlabs_audio','normalized_inputs_hash':record['input_sha256'],
+                    'parameters_hash':record['input_sha256'],'model_endpoint':record['model'],
+                    'provider_request_id':result['request_id'],'cost_usd':total,'started_at':started,
+                    'audio_charge':{'cash_usd':cash,'credits_usd':credits,'audio_approval_receipt_id':approval['receipt_id']}})
+            return complete_generation(root,reservation,tracker=tracker)
     except Exception:
         # Do not settle the tracker or free its reservation on a local failure.
         # A known provider acceptance followed by a bad download is not a refund.
-        if load_reservations(root)[reservation]['state'] not in ('completed','failed'):
-            reconcile_paid_call(root,reservation,bound,state='pending_billing')
+        with reservation_lock(root):
+            if load_reservations(root)[reservation]['state'] not in ('completed','failed'):
+                reconcile_paid_call(root,reservation,bound,state='pending_billing')
         raise

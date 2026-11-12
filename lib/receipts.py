@@ -1198,46 +1198,50 @@ def replay_generation_entry(project_root: Path | str, entry: dict, *, tracker: A
     """Complete one WAL entry idempotently: output present → receipt (skip if a
     signed row exists) → ledger (skip if present) → terminal reservation
     (skip if already terminal) → delete WAL. Returns the receipts."""
-    from tools.cost_tracker import TERMINAL_STATES, CostTracker, load_reservations, reconcile_paid_call
+    from tools.cost_tracker import reservation_lock
+    with reservation_lock(Path(project_root)):
+        from tools.cost_tracker import TERMINAL_STATES, CostTracker, load_reservations, reconcile_paid_call
 
-    root = Path(project_root).resolve()
-    execution_id = entry["execution_id"]
-    fields = dict(entry.get("receipt") or {})
-    receipts: list[dict] = []
-    seen: set[str] = set()
-    for out in entry.get("outputs") or []:
-        _ensure_wal_output(root, out)
-        sha = out["output_sha256"]
-        if sha in seen:
-            continue
-        seen.add(sha)
-        receipt = _signed_generation_row(root, execution_id, sha)
-        if receipt is None:
-            receipt = _build_generation_receipt(
-                root, execution_id=execution_id, output_sha256=sha,
-                finished_at=fields.pop("finished_at", None) or _now_iso(), **fields,
-            )
-        _commit_generation(root, receipt)
-        receipts.append(receipt)
-    reservation_id = entry.get("reservation_id")
-    if reservation_id:
-        reservation = load_reservations(root).get(reservation_id)
-        if reservation is None:
-            raise GenerationWalError(f"WAL entry {execution_id} names unknown reservation {reservation_id}")
-        if reservation.get("state") not in TERMINAL_STATES:
-            if tracker is None:
-                tracker = CostTracker(cost_log_path=root / "cost_log.json")
-            reconcile_paid_call(root, reservation_id, float(entry.get("actual_usd") or 0.0), "completed", tracker)
-    gates.generation_wal_delete(execution_id)
-    return receipts
+        root = Path(project_root).resolve()
+        execution_id = entry["execution_id"]
+        fields = dict(entry.get("receipt") or {})
+        receipts: list[dict] = []
+        seen: set[str] = set()
+        for out in entry.get("outputs") or []:
+            _ensure_wal_output(root, out)
+            sha = out["output_sha256"]
+            if sha in seen:
+                continue
+            seen.add(sha)
+            receipt = _signed_generation_row(root, execution_id, sha)
+            if receipt is None:
+                receipt = _build_generation_receipt(
+                    root, execution_id=execution_id, output_sha256=sha,
+                    finished_at=fields.pop("finished_at", None) or _now_iso(), **fields,
+                )
+            _commit_generation(root, receipt)
+            receipts.append(receipt)
+        reservation_id = entry.get("reservation_id")
+        if reservation_id:
+            reservation = load_reservations(root).get(reservation_id)
+            if reservation is None:
+                raise GenerationWalError(f"WAL entry {execution_id} names unknown reservation {reservation_id}")
+            if reservation.get("state") not in TERMINAL_STATES:
+                if tracker is None:
+                    tracker = CostTracker(cost_log_path=root / "cost_log.json")
+                reconcile_paid_call(root, reservation_id, float(entry.get("actual_usd") or 0.0), "completed", tracker)
+        gates.generation_wal_delete(execution_id)
+        return receipts
 
 
 def complete_generation(project_root: Path | str, execution_id: str, *, tracker: Any = None) -> list[dict]:
     """Finish the paid call staged under ``execution_id`` (see ``stage_generation_wal``)."""
-    entry = gates.generation_wal_read(execution_id)
-    if entry is None:
-        raise GenerationWalError(f"no generation WAL entry for execution {execution_id}")
-    return replay_generation_entry(project_root, entry, tracker=tracker)
+    from tools.cost_tracker import reservation_lock
+    with reservation_lock(Path(project_root)):
+        entry = gates.generation_wal_read(execution_id)
+        if entry is None:
+            raise GenerationWalError(f"no generation WAL entry for execution {execution_id}")
+        return replay_generation_entry(project_root, entry, tracker=tracker)
 
 
 def recover_generation_wal(project_root: Path | str) -> list[dict]:
@@ -1245,16 +1249,18 @@ def recover_generation_wal(project_root: Path | str) -> list[dict]:
     output is present are completed and removed; an entry whose output is
     missing or altered raises GenerationWalError (after the others are
     replayed) so callers block new paid calls until it is recovered."""
-    root = Path(project_root).resolve()
-    recovered: list[dict] = []
-    problems: list[str] = []
-    for entry in gates.generation_wal_entries():
-        if entry.get("project_root") != str(root) or not entry.get("execution_id"):
-            continue
-        try:
-            recovered.extend(replay_generation_entry(root, entry))
-        except GenerationWalError as exc:
-            problems.append(str(exc))
-    if problems:
-        raise GenerationWalError("; ".join(problems), recovered=recovered)
-    return recovered
+    from tools.cost_tracker import reservation_lock
+    with reservation_lock(Path(project_root)):
+        root = Path(project_root).resolve()
+        recovered: list[dict] = []
+        problems: list[str] = []
+        for entry in gates.generation_wal_entries():
+            if entry.get("project_root") != str(root) or not entry.get("execution_id"):
+                continue
+            try:
+                recovered.extend(replay_generation_entry(root, entry))
+            except GenerationWalError as exc:
+                problems.append(str(exc))
+        if problems:
+            raise GenerationWalError("; ".join(problems), recovered=recovered)
+        return recovered
