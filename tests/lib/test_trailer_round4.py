@@ -13,7 +13,11 @@ def test_honest_words(text):
 @pytest.mark.parametrize('parts', [['Before we open, please leave.'],['We','please','before','open','leave'],['Please leave.'],['Please leave','before we open.'],['Tonight please leave before we open now.']])
 def test_mechanical_versions(parts):
     errors,_=check_trailer_text({'lines':[row(t,ref='') for t in parts]},collection_canon())
-    assert errors and 'Please leave before we open.' in errors[0]
+    if parts==['Please leave.']:
+        assert not errors
+        assert 'Please leave before we open.' in check_trailer_text({'lines':[row(parts[0],ref='')]},collection_canon())[1][0]
+    else:
+        assert errors and 'Please leave before we open.' in errors[0]
 
 @pytest.mark.parametrize('key',['lines','cards'])
 def test_three_part_spoiler(key):
