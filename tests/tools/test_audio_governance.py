@@ -7,6 +7,19 @@ from lib import gates, receipts
 from lib.canonical_json import record_sha256
 from tools.cost_tracker import load_reservations, BudgetExceededError, IndeterminatePaidCallError
 
+@pytest.fixture(autouse=True)
+def no_real_network_contact(monkeypatch):
+    """Count and refuse real socket contact in every test in this file."""
+    import socket
+    attempts = []
+    def refuse(*args, **kwargs):
+        attempts.append(1)
+        raise AssertionError("Audio governance tests must use simulated transports.")
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    yield attempts
+    assert attempts == []
+
+
 def sign(root, kind, record, entity):
     with gates.handler_context():
         token=gates.mint_gate_token(root.name,'assets','audio',record_sha256(record),user_response='yes')
