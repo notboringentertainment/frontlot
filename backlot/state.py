@@ -1768,7 +1768,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
     trailer_damaged = None
     trailer_pin = None
     trailer_setup_pending = False
-    from lib.trailer_contract import signed_trailer_pin, require_contract, project_checkpoint, DAMAGED
+    from lib.trailer_contract import signed_trailer_pin, require_contract, project_checkpoint, DAMAGED, HISTORY_DAMAGED
     try:
         trailer_pin = signed_trailer_pin(project_dir)
         if trailer_pin is not None:
@@ -1781,7 +1781,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
     except Exception:
         # A marker cannot grant trailer status, but a known trailer with broken signatures is damaged.
         if marker.get("production_kind") == "trailer" or marker.get("pipeline_type") == "authored-film@1.6":
-            trailer_damaged = DAMAGED
+            trailer_damaged = HISTORY_DAMAGED
             pipeline_meta = _load_pipeline_meta("authored-film@1.6")
 
     if trailer_pin is None and not trailer_damaged and marker.get("production_kind") == "trailer" and marker.get("pipeline_type") == "authored-film@1.6":
@@ -1860,7 +1860,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         "events": events,
         "cost": cost,
         "last_activity": last_activity,
-        "live": bool(last_activity and (now - last_activity) < LIVE_WINDOW_SECONDS),
+        "live": bool(not trailer_damaged and last_activity and (now - last_activity) < LIVE_WINDOW_SECONDS),
     }
     state["gates"] = _gates_state(project_dir, cost)
     state["shots"] = _collect_shots(project_dir)

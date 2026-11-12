@@ -13,6 +13,7 @@ FPS = 24
 MIN_SECONDS = 1
 TOLERANCE_SECONDS = 1 / FPS
 DAMAGED = 'This trailer is damaged: its saved trailer facts are missing or invalid. Nothing can be completed.'
+HISTORY_DAMAGED = "This trailer's approval history can't be verified, so nothing can be completed. Nothing has been changed."
 SIGNED_REQUIRED = 'This stage needs your signed approval. Approval controls are not available yet.'
 
 
@@ -163,7 +164,15 @@ def approval_record(root, pin, stage, artifacts):
                 if a.get('edit_revision_sha256') != digest or a.get('export_sha256') != sha:
                     raise ValueError('The export fingerprints do not match the saved edit and actual file.')
             try:
-                _duration(_export_duration(output), contract['target_duration_seconds'])
+                measured = _export_duration(output)
+                _duration(measured, contract['target_duration_seconds'])
+                claims = [outputs[0].get('duration_seconds'),
+                          ((review.get('checks') or {}).get('technical_probe') or {}).get('duration_seconds')]
+                claims += [a['total_duration_seconds'] for a in (report, review) if 'total_duration_seconds' in a]
+                for claimed in claims:
+                    _duration(claimed, contract['target_duration_seconds'])
+                    if abs(measured - claimed) > TOLERANCE_SECONDS + 1e-9:
+                        raise ValueError('The exported file length does not match its review records within one frame.')
             except (OSError, subprocess.SubprocessError, KeyError, TypeError) as exc:
                 raise ValueError('The exported trailer could not be measured.') from exc
             record['export_sha256'] = sha
@@ -176,10 +185,13 @@ def require_stage_approval(root, pin, stage, artifacts):
     rows = [r for r in verified_approvals(root, 'artifact_review')
             if r.get('stage') == stage and r.get('scope') == 'trailer-stage'
             and r.get('artifact_type') == 'trailer_stage' and r.get('artifact_version') == '1.0'
-            and r.get('migration_status') == 'reviewed'
-            and (r.get('user_response') == 'approve' or
-                 isinstance(r.get('user_response'), dict) and r['user_response'].get('answer') == 'approved')]
+            and r.get('migration_status') == 'reviewed']
     if not rows:
+        raise ValueError(SIGNED_REQUIRED)
+    # Ledger order is authoritative: an older approved revision never revives.
+    rows = rows[-1:]
+    response = rows[0].get('user_response')
+    if not (response == 'approve' or isinstance(response, dict) and response.get('answer') == 'approved'):
         raise ValueError(SIGNED_REQUIRED)
     record = approval_record(root, pin, stage, artifacts)
     digest = record_sha256(record)
@@ -205,11 +217,19 @@ def project_checkpoint(root, pin, cp):
 def signed_trailer_pin(root):
     """Discover the trailer from the signer-owned chain even if marker text was edited."""
     from lib.receipts import verified_approvals
-    from lib.pipeline_pin import pinned_pipeline
+    from lib.pipeline_pin import PinnedPipeline, pinned_pipeline
+    from lib.pipeline_loader import manifest_digest
     rows = verified_approvals(root, 'pipeline_migration')
     if any(r.get('kind') == 'pipeline_migration' and r.get('record', {}).get('pipeline_name') == 'authored-film'
            and r.get('record', {}).get('version') == '1.6' for r in rows):
-        return pinned_pipeline(root, 'authored-film')
+        # Verify the complete migration supersession chain, including a historical downgrade.
+        pinned_pipeline(root, 'authored-film')
+        row = next(r for r in rows if r.get('record', {}).get('pipeline_name') == 'authored-film'
+                   and r.get('record', {}).get('version') == '1.6')
+        record = row['record']
+        if record.get('manifest_digest') != manifest_digest('authored-film@1.6'):
+            raise ValueError(HISTORY_DAMAGED)
+        return PinnedPipeline('authored-film', '1.6', record['manifest_digest'], row['receipt_id'])
     return None
 
 

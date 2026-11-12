@@ -34,3 +34,22 @@ def test_trailer_brief_has_one_composition_route():
     assert '30 credits' not in brief
     assert 'Remotion' in brief and 'FFmpeg' in brief
     assert 'frontlot_run' in brief
+
+
+def test_trailer_has_no_external_spending_or_upload_route(tmp_path):
+    repo=tmp_path/'repo';repo.mkdir()
+    film=init_project('p',title='Night Window',pipeline_type='authored-film@1.6',
+                      pipeline_dir=tmp_path/'projects',target_duration_seconds=28)
+    s=cs.build_settings(repo_root=repo,film_root=film,meta_root=tmp_path/'meta',environ={})
+    assert not s['sandbox']['network']['allowedDomains']
+    assert s['sandbox']['network']['deniedDomains']==['*']
+    assert all(f'mcp__claude_ai_{c}' in s['permissions']['deny'] for c in cs.CONNECTORS)
+    assert 'mcp__claude_ai_*' in s['permissions']['deny']
+    assert cs.CHROME_TOOLS in s['permissions']['deny']
+    assert not any(x.startswith('mcp__claude_ai_') for x in s['permissions']['allow'])
+    assert cs.TOOL_NAME in s['permissions']['allow']
+    b=cs.build_brief(film_title='Night Window',film_slug='p',trailer=True)
+    assert 'Higgsfield is switched off' in b
+    assert 'fine to use' not in b
+    old=cs.build_brief(film_title='Night Window',film_slug='p')
+    assert '30 credits' in old

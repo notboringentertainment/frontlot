@@ -900,7 +900,8 @@ def write_checkpoint(
     carries_decisions = "decision_log" in artifacts and isinstance(
         artifacts["decision_log"], dict
     )
-    if carries_decisions:
+    if carries_decisions and trailer_pin is None:
+        # Signed trailer material is immutable; older productions retain normalization.
         # Write decision_log_ref into proposal_packet and render_report
         # artifacts if they are present in this checkpoint. The ref path is
         # deterministic, so it can be injected BEFORE any validation runs.

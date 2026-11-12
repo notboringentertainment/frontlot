@@ -369,7 +369,8 @@ function renderStatus(s) {
   const needs = pendingGates(s).length || waitingShots(s).length || awaiting;
   let cls = "";
   let label = `Idle${s.last_activity ? ` · ${fmtAgo(s.last_activity)}` : ""}`;
-  if (needs) { cls = "needs"; label = "Needs you"; }
+  if (s.is_trailer && s.trailer_damaged) { cls = "needs"; label = "Cannot continue"; }
+  else if (needs) { cls = "needs"; label = "Needs you"; }
   else if (stalled) { cls = "stalled"; label = "Stalled?"; }
   else if (s.live) { cls = "running"; label = "Working"; }
   else if (inProgress) { label = `Paused${s.last_activity ? ` · ${fmtAgo(s.last_activity)}` : ""}`; }

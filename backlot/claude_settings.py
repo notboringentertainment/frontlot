@@ -216,16 +216,17 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
                              + (_trailer_write_denials(film, work) + [str(meta), str(signing_root)] if trailer else []),
             },
             "network": {
-                "allowedDomains": ["*", WRITEROS_HOST],
+                "allowedDomains": [] if trailer else ["*", WRITEROS_HOST],
+                **({"deniedDomains": ["*"]} if trailer else {}),
                 "allowUnixSockets": [],             # protects: signer and broker sockets
                 "allowLocalBinding": False,
             },
         },
         "permissions": {
             "defaultMode": "default",             # anything not allowed or denied below asks Ben
-            "allow": [TOOL_NAME, CHROME_TOOLS, f"Read(/{film}/**)", f"Read(/{repo}/**)", f"Edit(/{work}/**)"]
+            "allow": [TOOL_NAME, *([] if trailer else [CHROME_TOOLS]), f"Read(/{film}/**)", f"Read(/{repo}/**)", f"Edit(/{work}/**)"]
                      + ([] if trailer else [f"Bash({c}:*)" for c in UNSANDBOXED_COMMANDS])
-                     + [f"mcp__claude_ai_{c}" for c in CONNECTORS]
+                     + ([] if trailer else [f"mcp__claude_ai_{c}" for c in CONNECTORS])
                      + ([f"Read(/{package}/**)"] if package else [])
                      + ([f"Read(/{story}/**)"] if story else []),
             "ask": [f"mcp__claude_ai_Higgsfield__{t}" for t in HIGGSFIELD_SPEND]
@@ -233,7 +234,9 @@ def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ
             "deny": [f"Read({d}/**)" for d in HOME_SECRET_DIRS] + [f"Read({f})" for f in HOME_SECRET_FILES]
                     + [f"Read(/{meta}/**)", f"Read(/{repo}/**/.env*)"] + [f"Read(/{p})" for p in secrets]
                     + [f"Edit(/{work}/{name})" for name in WORK_PROTECTED]
-                    + _film_write_denials(film, work),
+                    + _film_write_denials(film, work)
+                    + (["mcp__claude_ai_*", *[f"mcp__claude_ai_{c}" for c in CONNECTORS],
+                        CHROME_TOOLS, "WebFetch", "WebSearch"] if trailer else []),
         },
         "enableAllProjectMcpServers": False,
     }
@@ -304,6 +307,7 @@ When the session opens or picks back up, give a short check-in: what is new (loo
 """
     if trailer:
         text = "\n".join(line for line in text.split("\n") if not line.startswith(("- Gray-box previz", "- Higgsfield:")))
+        text = text.replace("You have the open internet, Ben's claude.ai connectors (Higgsfield, Google Drive, Gmail, Notion and the rest) and Chrome. A tool that isn't pre-approved asks Ben with a Yes/No prompt; that is fine to use when the job needs it.", "Higgsfield is switched off for trailers. All external connectors, Chrome, web tools and direct shell network access are switched off. Every paid step must use Front Lot's listed operations, its spend card, receipts and single spending total. Never use a separate connector, upload, provider client or payment route.")
         text += "\nFor this trailer, only the approved local Remotion and FFmpeg composition route applies. No unsandboxed shell command is allowed. Use the listed Front Lot operations; missing controls remain unavailable.\n"
     return text
 
