@@ -250,3 +250,18 @@ def test_estimate_uses_signed_basis_and_never_contacts_service(priced,http):
     r,_=music_request(priced)
     assert MusicGen().estimate_cost({'project_dir':str(priced),'audio_request_id':r['request_id']})==.012
     assert http==[]
+
+
+def test_price_expiring_during_reservation_sends_nothing(priced,http,monkeypatch):
+    from tools.audio import _governed as audio
+    from tools.audio.music_gen import MusicGen
+    import lib.audio_prices
+    record,_=music_request(priced);sign(priced,'audio_spend',record,record['request_id'])
+    original=audio.reserve_paid_call
+    def reserve(*args,**kwargs):
+        value=original(*args,**kwargs)
+        monkeypatch.setattr(lib.audio_prices.time,'time',lambda:4102444801)
+        return value
+    monkeypatch.setattr(audio,'reserve_paid_call',reserve)
+    result=MusicGen().execute({'project_dir':str(priced),'audio_request_id':record['request_id']})
+    assert not result.success and http==[]

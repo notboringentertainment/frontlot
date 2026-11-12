@@ -47,6 +47,8 @@ def _execute_locked(inputs,kind):
                 url='https://api.elevenlabs.io/v1/music'
                 body={'prompt':payload['prompt'],'model_id':payload['model'],
                       'music_length_ms':round(payload['duration_seconds']*1000),'force_instrumental':True}
+            config=_governed.check_current(root,record)
+            rate=Decimal(str(config.data['audio_price_basis']['dollars_per_credit']['value']))
             try:
                 response=requests.post(url,headers={'xi-api-key':key,'Content-Type':'application/json'},json=body,timeout=120,allow_redirects=False)
                 response.raise_for_status()
@@ -57,8 +59,6 @@ def _execute_locked(inputs,kind):
             # invalid billing evidence leaves the durable reservation pending.
             credits=Decimal(response.headers['character-cost'])
             if not credits.is_finite() or credits<0:raise ValueError('The audio service did not report a valid credit charge.')
-            config=_governed.check_current(root,record)
-            rate=Decimal(str(config.data['audio_price_basis']['dollars_per_credit']['value']))
             charge=(credits*rate).quantize(Decimal('.0001'),rounding='ROUND_CEILING')
             return {'request_id':response.headers['request-id'],'cash_usd':0,'credits_usd':float(charge),'response':response}
         rows=_governed.execute(root,record,submit=submit,download=lambda result:result['response'].content)
