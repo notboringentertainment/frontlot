@@ -178,7 +178,21 @@ class TestMusicGen:
         assert "generate_background_music" in tool.capabilities
 
 
+@pytest.fixture
+def registered_older_music(tmp_path,monkeypatch):
+    from tests.contracts.test_kling_tts import verified_older_audio_production
+    # Preserve the real positive provider tests in the now-required context.
+    root=verified_older_audio_production.__wrapped__(tmp_path,monkeypatch)
+    monkeypatch.chdir(root)
+
+
+@pytest.mark.usefixtures('registered_older_music')
 class TestGoogleMusic:
+    @pytest.fixture
+    def tmp_path(self,tmp_path):
+        root=tmp_path/'older-audio';root.mkdir()
+        return root
+
     def test_identity(self):
         tool = GoogleMusic()
         info = tool.get_info()

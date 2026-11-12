@@ -92,11 +92,20 @@ def test_imported_licence_and_signed_decline(priced,tmp_path,http):
 
 
 def speech_request(root):
-    from lib.trailer_contract import edit_digest
-    directory=root/'artifacts';directory.mkdir(exist_ok=True)
-    edit={'paper_cut':{'lines':[{'text':'The gallery is closed.','start_frame':0,'duration_frames':72}]}}
-    edit['edit_revision_sha256']=edit_digest(edit)
-    (directory/'edit_decisions.json').write_text(json.dumps(edit))
+    from lib.checkpoint import init_project
+    from lib.pipeline_pin import migration_record
+    from lib.pipeline_loader import manifest_digest
+    from lib.trailer_contract import signed_trailer_pin
+    from tests.lib.test_trailer_edit import signed_story,paper
+    from lib.trailer_edit import save_revision,read_revision
+    init_project(root.name,title='Quiet Observatory',pipeline_type='authored-film@1.6',pipeline_dir=root.parent,target_duration_seconds=28)
+    if signed_trailer_pin(root) is None:
+        sign(root,'pipeline_migration',migration_record('authored-film','1.6',manifest_digest('authored-film@1.6')),'authored-film')
+    signed_story(root)
+    draft=paper();draft['shots'][0]['duration_frames']=672
+    draft['lines']=[{'text':'The gallery is closed.','start_frame':0,'duration_frames':72}]
+    old=read_revision(root)
+    save_revision(root,draft,old['edit_revision_sha256'] if old else None)
     return ws.prepare_request(root,'speech','eleven_multilingual_v2',line_index=0,voice='invented-voice')
 
 
