@@ -1779,10 +1779,9 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
                 trailer_damaged = DAMAGED
             checkpoints = {name: project_checkpoint(project_dir, trailer_pin, dict(cp, stage=name) if cp.get("stage") == name else dict(cp, pipeline=None)) for name, cp in checkpoints.items()}
     except Exception:
-        # A marker cannot grant trailer status, but a known trailer with broken signatures is damaged.
-        if marker.get("production_kind") == "trailer" or marker.get("pipeline_type") == "authored-film@1.6":
-            trailer_damaged = HISTORY_DAMAGED
-            pipeline_meta = _load_pipeline_meta("authored-film@1.6")
+        # Unverifiable history cannot authorize completion, even with no editable marker.
+        trailer_damaged = HISTORY_DAMAGED
+        pipeline_meta = _load_pipeline_meta("authored-film@1.6")
 
     if trailer_pin is None and not trailer_damaged and marker.get("production_kind") == "trailer" and marker.get("pipeline_type") == "authored-film@1.6":
         from lib.pipeline_pin import pinned_pipeline

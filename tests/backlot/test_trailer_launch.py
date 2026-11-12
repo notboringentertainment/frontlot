@@ -103,3 +103,67 @@ def test_trailer_broker_keeps_operation_route_with_strict_fake_launch(world,tmp_
     assert result['status']=='running'
     reply=post_live(sock,token,'/inbox',{'epoch':'e1'})
     assert reply['submit'].startswith('[Front Lot]')
+
+
+def test_every_trailer_start_rechecks_plugin(tmp_path,monkeypatch):
+    from scripts import claude_session as session
+    from tests.backlot.test_claude_settings import stream
+    meta=tmp_path/'meta';meta.mkdir();work=tmp_path/'work';work.mkdir()
+    paths={'sandbox_ok':meta/'ok','canary':meta/'deny'}
+    monkeypatch.setattr(session,'paths',lambda slug:paths)
+    monkeypatch.setattr(session,'canary_paths',lambda slug,w:(paths['canary'],w/'allow',w/'outside'))
+    settings=tmp_path/'settings';settings.write_text('{}')
+    calls=[]
+    class Probe:
+        pid=123
+        returncode=0
+        def __init__(self,*args,**kw): calls.append(args)
+        def communicate(self,timeout):
+            proof=stream(('Bash',{'command':f"cat {paths['canary']}"},'denied',True),
+                         ('Bash',{'command':f'cat {work}/allow'},(work/'allow').read_text(),False),
+                         ('Write',{'file_path':str(work/'outside')},'denied',True))
+            if len(calls)==1:
+                proof+='\n'+stream((cs.TOOL_NAME,{'check':'frontlot-startup-check'},'Front Lot did not confirm receipt',False))
+            return proof,None
+    monkeypatch.setattr(session.subprocess,'Popen',Probe)
+    assert session.sandbox_selfcheck('p','/fake','fake',settings,work,{},trailer=True)
+    # The second executable represents an updated or missing plugin: no tool result.
+    assert not session.sandbox_selfcheck('p','/fake','fake',settings,work,{},trailer=True)
+    assert len(calls)==2
+
+
+@pytest.mark.parametrize('unreadable',[False,True])
+def test_startup_uses_one_snapshot_and_refuses_a_changed_film(tmp_path,monkeypatch,unreadable):
+    import asyncio
+    from types import SimpleNamespace
+    from scripts import claude_session as session
+    for k in ['FRONTLOT_SKIP_PREFLIGHT']: monkeypatch.delenv(k,raising=False)
+    work=tmp_path/'work';work.mkdir()
+    class FilmSession:
+        slug='p';title='Night Window';film=tmp_path
+        token='fake-token';shutting=False
+        p={name:tmp_path/name for name in ['unavailable','sock','live','settings','brief']}
+        def _check(self): pass
+        def cancel_and_journal(self,*a): pass
+    broker=FilmSession();broker.work=work
+    monkeypatch.setattr(session,'resolve_claude',lambda:('/fake','fake'))
+    monkeypatch.setattr(session,'_login_environment',lambda:{'PATH':'/bin'})
+    reads=[]
+    def detect(film):
+        reads.append(True)
+        if unreadable: raise ValueError('Cannot read signing state')
+        return True
+    monkeypatch.setattr(cs,'trailer_workspace',detect)
+    captured=[]
+    monkeypatch.setattr(cs,'build_settings',lambda **kw:captured.append(kw['trailer']) or {})
+    monkeypatch.setattr(cs,'build_brief',lambda **kw:captured.append(kw['trailer']) or 'brief')
+    monkeypatch.setattr(cs,'writeros_package',lambda p:None)
+    monkeypatch.setattr(cs,'story_drive_folder',lambda p:None)
+    monkeypatch.setattr(session,'sandbox_selfcheck',lambda *a,**kw:captured.append(kw['trailer']) or True)
+    async def prepare(): await session.Broker._prepare(broker,asyncio.get_running_loop())
+    asyncio.run(prepare())
+    assert reads==[True]
+    assert captured==[True,True,True] and broker.trailer is True
+    monkeypatch.setattr(cs,'trailer_workspace',lambda p:False)
+    with pytest.raises(session.Unavailable,match='startup-changed'):
+        session.Broker.spawn_gated(broker,'/fake',{})

@@ -192,13 +192,15 @@ def _trailer_write_denials(film: Path, work: Path) -> list[str]:
     return sorted(paths)
 
 
-def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ: Mapping[str, str]) -> dict:
+def build_settings(*, repo_root: Path, film_root: Path, meta_root: Path, environ: Mapping[str, str],
+                   trailer: bool | None = None) -> dict:
     repo, film, meta = repo_root.resolve(), film_root.resolve(), meta_root.resolve()
     work = film / "frontlot-work"
     secrets = secret_paths(repo, environ)
     package = writeros_package(film)
     story = story_drive_folder(film)
-    trailer = trailer_workspace(film)
+    if trailer is None:
+        trailer = trailer_workspace(film)
     signing_root = Path(environ.get("OPENMONTAGE_GATES_DIR") or "~/.openmontage/gates").expanduser().resolve()
     return {
         "sandbox": {

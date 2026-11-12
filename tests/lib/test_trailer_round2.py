@@ -159,7 +159,7 @@ def test_exact_edit_and_export_are_bound_to_signed_receipt(trailer, monkeypatch)
     sha=hashlib.sha256(export.read_bytes()).hexdigest()
     common={'trailer':make_contract(28),'edit_revision_sha256':edit['edit_revision_sha256'],'export_sha256':sha}
     reports={'render_report':dict(common,outputs=[{'path':'renders/invented.mp4','duration_seconds':28}]),
-             'final_review':dict(common,output_path='renders/invented.mp4',checks={'technical_probe':{'duration_seconds':28}})}
+             'final_review':dict(common,status='pass',output_path='renders/invented.mp4',checks={'technical_probe':{'duration_seconds':28}})}
     sign_stage(trailer,'compose',reports)
     checkpoint.write_checkpoint(trailer.parent,'p','compose','completed',reports,human_approved=True)
     export.write_bytes(b'changed bytes')
@@ -291,7 +291,7 @@ def test_final_records_cannot_disagree(trailer, monkeypatch, field):
     common={'trailer':edit['trailer'],'edit_revision_sha256':edit['edit_revision_sha256'],
             'export_sha256':hashlib.sha256(export.read_bytes()).hexdigest()}
     reports={'render_report':dict(common,outputs=[{'path':'renders/invented.mp4','duration_seconds':28}]),
-             'final_review':dict(common,output_path='renders/invented.mp4')}
+             'final_review':dict(common,status='pass',output_path='renders/invented.mp4')}
     reports['final_review'][field]='0'*64
     with pytest.raises(checkpoint.CheckpointValidationError,match='fingerprints'):
         checkpoint.write_checkpoint(trailer.parent,'p','compose','awaiting_human',reports)

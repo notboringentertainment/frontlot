@@ -998,7 +998,7 @@ function openScriptModal() {
       el("div", { class: "script-card", style: "cursor:default" },
         el("div", { class: "sp-title" }, script.title || state.title),
         el("div", { class: "sp-meta" },
-          `${s.is_trailer ? "Lines and title cards" : "script"} · ${fmtDuration(script.total_duration_seconds)} · ${(script.sections || []).length} sections`),
+          `${state.is_trailer ? "Lines and title cards" : "script"} · ${fmtDuration(script.total_duration_seconds)} · ${(script.sections || []).length} sections`),
         ...scriptSections(script, 0),
         el("div", { class: "sp-fade" }, "END"),
       )),
@@ -1356,7 +1356,7 @@ function renderAwaitingNotice(s) {
 // ---------------------------------------------------------------------------
 
 function hasAuthoredGates(s) {
-  return s.pipeline.pipeline_type === "authored-film" && s.gates != null;
+  return String(s.pipeline.pipeline_type).split("@")[0] === "authored-film" && s.gates != null && !s.trailer_damaged;
 }
 
 function fmtGateTime(value) {

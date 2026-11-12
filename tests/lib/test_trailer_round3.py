@@ -34,7 +34,7 @@ def test_historical_trailer_signature_still_blocks_bare_flag(trailer,monkeypatch
     from lib.receipts import verified_approvals
     old=verified_approvals(trailer,'pipeline_migration')[-1]
     pin_project(trailer,'1.5',supersedes=old['receipt_id'])  # Simulate a previously signed downgrade, bypassing request handling.
-    with pytest.raises(Exception):
+    with pytest.raises(checkpoint.CheckpointValidationError,match="PIPELINE PIN VIOLATION:.*signed pin"):
         checkpoint.write_checkpoint(trailer.parent,'p','canon_ingest','completed',{},human_approved=True)
     from lib.trailer_contract import signed_trailer_pin
     assert signed_trailer_pin(trailer).version == '1.6'
@@ -80,7 +80,7 @@ def final_material(root):
     common={'trailer':e['trailer'],'edit_revision_sha256':e['edit_revision_sha256'],
             'export_sha256':hashlib.sha256(f.read_bytes()).hexdigest()}
     return {'render_report':dict(common,outputs=[{'path':'renders/invented.mp4','duration_seconds':28}]),
-            'final_review':dict(common,output_path='renders/invented.mp4',checks={'technical_probe':{'duration_seconds':28}})}
+            'final_review':dict(common,status='pass',output_path='renders/invented.mp4',checks={'technical_probe':{'duration_seconds':28}})}
 
 
 @pytest.mark.parametrize('measured',[3,27.9,28.1])

@@ -12,7 +12,7 @@
     },
     "target_duration_seconds": {
       "type": "number",
-      "exclusiveMinimum": 0,
+      "minimum": 1,
       "maximum": 120
     },
     "fps": {

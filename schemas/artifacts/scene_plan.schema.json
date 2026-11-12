@@ -30,7 +30,7 @@
         "scenes"
       ],
       "properties": {
-    "trailer": {"type": "object", "required": ["kind", "target_duration_seconds", "fps", "approval_points"], "properties": {"kind": {"const": "trailer"}, "target_duration_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 120}, "fps": {"const": 24}, "approval_points": {"const": {"edit": "rough_cut", "compose": "final_export"}}}, "additionalProperties": false},
+    "trailer": {"type": "object", "required": ["kind", "target_duration_seconds", "fps", "approval_points"], "properties": {"kind": {"const": "trailer"}, "target_duration_seconds": {"type": "number", "minimum": 1, "maximum": 120}, "fps": {"const": 24}, "approval_points": {"const": {"edit": "rough_cut", "compose": "final_export"}}}, "additionalProperties": false},
         "version": {
           "type": "string",
           "const": "1.0"
@@ -314,7 +314,7 @@
         "scenes"
       ],
       "properties": {
-    "trailer": {"type": "object", "required": ["kind", "target_duration_seconds", "fps", "approval_points"], "properties": {"kind": {"const": "trailer"}, "target_duration_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 120}, "fps": {"const": 24}, "approval_points": {"const": {"edit": "rough_cut", "compose": "final_export"}}}, "additionalProperties": false},
+    "trailer": {"type": "object", "required": ["kind", "target_duration_seconds", "fps", "approval_points"], "properties": {"kind": {"const": "trailer"}, "target_duration_seconds": {"type": "number", "minimum": 1, "maximum": 120}, "fps": {"const": 24}, "approval_points": {"const": {"edit": "rough_cut", "compose": "final_export"}}}, "additionalProperties": false},
         "version": {
           "type": "string",
           "const": "1.1"

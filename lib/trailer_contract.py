@@ -59,6 +59,29 @@ def _duration(value, target):
         raise ValueError('The trailer is longer than its target. At most one frame of timing tolerance is allowed, and never more than two minutes.')
 
 
+def _whole_frames(value):
+    if not math.isclose(value * FPS, round(value * FPS), abs_tol=1e-8, rel_tol=0):
+        raise ValueError('Trailer script and shot-list timing must use whole frames at twenty-four frames per second.')
+
+
+def _frame_times(value, target):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key.endswith('_seconds'):
+                _duration(item, target)
+                _whole_frames(item)
+            else:
+                _frame_times(item, target)
+    elif isinstance(value, list):
+        for item in value:
+            _frame_times(item, target)
+
+
+def edit_duration(edit):
+    return sum((cut['out_seconds'] - cut['in_seconds']) / cut.get('speed', 1)
+               for cut in edit.get('cuts', []) if cut.get('layer', 'primary') == 'primary')
+
+
 def validate_stage_contract(marker_contract, stage, artifacts, *, partial=False):
     try:
         expected = make_contract((marker_contract or {}).get('target_duration_seconds'))
@@ -75,11 +98,15 @@ def validate_stage_contract(marker_contract, stage, artifacts, *, partial=False)
         artifact = artifacts.get(name)
         if not isinstance(artifact, dict) or artifact.get('trailer') != expected:
             raise ValueError('Each trailer stage must carry the saved trailer contract unchanged.')
+        if name in {'script', 'scene_plan'}:
+            _frame_times(artifact, target)
         if 'total_duration_seconds' in artifact:
             _duration(artifact['total_duration_seconds'], target)
         for section in artifact.get('sections', []) + artifact.get('scenes', []):
             _duration(section.get('end_seconds'), target)
         if name == 'edit_decisions':
+            if artifact.get('render_runtime') != 'remotion':
+                raise ValueError('Trailer edits must use Remotion for timed composition.')
             # Existing second-based cut contract; the later cutting view supplies frame timelines.
             end = 0
             for cut in artifact.get('cuts', []):
@@ -175,6 +202,8 @@ def approval_record(root, pin, stage, artifacts):
                         raise ValueError('The exported file length does not match its review records within one frame.')
             except (OSError, subprocess.SubprocessError, KeyError, TypeError) as exc:
                 raise ValueError('The exported trailer could not be measured.') from exc
+            if abs(measured - edit_duration(saved)) > TOLERANCE_SECONDS + 1e-9:
+                raise ValueError('The exported file length does not match the saved edit timeline within one frame.')
             record['export_sha256'] = sha
     return record
 
@@ -188,6 +217,8 @@ def require_stage_approval(root, pin, stage, artifacts):
             and r.get('migration_status') == 'reviewed']
     if not rows:
         raise ValueError(SIGNED_REQUIRED)
+    if stage == 'compose' and (artifacts.get('final_review') or {}).get('status') != 'pass':
+        raise ValueError('The final review must pass before this trailer can be completed.')
     # Ledger order is authoritative: an older approved revision never revives.
     rows = rows[-1:]
     response = rows[0].get('user_response')
