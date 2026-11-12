@@ -1703,6 +1703,8 @@ GATE_RENDERERS = _GateRendererMap({
     "artifact_review": _render_text_only,
     "cast_change": _render_cast_change,
     "audio_spend": _render_audio_spend,
+    "audio_take": _render_text_only,
+    "audio_resolution": _render_text_only,
 })
 assert set(GATE_RENDERERS) == set(APPROVAL_KINDS)
 

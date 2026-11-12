@@ -1643,6 +1643,8 @@ def _construct_audio_spend(root: Path, req: dict) -> Constructed:
     from tools.audio._governed import read_request, check_current, _tracker
     record = read_request(root, _require_entity(req))
     config = check_current(root, record)
+    from lib.audio_workspace import check_price
+    check_price(root, record)
     bound = record["max_cash_usd"] + record["max_credits_usd"]
     if _tracker(root, config).budget_remaining_usd < round(bound, 4):
         raise GateHandlerError("The remaining production budget no longer covers this audio request.")
@@ -1664,12 +1666,30 @@ def _construct_audio_spend(root: Path, req: dict) -> Constructed:
     return Constructed(record, None, record["request_id"], evidence=evidence, pre_commit_check=recheck)
 
 
+def _construct_audio_workspace(root: Path, req: dict) -> Constructed:
+    from lib.audio_workspace import decision_record, resolution_record
+    supplied = req.get("approval_record") or {}
+    identity = _require_entity(req)
+    def build():
+        if req["kind"] == "audio_take":
+            return decision_record(root, identity, supplied.get("decision"))
+        return resolution_record(root, identity, supplied.get("charged"), supplied.get("cash_usd"), supplied.get("credits_usd"), supplied.get("note"))
+    record = build()
+    def recheck():
+        if build() != record:
+            raise GateHandlerError("The audio material changed. Nothing was approved.")
+    evidence = (json.dumps(record, ensure_ascii=False, indent=2),)
+    return Constructed(record, None, identity, evidence=evidence, pre_commit_check=recheck)
+
+
 CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
     "look_lock": _construct_look_lock,
     "reference_import": _construct_reference_import,
     "pipeline_migration": _construct_pipeline_migration,
     "config": _construct_config,
     "audio_spend": _construct_audio_spend,
+    "audio_take": _construct_audio_workspace,
+    "audio_resolution": _construct_audio_workspace,
     "storyboard_batch": _construct_storyboard_batch,
     "artifact_review": _construct_artifact_review,
     "hero": _construct_character,

@@ -166,41 +166,10 @@ class TTSSelector(BaseTool):
         return tool.estimate_cost(inputs) if tool else 0.0
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
-        from lib.scoring import rank_providers
-
-        task_context = self._prepare_task_context(inputs)
-        candidates = self._providers()
-
-        # Rank mode — return scored provider rankings without generating
         if inputs.get("operation") == "rank":
-            rankings = rank_providers(candidates, task_context)
-            return ToolResult(
-                success=True,
-                data={
-                    "rankings": self._serialize_rankings(candidates, rankings),
-                    "explanation": "\n".join(r.explain() for r in rankings[:5]),
-                    "normalized_task_context": task_context,
-                },
-            )
-
-        # Normal generation — use scored selection
-        tool, score = self._select_best_tool(inputs, candidates, task_context)
-        if tool is None:
-            return ToolResult(success=False, error="No TTS provider available.")
-
-        result = tool.execute(inputs)
-        if result.success:
-            result.data.setdefault("selected_tool", tool.name)
-            result.data["selected_provider"] = tool.provider
-            result.data["selection_reason"] = score.explain() if score else f"Selected {tool.provider} ({tool.name})"
-            if score:
-                result.data["provider_score"] = score.to_dict()
-            result.data.update(self._tool_context_payload(tool))
-            result.data["alternatives_considered"] = [
-                t.name for t in candidates
-                if t.name != tool.name and t.get_status().value == "available"
-            ]
-        return result
+            return ToolResult(success=True, data={"rankings": [], "explanation": "Voice requests use the explicitly approved ElevenLabs account only."})
+        from tools.audio.elevenlabs_tts import ElevenLabsTTS
+        return ElevenLabsTTS().execute(inputs)
 
     def _select_best_tool(
         self,

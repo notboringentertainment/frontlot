@@ -83,6 +83,8 @@ def refusal(inputs):
             return MESSAGE
         for path in root.glob('checkpoint_*.json'):
             pin = _read_marker(path).get('pipeline') or {}
+            if pin == 'authored-film@1.6':
+                return MESSAGE
             if isinstance(pin, dict) and pin.get('name') == 'authored-film' and pin.get('version') == '1.6':
                 return MESSAGE
         for name in ('project.yaml', 'approvals.jsonl'):

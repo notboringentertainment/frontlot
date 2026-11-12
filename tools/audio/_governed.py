@@ -38,7 +38,7 @@ def _payload(record):
     return {k:record[k] for k in ('provider','kind','model','voice','prompt','duration_seconds')}
 
 def validate_request(record, *, check_expiry=True):
-    if not isinstance(record,dict) or set(record)!=FIELDS:
+    if not isinstance(record,dict) or not FIELDS <= set(record) or set(record)-FIELDS-{'binding','price_basis_sha256'}:
         raise ValueError('Audio request fields changed or are incomplete.')
     try:
         if str(uuid.UUID(record['request_id']))!=record['request_id']:raise ValueError()
@@ -90,7 +90,7 @@ def _tracker(root,config):
         single_action_approval_usd=float('inf'),require_approval_for_new_paid_tool=False,
         mode=BudgetMode.CAP,cost_log_path=root/'cost_log.json')
 
-def prepare(root, *, kind,model,voice,prompt,duration_seconds,max_cash_usd,max_credits_usd,price_expires_at):
+def prepare(root, *, kind,model,voice,prompt,duration_seconds,max_cash_usd,max_credits_usd,price_expires_at,binding=None,price_basis_sha256=None):
     root=_root(root)
     # Bounds are validated even if the saved settings are damaged.
     _money(max_cash_usd);_money(max_credits_usd)
@@ -98,6 +98,8 @@ def prepare(root, *, kind,model,voice,prompt,duration_seconds,max_cash_usd,max_c
     r=dict(project_id=root.name,request_id=str(uuid.uuid4()),provider='elevenlabs',kind=kind,model=model,voice=voice,prompt=prompt,
            duration_seconds=duration_seconds,max_cash_usd=max_cash_usd,max_credits_usd=max_credits_usd,
            price_expires_at=price_expires_at,config_sha256=config.digest)
+    if binding is not None or price_basis_sha256 is not None:
+        r.update(binding=copy.deepcopy(binding),price_basis_sha256=price_basis_sha256)
     r['input_sha256']=record_sha256(_payload(r))
     # Expired quotes may be saved for inspection but cannot be signed or submitted.
     validate_request(r,check_expiry=False)
@@ -138,6 +140,9 @@ def read_request(root,request_id):
 
 def check_current(root,record):
     root=_root(root);validate_request(record)
+    if 'binding' in record or 'price_basis_sha256' in record:
+        from lib.audio_workspace import check_price
+        check_price(root,record)
     if read_request(root,record['request_id'])!=record:raise ValueError('Saved audio request changed.')
     config=load_current_verified_project_config(root)
     config.require_egress('elevenlabs',CLASSES[record['kind']])
