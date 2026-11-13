@@ -313,7 +313,39 @@ def _instrument_execute(fn: Callable) -> Callable:
         try:
             from lib.events import emit_event, infer_project_dir
         except Exception:
+            # Missing optional telemetry cannot turn an alternate audio route
+            # into an unsigned service call.
+            runtime=getattr(self,'runtime',None)
+            if getattr(self,'name','') not in {'elevenlabs_tts','music_gen','tts_selector'} and (
+                getattr(self,'capability','') in {'tts','music_generation','sfx','sound_effects','audio_generation','speech_to_text'}
+                or (self.__class__.__module__.startswith('tools.audio.') or getattr(self,'name','') in {'azure_stt','dashscope_asr'}) and getattr(runtime,'value',runtime)=='api'):
+                from tools.audio._legacy_guard import refusal
+                denied=refusal(inputs,local_only=getattr(runtime,'value',runtime)=='local')
+                if denied:return ToolResult(success=False,error=denied)
             return fn(self, inputs, *args, **kwargs)
+
+        # A pending audio bill freezes further network audio, including a
+        # direct provider call that does not pass through the voice selector.
+        # This stop never supplies spending permission for any tool.
+        runtime = getattr(self, "runtime", None)
+        protected_audio = getattr(self, "name", "") in {"elevenlabs_tts", "music_gen"} or (getattr(self, "name", "") == "tts_selector" and isinstance(inputs,dict) and inputs.get("audio_request_id"))
+        if not protected_audio and getattr(runtime, "value", runtime) == "api" and (getattr(self, "capability", "") in {"tts", "music_generation", "sfx", "sound_effects", "audio_generation", "speech_to_text"} or getattr(self,'name','') in {'azure_stt','dashscope_asr'}):
+            audio_root = infer_project_dir(inputs)
+            if audio_root is not None:
+                from tools.cost_tracker import nonterminal_reservations
+                pending = nonterminal_reservations(audio_root)
+                if any((r.get("output_hint") or {}).get("kind") == "audio" for r in pending):
+                    return ToolResult(success=False, error="An audio charge is unresolved. Check and sign its account outcome before any more audio calls.")
+
+        # Alternate audio routes need positive authority, never a failed attempt
+        # to identify a trailer. Pure local processing has no service boundary.
+        audio_generator = getattr(self, "capability", "") in {"tts", "music_generation", "sfx", "sound_effects", "audio_generation", "speech_to_text"}
+        audio_service = (self.__class__.__module__.startswith("tools.audio.") or getattr(self,'name','') in {'azure_stt','dashscope_asr'}) and getattr(runtime, "value", runtime) == "api"
+        if getattr(self, "name", "") not in {"elevenlabs_tts", "music_gen", "tts_selector"} and (audio_generator or audio_service):
+            from tools.audio._legacy_guard import refusal
+            denied = refusal(inputs,local_only=getattr(runtime,'value',runtime)=='local')
+            if denied:
+                return ToolResult(success=False, error=denied)
 
         tool_name = getattr(self, "name", "") or self.__class__.__name__
         scene_id = inputs.get("scene_id") if isinstance(inputs, dict) else None

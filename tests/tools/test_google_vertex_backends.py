@@ -15,6 +15,8 @@ def test_blank_google_location_uses_documented_default(monkeypatch) -> None:
 
 
 def test_google_music_requests_the_global_vertex_location(monkeypatch, tmp_path) -> None:
+    # The merged generation fixture already supplies the registered signed root.
+    root = tmp_path
     monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
     import tools.google_credentials as credentials
 
@@ -30,7 +32,7 @@ def test_google_music_requests_the_global_vertex_location(monkeypatch, tmp_path)
 
     result = GoogleMusic().execute({
         "prompt": "solo piano",
-        "output_path": str(tmp_path / "music.mp3"),
+        "output_path": str(root / "music.mp3"),
     })
 
     assert result.success is False

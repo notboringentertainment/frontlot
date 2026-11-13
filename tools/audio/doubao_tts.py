@@ -212,6 +212,8 @@ class DoubaoTTS(BaseTool):
         return result
 
     def _generate(self, inputs: dict[str, Any], *, api_key: str, voice_id: str) -> ToolResult:
+        from tools.audio._legacy_guard import require_legacy_audio
+        require_legacy_audio(inputs)
         import requests
 
         text = inputs["text"]

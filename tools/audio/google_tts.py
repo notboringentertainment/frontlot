@@ -216,6 +216,8 @@ class GoogleTTS(BaseTool):
         api_key: str | None = None,
         bearer_token: str | None = None,
     ) -> ToolResult:
+        from tools.audio._legacy_guard import require_legacy_audio
+        require_legacy_audio(inputs)
         import requests
 
         text = inputs["text"]

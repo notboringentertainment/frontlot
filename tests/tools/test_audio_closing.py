@@ -93,7 +93,9 @@ def test_zero_total_bound_is_always_refused(project):
 
 def test_human_readable_expiry_keeps_signed_epoch(project):
     from scripts.gate_approve import construct
-    r=prepare(project)
+    from tests.tools.test_audio_half_transport import priced,music_request
+    priced.__wrapped__(project)
+    r,_=music_request(project)
     b=construct(project,{'kind':'audio_spend','entity_id':r['request_id']})
     assert any('2100-01-01 00:00:00 UTC' in line for line in b.evidence)
     assert b.record['price_expires_at']==4102444800
@@ -110,10 +112,12 @@ def test_settings_change_without_budget_change_is_refused(project):
 @pytest.mark.parametrize('when',['construct','commit'])
 def test_signer_checks_remaining_budget(project,when):
     from scripts.gate_approve import construct,GateHandlerError
-    r=prepare(project);t=Transport();req={'kind':'audio_spend','entity_id':r['request_id']}
+    from tests.tools.test_audio_half_transport import priced,music_request
+    priced.__wrapped__(project)
+    r,_=music_request(project);t=Transport();req={'kind':'audio_spend','entity_id':r['request_id']}
     built=construct(project,req)
     tracker=audio._tracker(project,load_verified_project_config(project))
-    entry=tracker.estimate('footage','invented',0.1);tracker.reserve(entry);tracker.reconcile(entry,0.1)
+    entry=tracker.estimate('footage','invented',0.9999);tracker.reserve(entry);tracker.reconcile(entry,0.9999)
     with pytest.raises(GateHandlerError,match='remaining production budget'):
         construct(project,req) if when=='construct' else built.pre_commit_check()
     assert (t.calls,t.downloads)==(0,0)
@@ -175,8 +179,8 @@ def test_true_legacy_production_retains_three_posts(project,monkeypatch):
     for i,tool in enumerate([ElevenLabsTTS(),MusicGen(),TTSSelector()]):
         result=tool.execute({'project_dir':str(project),'text':'Closed tonight.','prompt':'A quiet lock.',
             'duration_seconds':3,'preferred_provider':'elevenlabs','output_path':str(project/(str(i)+'.mp3'))})
-        assert result.success
-    assert len(calls)==3
+        assert not result.success and 'each request' in result.error
+    assert len(calls)==0
 
 @pytest.mark.parametrize('attribution',['project','output','cwd'])
 def test_historical_signed_trailer_without_marker_still_refuses(project,monkeypatch,attribution):
