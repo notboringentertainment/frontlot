@@ -2,6 +2,10 @@
 Pixabay caller must clamp before building the request."""
 
 from tools.graphics.pixabay_image import PixabayImage
+import pytest
+from tests.tools.conftest import generation_tmp_path as tmp_path
+
+pytestmark = pytest.mark.usefixtures('verified_generation_project')
 from tools.video.pixabay_video import PixabayVideo
 from tools.video.stock_sources.base import SearchFilters
 from tools.video.stock_sources.pixabay_video import PixabayVideoSource

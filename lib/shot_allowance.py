@@ -27,12 +27,16 @@ class ShotGuard:
     shot_id: str
     kind: str
     inputs: Mapping
+    verification_refusal: str | None = None
 
     @property
     def scope(self):
         return f"shot:{self.shot_id}"
 
     def check(self, project_root, estimated_usd, *, tool=None):
+        from lib.supervised_production import is_trailer
+        if is_trailer(project_root):
+            raise ShotAllowanceError('A signed footage request is required. Trailer footage spending is not available yet; nothing was sent.')
         from lib.supervised_production import read_brief, history
         from tools.cost_tracker import load_reservations
         brief = read_brief(project_root, self.shot_id)
@@ -82,33 +86,49 @@ class ShotGuard:
             raise ShotAllowanceError("Shot video take allowance is exhausted")
         if round(held + estimated_usd, 4) > round(brief["spend_allowance_usd"], 4):
             raise ShotAllowanceError("Shot spending allowance is exhausted")
+        if self.verification_refusal:
+            raise ShotAllowanceError(self.verification_refusal)
 
 
 def resolve(project_root, inputs, *, kind):
+    verification_refusal=None
+    if kind in ('image','video'):
+        from tools._generation_guard import refusal,UNVERIFIED
+        message=refusal(dict(inputs) if isinstance(inputs,Mapping) else {},expected_root=project_root)
+        if message:
+            from lib.supervised_production import is_trailer
+            if message!=UNVERIFIED or is_trailer(project_root):raise ShotAllowanceError(message)
+            # Preserve an older shot's existing, specific stop sentence. A
+            # failed signature still cannot grant spending: if its existing
+            # scope checks pass, the guard refuses verification at the end.
+            verification_refusal=message
+    def unscoped():
+        if verification_refusal:raise ShotAllowanceError(verification_refusal)
+        return None
     from lib.supervised_production import read_brief, shot_dir
     if not isinstance(inputs, Mapping):
-        return None
+        return unscoped()
     shot_id = inputs.get("shot_id")
     explicit = inputs.get("asset_class") == "supervised_shot"
     if not shot_id:
         if explicit:
             raise ShotAllowanceError("A supervised shot requires shot_id and a saved brief")
-        return None
+        return unscoped()
     try:
         shot_dir(project_root, shot_id)
     except ValueError as exc:
         if explicit:
             raise ShotAllowanceError(str(exc)) from exc
-        return None
+        return unscoped()
     # A malformed saved journal is not permission to revert to project-only funds.
     brief = read_brief(project_root, shot_id)
     if brief is None:
         if explicit:
             raise ShotAllowanceError("Prepare the supervised shot brief first")
-        return None
+        return unscoped()
     if kind not in ("image", "video"):
         raise ShotAllowanceError("A supervised paid call must declare image or video")
-    return ShotGuard(shot_id, kind, inputs)
+    return ShotGuard(shot_id, kind, inputs,verification_refusal)
 
 
 def check_call(project_root, inputs, *, kind, estimated_usd=None):

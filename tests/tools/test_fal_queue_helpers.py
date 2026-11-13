@@ -108,8 +108,11 @@ def test_paid_call_context_requires_registered_verified_project(tmp_path, monkey
     project = make_verified_project(tmp_path, monkeypatch, "proj-rook", budget=3.5)
     with pytest.raises(_shared.PaidCallContextError, match="registered project"):
         _shared.paid_call_context({"project_dir": str(stray), "budget_usd_cap": 99.0})
-    # a file path deep inside the project attributes to its root
-    root, tracker, config = _shared.paid_call_context({"project_dir": str(project / "assets" / "x.png")})
+    # A generation call must name the registered root, never a sub-folder.
+    from lib.shot_allowance import ShotAllowanceError
+    with pytest.raises(ShotAllowanceError,match='registered production'):
+        _shared.paid_call_context({"project_dir": str(project / "assets" / "x.png")})
+    root, tracker, config = _shared.paid_call_context({"project_dir": str(project)})
     assert root == project.resolve()
     assert tracker.budget_total_usd == 3.5 and config.budget_usd_cap == 3.5
     assert tracker.mode.value == "cap"

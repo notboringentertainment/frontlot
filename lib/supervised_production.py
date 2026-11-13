@@ -20,6 +20,47 @@ from lib.state_io import append_jsonl, read_jsonl
 SUPPORTED_TOOLS = {'kling_reference_video', 'seedance_video', 'seedream_image'}
 
 
+def is_trailer(root):
+    """The signed pin remains authoritative even if the marker is edited."""
+    from lib.trailer_contract import signed_trailer_pin
+    try:
+        if signed_trailer_pin(root) is not None:return True
+    except Exception:
+        # Identity evidence is not spending authority. The generation guard
+        # separately requires verified settings and the complete history.
+        pass
+    marker = Path(root) / 'project.json'
+    try:data = json.loads(marker.read_text()) if marker.is_file() else {}
+    except (ValueError,OSError):data={}
+    if not isinstance(data,dict):data={}
+    if data.get('production_kind')=='trailer' or 'trailer' in data:return True
+    from backlot.state import _trailer_display_evidence
+    try:return _trailer_display_evidence(Path(root),data)
+    except Exception:return False
+
+
+def _paper_shot(root, shot_id):
+    from lib.trailer_edit import paper_state
+    state = paper_state(root)
+    shots = (state.get('current') or {}).get('paper_cut', {}).get('shots', [])
+    matches = [s for s in shots if s.get('id') == shot_id]
+    if len(matches) != 1:
+        raise ValueError('This shot is missing from the paper cut. Save the shot list first.')
+    return matches[0]
+
+
+def paper_binding(root, brief):
+    """Compare shot content, not the whole edit revision or a positional index."""
+    try:
+        current = _paper_shot(root, brief.get('paper_shot_id'))
+        changed = current != brief.get('paper_shot')
+    except (ValueError, OSError, TypeError, KeyError):
+        changed = True
+    return {'shot_id': brief.get('paper_shot_id'), 'needs_review': changed,
+            'message': 'The paper cut shot changed or is missing. Prepare a revised brief before using this take.'
+                       if changed else 'Bound to the saved paper cut shot.'}
+
+
 def shot_dir(root, shot_id):
     root = Path(root).resolve()
     if not isinstance(shot_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,100}', shot_id):
@@ -70,6 +111,12 @@ def prepare(root, spec, *, user_note):
     """Save a new brief revision; the shot id retains all its previous spend."""
     root = Path(root).resolve()
     brief = json.loads(json.dumps(spec, allow_nan=False))
+    if is_trailer(root):
+        shot = _paper_shot(root, brief.get('paper_shot_id'))
+        if (brief.get('shot_id') != shot['id'] or brief.get('direction') != shot['purpose']
+                or [r.get('path') for r in brief.get('reference_manifest', [])] != shot['references']):
+            raise ValueError('The description and references must match the paper cut shot exactly.')
+        brief['paper_shot'] = shot
     shot_id = brief['shot_id']
     directory = shot_dir(root, shot_id)
     _note(user_note)
@@ -126,6 +173,8 @@ def request(root, shot_id, *, prompt, output_path, expect_revision=None, **setti
     brief = read_brief(root, shot_id)
     if brief is None or brief['stopped']:
         raise ValueError('Shot is missing or stopped')
+    if is_trailer(root) and paper_binding(root, brief)['needs_review']:
+        raise ValueError('The paper cut shot changed. Prepare a revised brief; nothing was spent.')
     if expect_revision is not None and brief['revision_id'] != expect_revision:
         from lib.run_common import InputChanged
         raise InputChanged('the shot brief changed after it was approved; nothing was spent')
@@ -198,6 +247,16 @@ def attach(root, shot_id, source, *, user_note, cost_usd=None, provider_job_id=N
 
 
 def select(root, shot_id, take_id, *, user_note, start=None, end=None):
+    if not is_trailer(root):
+        return _select(root, shot_id, take_id, user_note=user_note, start=start, end=end)
+    from tools.cost_tracker import reservation_lock
+    with reservation_lock(Path(root)):
+        # Acceptance and cut insertion belong to the signed footage lifecycle.
+        # Do not turn an imported image or an old notebook entry into footage.
+        raise ValueError(TRAILER_DECISIONS_UNAVAILABLE)
+
+
+def _select(root, shot_id, take_id, *, user_note, start=None, end=None):
     take = next((row for row in history(root, shot_id)
                  if row['kind'] == 'take' and row['take_id'] == take_id), None)
     if take is None:
@@ -219,30 +278,46 @@ def select(root, shot_id, take_id, *, user_note, start=None, end=None):
 
 def decline(root, shot_id, take_id, *, user_note):
     """Set a take aside. Nothing is chosen, so no decision-log entry."""
+    if is_trailer(root):raise ValueError(TRAILER_DECISIONS_UNAVAILABLE)
+    from tools.cost_tracker import reservation_lock
+    with reservation_lock(Path(root)):
+        return _decline(root, shot_id, take_id, user_note=user_note)
+
+
+def _decline(root, shot_id, take_id, *, user_note):
     if not any(row['kind'] == 'take' and row['take_id'] == take_id for row in history(root, shot_id)):
         raise ValueError('Unknown take')
     return _append(root, shot_id, {'kind': 'decline', 'take_id': take_id, 'user_note': _note(user_note)})
 
 
-def take_decisions(rows):
+def take_decisions(rows, *, final_declines=False):
     """Each take's standing: chosen, declined, passed_over or waiting.
 
     A take waits until it is chosen or declined, or until Ben chooses another
     take made after it: approving one take settles every take made before it.
     A take made after the latest choice waits again, stopped shot or not.
     """
+    # This first half has no verifiable trailer decision kind. A caller of
+    # this low-level reader cannot promote unsigned rows either.
+    if final_declines:rows=[r for r in rows if r.get('kind') not in ('selection','decline')]
     chosen, last_choice, declined, order = None, -1, set(), {}
+    if final_declines:
+        declined = {r.get('take_id') for r in rows if r.get('kind') == 'decline'}
     for index, row in enumerate(rows):
         kind = row.get('kind')
         if kind == 'take':
             order.setdefault(row.get('take_id'), index)
         elif kind == 'selection':
+            if final_declines and row.get('take_id') in declined:
+                continue
             chosen, last_choice = row.get('take_id'), index
         elif kind == 'decline':
             declined.add(row.get('take_id'))
     standing = {}
     for take_id, index in order.items():
-        if take_id == chosen:
+        if final_declines and take_id in declined:
+            standing[take_id] = 'declined'
+        elif take_id == chosen:
             standing[take_id] = 'chosen'
         elif take_id in declined:
             standing[take_id] = 'declined'
@@ -253,9 +328,28 @@ def take_decisions(rows):
     return standing
 
 
+TRAILER_DECISIONS_UNAVAILABLE = 'Trailer take decisions require your signature. Signed take decisions are not available yet; nothing was decided.'
+
+
+def decision_rows(root, rows):
+    """Only older films still use conversational notebook decisions.
+
+    No signed trailer take lifecycle exists in this half. Even rows carrying
+    invented receipt identifiers or signature fields are historical notes,
+    never authority. The signed lifecycle must verify receipts before enabling
+    trailer decisions; it cannot infer consent from these rows.
+    """
+    if not is_trailer(root):return rows
+    return [r for r in rows if r.get('kind') not in ('selection','decline')]
+
+
+def shot_take_decisions(root, rows):
+    return take_decisions(decision_rows(root,rows),final_declines=is_trailer(root))
+
+
 def waiting_takes(root, shot_id):
     rows = history(root, shot_id)
-    standing = take_decisions(rows)
+    standing = shot_take_decisions(root,rows)
     return [row for row in rows if row['kind'] == 'take' and standing.get(row['take_id']) == 'waiting']
 
 
@@ -313,6 +407,9 @@ def _title(path):
 def source_changes(root, brief):
     """What the brief was made from that has changed since: [{kind, name|entity_id, missing}]."""
     changes = []
+    if is_trailer(root) and paper_binding(root, brief)['needs_review']:
+        changes.append({'kind': 'source', 'name': 'the paper cut shot',
+                        'path': 'the paper cut shot', 'missing': False})
     for snapshot in brief.get('source_snapshots') or []:
         path = Path(snapshot['path'])
         current = _current_hash(path) if path.is_file() else None
@@ -343,13 +440,15 @@ def inspect_shot(root, shot_id):
     warnings = _source_warnings(root, brief)
     rows = history(root, shot_id)
     revisions = {r['event_id']: r['brief'] for r in rows if r['kind'] == 'brief'}
-    standing = take_decisions(rows)
+    trailer = is_trailer(root)
+    standing = shot_take_decisions(root,rows)
     takes = [{**r, 'standing': standing.get(r['take_id']),
               'source_warnings': _source_warnings(root, revisions[r['brief_revision_id']])}
              for r in rows if r['kind'] == 'take']
-    return {'brief': brief, 'warnings': warnings,
+    return {**({'paper_binding': paper_binding(root, brief)} if trailer else {}),
+            'brief': brief, 'warnings': warnings,
             'takes': takes,
             'waiting_for_ben': [t['take_id'] for t in takes if t['standing'] == 'waiting'],
-            'declines': [r for r in rows if r['kind'] == 'decline'],
-            'selections': [r for r in rows if r['kind'] == 'selection'],
+            'declines': [r for r in decision_rows(root,rows) if r['kind'] == 'decline'],
+            'selections': [r for r in decision_rows(root,rows) if r['kind'] == 'selection'],
             'proposals': [r for r in rows if r['kind'] == 'canon_proposal']}

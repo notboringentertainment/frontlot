@@ -643,6 +643,8 @@ def _decide_take_locked(project_dir: Path, shot_id: str, take_id: str, decision:
         raise HTTPException(status_code=404, detail="That take isn't on this shot.")
     if take_id not in waiting:
         raise HTTPException(status_code=409, detail="This take is already decided. The card has been refreshed.")
+    if sp.is_trailer(project_dir):
+        raise HTTPException(status_code=409, detail=sp.TRAILER_DECISIONS_UNAVAILABLE)
     note = note or _TAKE_NOTES[decision]
     try:
         if decision == "approve":

@@ -184,7 +184,7 @@ def test_unregistered_project_dir_rejected_before_any_network(env, tmp_path, mon
     (stray / "project.yaml").write_bytes((env / "project.yaml").read_bytes())
     with patch.object(_shared, "fal_queue_submit") as submit, patch.object(_shared, "upload_image_fal") as up:
         r = SeedanceVideo().execute(_inputs(env, project_dir=str(stray), output_path=str(stray / "s.mp4")))
-        assert not r.success and "preflight" in r.error and "registered project" in r.error
+        assert not r.success and "registered production" in r.error
         r = SeedanceVideo().execute({**_inputs(env), "project_dir": ""})
         assert not r.success and "project_dir" in r.error
     submit.assert_not_called()
@@ -212,7 +212,7 @@ def test_unapproved_project_config_rejected(env, tmp_path, monkeypatch):
     cfg.write_bytes(cfg.read_bytes().replace(b"budget_usd_cap: 50.0", b"budget_usd_cap: 5000.0"))
     with patch.object(_shared, "fal_queue_submit") as submit:
         r = SeedanceVideo().execute(_inputs(env))
-    assert not r.success and "approval receipt" in r.error
+    assert not r.success and "verifiable signed settings" in r.error
     submit.assert_not_called()
 
 
@@ -599,7 +599,7 @@ def test_v20_refused_without_a_resolvable_project(tmp_path, monkeypatch):
          patch.object(_shared, "upload_image_fal") as upload, \
          patch("requests.post") as raw_post:
         r = SeedanceVideo().execute({"prompt": "p", "model_version": "2.0", "output_path": str(tmp_path / "x.mp4")})
-    assert not r.success and "registered project" in r.error and "2.5" in r.error
+    assert not r.success and "registered production" in r.error
     _assert_nothing_left_the_machine(submit, upload, raw_post)
 
 
@@ -624,7 +624,7 @@ def test_v20_refused_for_unpinned_project_too(legacy_env):
          patch("requests.post") as raw_post:
         r = SeedanceVideo().execute({"prompt": "p", "model_version": "2.0", "operation": "image_to_video",
                                      "image_path": str(legacy_env / "anything.png"), "output_path": str(out)})
-    assert not r.success and "not look-governed per the signed pipeline pin" in r.error and "kling_reference_video" in r.error
+    assert not r.success and "registered production" in r.error
     _assert_nothing_left_the_machine(submit, upload, raw_post)
     assert not (legacy_env / "cost-reservations.jsonl").exists()
 
