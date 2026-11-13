@@ -5,6 +5,7 @@ from playwright.sync_api import sync_playwright,expect
 from tests.backlot.test_voice_panel_browser import board,short_signing_folder
 from tests.lib.test_cutting_signed import signed_cut
 from tests.tools.test_signed_footage import film,provider,looks,workspace
+from tests.title_renderer import require_title_renderer
 
 def test_cards_save_sign_changed_refusal_and_play(signed_cut,monkeypatch):
  root,provider,posts,*_=signed_cut
@@ -15,6 +16,7 @@ def test_cards_save_sign_changed_refusal_and_play(signed_cut,monkeypatch):
   if folder:
    path=Path(folder)/(prefix+name+'.png');assert not path.exists();page.screenshot(path=str(path))
  with board(root,monkeypatch) as url,sync_playwright() as pw:
+  if folder:print('Invented title board:',url+'/p/'+root.name+'#k=invented-browser-proof',flush=True)
   browser=pw.chromium.launch(headless=True)
   try:
    page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))

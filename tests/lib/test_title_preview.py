@@ -4,6 +4,7 @@ import pytest
 from tests.lib.test_cutting_view import media,cut
 from tests.lib.test_trailer_titles import card
 from tests.tools.test_signed_footage import film,provider,looks,workspace
+from tests.title_renderer import require_title_renderer
 
 def test_saved_card_pixels_and_exact_frame_boundaries(media,tmp_path):
  from lib import cutting_view as cutting,trailer_edit,trailer_titles as titles

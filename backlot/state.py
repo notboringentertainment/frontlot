@@ -1788,11 +1788,11 @@ class _GateRendererMap(dict[str, Any]):
 # intentional test failure.
 def _render_trailer_card(root,req):
     from urllib.parse import quote
-    from lib.trailer_titles import approval_record
+    from lib.trailer_titles import approval_record,font_name,visible_characters
     from lib.canonical_json import record_sha256
     try:
         record=approval_record(root,req['entity_id']);card=record['card']
-        return {'title_card':card,'card_image':f'/api/project/{quote(root.name,safe="")}/cut/cards/{quote(card["id"],safe="")}/lettering?fingerprint={record_sha256(record)}'}
+        return {'title_card':card,'font_name':font_name(card),'visible_characters':visible_characters(card['text']),'card_image':f'/api/project/{quote(root.name,safe="")}/cut/cards/{quote(card["id"],safe="")}/lettering?fingerprint={record_sha256(record)}'}
     except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This card changed. Save the cut and prepare a new review.'}
 
 GATE_RENDERERS = _GateRendererMap({
