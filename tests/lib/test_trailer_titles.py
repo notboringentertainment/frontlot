@@ -29,8 +29,11 @@ def test_text_bytes_spaces_accents_and_quotes_survive_layout(media):
  value=card(text)
  checked=titles.validate_cards(root,[value],24,require_approval=False)[0]
  assert checked['text'].encode()==text.encode()
- from PIL import Image
+ from PIL import Image,ImageDraw,ImageFont
  image=Image.open(io.BytesIO(titles.card_png(checked))).convert('RGBA')
+ expected=Image.new('RGBA',(640,360),(0,0,0,0))
+ ImageDraw.Draw(expected).multiline_text((320,180),text,font=ImageFont.truetype(str(titles.REPO_ROOT/titles.FONT_PATH),32),fill='#FFFFFF',anchor='mm',align='center',spacing=8)
+ assert image.tobytes()==expected.tobytes()
  x0,y0,x1,y1=image.getbbox()
  assert x0>=64 and x1<=576 and y0>=36 and y1<=324
 

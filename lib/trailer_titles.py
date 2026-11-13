@@ -102,7 +102,9 @@ def validate_cards(root,cards,end,*,require_approval=True):
 
 def approval_record(root,identity):
     from lib.footage_requests import require_trailer
-    require_trailer(root)
+    try:require_trailer(root)
+    except ValueError:
+        raise ValueError('This trailer’s creation record cannot be verified. Restore its signed record before reviewing cards.') from None
     saved=trailer_edit.read_revision(root)
     if not saved or saved.get('inputs')!=trailer_edit._inputs(Path(root)):
         raise ValueError('The story or trailer settings changed. Review the paper cut before signing this card.')

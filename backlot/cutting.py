@@ -50,6 +50,15 @@ def mount(app,require_writer,safe_root,invalidate):
         from lib.trailer_titles import request_approval
         gate=await run(request_approval,root,identity);invalidate(project_id)
         return {'gate_request_id':gate['request_id']}
+    @app.get('/api/project/{project_id}/cut/cards/{identity}/lettering')
+    async def card_lettering(project_id:str,identity:str,fingerprint:str):
+        from fastapi.responses import Response
+        from lib.trailer_titles import approval_record,card_png
+        from lib.canonical_json import record_sha256
+        record=await run(approval_record,safe_root(project_id),identity)
+        if record_sha256(record)!=fingerprint:raise HTTPException(400,'The card changed. Save the cut and prepare a new review.')
+        png=await run(card_png,record['card'])
+        return Response(png,media_type='image/png',headers={'Cache-Control':'no-store'})
     @app.get('/api/project/{project_id}/cut/play/{name}')
     async def play(project_id:str,name:str):
         if not re.fullmatch('[a-f0-9]{64}-[a-f0-9]{32}\\.mp4',name):raise HTTPException(404)
