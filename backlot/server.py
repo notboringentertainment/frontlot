@@ -1,10 +1,9 @@
 """Backlot server — FastAPI app: board state API, SSE change feed, media.
 
-The watcher observes ``projects/`` with watchfiles; on any change it bumps a
-per-project version and wakes SSE subscribers, who tell the browser to
-refetch state. The server writes to a project directory in one place only:
-Ben's approve or decline on a video take card, which needs the app's
-capability token and the app's own origin, so nothing else can press it.
+The watcher observes ``projects/`` with watchfiles and wakes browser readers.
+Writes use narrow project operations checked against the app's origin and
+capability. Voice submits through the existing signed spending boundary;
+the board does not mint approvals or expose a general operation runner.
 """
 
 from __future__ import annotations

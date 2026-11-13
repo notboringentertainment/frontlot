@@ -1,6 +1,6 @@
 # Voice and music operations
 
-This is the service and take-record half of voice and music. It adds no panels, screens or buttons. The voice catalogue, pronunciation and delivery fields, spending card, player, native file chooser and paper-cut panels belong to the second half.
+This page describes the service and take-record layer of voice and music. A trailer voice workbench now connects these operations to account voices, signed spending cards, playback and take decisions. Its pronunciation and delivery notes stay local for human review; they are not generation instructions for this speech model. Music panels and the native licensed-file chooser remain for the next pull request. The voice workbench has its own guide.
 
 An operation prepares a request from an exact saved spoken line or an instrumental music brief. Speech keeps the line's wording and whole-frame timing. Music keeps its exact brief and requested whole-frame duration. The existing signing gate reconstructs that request and checks it again before Ben signs. A caller cannot override the words, voice, model, duration or price when submitting it.
 
