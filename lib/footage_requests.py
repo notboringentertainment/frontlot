@@ -27,6 +27,16 @@ FIELDS = {'project_id','request_id','shot_id','brief_revision_id','paper_shot','
           'price_expires_at','max_cash_usd','max_credits_usd','remaining_usd','retake_of','input_sha256'}
 
 
+def require_trailer(root):
+    """Display evidence is never authority for a paid trailer request."""
+    from lib.trailer_contract import signed_trailer_pin, require_contract
+    try:
+        if signed_trailer_pin(root) is None:raise ValueError()
+        require_contract(root)
+    except (ValueError, OSError, KeyError, TypeError, receipts.ReceiptChainError):
+        raise ValueError('A footage request requires a verified trailer with signed creation consent. Nothing was sent.') from None
+
+
 def validate_request(record):
     if not isinstance(record,dict) or set(record)!=FIELDS:raise ValueError('The footage request fields changed.')
     for key in ('max_cash_usd','max_credits_usd','remaining_usd'):_money(record[key])
@@ -142,6 +152,7 @@ def _sources(root, record):
 
 def check_current(root, record, *, check_allowance=True, saved=True):
     root = _root(root)
+    require_trailer(root)
     validate_request(record)
     if saved and _read(root, record['request_id']) != record:raise ValueError('The saved footage request changed.')
     if record['provider'] != 'fal' or record['model'] != MODEL or record['aspect_ratio'] != '16:9' or record['generate_audio'] is not False:
@@ -159,15 +170,15 @@ def check_current(root, record, *, check_allowance=True, saved=True):
     _shared.verify_reference_lineage(inputs, root, refs, governed=governance.get('governed',False))
     _shared.bind_reference_manifest(inputs, root, refs)
     if check_allowance:
-        from lib.shot_allowance import resolve
-        resolve(root, inputs, kind='video').check_limits(root,
+        from lib.shot_allowance import ShotGuard
+        ShotGuard(record['shot_id'],'video',inputs).check_limits(root,
             round(record['max_cash_usd']+record['max_credits_usd'],4), tool='kling_reference_video')
     return config
 
 
 def prepare_request(root, shot_id, *, duration_seconds, model, retake_of=None):
     root = _root(root)
-    if not sp.is_trailer(root):raise ValueError('Use the existing shot route for this older production.')
+    require_trailer(root)
     from lib.look_ingest import active_looks
     from tools.video.kling_reference_video import KlingReferenceVideo
     with reservation_lock(root):
@@ -195,7 +206,7 @@ def prepare_request(root, shot_id, *, duration_seconds, model, retake_of=None):
         directory = root/'.footage-requests'
         if directory.is_symlink():raise ValueError('Footage requests must stay inside the production.')
         directory.mkdir(exist_ok=True)
-        key = lambda r:{k:v for k,v in r.items() if k not in ('request_id','input_sha256','remaining_usd')}
+        key = lambda r:{k:v for k,v in r.items() if k not in ('request_id','input_sha256')}
         for path in directory.glob('*.json'):
             old = _read(root,path.stem)
             if key(old) == key(record):return old
@@ -236,6 +247,7 @@ def authorization(root, inputs, estimated_usd=None, tool=None):
     if not auth or auth['root'] != Path(root).resolve() or inputs != tool_inputs(root,auth['record']):
         raise ValueError('This trailer shot needs Ben’s signed footage request before anything is sent.')
     record = auth['record']
+    require_trailer(root)
     if tool not in (None,'kling_reference_video'):
         raise ValueError('The signed footage request is for a different model or service.')
     approval = receipts.find_approval(root,'footage_spend',entity_id=record['request_id'],record_sha256=record_sha256(record))
@@ -291,10 +303,21 @@ def before_submit(root, inputs):
 
 def actual_charge(inputs, data):
     auth = authorization(_AUTH.get()['root'],inputs)
-    cash, credits = _money(data.get('cash_usd')), _money(data.get('credits_usd'))
+    # Fal's ordinary result is a clip, not an invoice. Book the full signed
+    # maximum conservatively, explicitly distinguished from a reported charge.
+    reported = 'cash_usd' in data or 'credits_usd' in data
+    cash = _money(data.get('cash_usd')) if reported else auth['record']['max_cash_usd']
+    credits = _money(data.get('credits_usd')) if reported else auth['record']['max_credits_usd']
     if cash > auth['record']['max_cash_usd'] or credits > auth['record']['max_credits_usd']:
         raise ValueError('The reported footage charge exceeds its signed bound. Billing needs signed review.')
+    auth['charge']={'cash_usd':cash,'credits_usd':credits,
+        'footage_charge_basis':'service_report' if reported else 'signed_maximum',
+        'footage_approval_receipt_id':auth['approval']['receipt_id'],'footage_request_id':auth['record']['request_id']}
     return round(cash+credits,4)
+
+
+def receipt_charge(root,inputs):
+    return dict(authorization(root,inputs)['charge'])
 
 
 def _take(root, shot_id, take_id):
@@ -310,10 +333,12 @@ def _provenance(root, take):
     record = _read(root,hint.get('footage_request_id'))
     approval = receipts.find_approval(root,'footage_spend',record_sha256=record_sha256(record),entity_id=record['request_id'])
     from tools.base_tool import normalized_inputs_hash
-    found = receipts.find_generation(root,take['sha256'])
+    found = receipts.find_generation_by_id(root,take.get('generation_receipt_id'),output_sha256=take['sha256'])
     if (not approval or hint.get('footage_approval_receipt_id') != approval['receipt_id']
             or reservation.get('state') != 'completed' or record['shot_id'] != take.get('shot_id')
             or take['brief_revision_id'] != record['brief_revision_id'] or not found
+            or take['take_id'] != record['request_id'] or take.get('footage_request_id') != record['request_id']
+            or found.get('footage_request_id') != record['request_id'] or found.get('footage_approval_receipt_id') != approval['receipt_id']
             or found.get('tool') != 'kling_reference_video' or found.get('model_endpoint') != record['model']
             or found.get('provider_request_id') != reservation.get('provider_request_id')
             or found.get('normalized_inputs_hash') != normalized_inputs_hash(tool_inputs(root,record))
@@ -327,6 +352,9 @@ def decision_record(root, shot_id, take_id, decision):
     take = _take(root,shot_id,take_id)
     subject = {'shot_id':shot_id,'take':take,'decision':decision}
     decisions = receipts.verified_approvals(root,'footage_take',entity_id=take_id)
+    if any(r.get('record',{}).get('shot_id')==shot_id and r['record'].get('decision')=='decline'
+           and r['record'].get('take',{}).get('take_id')==take_id for r in decisions):
+        raise ValueError('This take was declined. Decline is final; request a new take.')
     declined = False
     for row in decisions:
         old = row['record']
@@ -352,7 +380,10 @@ def request_decision(root, shot_id, take_id, decision):
 
 def take_state(root, shot_id, take_id):
     take = _take(root,shot_id,take_id)
-    rows = receipts.verified_approvals(root,'footage_take',entity_id=take_id)
+    try:rows = receipts.verified_approvals(root,'footage_take',entity_id=take_id)
+    except receipts.ReceiptChainError:return 'Needs a fresh look'
+    if any(r.get('record',{}).get('shot_id')==shot_id and r['record'].get('decision')=='decline'
+           and r['record'].get('take',{}).get('take_id')==take_id for r in rows):return 'Declined'
     valid = [r['record'] for r in rows if isinstance(r.get('record'),dict) and r['record'].get('shot_id')==shot_id and r['record'].get('take')==take]
     if any(r.get('decision')=='decline' for r in valid):return 'Declined'
     if len(valid)!=len(rows):return 'Needs a fresh look'
@@ -370,6 +401,53 @@ def require_accepted(root, shot_id, take_id):
     return _take(root,shot_id,take_id)
 
 
+def _window(picture,take):
+    fps=picture.get('source_timebase_fps',24)
+    start=picture.get('source_in_frame',0)
+    end=picture.get('source_out_frame',start+picture['duration_frames'])
+    if (any(type(x) is not int for x in (fps,start,end)) or fps<=0 or start<0 or end<=start
+            or end/fps>take['duration_seconds']+1e-6):
+        raise ValueError('This take is too short for the saved trim window. Adjust the cut; the signed decision and previous version are kept.')
+    return {'source_timebase_fps':fps,'source_in_frame':start,'source_out_frame':end}
+
+
+def validate_cut_sources(root,value):
+    """Later preview/export and stage signing use the saved timeline, never labels."""
+    for picture in value.get('timeline',{}).get('picture',[]):
+        if picture.get('kind')!='footage':continue
+        take=require_accepted(root,picture.get('shot_id'),picture.get('take_id'))
+        if picture.get('path')!=take['path'] or picture.get('asset_id')!=take['sha256']:
+            raise ValueError('The cut does not match its accepted footage take.')
+        _window(picture,take)
+
+
+def set_aside_declined(root,value):
+    """A restored edit preserves history without making a declined take usable."""
+    for picture in value.get('timeline',{}).get('picture',[]):
+        if picture.get('kind')!='footage':continue
+        try:declined=take_state(root,picture.get('shot_id'),picture.get('take_id'))=='Declined'
+        except (ValueError,OSError,TypeError,KeyError):declined=False
+        if not declined:continue
+        value.setdefault('set_aside_footage',[]).append({'picture':copy.deepcopy(picture),
+            'reason':'This take was declined. Its original placement remains in the previous saved version.'})
+        for key in ('take_id','shot_id','path','asset_id','source_in_frame','source_out_frame','source_timebase_fps'):
+            picture.pop(key,None)
+        picture.update(kind='placeholder',label='Unfinished placeholder — take declined')
+        value.update(unfinished=True,paper_cut_pending=True,
+            timing_message='A declined take was set aside. Its placement is kept in the previous saved version. Downstream work needs a fresh look.')
+
+
+def preview_availability(root,value):
+    result={}
+    for picture in (value or {}).get('timeline',{}).get('picture',[]):
+        if picture.get('kind')!='footage':continue
+        try:
+            validate_cut_sources(root,{'timeline':{'picture':[picture]}})
+            result[picture['id']]='Accepted footage available'
+        except (ValueError,OSError,TypeError,KeyError):result[picture.get('id')]='Needs a fresh look — placeholder'
+    return result
+
+
 def apply_decision(root, shot_id, take_id, decision):
     with call_lock(root):return _apply_decision(root,shot_id,take_id,decision)
 
@@ -377,14 +455,12 @@ def apply_decision(root, shot_id, take_id, decision):
 def _apply_decision(root, shot_id, take_id, decision):
     take = _take(root,shot_id,take_id)
     record = {'shot_id':shot_id,'take':take,'decision':decision}
+    if decision=='accept' and take_state(root,shot_id,take_id)=='Declined':
+        raise ValueError('This take was declined. Decline is final; request a new take.')
     if not receipts.find_approval(root,'footage_take',entity_id=take_id,record_sha256=record_sha256(record)):
-        raise ValueError('This take decision needs Ben’s signed approval.')
+        raise ValueError('This take decision needs your signature first. Nothing was decided.')
     if decision == 'accept':require_accepted(root,shot_id,take_id)
     elif decision != 'decline':raise ValueError('Accept or decline this take.')
-    with reservation_lock(root):
-        kind = 'selection' if decision=='accept' else 'decline'
-        if not any(r.get('kind')==kind and r.get('take_id')==take_id for r in sp.history(root,shot_id)):
-            sp._append(root,shot_id,{'kind':kind,'take_id':take_id,'user_note':'Applied Ben’s signed take decision.'})
     from lib import trailer_edit as edit
     with edit._edit_lock(root):
         old = edit._read_current(root)
@@ -393,18 +469,22 @@ def _apply_decision(root, shot_id, take_id, decision):
         for picture in value.get('timeline',{}).get('picture',[]):
             if picture.get('id') != shot_id:continue
             if decision=='accept':
+                window=_window(picture,take)
                 picture.update(kind='footage',take_id=take_id,shot_id=shot_id,path=take['path'],asset_id=take['sha256'],
-                    source_in_frame=0,source_out_frame=picture['duration_frames'],source_timebase_fps=24,
+                    **window,
                     label='Accepted footage')
             elif picture.get('take_id')==take_id:
                 for k in ('take_id','shot_id','path','asset_id','source_in_frame','source_out_frame','source_timebase_fps'):picture.pop(k,None)
                 picture.update(kind='placeholder',label='Unfinished placeholder')
         if value == old:return old
+        value.update(unfinished=True,paper_cut_pending=True,
+            timing_message='The footage choice changed. Existing timing and sound were kept; downstream work needs a fresh look. The earlier choice remains in saved versions.')
         return edit._commit(Path(root),value,old)
 
 
 def execute(root, identity):
     root = _root(root)
+    require_trailer(root)
     with call_lock(root):
         resume_check(root)
         record = _read(root,identity)

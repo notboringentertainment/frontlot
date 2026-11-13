@@ -161,6 +161,7 @@ _VOLATILE_INPUT_KEYS = frozenset({
     "project_dir", "project_path", "output_path", "output_dir", "output_file",
     "objects_dir", "scene_id", "execution_id", "cost_tracker", "api_key",
     "budget_usd_cap", "poll_s", "deadline_s", "timeout_s",
+    "footage_request_id",  # consent identity; bound separately by the signed receipt
 })
 _PATH_KEY_SUFFIXES = ("_path", "_paths", "_dir", "_file")
 

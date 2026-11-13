@@ -1060,7 +1060,9 @@ def paid_call_context(
         resume_check(project_root)  # raises IndeterminatePaidCallError
 
     config = load_verified_project_config(project_root)  # raises ProjectConfigError
-    verified = verify_look_governance(inputs, project_root, media=media)
+    # Reconciliation reads existing charges. It sends no visual material and
+    # cannot require a new shot's look selection to inspect the old account.
+    verified = verify_look_governance(inputs, project_root, media=media) if check_resume else {}
     if governance is not None:
         governance.update(verified)
     # Canon appeals: an open appeal that touches this job stops it here, read

@@ -8,7 +8,7 @@ from tests.lib.look_lock_helpers import PROJECT, CHAR, pin_project, character_lo
 from tests.tools._authored_film_helpers import make_verified_project, write_receipted_png, make_tracker
 from tests.tools.test_trailer_footage_notebook import shot  # noqa: F401
 
-CLOSED = 'A signed footage request is required. Trailer generation is not available yet; nothing was sent.'
+from tools._generation_guard import CLOSED
 
 
 @pytest.fixture

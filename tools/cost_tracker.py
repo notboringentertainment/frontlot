@@ -744,15 +744,8 @@ def reserve_paid_call(
         if guard is not None:
             guard.check(project_root, reserved_usd, tool=tool)
         entry_id = tracker.estimate(tool, endpoint, reserved_usd)
-        try:
-            tracker.reserve(entry_id)
-        except Exception:
-            tracker.refund(entry_id)
-            raise
         reservation_id = str(uuid.uuid4())
-        _append_reservation_event(
-            project_root,
-            {
+        event = {
                 "reservation_id": reservation_id,
                 "idempotency_key": reservation_id,
                 "cost_entry_id": entry_id,
@@ -764,8 +757,25 @@ def reserve_paid_call(
                 "provider_request_id": None,
                 "output_hint": dict(output_hint) if output_hint else None,
                 **({"scope": guard.scope, "kind": guard.kind} if guard is not None else {}),
-            },
-        )
+            }
+        # Dedicated signed requests must remain identifiable even if the
+        # process dies inside the budget hold. Publish their durable intent
+        # before holding money; the existing unknown-outcome stop then covers
+        # both sides of that window. Ordinary legacy calls retain their order.
+        hint = output_hint or {}
+        signed = bool(hint.get('footage_approval_receipt_id') or hint.get('audio_approval_receipt_id'))
+        if signed:
+            _append_reservation_event(project_root,event)
+        try:
+            tracker.reserve(entry_id)
+        except Exception:
+            tracker.refund(entry_id)
+            if signed:
+                _append_reservation_event(project_root,{'reservation_id':reservation_id,
+                    'state':'failed','actual_usd':0.0})
+            raise
+        if not signed:
+            _append_reservation_event(project_root,event)
     return reservation_id
 
 

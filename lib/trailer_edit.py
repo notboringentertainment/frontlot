@@ -302,6 +302,8 @@ def _commit(root, value, old, inputs=None):
     # There is never an archive entry for a save that did not happen.
     versions = _committed_versions(root, old)
     value = copy.deepcopy(value)
+    from lib.footage_requests import set_aside_declined
+    set_aside_declined(root,value)
     value.pop('edit_revision_sha256', None)
     value.pop('revision_history', None)
     value['previous_revision'] = (old or {}).get('edit_revision_sha256')

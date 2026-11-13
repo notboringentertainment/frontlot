@@ -1758,6 +1758,8 @@ const GATE_WORDS = {
   pipeline_migration: "Move to a newer pipeline",
   cast_change: "Change the trailer cast",
   location: "Approve location pictures",
+  footage_spend: "Make this clip",
+  footage_take: "Review this take",
 };
 const gateWords = (kind) => state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : GATE_WORDS[kind] || titleCase(kind);
 
@@ -2267,7 +2269,7 @@ function renderTakeReview(s, shot) {
     direction && direction !== label
       ? el("details", { class: "take-brief" }, el("summary", {}, "What the shot asked for, in full"), el("p", {}, direction)) : null,
     el("p", { class: "take-lead" }, s.is_trailer
-      ? "Signed take decisions are not available yet. You can watch this take, but accepting or declining it needs your signature; it cannot enter the cut."
+      ? "Watch the full take. Signed accept and decline requests are supported; creating those requests from these buttons is not built yet. Review a prepared request under Needs you. No stage is completed by choosing a take."
       : waiting.length === 1
       ? "Watch the take, then approve it to make it this shot's chosen take, or decline it."
       : `Watch the ${waiting.length} takes side by side. Approve the one you want; it becomes this shot's chosen take.`),
@@ -2407,13 +2409,13 @@ const LOOK_FIELDS = [
   ["negative_lines", "Ruled out"],
 ];
 const LOOK_SKIP = new Set(["version", "entity_id", "entity_kind", "depends_on"]);
-function lookCard(spec) {
+function lookCard(spec, label="The look you're locking") {
   const known = new Set(LOOK_FIELDS.map(([k]) => k));
   const rows = [...LOOK_FIELDS, ...Object.keys(spec).filter((k) => !known.has(k) && !LOOK_SKIP.has(k)).map((k) => [k, humanize(k)])];
   const value = (v) => Array.isArray(v)
     ? (v.length ? el("ul", {}, v.map((item) => el("li", {}, String(item)))) : null)
     : typeof v === "string" && v.trim() ? el("p", {}, v) : null;
-  return el("section", { class: "look-card", "aria-label": "The look you're locking" },
+  return el("section", { class: "look-card", "aria-label": label },
     rows.map(([k, label]) => {
       const body = value(spec[k]);
       return body ? el("div", { class: "look-row" }, el("h3", {}, label), body) : null;
@@ -2468,7 +2470,9 @@ function renderGateViewer(s) {
   const firstSentence = (named.match(/^.*?[.!?](?=\s|$)/) || [named])[0];
 
   const trailerCreation = Boolean(s.trailer_setup_pending && header.kind === "pipeline_migration");
-  const facts = trailerCreation ? [["What you are signing", "Trailer creation"], ["Stage approval", "None"], ["Spending permission", "None"]] : [
+  const footageCard=gateDetail.packet?.footage_card;
+  const footageGate=["footage_spend","footage_take"].includes(header.kind);
+  const facts = footageGate ? [["What you are signing",gateWords(header.kind)],["Stage approval","None"]] : trailerCreation ? [["What you are signing", "Trailer creation"], ["Stage approval", "None"], ["Spending permission", "None"]] : [
     ["what", gateWords(header.kind)], ["kind", header.kind], ["stage", header.stage], ["scope", header.scope],
     ["entity", header.entity_id], ["snapshot", fmtGateTime(gateDetail.snapshot_at)],
   ];
@@ -2479,14 +2483,14 @@ function renderGateViewer(s) {
     header.summary ? textEvidence("the full request", header.summary) : null,
     el("dl", { class: "gate-meta-strip gate-detail-facts" }, facts.map(([label, value]) =>
       el("div", { class: "gate-meta-chip" }, el("dt", {}, label), el("dd", {}, value || "—")))),
-    trailerCreation ? el("p", {}, "Signing creates this trailer only. No stage or spending is approved. Separate signed spending settings are still required before any paid work.") : gateDetail.packet
+    footageGate ? el("p",{},"The signature is bound to the saved request, pictures and settings. The signer checks them again before recording your decision.") : trailerCreation ? el("p", {}, "Signing creates this trailer only. No stage or spending is approved. Separate signed spending settings are still required before any paid work.") : gateDetail.packet
       ? renderPacketEvidence(s, gateDetail.packet, { visuals: false })
       : el("div", {},
         textEvidence("request", gateDetail.request || {}),
         gateDetail.approval_receipt_id ? textEvidence("approval receipt id", gateDetail.approval_receipt_id) : null,
         gateDetail.declined_note ? textEvidence("declined note", gateDetail.declined_note) : null,
         gateDetail.unverified_ledger_row ? textEvidence(gateDetail.ledger_label || "unverified ledger row", gateDetail.unverified_ledger_row) : null),
-    command && !trailerCreation ? el("div", { class: "gate-command" },
+    command && !trailerCreation && !footageGate ? el("div", { class: "gate-command" },
       el("p", { class: "source" }, "Prefer your own Terminal? This command does the same signing."),
       el("code", {}, command),
       el("button", { type: "button", onclick: () => copyCommand(command) }, "Copy command"),
@@ -2513,7 +2517,17 @@ function renderGateViewer(s) {
     packetError ? el("div", { class: "alert", role: "alert" }, el("b", {}, "Some evidence is missing or changed"),
       el("span", {}, gateDetail.packet && gateDetail.packet.error ? gateDetail.packet.error : "Signing stays off until it's complete.")) : null,
     lookSpec ? gateActions(s, summary, stale, packetError) : null,
-    lookSpec ? lookCard(lookSpec) : renderScreen(s, frames[selectedFrame], blank),
+    footageCard ? el("section",{class:"paper-panel","aria-label":"Footage request details"},
+      el("h3",{},footageCard.decision ? `Your decision: ${footageCard.decision}` : "One clip, one signature"),
+      el("p",{},footageCard.description),
+      el("p",{},`${footageCard.length} seconds. ${footageCard.service || ""} ${footageCard.model || ""}`),
+      footageCard.highest_charge!=null ? el("div",{},
+        el("p",{},`Highest charge: $${footageCard.highest_charge.toFixed(4)} ($${footageCard.highest_cash.toFixed(4)} cash and $${footageCard.highest_credits.toFixed(4)} replacement value of credits).`),
+        el("p",{},`Left in the ceiling when prepared: $${footageCard.remaining.toFixed(4)}. Price figures expire ${footageCard.expiry}.`),
+        el("p",{},"The exact description and reference pictures shown here leave this computer for Fal. The approved looks below establish which pictures may be used; their text is not sent separately. This request is for silent widescreen footage. There are no automatic retries or changes of service or model.")) : el("p",{},footageCard.accounting),
+      ...(footageCard.looks || []).map(spec=>lookCard(spec,"Approved look behind this request")),
+      el("p",{},footageCard.decision ? "Declining is final for this take. Accepting completes no stage." : "A retake needs a new request and signature. Signing this request does not approve a stage.")) : null,
+    gateDetail.packet?.footage_take ? el("video",{controls:"",preload:"metadata",src:mediaURL(s.project_id,gateDetail.packet.footage_take.path),"aria-label":"Full footage take",style:"width:100%;max-height:65vh"}) : lookSpec ? lookCard(lookSpec) : renderScreen(s, frames[selectedFrame], blank),
     lookSpec ? null : renderFrameStrip(s, frames, "Request"),
     evidence,
     lookSpec ? null : gateActions(s, summary, stale, packetError),

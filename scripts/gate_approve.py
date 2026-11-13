@@ -1716,7 +1716,7 @@ def _construct_footage(root: Path, req: dict) -> Constructed:
         if build()!=record:raise GateHandlerError('The footage material changed. Nothing was approved.')
     if req['kind']=='footage_spend':
         evidence = (
-            'Service: Fal. Model: '+record['model']+'.',
+            'Service: Fal. Model: Kling o3 reference video.',
             'Exact outgoing shot description: '+record['prompt'],
             f"Clip length: {record['duration_seconds']} seconds. Silent widescreen footage.",
             f"Highest cash charge: ${record['max_cash_usd']:.4f}. Replacement value of credits: ${record['max_credits_usd']:.4f}.",
@@ -1724,11 +1724,10 @@ def _construct_footage(root: Path, req: dict) -> Constructed:
             'Reference pictures sent: '+', '.join(Path(r['path']).name for r in record['references']),
             'Approved looks used to verify those pictures: '+', '.join(r['entity_id'].replace('-',' ') for r in record['look_refs']),
             'One signature buys one clip. A retake needs a new request and signature.',
-            'For the tools: input fingerprint '+record['input_sha256'],
         )
     else:
         evidence = ('Decision: '+record['decision']+'.', 'Watch the whole clip before signing. Declining is final.',
-                    'This decision completes no stage.','For the tools: take fingerprint '+record['take']['sha256'])
+                    'This decision completes no stage.')
     return Constructed(record,None,identity,evidence=evidence,pre_commit_check=recheck)
 
 
@@ -1786,6 +1785,11 @@ def canonical_text(obj: Any) -> str:
 
 def show_request(req: dict, root: Path, out=None, built: Optional[Constructed] = None) -> None:
     out = out or sys.stdout
+    if req['kind'] in {'footage_spend','footage_take'}:
+        print('\nReview this footage request' if req['kind']=='footage_spend' else '\nReview this take decision',file=out)
+        if built is not None:
+            for line in built.evidence:print(line,file=out)
+        return
     if 'trailer_creation' in (req.get('approval_record') or {}):
         print("\nReview trailer creation", file=out)
         print(req['summary'], file=out)

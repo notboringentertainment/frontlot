@@ -424,6 +424,7 @@ class KlingReferenceVideo(BaseTool):
                     "prompt": prompt_text,
                     "seed": data.get("seed"),
                     "references_applied": references_applied,
+                    **({'footage_charge':footage.receipt_charge(project_root,inputs)} if signed_bound is not None else {}),
                     **_shared.receipt_governance_fields(governance),
                 },
             )

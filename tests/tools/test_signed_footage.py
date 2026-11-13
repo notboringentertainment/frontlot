@@ -135,10 +135,12 @@ def test_one_signature_one_clip_and_signed_take_in_timeline(film, provider):
 @pytest.mark.parametrize('field,value', [('prompt','Another action.'),('model','another-model'),
     ('duration_seconds',6),('max_cash_usd',.7),('max_credits_usd',1),('price_expires_at',4102444801),
     ('references',[]),('look_refs',[])])
-def test_changed_approved_request_refuses_before_network(film, provider, field, value):
+@pytest.mark.parametrize('rehash',[False,True],ids=['broken-fingerprint','recomputed-fingerprint'])
+def test_changed_approved_request_refuses_before_network(film, provider, field, value,rehash):
     root, _ = film
     record = prepare(film); approve(root, record)
     altered = copy.deepcopy(record); altered[field] = value
+    if rehash:altered['input_sha256']=record_sha256({k:v for k,v in altered.items() if k not in ('request_id','input_sha256')})
     path = root/'.footage-requests'/(record['request_id']+'.json')
     path.write_text(json.dumps(altered))
     with pytest.raises(ValueError):workspace().execute(root, record['request_id'])
@@ -156,7 +158,7 @@ def test_decline_is_signed_and_final(film, provider):
     root, shot = film
     record = prepare(film); approve(root,record)
     take = workspace().execute(root,record['request_id'])
-    with pytest.raises(ValueError,match='signed'):sp.decline(root,shot,take['take_id'],user_note='Decline.')
+    with pytest.raises(ValueError,match='signature'):sp.decline(root,shot,take['take_id'],user_note='Decline.')
     looks.approve_request(workspace().request_decision(root,shot,take['take_id'],'decline'),root)
     sp.decline(root,shot,take['take_id'],user_note='Apply the signed decline.')
     with pytest.raises(ValueError,match='declined'):workspace().request_decision(root,shot,take['take_id'],'accept')
@@ -262,3 +264,286 @@ def test_invalid_or_expired_signed_figures_refuse(film,provider,field,value):
     sign(root,'config',{'config_sha256':hashlib.sha256(raw).hexdigest()},'project_config')
     with pytest.raises(ValueError):prepare(film)
     assert not provider['posts'] and not provider['uploads']
+
+
+@pytest.mark.parametrize('forged',['selection','decline'])
+def test_unsigned_rows_do_not_block_or_borrow_a_signed_take_decision(film,provider,forged):
+    from backlot.state import load_board_state
+    root,shot=film;record=prepare(film);approve(root,record)
+    take=workspace().execute(root,record['request_id'])
+    sp._append(root,shot,{'kind':forged,'take_id':take['take_id'],'receipt_id':'invented','signature':'invented'})
+    assert workspace().take_state(root,shot,take['take_id'])=='Waiting for your decision'
+    assert sp.inspect_shot(root,shot)['takes'][0]['standing']=='waiting'
+    assert next(s for s in load_board_state(root)['shots'] if s['id']==shot)['takes'][0]['waiting']
+    looks.approve_request(workspace().request_decision(root,shot,take['take_id'],'accept'),root)
+    assert sp.inspect_shot(root,shot)['takes'][0]['standing']=='chosen'
+    sp.select(root,shot,take['take_id'],user_note='Apply a real signed choice.')
+    assert workspace().require_accepted(root,shot,take['take_id'])['take_id']==take['take_id']
+    assert not (root/'checkpoint_assets.json').exists()
+
+
+def test_signed_decline_is_final_even_after_a_later_signed_accept_record(film,provider):
+    root,shot=film;record=prepare(film);approve(root,record)
+    take=workspace().execute(root,record['request_id']);raw=workspace()._take(root,shot,take['take_id'])
+    looks.approve_request(workspace().request_decision(root,shot,take['take_id'],'decline'),root)
+    # A different or future signer must not revive a terminal decline either.
+    sign(root,'footage_take',{'shot_id':shot,'take':raw,'decision':'accept'},take['take_id'])
+    assert workspace().take_state(root,shot,take['take_id'])=='Declined'
+    assert sp.inspect_shot(root,shot)['takes'][0]['standing']=='declined'
+    with pytest.raises(ValueError):sp.select(root,shot,take['take_id'],user_note='Attempt a revival.')
+    with pytest.raises(ValueError):workspace().require_accepted(root,shot,take['take_id'])
+    current=json.loads((root/'artifacts/edit_decisions.json').read_text())
+    assert current['timeline']['picture'][0]['kind']=='placeholder'
+
+
+def test_signed_authority_cannot_escape_to_another_provider(film,provider,monkeypatch):
+    from tools.video import _shared
+    from tools.video.seedance_video import SeedanceVideo
+    root,_=film;record=prepare(film);approve(root,record)
+    original=_shared.upload_image_fal;attempts=[]
+    def upload(path):
+        result=SeedanceVideo().execute(workspace().tool_inputs(root,record))
+        attempts.append(result.success)
+        assert not result.success
+        return original(path)
+    monkeypatch.setattr(_shared,'upload_image_fal',upload)
+    workspace().execute(root,record['request_id'])
+    assert attempts==[False] and len(provider['posts'])==1
+
+
+def test_changed_remaining_ceiling_can_make_a_fresh_card_without_erasing_the_old_one(film):
+    from tools.audio._governed import _tracker
+    from lib.project_config import load_current_verified_project_config
+    root,_=film;old=prepare(film)
+    tracker=_tracker(root,load_current_verified_project_config(root))
+    entry=tracker.estimate('invented-existing-service','invented-model',.1)
+    tracker.reserve(entry);tracker.reconcile(entry,.1)
+    fresh=prepare(film)
+    assert fresh['request_id']!=old['request_id']
+    assert fresh['remaining_usd']==pytest.approx(old['remaining_usd']-.1)
+    assert workspace()._read(root,old['request_id'])==old
+
+
+@pytest.mark.parametrize('point',['before-hold','after-hold'])
+def test_crash_around_budget_hold_is_durably_reserved_and_signed_resolvable(film,provider,monkeypatch,point):
+    from tools.cost_tracker import CostTracker,nonterminal_reservations,resume_check,IndeterminatePaidCallError
+    from lib import audio_workspace
+    root,_=film;record=prepare(film);approve(root,record)
+    class SimulatedCrash(BaseException):pass
+    original=CostTracker.reserve
+    def interrupted(self,*args,**kwargs):
+        if point=='after-hold':original(self,*args,**kwargs)
+        raise SimulatedCrash()
+    with monkeypatch.context() as patch:
+        patch.setattr(CostTracker,'reserve',interrupted)
+        with pytest.raises(SimulatedCrash):workspace().execute(root,record['request_id'])
+    pending=nonterminal_reservations(root)
+    assert len(pending)==1
+    assert pending[0]['output_hint']['footage_request_id']==record['request_id']
+    with pytest.raises(IndeterminatePaidCallError):resume_check(root)
+    with pytest.raises(Exception):prepare(film)
+    assert not provider['uploads'] and not provider['posts']
+    identity=pending[0]['reservation_id']
+    note='Checked the invented service account; the clip was never submitted.'
+    looks.approve_request(audio_workspace.request_resolution(root,identity,False,0,0,note),root)
+    audio_workspace.resolve_charge(root,identity,False,0,0,note)
+    assert nonterminal_reservations(root)==[]
+    with pytest.raises(ValueError):workspace().execute(root,record['request_id'])
+    assert not provider['posts']
+
+
+def test_unsigned_reconciler_cannot_resolve_or_poll_an_unknown_trailer_charge(film,provider,monkeypatch):
+    import io
+    from scripts import reconcile_paid_calls as reconciler
+    from tools.video import _shared
+    from tools.cost_tracker import nonterminal_reservations
+    root,_=film;record=prepare(film);approve(root,record)
+    monkeypatch.setattr(_shared,'fal_queue_wait',lambda *a,**k:(_ for _ in ()).throw(TimeoutError('Invented unknown result.')))
+    with pytest.raises(ValueError):workspace().execute(root,record['request_id'])
+    pending=nonterminal_reservations(root);polled=[]
+    monkeypatch.setattr(reconciler,'fal_queue_status',lambda *a,**k:polled.append(1) or {'status':'FAILED'})
+    summary=reconciler.reconcile_project(root,api_key='invented-only',out=io.StringIO())
+    assert len(summary['manual'])==1 and not summary['failed']
+    assert not polled and nonterminal_reservations(root)==pending
+
+
+def test_identical_retakes_keep_independent_signed_provenance_and_final_decisions(film,provider):
+    root,shot=film;first_request=prepare(film);approve(root,first_request)
+    first=workspace().execute(root,first_request['request_id'])
+    looks.approve_request(workspace().request_decision(root,shot,first['take_id'],'accept'),root)
+    sp.select(root,shot,first['take_id'],user_note='Use the first signed take.')
+    retake=workspace().prepare_request(root,shot,duration_seconds=5,model=first_request['model'],retake_of=first_request['request_id'])
+    approve(root,retake);second=workspace().execute(root,retake['request_id'])
+    assert first['sha256']==second['sha256'] and first['take_id']!=second['take_id']
+    assert workspace().take_state(root,shot,first['take_id'])=='Accepted'
+    looks.approve_request(workspace().request_decision(root,shot,second['take_id'],'accept'),root)
+    sp.select(root,shot,second['take_id'],user_note='Use the second signed take.')
+    looks.approve_request(workspace().request_decision(root,shot,first['take_id'],'decline'),root)
+    sp.decline(root,shot,first['take_id'],user_note='Keep the first take declined.')
+    assert workspace().take_state(root,shot,first['take_id'])=='Declined'
+    assert workspace().take_state(root,shot,second['take_id'])=='Accepted'
+    assert workspace().require_accepted(root,shot,second['take_id'])
+    current=json.loads((root/'artifacts/edit_decisions.json').read_text())
+    assert current['timeline']['picture'][0]['take_id']==second['take_id']
+    assert len(provider['posts'])==2
+
+
+def test_one_completed_request_cannot_be_reattached_to_revive_its_declined_take(film,provider):
+    root,shot=film;record=prepare(film);approve(root,record)
+    take=workspace().execute(root,record['request_id'])
+    looks.approve_request(workspace().request_decision(root,shot,take['take_id'],'decline'),root)
+    sp.decline(root,shot,take['take_id'],user_note='A signed decline.')
+    again=sp.attach(root,shot,root/take['path'],reservation_id=take['reservation_id'],user_note='Try the same paid clip again.',
+        prompt=record['prompt'],references=record['references'])
+    assert again['take_id']==take['take_id']
+    assert len([r for r in sp.history(root,shot) if r['kind']=='take'])==1
+    with pytest.raises(ValueError):workspace().request_decision(root,shot,again['take_id'],'accept')
+    assert len(provider['posts'])==1
+
+
+def test_success_without_invoice_fields_books_the_signed_maximum_honestly(film,provider,monkeypatch):
+    from tools.video import _shared
+    from tools.audio._governed import _tracker
+    from lib.project_config import load_current_verified_project_config
+    root,_=film;record=prepare(film);approve(root,record)
+    monkeypatch.setattr(_shared,'fal_queue_wait',lambda *a,**k:{'video':{'url':'https://simulation.invalid/clip.mp4'}})
+    take=workspace().execute(root,record['request_id'])
+    receipt=receipts.find_generation_by_id(root,take['generation_receipt_id'])
+    assert receipt['footage_charge_basis']=='signed_maximum'
+    assert take['cost_basis']=='signed_maximum'
+    assert receipt['cost_usd']==record['max_cash_usd']+record['max_credits_usd']
+    assert _tracker(root,load_current_verified_project_config(root)).budget_spent_usd==receipt['cost_usd']
+    assert len(provider['posts'])==1
+
+
+def test_generation_receipt_signature_binds_the_specific_footage_approval(film,provider):
+    root,_=film;record=prepare(film);approve(root,record)
+    take=workspace().execute(root,record['request_id'])
+    receipt=receipts.find_generation_by_id(root,take['generation_receipt_id'])
+    assert gates.verify_receipt_signature(receipt)
+    assert receipt['footage_charge_basis']=='service_report'
+    for field in ['footage_request_id','footage_approval_receipt_id','cash_usd','footage_charge_basis']:
+        altered=copy.deepcopy(receipt);altered[field]='changed'
+        assert not gates.verify_receipt_signature(altered)
+
+
+def accepted(film):
+    root,shot=film;record=prepare(film);approve(root,record)
+    take=workspace().execute(root,record['request_id'])
+    looks.approve_request(workspace().request_decision(root,shot,take['take_id'],'accept'),root)
+    return take
+
+
+def test_accept_preserves_later_timing_and_marks_downstream_review(film,provider):
+    from lib import trailer_edit as edit
+    root,shot=film;take=accepted(film)
+    current=edit.read_revision(root);later=copy.deepcopy(current)
+    later['timeline']['picture'][0].update(source_in_frame=12,source_out_frame=108,source_timebase_fps=24)
+    later['timeline']['sound']=[{'label':'An invented sound entry','start_frame':17}]
+    saved=edit.save_edit_revision(root,later)
+    result=sp.select(root,shot,take['take_id'],user_note='Apply the signed choice.')
+    assert result['timeline']['sound']==saved['timeline']['sound']
+    assert result['timeline']['picture'][0]['source_in_frame']==12
+    assert result['timeline']['picture'][0]['source_out_frame']==108
+    assert result['paper_cut_pending'] and 'fresh look' in result['timing_message']
+    assert result['revision_history'][-1]['edit_revision_sha256']==saved['edit_revision_sha256']
+
+
+def test_accept_does_not_write_an_out_of_bounds_source_window(film,provider):
+    from lib import trailer_edit as edit
+    root,shot=film;take=accepted(film)
+    current=edit.read_revision(root);later=copy.deepcopy(current)
+    later['timeline']['picture'][0].update(source_in_frame=48,source_out_frame=144,source_timebase_fps=24)
+    saved=edit.save_edit_revision(root,later)
+    with pytest.raises(ValueError,match='short|trim|window'):
+        sp.select(root,shot,take['take_id'],user_note='Apply the signed choice.')
+    assert edit.read_revision(root)==saved
+    assert workspace().take_state(root,shot,take['take_id'])=='Accepted'
+
+
+def test_decline_then_restoring_a_saved_cut_cannot_restore_usable_footage(film,provider):
+    from lib import trailer_edit as edit
+    root,shot=film;take=accepted(film)
+    chosen=sp.select(root,shot,take['take_id'],user_note='Apply the signed choice.')
+    looks.approve_request(workspace().request_decision(root,shot,take['take_id'],'decline'),root)
+    # The signer can finish before a crash prevents the timeline projection.
+    with pytest.raises(ValueError,match='accepted|declined'):
+        workspace().validate_cut_sources(root,chosen)
+    restored=edit.save_edit_revision(root,chosen)
+    assert restored['timeline']['picture'][0]['kind']=='placeholder'
+    assert restored['set_aside_footage'][-1]['picture']['take_id']==take['take_id']
+    assert restored['unfinished'] and restored['paper_cut_pending']
+    assert restored['revision_history'][-1]['timeline']['picture'][0]['take_id']==take['take_id']
+
+
+@pytest.mark.parametrize('change',['conceal-marker','broken-history'])
+def test_paid_request_requires_positive_signed_trailer_not_board_label(film,provider,change):
+    root,_=film;record=prepare(film);approve(root,record)
+    if change=='broken-history':(root/'approvals.jsonl').write_text('{}\n')
+    else:
+        value=json.loads((root/'project.json').read_text());value.pop('trailer',None);value.pop('production_kind',None)
+        (root/'project.json').write_text(json.dumps(value))
+    with pytest.raises(ValueError):workspace().execute(root,record['request_id'])
+    assert not provider['uploads'] and not provider['posts']
+
+
+def test_request_card_shows_saved_outgoing_material_and_prices(film,provider):
+    from backlot.state import GATE_RENDERERS
+    root,_=film;record=prepare(film);request=workspace().request_approval(root,record['request_id'])
+    request['approval_record']['prompt']='An untrusted hint.'
+    packet=GATE_RENDERERS['footage_spend'](root,request)
+    assert packet['footage_card']['description']==record['prompt']
+    assert packet['footage_card']['highest_charge']==.5
+    assert packet['footage_card']['remaining']==50
+    assert packet['visuals'][0]['sha256']==record['references'][0]['asset_id']
+    assert packet['footage_card']['looks']
+    assert not provider['uploads'] and not provider['posts']
+
+
+def test_take_card_and_timing_sketch_use_verified_accepted_footage(film,provider):
+    from backlot.state import GATE_RENDERERS,load_board_state
+    root,shot=film;record=prepare(film);approve(root,record)
+    take=workspace().execute(root,record['request_id'])
+    request=workspace().request_decision(root,shot,take['take_id'],'accept')
+    packet=GATE_RENDERERS['footage_take'](root,request)
+    assert packet['footage_take']['path']==take['path']
+    assert packet['footage_card']['decision']=='accept'
+    looks.approve_request(request,root);sp.select(root,shot,take['take_id'],user_note='Use the signed take.')
+    state=load_board_state(root)
+    assert state['paper_cut']['footage_availability'][shot]=='Accepted footage available'
+    assert state['paper_cut']['current']['unfinished']
+
+
+@pytest.mark.parametrize('billing',[{'cash_usd':.51,'credits_usd':0},{'cash_usd':.1},{'cash_usd':0,'credits_usd':1}])
+def test_overcharge_or_incomplete_charge_stays_reserved_and_blocks(film,provider,monkeypatch,billing):
+    from tools.video import _shared
+    from tools.cost_tracker import nonterminal_reservations
+    root,_=film;record=prepare(film);approve(root,record)
+    monkeypatch.setattr(_shared,'fal_queue_wait',lambda *a,**k:{'video':{'url':'https://simulation.invalid/clip.mp4'},**billing})
+    with pytest.raises(ValueError):workspace().execute(root,record['request_id'])
+    assert nonterminal_reservations(root)
+    with pytest.raises(Exception):prepare(film)
+    assert len(provider['posts'])==1 and not provider['downloads']
+
+
+def test_two_confirmations_in_parallel_and_restart_buy_one_clip(film,provider,monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from tools.video import _shared
+    from lib.audio_workspace import PaidCallBusy
+    root,_=film;record=prepare(film);approve(root,record)
+    entered=Event();release=Event();original=_shared.fal_queue_submit
+    def paused(*args,**kwargs):
+        entered.set();assert release.wait(20)
+        return original(*args,**kwargs)
+    monkeypatch.setattr(_shared,'fal_queue_submit',paused)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first=pool.submit(workspace().execute,root,record['request_id'])
+        try:
+            assert entered.wait(20)
+            with pytest.raises(PaidCallBusy):workspace().execute(root,record['request_id'])
+        finally:release.set()
+        take=first.result(timeout=30)
+    # A fresh operation has no remembered in-process authorization.
+    assert workspace().execute(root,record['request_id'])==take
+    assert len(provider['uploads'])==len(provider['posts'])==1

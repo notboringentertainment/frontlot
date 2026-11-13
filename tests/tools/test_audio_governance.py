@@ -238,9 +238,11 @@ def test_successful_charge_failed_download_keeps_known_breakdown(project):
     assert (t.calls,t.downloads)==(1,1)
 
 def test_second_confirmation_in_parallel_buys_once(project):
+    from lib.audio_workspace import PaidCallBusy
     r=prepare(project);approve(project,r);t=Transport()
     def click():
         try:run(project,r,t);return 'sent'
+        except PaidCallBusy:return 'duplicate'
         except ValueError as exc:
             assert 'already used' in str(exc)
             return 'duplicate'
