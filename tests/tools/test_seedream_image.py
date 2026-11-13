@@ -184,7 +184,10 @@ def test_submit_crash_is_indeterminate_and_wait_failure_is_pending_billing(env, 
     assert not r.success
     res = list(load_reservations(env2).values())[0]
     assert res["state"] == "pending_billing" and res["provider_request_id"] == "req-f"
-    assert project_tracker(env2).budget_spent_usd == pytest.approx(res["reserved_usd"], abs=1e-4)
+    tracker = project_tracker(env2)
+    assert tracker.budget_spent_usd == 0
+    assert tracker.budget_reserved_usd == pytest.approx(res["reserved_usd"], abs=1e-4)
+    assert tracker.budget_remaining_usd == pytest.approx(tracker.budget_total_usd-res["reserved_usd"], abs=1e-4)
     with pytest.raises(IndeterminatePaidCallError):
         resume_check(env2)
 
