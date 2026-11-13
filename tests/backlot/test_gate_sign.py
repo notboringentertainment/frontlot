@@ -63,7 +63,7 @@ from tests.lib.look_lock_helpers import PROJECT
 def broker_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     projects = tmp_path / "projects"
     root, _ = write_project(projects)
-    gates = Path(tempfile.mkdtemp(prefix="om-gates-", dir=os.environ.get('OPENMONTAGE_HOME') or tempfile.gettempdir()))
+    gates = Path(tempfile.mkdtemp(prefix="om-gates-", dir=os.environ.get('OPENMONTAGE_HOME') or '/tmp'))
     signer = fake_signer(tmp_path)
     owner = DisposableResources()
     monkeypatch.setenv("OPENMONTAGE_GATES_DIR", str(gates))
