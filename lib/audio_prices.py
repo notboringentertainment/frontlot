@@ -19,25 +19,26 @@ def quote(root,kind,prompt,seconds):
         raise
     basis=config.data.get('audio_price_basis')
     if not isinstance(basis,dict):raise ValueError(MISSING_BASIS)
-    if kind not in ('speech','music'):raise ValueError('Choose speech or instrumental music.')
+    if kind not in ('speech','music','effect'):raise ValueError('Choose voice, instrumental music or a sound effect.')
     if not isinstance(prompt,str) or not prompt.strip():raise ValueError('Give the exact words or music brief.')
     if type(seconds) not in (int,float) or not math.isfinite(seconds) or not 0<seconds<=120:
         raise ValueError('Audio length must be positive and no more than two minutes.')
-    keys=['dollars_per_credit','speech_credits_per_character' if kind=='speech' else 'music_credits_per_minute']
+    keys=['dollars_per_credit',{'speech':'speech_credits_per_character','music':'music_credits_per_minute','effect':'effect_credits_per_second'}[kind]]
     # Until the catalogue integration can positively identify standard-rate
     # voices, all selected voices require the signed multiplier ceiling.
     if kind=='speech':keys.append('voice_multiplier_ceiling')
     now=time.time();expiry=float('inf');values={}
     for key in keys:
         rate=basis.get(key)
-        if not isinstance(rate,dict):raise ValueError('The signed price basis needs a voice multiplier ceiling.' if key=='voice_multiplier_ceiling' else 'The signed price basis is incomplete.')
+        if not isinstance(rate,dict):raise ValueError('Sign a sound-effect credits-per-second ceiling in the audio price settings first.' if key=='effect_credits_per_second' else 'The signed price basis needs a voice multiplier ceiling.' if key=='voice_multiplier_ceiling' else 'The signed price basis is incomplete.')
         value=rate.get('value');start=rate.get('set_at');end=rate.get('expires_at')
         if any(type(x) not in (int,float) or not math.isfinite(x) for x in (value,start,end)) or value<=0 or not start<=now<end:
             raise ValueError('The signed price basis has expired or is not yet valid. Sign a current basis before audio approval.')
         values[key]=Decimal(str(value));expiry=min(expiry,end)
     if kind=='speech':
         credits=Decimal(len(prompt.encode('utf-8')))*values['speech_credits_per_character']*values['voice_multiplier_ceiling']
-    else:credits=Decimal(str(seconds))/Decimal(60)*values['music_credits_per_minute']
+    elif kind=='music':credits=Decimal(str(seconds))/Decimal(60)*values['music_credits_per_minute']
+    else:credits=Decimal(str(seconds))*values['effect_credits_per_second']
     credits=credits.to_integral_value(rounding=ROUND_CEILING)
     dollars=(credits*values['dollars_per_credit']).quantize(Decimal('.0001'),rounding=ROUND_CEILING)
     return {'credits':int(credits),'max_credits_usd':float(dollars),'max_cash_usd':0,

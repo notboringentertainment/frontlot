@@ -5,7 +5,7 @@ from pathlib import Path
 from tools.base_tool import ToolResult
 from tools.audio import _governed
 
-REFUSAL = 'Audio now needs your signed approval of each request. Audio controls in the app are not available yet.'
+REFUSAL = 'Audio now needs your signed approval of each request. Open the trailer’s audio controls to prepare and sign one request.'
 
 
 def _execute_locked(inputs,kind):
@@ -47,10 +47,14 @@ def _execute_locked(inputs,kind):
             if kind=='speech':
                 url='https://api.elevenlabs.io/v1/text-to-speech/'+payload['voice']
                 body={'text':payload['prompt'],'model_id':payload['model']}
-            else:
+            elif kind=='music':
                 url='https://api.elevenlabs.io/v1/music'
                 body={'prompt':payload['prompt'],'model_id':payload['model'],
                       'music_length_ms':round(payload['duration_seconds']*1000),'force_instrumental':True}
+            else:
+                url='https://api.elevenlabs.io/v1/sound-generation'
+                body={'text':payload['prompt'],'model_id':payload['model'],
+                      'duration_seconds':payload['duration_seconds'],'loop':payload['loop']}
             config=_governed.check_current(root,record)
             rate=Decimal(str(config.data['audio_price_basis']['dollars_per_credit']['value']))
             try:
@@ -66,7 +70,12 @@ def _execute_locked(inputs,kind):
             if not credits.is_finite() or credits<0:raise ValueError('The audio service did not report a valid credit charge.')
             charge=(credits*rate).quantize(Decimal('.0001'),rounding='ROUND_CEILING')
             return {'request_id':response.headers['request-id'],'cash_usd':0,'credits_usd':float(charge),'response':response}
-        rows=_governed.execute(root,record,submit=submit,download=lambda result:result['response'].content)
+        def validate_download(path):
+            from lib.audio_workspace import probe_audio
+            measured=probe_audio(path,maximum=30+1/24 if kind=='effect' else 120)
+            if kind=='effect' and abs(measured['duration_seconds']-record['duration_seconds'])>1/24:
+                raise ValueError('The effect length differs from the approved length. Review the charge and request a new take.')
+        rows=_governed.execute(root,record,submit=submit,download=lambda result:result['response'].content,validate_download=validate_download)
         return ToolResult(success=True,data={'take':generated_take(root,record,rows[0]),'receipts':rows})
     except Exception as exc:
         # Never put raw provider messages, credentials or payload echoes on a page.

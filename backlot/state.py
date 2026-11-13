@@ -1502,6 +1502,7 @@ def _audio_price_summary(root,settings):
         return float((credits.to_integral_value(rounding=ROUND_CEILING)*value('dollars_per_credit')).quantize(Decimal('.0001'),rounding=ROUND_CEILING))
     return {'longest_line':longest,'longest_line_dollars':None if longest is None else dollars(Decimal(len(longest.encode('utf-8')))*value('speech_credits_per_character')*value('voice_multiplier_ceiling')),
             'music_minute_dollars':dollars(value('music_credits_per_minute')),
+            'effect_second_dollars':dollars(value('effect_credits_per_second')) if 'effect_credits_per_second' in basis else None,
             'expires_at':min(rate['expires_at'] for rate in basis.values())}
 
 
