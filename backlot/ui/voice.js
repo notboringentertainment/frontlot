@@ -15,7 +15,7 @@ export function renderVoice(s,onSign){
   const project=s.project_id,url=`/api/project/${encodeURIComponent(project)}/voice`;
   const node=el('section',{class:'voice-panel paper-editor','aria-label':'Trailer audio'}),message=el('p',{role:'status','aria-live':'polite'}),content=el('div',{});
   const drafts=new Map(),players=new Map(),priceForm={},outcomes=new Map(),musicDraft={},effectDraft={};let voices=[],last='',busy=false,loading=false,pendingRefresh=false;
-  const act=async fn=>{if(busy)return;busy=true;message.textContent='Working…';try{const result=await fn();message.textContent=typeof result==='string'?result:'Saved. Review the request before signing.';}catch(e){message.textContent=e.message;}finally{busy=false;last='';refresh();}};
+  const act=async fn=>{if(busy)return;busy=true;message.textContent='Working…';let refused=false;try{const result=await fn();message.textContent=typeof result==='string'?result:'Saved. Review the request before signing.';}catch(e){message.textContent=e.message;refused=true;}finally{busy=false;last='';await refresh();if(refused)requestAnimationFrame(()=>message.scrollIntoView({block:'center'}));}};
   const loadVoices=button('Load account voices',()=>act(async()=>{voices=await api(url+'/catalogue',{});return 'Account voices loaded. Choose a voice for the saved line.';}));
   node.append(el('h2',{},'Voice, music and sound effects'),el('p',{},'Choose a voice for each saved spoken line, request instrumental music or describe an effect for a paper-cut moment. One signature buys one take. Keeping or declining a take needs its own signature; a decline is final.'),
     loadVoices,

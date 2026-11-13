@@ -431,7 +431,14 @@ def restore_revision(root, revision, expected_revision):
         if source is None:
             raise ValueError('That saved version could not be found.')
         inputs = _inputs(root)
-        if 'paper_cut' in source:
+        if source.get('cutting_view'):
+            value = copy.deepcopy(source)
+            value['story_check'] = _validate_paper(root,value['paper_cut'])
+            value['unfinished'] = True
+            if value.get('inputs') != inputs:
+                value['paper_cut_pending'] = True
+                value['timing_message'] = 'The saved cut was restored, but its story inputs changed. Review the paper cut before saving or playing it.'
+        elif 'paper_cut' in source:
             value = _paper_value(root, source['paper_cut'], old, inputs)
         else:
             value = copy.deepcopy(source)

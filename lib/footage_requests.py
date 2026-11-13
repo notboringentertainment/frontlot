@@ -425,6 +425,8 @@ def validate_cut_sources(root,value):
 
 def set_aside_declined(root,value):
     """A restored edit preserves history without making a declined take usable."""
+    if value.get('cutting_view'):
+        return  # The editor displays the original placement with a live refusal.
     for picture in value.get('timeline',{}).get('picture',[]):
         if picture.get('kind')!='footage':continue
         try:declined=take_state(root,picture.get('shot_id'),picture.get('take_id'))=='Declined'
@@ -467,8 +469,8 @@ def _apply_decision(root, shot_id, take_id, decision):
     with edit._edit_lock(root):
         old = edit._read_current(root)
         if not old:raise ValueError('The saved paper cut is missing. The signed decision was kept.')
-        if decision=='accept' and old.get('cutting_view'):
-            return old  # Keeping a take does not replace clips in the writer's cut.
+        if old.get('cutting_view'):
+            return old  # Decisions change usability, never the writer's placements.
         value = copy.deepcopy(old)
         for picture in value.get('timeline',{}).get('picture',[]):
             if picture.get('id') != shot_id:continue

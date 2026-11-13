@@ -11,7 +11,7 @@ from tests.backlot.tty_helpers import recv_frame, wait_until
 
 @pytest.fixture
 def world(tmp_path):
-    gates = Path(tempfile.mkdtemp(prefix="omcs-", dir="/tmp"))  # AF_UNIX path limit (~104 bytes)
+    gates = Path(tempfile.mkdtemp(prefix="omcs-", dir=os.environ.get('OPENMONTAGE_HOME') or '/tmp'))  # AF_UNIX path limit (~104 bytes)
     projects = tmp_path / "projects"; film = projects / "film"; film.mkdir(parents=True)
     (film / "project.json").write_text(json.dumps({"title": "Film"}))
     env = dict(os.environ, OPENMONTAGE_GATES_DIR=str(gates), OPENMONTAGE_PROJECTS_DIR=str(projects),

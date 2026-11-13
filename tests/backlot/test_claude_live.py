@@ -17,7 +17,7 @@ ORIGIN = f"http://127.0.0.1:{PORT}"
 
 @pytest.fixture
 def app_world(tmp_path, monkeypatch):
-    gates = Path(tempfile.mkdtemp(prefix="om-cl-", dir="/tmp"))  # AF_UNIX path limit
+    gates = Path(tempfile.mkdtemp(prefix="om-cl-", dir=os.environ.get('OPENMONTAGE_HOME') or '/tmp'))  # AF_UNIX path limit
     projects = tmp_path / "projects"; film = projects / "film"; film.mkdir(parents=True)
     (film / "project.json").write_text(json.dumps({"title": "Film"}))
     monkeypatch.setenv("OPENMONTAGE_GATES_DIR", str(gates))
