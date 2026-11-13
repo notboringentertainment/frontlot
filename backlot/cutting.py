@@ -88,6 +88,18 @@ def mount(app,require_writer,safe_root,invalidate):
         from lib.trailer_titles import request_approval
         gate=await run(request_approval,root,identity);invalidate(project_id)
         return {'gate_request_id':gate['request_id']}
+    @app.post('/api/project/{project_id}/cut/cards/preview')
+    async def draft_lettering(project_id:str,request:Request):
+        require_writer(request);data=await request.json();root=safe_root(project_id)
+        from fastapi.responses import Response
+        from lib.trailer_titles import CARD_FIELDS,card_png
+        if not isinstance(data,dict) or set(data)!={'revision','card'} or not isinstance(data['card'],dict) or set(data['card'])!=CARD_FIELDS:
+            raise HTTPException(400,'Choose the card’s exact words and a supplied face before previewing its lettering.')
+        await run(footage_requests.require_trailer,root)
+        saved=await run(trailer_edit.read_revision,root)
+        if not saved or saved['edit_revision_sha256']!=data['revision']:
+            raise HTTPException(400,'The cut changed. Reopen the saved cut before previewing this card.')
+        return Response(await run(card_png,data['card']),media_type='image/png',headers={'Cache-Control':'no-store'})
     @app.get('/api/project/{project_id}/cut/cards/{identity}/lettering')
     async def card_lettering(project_id:str,identity:str,fingerprint:str):
         from fastapi.responses import Response

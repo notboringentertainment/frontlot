@@ -5,7 +5,9 @@ export function renderCardSigning(detail,actions,onReturn){
  const c=detail.packet?.title_card;
  return el('section',{'aria-label':'Exact card review',class:'paper-editor'},el('h2',{},'Review these exact card words'),
   c?el('div',{},el('pre',{style:'white-space:pre-wrap;font:inherit'},c.text),
-   el('p',{},`Patrick Hand · letter size ${c.font_size} pixels. Starts at frame ${c.start_frame} (${(c.start_frame/24).toFixed(3)} seconds); lasts ${c.duration_frames} frames (${(c.duration_frames/24).toFixed(3)} seconds).`),
+   el('p',{},'Space guide: · means a space, ⍽ means a non-breaking space and ↵ means a line break. These markers are not drawn on the card.'),
+   el('code',{'aria-label':'Visible spaces and line breaks',style:'display:block;white-space:pre-wrap'},detail.packet.visible_characters),
+   el('p',{},`${detail.packet.font_name} · letter size ${c.font_size} pixels. Starts at frame ${c.start_frame} (${(c.start_frame/24).toFixed(3)} seconds); lasts ${c.duration_frames} frames (${(c.duration_frames/24).toFixed(3)} seconds).`),
    el('p',{},c.background==='black'?'Shown on black.':'Shown over the picture.'),
    el('img',{src:detail.packet.card_image,alt:'Exact local lettering preview',style:'width:100%;background:#000'})):
    el('p',{role:'alert'},detail.packet?.error||'This card could not be verified. Save the cut and prepare a new review.'),
@@ -31,7 +33,7 @@ export function renderCutting(s,onSign){
   const shown=el('span',{'data-seconds-for':`${subject}:${key}`},`${(row[key]/24).toFixed(3)} seconds`);
   input.oninput=()=>{row[key]=Number(input.value);seconds.value=(row[key]/24).toFixed(3);shown.textContent=`${seconds.value} seconds`;onChange();};
   seconds.oninput=()=>{dirty=true;clearPlayback();};
-  seconds.onchange=()=>{const n=Number(seconds.value);if(!seconds.value||!Number.isFinite(n)||n<0){row[key]=NaN;message.textContent='Enter a non-negative time in seconds, then leave the field to use the nearest whole frame.';onChange();return;}row[key]=Math.round(n*24);input.value=row[key];seconds.value=(row[key]/24).toFixed(3);shown.textContent=`${seconds.value} seconds`;onChange();message.textContent=`Time set to ${row[key]} whole frames (${seconds.value} seconds).`;};
+  seconds.onchange=()=>{const n=Number(seconds.value);if(!seconds.value||!Number.isFinite(n)||n<0){row[key]=NaN;input.value='';shown.textContent='No time set. Enter valid seconds or a whole frame.';message.textContent='Enter a non-negative time in seconds, then leave the field to use the nearest whole frame.';onChange();return;}row[key]=Math.round(n*24);input.value=row[key];seconds.value=(row[key]/24).toFixed(3);shown.textContent=`${seconds.value} seconds`;onChange();message.textContent=`Time set to ${row[key]} whole frames (${seconds.value} seconds).`;};
   box.append(el('label',{},label,input,shown),el('label',{},secondsLabel,seconds));
  }
  async function api(path='',value){const r=await fetch(url+path,value===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify(value)});const v=await r.json();if(!r.ok)throw Error(v.detail||'Reopen the cut and try again.');return v;}
@@ -94,9 +96,22 @@ export function renderCutting(s,onSign){
   data.timeline.cards ||= [];
   data.timeline.cards.forEach((row,index)=>{
    const n=index+1,box=el('section',{class:'paper-panel','data-card':row.id}),state=el('p',{'aria-live':'polite'},data.card_states[row.id]||'Needs your signature');
-   const touch=()=>{changed();state.textContent='Unsaved change — needs a fresh look and your signature.';};
+   const lettering=el('canvas',{'aria-label':`Lettering preview for card ${n}`,width:640,height:360,hidden:'',style:'width:100%;max-width:640px;background:#000'}),previewMessage=el('p',{'data-card-preview-message':'','aria-live':'polite'});
+   const touch=()=>{changed();lettering.hidden=true;previewMessage.textContent='The card changed. Preview its words again before signing.';state.textContent='Unsaved change — needs a fresh look and your signature.';};
    const text=el('textarea',{'aria-label':`Exact words for card ${n}`,rows:3,spellcheck:'false',autocapitalize:'off',autocorrect:'off',style:'text-transform:none;white-space:pre'});text.value=row.text;text.oninput=()=>{row.text=text.value;touch();};
    box.append(el('h4',{},`Text card ${n}`),state,el('label',{},'Exact words',text));
+   const face=el('select',{'aria-label':`Title face for card ${n}`});data.fonts.forEach(f=>face.append(el('option',{value:f.path},f.name)));face.value=row.font_path;
+   face.onchange=()=>{const f=data.fonts.find(f=>f.path===face.value);row.font_path=f.path;row.font_sha256=f.sha256;touch();};
+   async function previewWords(){
+    lettering.hidden=true;previewMessage.textContent='Drawing these exact words locally…';const requested=JSON.stringify(row);
+    try{
+     const r=await fetch(url+'/cards/preview',{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify({revision:data.revision,card:row})});
+     if(!r.ok){const v=await r.json();throw Error(v.detail||'The lettering could not be drawn. Check the words and chosen face.');}
+     const image=await createImageBitmap(await r.blob());
+     try{if(JSON.stringify(row)!==requested)return;const ctx=lettering.getContext('2d');ctx.clearRect(0,0,640,360);ctx.drawImage(image,0,0);lettering.hidden=false;previewMessage.textContent='Lettering preview only. Saving and your signature are still required before playback.';}finally{image.close();}
+    }catch(e){if(JSON.stringify(row)===requested){lettering.hidden=true;previewMessage.textContent=e.message;}}
+   }
+   box.append(el('label',{},'Title face',face),el('p',{},'The supplied faces are licensed for use in your trailer.'),button(`Preview words for card ${n}`,previewWords),previewMessage,lettering);
    for(const [label,key] of [['Starts at frame','start_frame'],['Lasts for frames','duration_frames'],['Letter size in pixels','font_size']]){
     if(key==='font_size'){
      const size=el('input',{type:'number',step:'1',min:'12',max:'72','aria-label':`Letter size in pixels for card ${n}`});size.value=row.font_size;size.oninput=()=>{row.font_size=Number(size.value);touch();};box.append(el('label',{},label,size));
@@ -105,10 +120,11 @@ export function renderCutting(s,onSign){
    for(const [key,label,choices] of [['role','Card kind',[['intertitle','Intertitle'],['end','End card']]],['background','Background',[['black','On black'],['transparent','Over the picture']]]]){
     const select=el('select',{'aria-label':`${label} for card ${n}`});choices.forEach(([value,word])=>select.append(el('option',{value},word)));select.value=row[key];select.onchange=()=>{row[key]=select.value;touch();};box.append(el('label',{},label,select));
    }
-   box.append(el('p',{},'Font: Patrick Hand. The supplied font is licensed for this lettering.'),button(`Review and sign card ${n}`,async()=>{if(dirty)throw Error('Save the cut first, then review and sign the card’s exact words, font and timing.');const v=await api(`/cards/${encodeURIComponent(row.id)}/approval`,{revision:data.revision});await onSign(v.gate_request_id);}),
+   box.append(button(`Review and sign card ${n}`,async()=>{if(dirty)throw Error('Save the cut first, then review and sign the card’s exact words, font and timing.');const v=await api(`/cards/${encodeURIComponent(row.id)}/approval`,{revision:data.revision});await onSign(v.gate_request_id);}),
     button(`Remove card ${n}`,()=>{data.timeline.cards.splice(index,1);changed();draw();}));section.append(box);
+   if(row.text.trim())void previewWords();
   });
-  section.append(button('Add text card',()=>{const f=data.fonts[0];data.timeline.cards.push({id:crypto.randomUUID(),text:'',font_path:f.path,font_sha256:f.sha256,font_size:32,start_frame:0,duration_frames:24,role:'intertitle',background:'black'});changed();draw();}));body.append(section);
+  section.append(button('Add text card',()=>{const f=data.fonts.find(f=>f.default)||data.fonts[0];data.timeline.cards.push({id:crypto.randomUUID(),text:'',font_path:f.path,font_sha256:f.sha256,font_size:32,start_frame:0,duration_frames:24,role:'intertitle',background:'black'});changed();draw();}));body.append(section);
   const versions=el('select',{'aria-label':'Saved cut versions'});for(const v of data.versions||[])versions.append(el('option',{value:v.revision},`Version ${v.number} · ${new Date(v.saved_at).toLocaleString()}`));versions.value=data.revision;
   body.append(el('section',{class:'paper-panel'},el('h3',{},'Restore an earlier cut'),versions,button('Restore selected cut',async()=>{if(dirty)throw Error('Save or reopen your current cut before restoring another version.');data=await api('/restore',{revision:versions.value,current:data.revision});lastSnapshot=JSON.stringify(data);dirty=false;clearPlayback();draw();message.textContent='Earlier cut restored as a new saved version. Every old version remains. Any unusable take is still marked and cannot play.';})));
   updateGaps();

@@ -16,8 +16,14 @@ def test_board_accepts_tmp_alias_without_any_private_redirect(voice_world,monkey
 
 def test_slow_broker_hello_is_unavailable_not_an_unhandled_timeout(tmp_path,monkeypatch):
     from backlot import tty
-    import socket
-    socket_path=tmp_path/'pending.sock';sock=socket.socket(socket.AF_UNIX);sock.bind(str(socket_path))
+    import stat
+    from types import SimpleNamespace
+    # This unit test replaces the connection and frame reader. It needs no
+    # actual Unix socket, whose pathname has a platform-specific length cap.
+    class PendingSocket:
+        def lstat(self):return SimpleNamespace(st_mode=stat.S_IFSOCK)
+        def __str__(self):return str(tmp_path/'pending.sock')
+    socket_path=PendingSocket()
     class Writer:
         closed=False
         def close(self):self.closed=True
@@ -28,11 +34,13 @@ def test_slow_broker_hello_is_unavailable_not_an_unhandled_timeout(tmp_path,monk
     monkeypatch.setattr(tty,'session_paths',lambda p:{'socket':socket_path})
     monkeypatch.setattr(asyncio,'open_unix_connection',connect)
     monkeypatch.setattr(tty,'read_frame',timed_read)
-    try:
-        with pytest.raises(tty.BrokerUnavailable,match='ready'):
-            asyncio.run(tty._attach('invented','request'))
-        assert writer.closed
-    finally:sock.close()
+    with pytest.raises(tty.BrokerUnavailable,match='ready'):
+        asyncio.run(tty._attach('invented','request'))
+    assert writer.closed
+
+def test_slow_helper_handles_very_long_temporary_location(tmp_path,monkeypatch):
+    nested=tmp_path/('long-temporary-location-'*6);nested.mkdir()
+    test_slow_broker_hello_is_unavailable_not_an_unhandled_timeout(nested,monkeypatch)
 
 @pytest.mark.parametrize('temporary',['/tmp','/private/tmp','/var/folders/t7/invented/T'])
 def test_resolved_locations_accept_default_named_and_mac_temporary_roots(tmp_path,monkeypatch,temporary):

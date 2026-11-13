@@ -1740,7 +1740,7 @@ def _construct_footage(root: Path, req: dict) -> Constructed:
 
 
 def _construct_trailer_card(root: Path, req: dict) -> Constructed:
-    from lib.trailer_titles import approval_record
+    from lib.trailer_titles import approval_record,font_name,visible_characters
     identity=_require_entity(req)
     record=approval_record(root,identity)
     def recheck():
@@ -1749,7 +1749,8 @@ def _construct_trailer_card(root: Path, req: dict) -> Constructed:
     card=record['card']
     return Constructed(record,None,identity,evidence=(
         'Exact card words follow without rewriting:',card['text'],
-        f"Patrick Hand, {card['font_size']} pixels. Starts at frame {card['start_frame']} ({card['start_frame']/24:.3f} seconds); lasts {card['duration_frames']} frames ({card['duration_frames']/24:.3f} seconds).",
+        'Space guide: · means a space, ⍽ means a non-breaking space and ↵ means a line break. These markers are not drawn on the card.',visible_characters(card['text']),
+        f"{font_name(card)}, {card['font_size']} pixels. Starts at frame {card['start_frame']} ({card['start_frame']/24:.3f} seconds); lasts {card['duration_frames']} frames ({card['duration_frames']/24:.3f} seconds).",
         'This signature approves this card only. It permits no spending and completes no stage.'),pre_commit_check=recheck)
 
 CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {

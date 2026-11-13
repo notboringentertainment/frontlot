@@ -16,17 +16,42 @@ FONT_SHA='0f173b3e6cb6d1af25babf7f0057c5ac4ee11f9992b0469bb817e967ef4ad0fc'
 CARD_FIELDS={'id','text','font_path','font_sha256','font_size','start_frame','duration_frames','background','role'}
 
 def fonts():
-    return [{'name':'Patrick Hand — licensed for film lettering','path':FONT_PATH,'sha256':FONT_SHA}]
+    return [{'name':'Patrick Hand — handwritten','path':FONT_PATH,'sha256':FONT_SHA},
+            {'name':'Source Serif 4 — clean serif','path':'assets/fonts/source-serif-4/SourceSerif4-Semibold.otf','sha256':'25e034392847d9965c92f98971b3646436b7ab919ece9118b0c0e5ec94c02efc'},
+            {'name':'Source Sans 3 — clean sans-serif','path':'assets/fonts/source-sans-3/SourceSans3-Semibold.otf','sha256':'36f1cd2c344aa3109e64429bce41a41e4b2b923beb2db19b8dbf9bb56f05a4f9','default':True}]
+
+def font_name(card):
+    return next((f['name'] for f in fonts() if f['path']==card.get('font_path')),'Unknown face — choose a supplied font')
+
+def visible_characters(text):
+    """A separate signing guide; the raw text remains the signed authority."""
+    return text.replace('\u00a0','⍽').replace(' ','·').replace('\n','↵\n')
 
 def _font(card):
-    if card.get('font_path')!=FONT_PATH or card.get('font_sha256')!=FONT_SHA:
-        raise ValueError('This card’s font is missing or changed. Choose the supplied licensed font and review the card again.')
+    face=next((f for f in fonts() if card.get('font_path')==f['path'] and card.get('font_sha256')==f['sha256']),None)
+    if face is None:
+        raise ValueError('This card’s font is missing or changed. Choose one of the supplied licensed faces and review the card again.')
     try:
-        path=resolve_input(FONT_PATH,REPO_ROOT)
-        if sha256_file(path)!=FONT_SHA:raise ValueError()
+        path=resolve_input(face['path'],REPO_ROOT)
+        if sha256_file(path)!=face['sha256']:raise ValueError()
         return path
     except (PathSafetyError,OSError,ValueError):
         raise ValueError('The supplied font is missing or changed. Restore the licensed font before signing or playing cards.') from None
+
+def drawing_text(text):
+    """Compose base/mark clusters for drawing only; never edit signed text."""
+    result=[];i=0
+    while i<len(text):
+        end=i+1
+        while end<len(text) and unicodedata.category(text[end]).startswith('M'):end+=1
+        cluster=text[i:end]
+        marks=[c for c in cluster if unicodedata.category(c).startswith('M')]
+        drawn=unicodedata.normalize('NFC',cluster) if marks else cluster
+        if any(unicodedata.category(c).startswith('M') for c in drawn):
+            names=', '.join(unicodedata.name(c,'unnamed mark').lower() for c in marks)
+            raise ValueError(f'The separate mark or combination “{cluster}” ({names}) cannot be drawn correctly by this face. Choose another face or change that character yourself; nothing was substituted.')
+        result.append(drawn.replace('\u00a0',' '));i=end
+    return ''.join(result)
 
 def card_png(card):
     """Reuse the title tool's literal PIL renderer, with no model or fallback font."""
@@ -37,12 +62,15 @@ def card_png(card):
     if len(text)>4000:raise ValueError('This text leaves the safe margins. Add your own line breaks or choose a smaller letter size; nothing was shortened.')
     if any(unicodedata.category(c).startswith('C') and c!='\n' for c in text):
         raise ValueError('The card contains a control character that cannot be shown. Remove that character yourself; the words have not been changed.')
+    text=drawing_text(text)
     size=card.get('font_size')
     if type(size) is not int or not 12<=size<=72:raise ValueError('Choose a whole-number letter size from twelve to seventy-two pixels.')
     path=_font(card);font=ImageFont.truetype(str(path),size)
     missing=bytes(font.getmask('\U0010ffff'))
-    if any(c not in ' \n' and bytes(font.getmask(c))==missing for c in text):
-        raise ValueError('This font cannot show every letter or symbol in the card. Choose different wording yourself or wait for another licensed font; nothing was substituted.')
+    unsupported=next((c for c in text if c not in ' \n' and bytes(font.getmask(c))==missing),None)
+    if unsupported:
+        name=unicodedata.name(unsupported,'unrecognised character').lower()
+        raise ValueError(f'This font cannot show the letter or symbol “{unsupported}” ({name}). Choose another licensed face or change that character yourself; nothing was substituted.')
     params={'text':text,'font_size':size,'color':'#FFFFFF','width':640,'height':360,'alignment':'center','line_spacing':8}
     png=TitleCard()._render(params,path)
     # Check both layout bounds and pixels: a clipped glyph cannot hide beyond
@@ -119,9 +147,9 @@ def request_approval(root,identity):
     return gate_request(root,'trailer_card',identity,approval_record(root,identity),
         'Review these exact card words, font and timing. This signature permits no spending and approves no stage.',stage='edit')
 
-def render_layer(root,cards,end,directory):
-    """Remotion places literal title-tool PNGs; never downloads a runtime."""
-    import base64,json,os,shutil,subprocess,uuid
+def renderer_configuration():
+    """Inspect installed local tools without launching or downloading them."""
+    import os,shutil
     modules=Path(os.environ.get('FRONTLOT_REMOTION_MODULES',REPO_ROOT/'remotion-composer'/'node_modules'))
     browser=os.environ.get('FRONTLOT_REMOTION_BROWSER')
     if not browser:
@@ -131,6 +159,12 @@ def render_layer(root,cards,end,directory):
         browser=next((str(p) for p in candidates if p.is_file()),None)
     if not shutil.which('node') or not (modules/'@remotion'/'renderer').is_dir() or not browser or not Path(browser).is_file():
         raise ValueError('Local title playback needs the installed Remotion tools and browser. Nothing was sent or spent; restore the local renderer before preparing playback.')
+    return modules,browser
+
+def render_layer(root,cards,end,directory):
+    """Remotion places literal title-tool PNGs; never downloads a runtime."""
+    import base64,json,subprocess,uuid
+    modules,browser=renderer_configuration()
     job=directory/('titles-'+uuid.uuid4().hex);job.mkdir()
     props={'end':end,'cards':[{**row,'image':'data:image/png;base64,'+base64.b64encode(card_png(row)).decode()} for row in cards]}
     request=job/'props.json'
