@@ -2620,7 +2620,7 @@ function renderLog(s, roster) {
         class: "need",
         type: "button",
         "aria-current": selectedGateId === row.request_id ? "true" : null,
-        "aria-label": `Inspect ${row.kind} gate ${row.request_id}`,
+        "aria-label": ["footage_spend","footage_take"].includes(row.kind) || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind)}` : `Inspect ${row.kind} gate ${row.request_id}`,
         onclick: () => { selectedEntity = key; selectGate(row.request_id); },
       },
         el("span", { class: "what" }, gateWords(row.kind)),
@@ -2642,7 +2642,7 @@ function renderLog(s, roster) {
           el("button", {
             class: "text",
             type: "button",
-            "aria-label": `Inspect ${row.kind} gate ${row.request_id}`,
+            "aria-label": ["footage_spend","footage_take"].includes(row.kind) || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind)}` : `Inspect ${row.kind} gate ${row.request_id}`,
             onclick: () => { selectedEntity = entityKeyOf(row); selectGate(row.request_id); },
           }, logLine(row, roster)),
           el("small", {}, `${row.state === "done" ? "Signed" : row.state === "declined" ? "Declined" : "Dropped"} · ${fmtGateTime(row.mtime)}`)))));
