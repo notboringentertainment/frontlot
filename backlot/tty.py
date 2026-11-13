@@ -627,13 +627,13 @@ async def _attach(project: str, request_id: str) -> tuple[asyncio.StreamReader, 
         }))
         await writer.drain()
         return reader, writer, hello
-    except CleanEOF as exc:
+    except (CleanEOF,asyncio.TimeoutError) as exc:
         writer.close()
         try:
             await writer.wait_closed()
         except (ConnectionError, OSError):
             pass
-        raise BrokerUnavailable("broker closed before HELLO") from exc
+        raise BrokerUnavailable("signing broker is not ready for HELLO") from exc
     except ProtocolError:
         await _best_effort_bye(writer, "protocol")
         writer.close()
@@ -685,7 +685,9 @@ async def _connect_or_spawn(
     except BrokerUnavailable:
         process = _spawn_broker(registry, project_dir, request_id)
 
-    deadline = time.monotonic() + 5.0
+    # The broker may spend ten seconds obtaining its login PATH after binding
+    # its socket. Keep waiting for a verified HELLO, never forward input early.
+    deadline = time.monotonic() + 15.0
     last_identity_error: Optional[IdentityMismatch] = None
     losing_lease_race = False
     saw_matching_session = False

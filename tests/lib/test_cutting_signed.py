@@ -54,5 +54,5 @@ def test_only_real_signed_kept_sources_render(signed_cut):
  root,provider,posts,timeline,take=signed_cut
  assert render_preview(root,trailer_edit.read_revision(root)['edit_revision_sha256']).stat().st_size>0
  sign(root,'audio_take',audio.decision_record(root,take['id'],'decline'),take['id'])
- with pytest.raises(ValueError,match='accepted'):validate_cut(root,timeline,verify_files=True)
+ with pytest.raises(ValueError,match='Sound 1.*declined'):validate_cut(root,timeline,verify_files=True)
  assert len(provider['posts'])==3 and len(posts)==1

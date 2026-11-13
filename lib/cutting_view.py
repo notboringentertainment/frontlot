@@ -5,6 +5,25 @@ from pathlib import Path
 from lib import trailer_edit,footage_requests,audio_workspace
 from lib.pathsafe import resolve_input,sha256_file
 
+def source_problem(medium,number,state):
+    label=f'{"Picture" if medium=="picture" else "Sound"} {number}'
+    if state=='Declined':reason='This take was declined. Replace or remove this clip.'
+    elif state=='Needs a fresh look':reason='This take needs a fresh look. Review a new kept take, or remove this clip.'
+    elif medium=='audio':reason='Choose a kept voice, music or sound effect. A picture take cannot be used as sound.'
+    else:reason='This picture is no longer kept, is missing or has changed. Replace or remove this clip.'
+    return label+' is no longer usable. '+reason
+
+def require_source(root,row,medium,number):
+    try:
+        take=footage_requests.require_accepted(root,row.get('shot_id'),row.get('take_id')) if medium=='picture' else audio_workspace.require_accepted(root,row.get('take_id'))
+        if medium=='audio' and take.get('kind') not in ('speech','music','effect'):raise ValueError()
+        return take
+    except (ValueError,OSError,KeyError,TypeError,RuntimeError):
+        try:
+            state=footage_requests.take_state(root,row.get('shot_id'),row.get('take_id')) if medium=='picture' else audio_workspace.take_state(root,audio_workspace.read(root,row.get('take_id')))
+        except (ValueError,OSError,KeyError,TypeError,RuntimeError):state=None
+        raise ValueError(source_problem(medium,number,state)) from None
+
 def _frame(value,label):
     if type(value) is not int or value<0:raise ValueError(label+' must use non-negative whole frames.')
     return value
@@ -16,13 +35,12 @@ def validate_cut(root,timeline,*,verify_files=False,release=False):
         raise ValueError('Use one to sixty picture clips and up to twenty-four sound clips.')
     picture=[];audio=[];end=0
     for medium,rows in (('picture',timeline['picture']),('audio',timeline['audio'])):
-        for supplied in rows:
+        for number,supplied in enumerate(rows,1):
             keys={'take_id','start_frame','source_in_frame','source_out_frame'}|({'shot_id'} if medium=='picture' else {'level_db','fade_in_frames','fade_out_frames'})
             if not isinstance(supplied,dict) or set(supplied)!=keys:raise ValueError('Choose a kept take and fill in its timing controls.')
             row=copy.deepcopy(supplied)
             for key in ('start_frame','source_in_frame','source_out_frame'):_frame(row[key],'Clip timing')
-            if not isinstance(row['take_id'],str) or not row['take_id']:raise ValueError('Choose a kept take.')
-            take=footage_requests.require_accepted(root,row['shot_id'],row['take_id']) if medium=='picture' else audio_workspace.require_accepted(root,row['take_id'])
+            take=require_source(root,row,medium,number)
             start=row['source_in_frame'];stop=row['source_out_frame'];duration=stop-start
             if duration<=0 or stop>math.floor(take['duration_seconds']*24+1e-6):raise ValueError('The source trim is outside the kept take. Choose a shorter source range.')
             row.update(path=take['path'],asset_id=take['sha256'],duration_frames=duration)
@@ -47,11 +65,15 @@ def validate_cut(root,timeline,*,verify_files=False,release=False):
     if any(r['start_frame']+r['duration_frames']>end for r in audio):raise ValueError('Sound ends after the picture. Trim it or extend the picture first.')
     return {'fps':24,'picture':picture,'audio':audio,'cards':[]}
 
-def editable(timeline):
+def editable(timeline,*,display=False):
     result={'fps':24,'picture':[],'audio':[]}
     for kind in ('picture','audio'):
         keys={'take_id','start_frame','source_in_frame','source_out_frame'}|({'shot_id'} if kind=='picture' else {'level_db','fade_in_frames','fade_out_frames'})
-        for row in timeline[kind]:result[kind].append({k:row[k] for k in keys})
+        for row in timeline[kind]:
+            if display:
+                defaults={'take_id':'','shot_id':'','start_frame':0,'source_in_frame':0,'source_out_frame':row.get('duration_frames',0),'level_db':-6,'fade_in_frames':0,'fade_out_frames':0}
+                result[kind].append({k:row.get(k,defaults[k]) for k in keys})
+            else:result[kind].append({k:row[k] for k in keys})
     return result
 
 def save_cut(root,timeline,expected_revision):
