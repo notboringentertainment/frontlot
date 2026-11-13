@@ -144,3 +144,7 @@ def mount(app,require_writer,safe_root,invalidate,*,kind='music'):
     @app.post(prefix+'/{identity}/decision')
     async def decision(project_id:str,identity:str,request:Request):
         require_writer(request);body=await form(request);result=await run(project_id,partial(decide,kind=kind),identity,body.get('decision'));invalidate(project_id);return result
+    @app.post(prefix+'/{identity}/recover')
+    async def recover_take(project_id:str,identity:str,request:Request):
+        from backlot.voice_panel import recover
+        require_writer(request);result=await run(project_id,partial(recover,kind=kind),identity);invalidate(project_id);return result

@@ -88,6 +88,17 @@ def send(root,identity):
     result=ElevenLabsTTS().execute({'project_dir':str(root),'audio_request_id':identity})
     return {'success':result.success,**({'take':result.data['take']} if result.success else {'message':result.error+' Review the request and signed settings before trying again.'})}
 
+
+def recover(root,identity,*,kind='speech'):
+    root=root_checked(root)
+    with audio.call_lock(root):
+        record=_governed.read_request(root,identity)
+        _governed.validate_request(record,check_expiry=False)
+        if record['kind']!=kind:raise ValueError('Recover this take from its matching audio controls.')
+        take=audio.recover_recorded_take(root,record)
+        if take is None:raise ValueError('No verified completed take is recorded for this request. Review any held charge; recovery cannot submit it again.')
+    return {'take':take,'message':'Recorded take recovered without another call or charge. Listen, then sign keeping or declining it.'}
+
 def decide(root,identity,decision):
     root=root_checked(root)
     _voice_record(root,audio.read(root,identity))
@@ -138,14 +149,17 @@ def snapshot(root):
     requests=[]
     from tools.cost_tracker import load_reservations
     used={r.get('output_hint',{}).get('request_id') for r in load_reservations(root).values()}
+    generations=receipts.verified_generation_receipts(root)
     audio._checked_path(root/'.audio-requests')
     for path in (root/'.audio-requests').glob('*.json'):
         record=_governed.read_request(root,path.stem);_governed.validate_request(record,check_expiry=False)
         if record['kind'] not in ('speech','music','effect'):continue
         from lib.canonical_json import record_sha256
-        approved=receipts.find_approval(root,'audio_spend',entity_id=record['request_id'],record_sha256=record_sha256(record)) is not None
+        approval=receipts.find_approval(root,'audio_spend',entity_id=record['request_id'],record_sha256=record_sha256(record))
+        approved=approval is not None
         error=None
         made=any(t.get('approved_request_id')==record['request_id'] for t in takes)
+        recoverable=bool(not made and approval and any(r.get('audio_approval_receipt_id')==approval['receipt_id'] for r in generations))
         if not made:
             try:audio.check_price(root,record)
             except Exception:error='This request needs fresh review. Check the paper cut and signed price settings, then prepare another request.'
@@ -154,7 +168,8 @@ def snapshot(root):
             if record['request_id'] in used:error='This signature has already been used. If no take was recovered, prepare a new spending card; it cannot buy another call.'
             if state['unresolved_requests']:error='Resolve the held audio charge in the account review above before submitting any request.'
             if not account['configured'] and error is None:error=account['message']
-        requests.append({'record':record,'approved':approved,'error':error,'gate_request_id':_gate_id(root,record['request_id'],'audio_spend')})
+        if recoverable:error=None
+        requests.append({'record':record,'approved':approved,'recoverable':recoverable,'error':error,'gate_request_id':_gate_id(root,record['request_id'],'audio_spend')})
     charges={}
     for r in receipts.verified_generation_receipts(root):
         if r.get('audio_approval_receipt_id'):charges[r['audio_approval_receipt_id']]=r
@@ -287,6 +302,9 @@ def mount(app,require_writer,safe_root,invalidate):
     @app.post('/api/project/{project_id}/voice/{identity}/decision')
     async def decision(project_id:str,identity:str,request:Request):
         require_writer(request);body=await form(request);result=await run(project_id,decide,identity,body.get('decision'));invalidate(project_id);return result
+    @app.post('/api/project/{project_id}/voice/{identity}/recover')
+    async def recover_take(project_id:str,identity:str,request:Request):
+        require_writer(request);result=await run(project_id,recover,identity);invalidate(project_id);return result
     @app.get('/api/project/{project_id}/audio-take/{identity}/play')
     async def play(project_id:str,identity:str):
         data,mime=await run(project_id,playback,identity);return Response(data,media_type=mime,headers={'Cache-Control':'no-store'})

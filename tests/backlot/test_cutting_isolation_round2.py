@@ -16,8 +16,11 @@ def test_board_accepts_tmp_alias_without_any_private_redirect(voice_world,monkey
 
 def test_slow_broker_hello_is_unavailable_not_an_unhandled_timeout(tmp_path,monkeypatch):
     from backlot import tty
-    import socket
-    socket_path=tmp_path/'pending.sock';sock=socket.socket(socket.AF_UNIX);sock.bind(str(socket_path))
+    import os,socket,tempfile
+    # macOS Unix sockets have a short pathname limit. Keep this inside the
+    # redirected app home without adding pytest's long per-test directory.
+    socket_path=Path(tempfile.mkdtemp(prefix='hello-',dir=os.environ.get('OPENMONTAGE_HOME') or tempfile.gettempdir()))/'pending.sock'
+    sock=socket.socket(socket.AF_UNIX);sock.bind(str(socket_path))
     class Writer:
         closed=False
         def close(self):self.closed=True
