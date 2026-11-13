@@ -63,9 +63,11 @@ export function renderPaperCut(s) {
   const panel=(title)=>{const n=el("section",{class:"paper-panel"},el("h3",{},title));content.append(n);return n;};
   const protectedPanels=[];
   let updateTiming=()=>{};
+  const rowWarnings=[];
+  function updateRowWarnings(){for(const show of rowWarnings)show();}
   function draw() {
     if(playing){clearInterval(playing);playing=null;}
-    content.replaceChildren();protectedPanels.length=0;
+    content.replaceChildren();protectedPanels.length=0;rowWarnings.length=0;
     const beats=panel("Beat sequence");
     draft.beats.forEach((b,i)=>{const f=field(names[i],b.text,"textarea");f.input.oninput=()=>{b.text=f.input.value;dirty=true;};beats.append(f.node);});
     function rows(title,key,shot=false) {
@@ -73,6 +75,11 @@ export function renderPaperCut(s) {
       if(!shot){const protectedBox=el("div",{});box.prepend(protectedBox);protectedPanels.push(protectedBox);}
       const drawRows=()=>{list.replaceChildren();draft[key].forEach((row,index)=>{
         const item=el("fieldset",{},el("legend",{},`${shot?"Shot":key==="lines"?"Line":"Card"} ${index+1}`));
+        if(!shot){const note=el("div",{class:"short-phrase-warning"});item.append(note);
+          const show=()=>{note.replaceChildren();if(state.current?.paper_cut?.[key]?.[index]?.text!==row.text)return;
+            const prefix=`${key==="lines"?"Line":"Card"} ${index+1} resembles part of a protected line:`;
+            for(const text of state.story_check?.warnings||[])if(text.startsWith(prefix))note.append(el("p",{role:"status"},text));};
+          rowWarnings.push(show);show();}
         const fields=shot?[["Purpose (private plan)","purpose","textarea"],["Screen time in frames","duration_frames","number"],["References, separated by commas","references"],["Difficulty","difficulty"]]:[["Exact wording","text","textarea"],["Starts at frame","start_frame","number"],["Screen time in frames","duration_frames","number"],["Story material","source_ref"]];
         fields.forEach(([label,k,type])=>{
           if(k==="source_ref") {
@@ -85,7 +92,7 @@ export function renderPaperCut(s) {
           }
           const f=field(label,Array.isArray(row[k])?row[k].join(", "):row[k],type);
           if(type==="number"){f.input.step=1;f.input.min=k==="start_frame"?0:1;}
-          f.input.oninput=()=>{row[k]=type==="number"?Number(f.input.value):k==="references"?f.input.value.split(",").map(x=>x.trim()).filter(Boolean):f.input.value;dirty=true;updateTiming();};item.append(f.node);
+          f.input.oninput=()=>{row[k]=type==="number"?Number(f.input.value):k==="references"?f.input.value.split(",").map(x=>x.trim()).filter(Boolean):f.input.value;dirty=true;updateTiming();updateRowWarnings();};item.append(f.node);
         });
         const up=button("Move earlier",()=>{[draft[key][index-1],draft[key][index]]=[row,draft[key][index-1]];dirty=true;drawRows();updateTiming();});up.disabled=index===0;
         item.append(up,button("Remove from this draft",()=>{draft[key].splice(index,1);dirty=true;drawRows();updateTiming();}));list.append(item);
@@ -128,13 +135,14 @@ export function renderPaperCut(s) {
   function update(next) {
     if(!next)return;
     state=next;
+    updateRowWarnings();
     if(Number.isInteger(state.target_frames)){targetFrames=state.target_frames;updateTiming();}
     for(const box of protectedPanels)box.replaceChildren(el("h4",{},"Protected wording from the story"),el("p",{},"Mechanical comparison cannot recognise every rewording. Compare your lines and cards with these originals."),...(state.protected_lines||[]).map(text=>el("blockquote",{},text)));
     checks.replaceChildren();
     if(state.error)checks.append(el("p",{role:"alert"},state.error));
     if(state.needs_review)checks.append(el("p",{role:"alert"},state.current?.paper_cut_pending?state.current.timing_message:"The story, script or timing changed. Dependent work needs a fresh look."));
     if(state.story_check){checks.append(el("p",{},state.story_check.message));
-      for(const text of [...state.story_check.errors,...state.story_check.warnings])checks.append(el("p",{role:"alert"},text));}
+      for(const text of [...state.story_check.errors,...state.story_check.warnings.filter(x=>! /^(Line|Card) \d+ resembles part of a protected line:/.test(x))])checks.append(el("p",{role:"alert"},text));}
     conflict.replaceChildren();
     if((state.current?.edit_revision_sha256 || null)!==revision) {
       conflict.append(el("p",{},"Another window saved a newer version. Your unsaved draft is still here."),button("Open the latest saved version",()=>{
