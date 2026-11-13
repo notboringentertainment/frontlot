@@ -73,9 +73,13 @@ or a conversion path.
 One sound test setup then needed a correction: after deliberately damaging
 settings, its signed-rate factory failed before the invalid-price operation
 could be tested. That test now calls the operation directly and proves its
-original refusal. The running count is fifteen. The final decision is to keep
-production code frozen and finish a fresh complete comparison after this test
-correction, without replacing failed results with isolated passes.
+original refusal. The shared lock also keeps the existing production lock
+file, so moving its implementation cannot bypass a still-running purchase.
+One test holds that file from another process and proves that both a new
+purchase and an account review are blocked. The running count is sixteen.
+The final decision is to keep this single coordination record and finish a
+fresh complete comparison, without replacing failed results with isolated
+passes or adding a migration or a second lock.
 
 ## For the tools
 

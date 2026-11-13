@@ -138,7 +138,7 @@ def call_lock(root, *, reentrant=True):
         if not reentrant:raise PaidCallBusy()
         yield
         return
-    path=root/'.media-call.lock'
+    path=root/'.audio-call.lock'
     fd=os.open(path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)

@@ -9,6 +9,28 @@ from tests.tools.test_audio_half_transport import http, music_request
 from tests.tools.test_audio_governance import project, sign, Transport, run
 
 
+def test_purchase_and_account_review_use_the_productions_existing_lock(project):
+    import os,subprocess,sys
+    code="""import fcntl,sys
+with open(sys.argv[1],'a') as lock:
+    fcntl.flock(lock,fcntl.LOCK_EX)
+    print('held',flush=True)
+    sys.stdin.readline()
+"""
+    with subprocess.Popen([sys.executable,'-c',code,str(project/'.audio-call.lock')],
+            env=dict(os.environ),stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True) as owner:
+        try:
+            assert owner.stdout.readline().strip()=='held'
+            for reentrant in (True,False):
+                with pytest.raises(spending.PaidCallBusy):
+                    with spending.call_lock(project,reentrant=reentrant):
+                        pytest.fail('A live purchase must keep the shared financial lock.')
+            with pytest.raises(spending.PaidCallBusy):
+                spending.resolution_record(project,'invented',False,0,0,'Checked the invented account.')
+        finally:
+            owner.stdin.write('done\n');owner.stdin.flush()
+
+
 @pytest.mark.parametrize('first',['audio','footage'])
 def test_unknown_charge_stops_both_media_and_only_a_signature_releases_it(film,provider,http,monkeypatch,first):
     from tools.audio.music_gen import MusicGen
