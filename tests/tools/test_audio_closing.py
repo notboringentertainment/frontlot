@@ -78,7 +78,7 @@ def test_identical_content_with_separate_approvals_completes_twice(project):
     t=Transport()
     # Half-dollar bounds leave room for both independently approved calls.
     for _ in range(2):
-        r=prepare(project,max_cash_usd=0.2,max_credits_usd=0.3);approve(project,r);run(project,r,t)
+        r=prepare(project,max_credits_usd=0.5);approve(project,r);run(project,r,t)
     rows=receipts.verified_generation_receipts(project)
     assert len(rows)==2 and rows[0]['parameters_hash']==rows[1]['parameters_hash']
     assert rows[0]['audio_approval_receipt_id']!=rows[1]['audio_approval_receipt_id']
@@ -128,7 +128,7 @@ def test_overcharge_cannot_complete_or_download(project,part):
     r=prepare(project);approve(project,r);t=Transport()
     def submit(payload,key):
         result=t.submit(payload,key)
-        result[part+'_usd']=0.7 if part=='credits' else 0.5
+        result[part+'_usd']=1.1 if part=='credits' else 0.5
         return result
     with pytest.raises(ValueError,match='exceeds the approved bound'):
         audio.execute(project,r,submit=submit,download=t.download)
@@ -149,9 +149,9 @@ def test_last_fraction_of_a_cent_is_usable(project):
     t=Transport()
     tracker=audio._tracker(project,load_verified_project_config(project))
     entry=tracker.estimate('footage','invented',0.9999);tracker.reserve(entry);tracker.reconcile(entry,0.9999)
-    r=prepare(project,max_cash_usd=0.0001,max_credits_usd=0);approve(project,r)
+    r=prepare(project,max_credits_usd=0.0001);approve(project,r)
     def submit(payload,key):
-        result=t.submit(payload,key);result.update(cash_usd=0.0001,credits_usd=0);return result
+        result=t.submit(payload,key);result.update(cash_usd=0,credits_usd=0.0001);return result
     audio.execute(project,r,submit=submit,download=t.download)
     assert (t.calls,t.downloads)==(1,1)
 
@@ -207,7 +207,7 @@ def test_failure_above_last_cent_has_four_place_wording(project):
     from tools.cost_tracker import BudgetExceededError
     tracker=audio._tracker(project,load_verified_project_config(project))
     e=tracker.estimate('footage','invented',0.9999);tracker.reserve(e);tracker.reconcile(e,0.9999)
-    r=prepare(project,max_cash_usd=0.0002,max_credits_usd=0);approve(project,r);t=Transport()
+    r=prepare(project,max_credits_usd=0.0002);approve(project,r);t=Transport()
     with pytest.raises(BudgetExceededError,match=r'needs \$0.0002; only \$0.0001 remains'):
         run(project,r,t)
     assert (t.calls,t.downloads)==(0,0)

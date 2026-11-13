@@ -10,7 +10,6 @@ import json
 import math
 import os
 import stat
-from decimal import Decimal
 import time
 import uuid
 from datetime import datetime, timezone
@@ -19,20 +18,15 @@ from pathlib import Path
 from lib.canonical_json import record_sha256
 from lib.project_config import load_current_verified_project_config
 from lib.receipts import find_approval, stage_generation_wal, complete_generation
-from lib.run_common import resolve_project_root
 from lib.state_io import append_jsonl
-from lib.config_model import BudgetMode
-from tools.cost_tracker import (CostTracker, reservation_lock, reserve_paid_call,
+from tools.cost_tracker import (reservation_lock, reserve_paid_call,
     attach_request_id, reconcile_paid_call, resume_check, load_reservations)
+
+from lib.media_spending import _root, _tracker, _money, call_lock, check_quote
 
 CLASSES = {'speech':'speech_text', 'music':'music_prompt', 'effect':'effect_prompt'}
 FIELDS = {'project_id','request_id','provider','kind','model','voice','prompt','duration_seconds',
           'max_cash_usd','max_credits_usd','price_expires_at','input_sha256','config_sha256'}
-
-def _money(value):
-    if isinstance(value, bool) or not isinstance(value, (float,int)) or not math.isfinite(value) or value < 0 or round(value,4) != value:
-        raise ValueError('A firm charge bound in dollars, to four decimal places, is required.')
-    return value
 
 def _payload(record):
     payload={k:record[k] for k in ('provider','kind','model','voice','prompt','duration_seconds')}
@@ -74,28 +68,6 @@ def validate_request(record, *, check_expiry=True):
     if not isinstance(record['config_sha256'],str) or len(record['config_sha256'])!=64:
         raise ValueError('Signed project settings are required.')
 
-def _root(root):
-    root=Path(root).resolve()
-    if resolve_project_root(root.name)!=root:
-        raise ValueError('Audio requires a registered production.')
-    return root
-
-class AudioCostTracker(CostTracker):
-    @property
-    def budget_remaining_usd(self):
-        remaining = Decimal(str(self.budget_total_usd))
-        for entry in self.entries:
-            if entry["status"] == "reserved":
-                remaining -= Decimal(str(entry.get("reserved_usd", 0)))
-            elif entry["status"] in ("completed", "failed"):
-                remaining -= Decimal(str(entry.get("actual_usd", 0)))
-        return float(remaining)
-
-def _tracker(root,config):
-    return AudioCostTracker(budget_total_usd=config.budget_usd_cap,reserve_pct=0,
-        single_action_approval_usd=float('inf'),require_approval_for_new_paid_tool=False,
-        mode=BudgetMode.CAP,cost_log_path=root/'cost_log.json')
-
 def prepare(root, *, kind,model,voice,prompt,duration_seconds,max_cash_usd,max_credits_usd,price_expires_at,binding=None,price_basis_sha256=None,loop=False):
     root=_root(root)
     # Bounds are validated even if the saved settings are damaged.
@@ -104,8 +76,8 @@ def prepare(root, *, kind,model,voice,prompt,duration_seconds,max_cash_usd,max_c
     r=dict(project_id=root.name,request_id=str(uuid.uuid4()),provider='elevenlabs',kind=kind,model=model,voice=voice,prompt=prompt,
            duration_seconds=duration_seconds,max_cash_usd=max_cash_usd,max_credits_usd=max_credits_usd,
            price_expires_at=price_expires_at,config_sha256=config.digest)
-    if binding is not None or price_basis_sha256 is not None:
-        r.update(binding=copy.deepcopy(binding),price_basis_sha256=price_basis_sha256)
+    if binding is not None:r['binding']=copy.deepcopy(binding)
+    if price_basis_sha256 is not None:r['price_basis_sha256']=price_basis_sha256
     if kind=='effect':r['loop']=loop
     r['input_sha256']=record_sha256(_payload(r))
     # Expired quotes may be saved for inspection but cannot be signed or submitted.
@@ -147,9 +119,12 @@ def read_request(root,request_id):
 
 def check_current(root,record):
     root=_root(root);validate_request(record)
-    if 'binding' in record or 'price_basis_sha256' in record:
-        from lib.audio_workspace import check_price
-        check_price(root,record)
+    from lib.audio_prices import quote
+    price=quote(root,record['kind'],record['prompt'],record['duration_seconds'])
+    check_quote(record,price,'audio')
+    if 'binding' in record:
+        from lib.audio_workspace import check_binding
+        check_binding(root,record)
     if read_request(root,record['request_id'])!=record:raise ValueError('Saved audio request changed.')
     config=load_current_verified_project_config(root)
     config.require_egress('elevenlabs',CLASSES[record['kind']])
@@ -157,6 +132,10 @@ def check_current(root,record):
     return config
 
 def execute(root,record, *, submit,download,validate_download=None):
+    with call_lock(root):return _execute_locked(root,record,submit=submit,download=download,validate_download=validate_download)
+
+
+def _execute_locked(root,record, *, submit,download,validate_download=None):
     """Transport callbacks run only after a durable reservation. Any ambiguous
     failure leaves billing pending; only the existing reconciler may resolve it.
     """
@@ -181,6 +160,9 @@ def execute(root,record, *, submit,download,validate_download=None):
             output_hint={'kind':'audio','audio_approval_receipt_id':approval['receipt_id'],'request_id':record['request_id']})
     started=datetime.now(timezone.utc).isoformat()
     try:
+        # Match footage: a durable hold is not authority to send changed or
+        # expired material. Recheck immediately before the one paid contact.
+        check_current(root,record)
         result=submit(copy.deepcopy(_payload(record)),reservation)
         attach_request_id(root,reservation,result['request_id'])
         cash=_money(result['cash_usd']);credits=_money(result['credits_usd'])

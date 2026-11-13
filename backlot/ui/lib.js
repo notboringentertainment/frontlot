@@ -52,10 +52,16 @@ export function fmtDuration(seconds) {
   return `${m}:${String(s % 60).padStart(2, "0")}`;
 }
 
-export function fmtMoney(v) {
+export function fmtMoney(v, places=2) {
   const n = Number(v);
   if (v == null || !Number.isFinite(n)) return "—";
-  return `$${n.toFixed(2)}`;
+  return `$${n.toFixed(places)}`;
+}
+
+export function spendingCard(card) {
+  return el("div", {class:"spending-card"},
+    el("p",{},`Highest charge: ${fmtMoney(card.highest_charge,4)} (${fmtMoney(card.highest_cash,4)} cash and ${fmtMoney(card.highest_credits,4)} replacement value of credits).`),
+    el("p",{},`Left in the ceiling: ${fmtMoney(card.remaining,4)}. Price figures expire ${card.expiry}.`));
 }
 
 export function fmtAgo(epochSeconds) {

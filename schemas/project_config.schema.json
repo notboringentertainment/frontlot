@@ -791,6 +791,42 @@
               }
             }
           }
+        },
+        "footage_price_basis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "model",
+            "cash_usd_per_second",
+            "credits_usd_per_second",
+            "set_at",
+            "expires_at"
+          ],
+          "properties": {
+            "provider": {
+              "const": "fal"
+            },
+            "model": {
+              "const": "fal-ai/kling-video/o3/pro/reference-to-video"
+            },
+            "cash_usd_per_second": {
+              "type": "number",
+              "minimum": 0
+            },
+            "credits_usd_per_second": {
+              "type": "number",
+              "minimum": 0
+            },
+            "set_at": {
+              "type": "number",
+              "minimum": 0
+            },
+            "expires_at": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
         }
       },
       "additionalProperties": false

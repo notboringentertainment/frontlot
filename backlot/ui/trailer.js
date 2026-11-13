@@ -106,13 +106,15 @@ export function renderPaperCut(s) {
       let start=0;const frame=Number(cursor.value);const shot=draft.shots.find(x=>{const hit=frame>=start&&frame<start+x.duration_frames;start+=x.duration_frames;return hit;});
       const cards=draft.cards.filter(x=>frame>=x.start_frame&&frame<x.start_frame+x.duration_frames).map(x=>x.text);
       const lines=draft.lines.filter(x=>frame>=x.start_frame&&frame<x.start_frame+x.duration_frames).map(x=>x.text);
-      preview.replaceChildren(el("strong",{},"UNFINISHED PLACEHOLDER"),el("p",{},shot?"Planned shot only — no footage":"No shot planned here"),el("p",{},cards.join(" · ")),el("p",{},lines.length?`Spoken text only: ${lines.join(" · ")}`:""),el("small",{},`Frame ${frame} · ${(frame/24).toFixed(2)} seconds`));
+      const saved=state.current?.paper_cut?.shots?.find(x=>x.id===shot?.id);
+      const available=shot && saved && JSON.stringify(saved)===JSON.stringify(shot) ? state.footage_availability?.[shot.id] : null;
+      preview.replaceChildren(el("strong",{},available || "UNFINISHED PLACEHOLDER"),el("p",{},available==="Accepted footage available"?"The saved sequence uses an accepted take for this shot. This sketch does not play the clip.":shot?"Planned shot only — no usable footage":"No shot planned here"),el("p",{},cards.join(" · ")),el("p",{},lines.length?`Spoken text only: ${lines.join(" · ")}`:""),el("small",{},`Frame ${frame} · ${(frame/24).toFixed(2)} seconds`));
     };
     updateTiming=()=>{const total=draft.shots.reduce((n,x)=>n+x.duration_frames,0),target=targetFrames;cursor.max=target-1;if(Number(cursor.value)>target-1)cursor.value=target-1;
       timingText.textContent=total===target?"The shots match the target length.":`Shots total ${(total/24).toFixed(2)} seconds; target ${(target/24).toFixed(2)} seconds. ${Math.abs(total-target)} frames ${total>target?"over":"short"}.`;show();};
     cursor.oninput=show;
     const play=button("Play placeholders",()=>{if(playing){clearInterval(playing);playing=null;play.textContent="Play placeholders";}else{play.textContent="Pause";playing=setInterval(()=>{cursor.value=(Number(cursor.value)+1)%(Number(cursor.max)+1);show();},1000/24);}});
-    timing.append(el("p",{},"This is a timing sketch with no footage or sound. It cannot finish a stage. Playback and export of real media are not built yet. Shot purposes remain private planning notes; they are not shown as trailer pictures."),timingText,preview,cursor,play);updateTiming();
+    timing.append(el("p",{},"This timing sketch identifies shots with accepted footage and those still using placeholders. It cannot finish a stage. Timed playback and export of real media are not built yet. Watch full takes on their shot cards. Shot purposes remain private planning notes."),timingText,preview,cursor,play);updateTiming();
   }
   function showVersion(value, label) {
     const box=el("div",{},el("h4",{},label));

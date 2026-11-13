@@ -582,7 +582,7 @@ def _shot_entry(project_dir: Path, shot_id: str) -> Optional[dict]:
     if brief is None:
         return None
     revision = brief.get("revision_id")
-    standing = sp.shot_take_decisions(project_dir,rows)
+    standing = sp.shot_take_decisions(project_dir,rows,shot_id=shot_id)
     briefs = {r.get("event_id"): r.get("brief") or {} for r in rows if r.get("kind") == "brief"}
     changes: dict = {}   # brief revision -> what it was made from that has changed since
     takes: list[dict] = []
@@ -607,6 +607,8 @@ def _shot_entry(project_dir: Path, shot_id: str) -> Optional[dict]:
                 "playable": path is not None,
                 "made_at": row.get("at"),
                 "cost_usd": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+                **({'cost_basis':row.get('cost_basis'),'signed_footage_request':bool(row.get('footage_request_id')),
+                    'needs_review':take_standing=='needs_review'} if sp.is_trailer(project_dir) else {}),
                 "duration_seconds": row.get("duration_seconds"),
                 "from_earlier_brief": bool(revision and made_from != revision),
                 "selected": take_standing == "chosen",
@@ -1703,7 +1705,60 @@ def _render_audio_resolution(root,req):
     r=req.get('approval_record') or {}
     try:return {'record':resolution_record(root,req['entity_id'],r['charged'],r['cash_usd'],r['credits_usd'],r['note'])}
     except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This account review changed. Prepare a new account review before signing.'}
+def _render_footage(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    from lib import footage_requests as footage, receipts
+    from datetime import datetime, timezone
+    try:
+        if req['kind']=='footage_take':
+            supplied=req.get('approval_record') or {}
+            record=footage.decision_record(root,supplied.get('shot_id'),req.get('entity_id'),supplied.get('decision'))
+            take=record['take']
+            return {'footage_card':{'decision':record['decision'],
+                'description':take['prompt'],'length':take['duration_seconds'],
+                'accounting':'Budget booked at the signed maximum.' if take.get('cost_basis')=='signed_maximum' else 'Charge reported by the service.'},
+                'footage_take':{'path':take['path'],'sha256':take['sha256']}}
+        record=footage._read(root,req.get('entity_id'))
+        footage.check_current(root,record,check_allowance=False)
+        pictures=[_file_packet(root,r['asset_id'],path=root/r['path'],label=f'Reference picture {n}')
+                  for n,r in enumerate(record['references'],1)]
+        if any(p.get('error') for p in pictures):raise ValueError('A reference picture is missing or changed. Nothing can be sent.')
+        return {'footage_card':{'description':record['prompt'],'service':'Fal',
+            'model':'Kling o3 reference video','length':record['duration_seconds'],
+            'highest_cash':record['max_cash_usd'],'highest_credits':record['max_credits_usd'],
+            'highest_charge':round(record['max_cash_usd']+record['max_credits_usd'],4),
+            'remaining':record['remaining_usd'],
+            'expiry':datetime.fromtimestamp(record['price_expires_at'],timezone.utc).strftime('%d %B %Y, %H:%M UTC'),
+            'looks':[{k:_footage_look_words(v) if isinstance(v,dict) or (isinstance(v,list) and any(isinstance(x,dict) for x in v)) else v
+                      for k,v in m['payload'].items()} for m in record['look_material']]},'visuals':pictures}
+    except (ValueError,OSError,TypeError,KeyError,receipts.ReceiptChainError) as exc:
+        return {'packet_error':True,'error':str(exc) if isinstance(exc,ValueError) else 'The footage request cannot be verified. Nothing can be signed.'}
 
+
+def _footage_look_words(value):
+    """Readable copies of approved look facts; never alter the signed payload."""
+    if isinstance(value,dict):return '. '.join(str(k).replace('_',' ').capitalize()+': '+_footage_look_words(v) for k,v in value.items())
+    if isinstance(value,list):return ', '.join(_footage_look_words(v) for v in value)
+    if isinstance(value,bool):return 'yes' if value else 'no'
+    return str(value)
+
+
+def _render_account_review(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    supplied=req.get('approval_record') or {}
+    if (supplied.get('request') or {}).get('provider')!='fal':return _render_text_only(root,req)
+    from lib import audio_workspace,receipts
+    try:
+        record=audio_workspace.resolution_record(root,req.get('entity_id'),supplied.get('charged'),
+            supplied.get('cash_usd'),supplied.get('credits_usd'),supplied.get('note'))
+        if record['request'].get('provider')!='fal':raise ValueError('This account review is for a different service.')
+        return {'footage_resolution':{'description':record['request']['prompt'],'charged':record['charged'],
+            'cash':record['cash_usd'],'credits':record['credits_usd'],'note':record['note']}}
+    except (ValueError,OSError,TypeError,KeyError,receipts.ReceiptChainError):
+        return {'packet_error':True,'error':'The original signed footage request or proposed account outcome cannot be verified. Nothing was resolved.'}
+
+
+def _render_combined_resolution(root,req):
+    record=req.get('approval_record') or {}
+    return _render_account_review(root,req) if (record.get('request') or {}).get('provider')=='fal' else _render_audio_resolution(root,req)
 
 from lib.receipts import APPROVAL_KINDS
 
@@ -1748,7 +1803,9 @@ GATE_RENDERERS = _GateRendererMap({
     "cast_change": _render_cast_change,
     "audio_spend": _render_audio_spend,
     "audio_take": _render_audio_take,
-    "audio_resolution": _render_audio_resolution,
+    "audio_resolution": _render_combined_resolution,
+    "footage_spend": _render_footage,
+    "footage_take": _render_footage,
 })
 assert set(GATE_RENDERERS) == set(APPROVAL_KINDS)
 
@@ -1989,6 +2046,8 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
     if trailer_pin is not None and not trailer_damaged:
         from lib.trailer_edit import paper_state
         state["paper_cut"] = paper_state(project_dir)
+        from lib.footage_requests import preview_availability
+        state['paper_cut']['footage_availability']=preview_availability(project_dir,state['paper_cut'].get('current'))
     return state
 
 

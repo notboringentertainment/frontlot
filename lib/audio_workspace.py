@@ -7,7 +7,8 @@ import uuid
 from pathlib import Path
 from lib.canonical_json import record_sha256
 from lib import receipts
-from tools.audio._governed import _root
+from lib.media_spending import (_root, gate_request, call_lock, PaidCallBusy,
+    reservation_request, resolution_record, resolve_charge, request_resolution, take_decisions, check_quote)
 from tools.audio._legacy_guard import _checked_path
 
 TEST_ONLY = 'For the test trailer only until a person at ElevenLabs confirms otherwise in writing.'
@@ -125,15 +126,7 @@ def import_music(root,source,origin,licence,*,kind='music',brief_id=None):
 
 def _take_decisions(root,take):
     """Verify the subject of every signature, not just the ledger's entity label."""
-    rows=receipts.verified_approvals(root,'audio_take',entity_id=take['id'])
-    records=[row['record'] for row in rows]
-    declines=[record for record in records if isinstance(record,dict)
-              and record.get('take')==take and record.get('decision')=='decline']
-    if declines:return declines
-    if any(not isinstance(record,dict) or record.get('decision') not in ('accept','decline')
-           or record.get('take')!=take for record in records):
-        raise ValueError('The audio decision history cannot be verified. Nothing can be used.')
-    return records
+    return take_decisions(root,'audio_take',take['id'],take,identity_key='id',label='audio')
 
 
 def decision_record(root,identity,decision):
@@ -181,17 +174,6 @@ def request_decision(root,identity,decision):
     return gate_request(root,'audio_take',identity,record,'Review this audio take, then sign your decision.')
 
 
-def gate_request(root,kind,entity,record,summary):
-    from lib.run_common import request_paths
-    identity='audio-'+str(uuid.uuid4())
-    directory=Path(root)/'.gate-requests'
-    if directory.is_symlink():raise ValueError('Signing requests must not use links.')
-    directory.mkdir(exist_ok=True)
-    request={'request_id':identity,'kind':kind,'entity_id':entity,'approval_record':record,
-             'record_sha256':record_sha256(record),'summary':summary,'stage':'assets','status':'pending','project_id':Path(root).name,'scope':'audio:'+entity}
-    with request_paths(root,identity)['pending'].open('x') as f:json.dump(request,f,indent=2)
-    return request
-
 
 def take_state(root,take):
     try:records=_take_decisions(root,take)
@@ -222,50 +204,6 @@ def state(root):
         unresolved.append({'reservation':reservation,'request':request})
     return {'takes':takes,'unresolved_requests':unresolved}
 
-
-def reservation_request(root,reservation):
-    """Account review uses the original signature, never an editable draft."""
-    hint=reservation.get('output_hint') or {}
-    for row in receipts.verified_approvals(root,'audio_spend',entity_id=hint.get('request_id')):
-        record=row['record']
-        if row['receipt_id']==hint.get('audio_approval_receipt_id') and record.get('input_sha256')==reservation.get('normalized_inputs_hash'):
-            return record
-    raise ValueError('The original signed audio request cannot be verified. Nothing was resolved.')
-
-
-def resolution_record(root,identity,charged,cash,credits,note):
-    if receipts.verified_approvals(root,'audio_resolution',entity_id=identity):
-        raise ValueError('This request already has a signed account outcome. Apply that outcome; nothing was changed.')
-    return _resolution_material(root,identity,charged,cash,credits,note)
-
-
-def _resolution_material(root,identity,charged,cash,credits,note):
-    from tools.cost_tracker import load_reservations
-    from tools.audio._governed import _money
-    if type(charged) is not bool:raise ValueError('Say whether this request was charged.')
-    _money(cash);_money(credits)
-    if not isinstance(note,str) or not note.strip():raise ValueError('Record what you checked in your ElevenLabs account.')
-    if not charged and (cash or credits):raise ValueError('An uncharged request must have no cash or credit charge.')
-    reservation=load_reservations(root).get(identity)
-    if not reservation or (reservation.get('output_hint') or {}).get('kind')!='audio':raise ValueError('Choose an unresolved audio request.')
-    if reservation['state'] in ('completed','failed'):raise ValueError('This charge has already been resolved.')
-    return {'reservation_id':identity,'reservation':reservation,'request':reservation_request(root,reservation),'charged':charged,'cash_usd':cash,'credits_usd':credits,'note':note.strip()}
-
-
-def resolve_charge(root,identity,charged,cash,credits,note):
-    from tools.cost_tracker import reservation_lock,reconcile_paid_call
-    from tools.audio._governed import _tracker
-    from lib.project_config import load_current_verified_project_config
-    with call_lock(root), reservation_lock(root):
-        record=_resolution_material(root,identity,charged,cash,credits,note)
-        rows=receipts.verified_approvals(root,'audio_resolution',entity_id=identity)
-        if len(rows)>1:
-            raise ValueError('This request has conflicting signed account outcomes. Nothing was resolved.')
-        approval=receipts.find_approval(root,'audio_resolution',record_sha256=record_sha256(record),entity_id=identity)
-        if approval is None:raise ValueError("This resolution needs Ben's signed approval.")
-        tracker=_tracker(root,load_current_verified_project_config(root))
-        reconcile_paid_call(root,identity,round(cash+credits,4),'completed' if charged else 'failed',tracker)
-        return {'message':'The account outcome has been recorded. This approval cannot submit the request again.'}
 
 
 def save_music_brief(root,text,seconds,identity=None):
@@ -401,8 +339,7 @@ def prepare_request(root,kind,model,*,line_index=None,voice=None,brief_id=None,p
 def check_price(root,record):
     from lib.audio_prices import quote
     price=quote(root,record['kind'],record['prompt'],record['duration_seconds'])
-    for key in ('max_cash_usd','max_credits_usd','price_expires_at','price_basis_sha256'):
-        if record.get(key)!=price[key]:raise ValueError('The audio price changed. Prepare a new request before approval.')
+    check_quote(record,price,'audio')
     check_binding(root,record)
     return price
 
@@ -434,25 +371,6 @@ def approved_source_request(root,take):
     if row is None:raise ValueError('The audio request cannot be verified. Stop and have its approval history checked.')
     return row['record']
 
-
-from contextlib import contextmanager
-@contextmanager
-def call_lock(root):
-    """One live service owner; signed recovery never settles that owner's call."""
-    import fcntl
-    path=_root(root)/'.audio-call.lock'
-    fd=os.open(path,os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
-    try:
-        try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:raise ValueError('An audio call is still running. Wait for its result before account review.')
-        yield
-    finally:os.close(fd)
-
-
-def request_resolution(root,identity,charged,cash,credits,note):
-    with call_lock(root):
-        record=resolution_record(root,identity,charged,cash,credits,note)
-        return gate_request(root,'audio_resolution',identity,record,'After checking your ElevenLabs account, sign this charge outcome. No request will be submitted again.')
 
 
 def probe_audio(path,maximum=120):

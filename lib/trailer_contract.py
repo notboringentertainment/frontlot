@@ -182,6 +182,8 @@ def approval_record(root, pin, stage, artifacts):
                               if (Path(root)/f'checkpoint_{s}.json').is_file()}
     if stage in {'edit', 'compose'}:
         saved = json.loads(_local_file(root, 'artifacts/edit_decisions.json').read_text())
+        from lib.footage_requests import validate_cut_sources
+        validate_cut_sources(root,saved)
         validate_stage_contract(contract, 'edit', {'edit_decisions': saved})
         digest = edit_digest(saved)
         if saved.get('edit_revision_sha256') != digest:

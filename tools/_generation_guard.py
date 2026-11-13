@@ -7,7 +7,7 @@ import contextvars
 from pathlib import Path
 
 CAPABILITIES = frozenset({'image_generation','video_generation','avatar'})
-CLOSED = 'A signed footage request is required. Trailer generation is not available yet; nothing was sent.'
+CLOSED = 'A matching signed footage request is required. Nothing was sent.'
 UNVERIFIED = 'Generation needs one registered production with verifiable signed settings and history. Nothing was sent.'
 BAD_PATH = 'Generation must stay inside one registered production, without linked or conflicting production paths. Nothing was sent.'
 _CONTEXT = contextvars.ContextVar('verified_generation_production', default=None)
@@ -53,7 +53,7 @@ def _identify(inputs, expected_root=None):
     return root
 
 
-def refusal(inputs, expected_root=None):
+def refusal(inputs, expected_root=None, *, tool=None):
     """Return a plain refusal, or establish a positively verified old root."""
     try:root=_identify(inputs,expected_root)
     except ValueError as exc:return str(exc) if str(exc) in (BAD_PATH,UNVERIFIED) else BAD_PATH
@@ -62,7 +62,14 @@ def refusal(inputs, expected_root=None):
         from lib.supervised_production import is_trailer
         from lib.project_config import load_current_verified_project_config
         from lib.receipts import verified_approvals
-        if is_trailer(root):return CLOSED
+        if is_trailer(root):
+            # Only the operation that verified a saved signed request can
+            # establish this scoped capability. Input flags never grant it.
+            try:
+                from lib.footage_requests import authorization
+                authorization(root,inputs,tool=tool)
+            except Exception:return CLOSED
+            return None
         from tools.audio._legacy_guard import _checked_path
         for name in ('project.yaml','approvals.jsonl'):_checked_path(root/name)
         config=load_current_verified_project_config(root)
@@ -84,7 +91,7 @@ def protect(fn):
         inputs=args[0] if args else kwargs.get('inputs')
         if not isinstance(inputs,dict) and _CONTEXT.get() is not None:
             inputs={}
-        message=refusal(inputs)
+        message=refusal(inputs,tool=getattr(self,'name',None))
         if message:return message,None
         return None,_CONTEXT.set(_identify(inputs))
     if inspect.iscoroutinefunction(fn):
