@@ -1099,3 +1099,4 @@ details.log-more[open] > summary { margin-bottom: 12px; }
 .voice-workspace-nav { display:flex; gap:12px; padding:12px 20px; border-bottom:1px solid #ddd; }
 @media(max-width:900px){.voice-lines { grid-template-columns:1fr; }.voice-lines > aside { position:static; }}
 .voice-spend,.voice-take { overflow-wrap:anywhere; }
+.voice-panel > [role=status]:not(:empty) { position:sticky; top:8px; z-index:5; padding:12px; background:#f4f0df; color:#252a24; border:1px solid #8b8067; border-radius:4px; }

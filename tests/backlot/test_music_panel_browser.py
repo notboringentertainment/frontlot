@@ -96,6 +96,7 @@ def test_import_controls_choose_require_licence_play_sign_and_decline(voice_worl
             form.get_by_label('Where this music came from',exact=True).fill('My own recording')
             form.get_by_role('button',name='Bring in this music',exact=True).click()
             expect(panel.get_by_role('status')).to_contain_text('licence note')
+            expect(panel.get_by_role('status')).to_be_in_viewport()
             capture(page,'import-licence-needed',form)
             form.get_by_role('button',name='Choose a music file',exact=True).click()
             expect(panel.get_by_role('status')).to_contain_text('No file was chosen')
