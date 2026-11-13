@@ -231,7 +231,7 @@ def reservation_request(root,reservation):
 
 
 def resolution_record(root,identity,charged,cash,credits,note):
-    with call_lock(root):
+    with call_lock(root,reentrant=False):
         if receipts.verified_approvals(root,'audio_resolution',entity_id=identity):
             raise ValueError('This request already has a signed account outcome. Apply that outcome; nothing was changed.')
         return _resolution_material(root,identity,charged,cash,credits,note)
@@ -256,7 +256,7 @@ def resolve_charge(root,identity,charged,cash,credits,note):
     from tools.cost_tracker import reservation_lock,reconcile_paid_call
     from tools.audio._governed import _tracker
     from lib.project_config import load_current_verified_project_config
-    with call_lock(root), reservation_lock(root):
+    with call_lock(root,reentrant=False), reservation_lock(root):
         record=_resolution_material(root,identity,charged,cash,credits,note)
         rows=receipts.verified_approvals(root,'audio_resolution',entity_id=identity)
         if len(rows)>1:
@@ -389,7 +389,7 @@ class PaidCallBusy(ValueError, IndeterminatePaidCallError):
 
 
 @contextmanager
-def call_lock(root):
+def call_lock(root, *, reentrant=True):
     """One live service owner; signed recovery never settles that owner's call."""
     import fcntl
     root = _root(root)
@@ -397,6 +397,7 @@ def call_lock(root):
     held = getattr(_call_owners,'held',None)
     if held is None:held=_call_owners.held=set()
     if identity in held:
+        if not reentrant:raise PaidCallBusy()
         yield
         return
     path=root/'.audio-call.lock'
@@ -411,9 +412,8 @@ def call_lock(root):
 
 
 def request_resolution(root,identity,charged,cash,credits,note):
-    with call_lock(root):
-        record=resolution_record(root,identity,charged,cash,credits,note)
-        return gate_request(root,'audio_resolution',identity,record,'After checking the service account, sign this charge outcome. No request will be submitted again.')
+    record=resolution_record(root,identity,charged,cash,credits,note)
+    return gate_request(root,'audio_resolution',identity,record,'After checking the service account, sign this charge outcome. No request will be submitted again.')
 
 
 def probe_audio(path,maximum=120):

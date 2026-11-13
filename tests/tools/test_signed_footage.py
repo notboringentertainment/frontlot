@@ -567,3 +567,20 @@ def test_relabelled_take_cannot_obtain_acceptance(film,provider,field,value):
     path.write_text(''.join(json.dumps(r)+'\n' for r in rows))
     with pytest.raises(ValueError):workspace().request_decision(root,shot,take['take_id'],'accept')
     assert len(provider['posts'])==1
+
+
+def test_signed_account_outcome_cannot_be_applied_inside_an_active_call(film,provider,monkeypatch):
+    from lib import audio_workspace as ws
+    from tools.video import _shared
+    from tools.cost_tracker import nonterminal_reservations
+    root,_=film;record=prepare(film);approve(root,record)
+    monkeypatch.setattr(_shared,'fal_queue_wait',lambda *a,**k:(_ for _ in ()).throw(TimeoutError('Invented uncertain result.')))
+    with pytest.raises(ValueError):workspace().execute(root,record['request_id'])
+    identity=nonterminal_reservations(root)[0]['reservation_id'];note='Checked the invented account; no charge.'
+    looks.approve_request(ws.request_resolution(root,identity,False,0,0,note),root)
+    before=nonterminal_reservations(root)
+    with ws.call_lock(root):
+        with pytest.raises(ValueError,match='still running'):ws.resolve_charge(root,identity,False,0,0,note)
+    assert nonterminal_reservations(root)==before
+    ws.resolve_charge(root,identity,False,0,0,note)
+    assert nonterminal_reservations(root)==[] and len(provider['posts'])==1

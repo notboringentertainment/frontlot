@@ -6,14 +6,15 @@ request is for one clip, with its exact shot, references, approved look, model,
 length, signed price figures and remaining ceiling. Accepting a take never
 completes a stage.
 
-The bounded implementation is complete. Twelve concrete findings across the footage work
+The bounded implementation is complete. Thirteen concrete findings across the footage work
 have required corrections: the original spending gap, unsigned decisions treated
 as authority, older shots disappearing, an early reservation gap, a stale card
 which could not refresh its remaining ceiling, and an unsigned reconciliation
 path, separate identities for identical retakes, reattachment after a decline,
 honest accounting when the service returns no invoice, preserving later trim
 windows, rejecting edited take metadata, and readable nested look facts on the
-new signing card. The proportionality decision is to finish the bounded operations and their
+new signing card, and keeping account resolution exclusive while a purchase is
+active. The proportionality decision is to finish the bounded operations and their
 readable signing cards, retaining the financial proofs. A full request workbench
 and automatic dispatch are deferred. The existing signer and transport remain
 the foundation.
