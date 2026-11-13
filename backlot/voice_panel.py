@@ -128,7 +128,7 @@ def snapshot(root):
     account=account_status()
     tracker=_governed.AudioCostTracker(budget_total_usd=ceiling,reserve_pct=0,cost_log_path=root/'cost_log.json')
     state=audio.state(root)
-    takes=[t for t in state['takes'] if t['kind'] in ('speech','music')]
+    takes=[t for t in state['takes'] if t['kind'] in ('speech','music','effect')]
     for take in takes:
         if take['origin']=='generated':
             source=audio.approved_source_request(root,take)
@@ -140,7 +140,7 @@ def snapshot(root):
     audio._checked_path(root/'.audio-requests')
     for path in (root/'.audio-requests').glob('*.json'):
         record=_governed.read_request(root,path.stem);_governed.validate_request(record,check_expiry=False)
-        if record['kind'] not in ('speech','music'):continue
+        if record['kind'] not in ('speech','music','effect'):continue
         from lib.canonical_json import record_sha256
         approved=receipts.find_approval(root,'audio_spend',entity_id=record['request_id'],record_sha256=record_sha256(record)) is not None
         error=None
@@ -164,11 +164,14 @@ def snapshot(root):
     from backlot.music_panel import current_brief
     try:music_brief=current_brief(root)
     except ValueError:music_brief=None
+    try:effect_brief=current_brief(root,kind='effect')
+    except ValueError:effect_brief=None
     return {'lines':(paper.get('current') or {}).get('paper_cut',{}).get('lines',[]),
             'music_brief':music_brief,
+            'effect_brief':effect_brief,'shots':(paper.get('current') or {}).get('paper_cut',{}).get('shots',[]),
             'account':account,'price_basis':basis,'price_config_sha256':config_sha,'price_settings_signed':basis is not None,
             'protected_lines':paper.get('protected_lines',[]),'usable':paper.get('usable_downstream',False),
-            'message':settings_error or (None if paper.get('usable_downstream') else 'Review the approved story and save a checked paper cut before requesting voice or generated music.'),
+            'message':settings_error or (None if paper.get('usable_downstream') else 'Review the approved story and save a checked paper cut before requesting audio.'),
             'takes':takes,'requests':requests,'unresolved_requests':state['unresolved_requests'],
             'budget':{'ceiling':ceiling,'spent':tracker.budget_spent_usd,'held':tracker.budget_reserved_usd,
                       'remaining':tracker.budget_remaining_usd,'audio_cash':sum(r.get('cash_usd',0) for r in charges),
@@ -182,6 +185,7 @@ def prepare_prices(root,data):
     from tools.cost_tracker import nonterminal_reservations,reservation_lock
     root=root_checked(root)
     keys={'dollars_per_credit','speech_credits_per_character','music_credits_per_minute','voice_multiplier_ceiling','expires_at'}
+    if isinstance(data,dict) and 'effect_credits_per_second' in data:keys.add('effect_credits_per_second')
     if not isinstance(data,dict) or set(data)!=keys or any(type(data[k]) not in (int,float) or not math.isfinite(data[k]) or data[k]<=0 for k in keys):
         raise ValueError('Fill in positive account price ceilings and a future expiry. No default prices are supplied.')
     if data['voice_multiplier_ceiling']<1 or data['expires_at']<=time.time():
@@ -198,9 +202,10 @@ def prepare_prices(root,data):
         providers=settings['provider_egress']
         if not isinstance(providers,list):raise ValueError('Use the current trailer settings before preparing audio prices.')
         entry=next((p for p in providers if p['provider']=='elevenlabs'),None)
-        if entry is None:providers.append({'provider':'elevenlabs','content_classes':['speech_text','music_prompt']})
+        classes=['speech_text','music_prompt']+(['effect_prompt'] if 'effect_credits_per_second' in keys else [])
+        if entry is None:providers.append({'provider':'elevenlabs','content_classes':classes})
         else:
-            for kind in ('speech_text','music_prompt'):
+            for kind in classes:
                 if kind not in entry['content_classes']:entry['content_classes'].append(kind)
         validate_project_config(settings)
         path=audio._checked_path(root/'project.yaml');old=path.read_bytes()
@@ -211,7 +216,7 @@ def prepare_prices(root,data):
         raw=yaml.safe_dump(settings,sort_keys=True).encode()
         atomic_write_bytes(path,raw)
         return audio.gate_request(root,'config','project_config',{'config_sha256':hashlib.sha256(raw).hexdigest()},
-            'Review the account price ceilings and permission to send separately approved voice words and instrumental music briefs. This signature buys no audio.')
+            'Review the account price ceilings and permission to send separately approved voice words, instrumental music briefs and any priced sound-effect descriptions. This signature buys no audio.')
 
 def prepare_resolution(root,data):
     if not isinstance(data,dict) or set(data)!={'reservation_id','charged','cash','credits','note'}:raise ValueError('Fill in the charge outcome and what you checked in the account.')

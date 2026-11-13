@@ -1,6 +1,6 @@
 """Music generation tool via ElevenLabs Music API.
 
-Generates background music and sound effects for video production.
+Generates instrumental background music for video production.
 Reports unavailable when no API key is configured.
 """
 
@@ -43,11 +43,10 @@ class MusicGen(BaseTool):
         "Get a key at https://elevenlabs.io"
     )
 
-    agent_skills = ["music", "sound-effects", "elevenlabs"]
+    agent_skills = ["music", "elevenlabs"]
 
     capabilities = [
         "generate_background_music",
-        "generate_sfx",
     ]
 
     input_schema = {

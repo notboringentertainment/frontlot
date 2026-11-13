@@ -8,6 +8,12 @@ The saved trailer contract states its target running time, at least one second a
 
 Use Remotion for local timed graphics and footage composition, and FFmpeg for trimming, colour, mixing, probing and final encoding. This fixed trailer workflow takes precedence over instructions below to offer composition runtimes. It does not establish that a runtime is installed, change an older renderer lock, or approve any creative choice for Ben.
 
+Sound-effect takes are prepared and signed in the board's audio workspace. Use only
+kept, unchanged takes with their recorded moment and provenance. A loop intention
+does not mix or repeat a take automatically. The cutting view will place and mix
+these effects; preparing a take does not make a rough cut or finish a stage. Never
+call generation from a mixer or substitute another service.
+
 Ben works through visible controls and ordinary conversation. Use only available Front Lot operations. Never give him a command to type, run an unavailable operation by another route, or mark a placeholder as produced footage. Say plainly when a control is not available yet and stop that step. The trailer is unfinished until those later pieces exist.
 
 Every stage requires Ben's signed approval through the existing gate and receipt machinery. A bare approval flag, the assistant's words and a hand-written stage file never complete a trailer stage. Whole-stage signing screens are not available yet, including for looks, portraits and visual references; keep those stages unfinished until their signing controls exist. Technical checks and the assistant's review never approve a stage. The rough cut requires approval of its exact saved edit revision. Final approval follows watching and listening to the exact exported file and binds both that edit revision and the file's content digest. Changed inputs require fresh downstream review while preserving history. The delivery piece will supply the visible exact-file signing controls; never invent a receipt or claim those controls exist now.

@@ -2884,7 +2884,8 @@ function renderBoard() {
   if(s.is_trailer && !s.trailer_damaged && !selectedGateId)viewer.append(el('nav',{class:'voice-workspace-nav','aria-label':'Trailer workspaces'},
     el('button',{type:'button',onclick:()=>viewer.querySelector('.paper-editor:not(.voice-panel)')?.scrollIntoView({block:'start'})},'Paper cut workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('.voice-lines')?.scrollIntoView({block:'start'})},'Voice workspace'),
-    el('button',{type:'button',onclick:()=>viewer.querySelector('#music-compose')?.scrollIntoView({block:'start'})},'Music workspace')));
+    el('button',{type:'button',onclick:()=>viewer.querySelector('#music-compose')?.scrollIntoView({block:'start'})},'Music workspace'),
+    el('button',{type:'button',onclick:()=>viewer.querySelector('#effect-compose')?.scrollIntoView({block:'start'})},'Sound effects workspace')));
   const drawer = renderDrawer(s);
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(renderPaperCut(s));
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderVoice(s,async(id)=>{await refresh();await selectGate(id);}));
