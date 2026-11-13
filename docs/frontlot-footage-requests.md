@@ -51,6 +51,22 @@ that the production has verified signed trailer creation and current signed
 settings. This work leaves the accepted display limitation for completely
 concealed, unverifiable trailer files unchanged.
 
+The voice-and-music work is now on the main line and has been merged here.
+Sound and footage use one shared purchase lock, budget calculation, price
+comparison, signing-request writer, decision-history check and signed account
+resolution. Their price calculations still describe their actual units: sound
+is priced in credits, while footage is priced by clip length. Both must agree
+with current signed figures before a call can begin.
+
+This integration found one additional financial gap: the low-level sound
+operation could accept a signed request containing only typed price limits.
+It now checks signed figures every time. That brings the concrete finding
+count to fourteen. The proportionality decision remains to finish the shared
+operations and their evidence, without request controls, another workbench or
+a compatibility project. The special local-audio exception for older
+productions and the separate reservation ordering for older calls have been
+removed. Tests now check the current refusal and the single crash-safe order.
+
 ## For the tools
 
 The operations live in `lib/footage_requests.py`. The transport remains
@@ -67,6 +83,6 @@ verified one-use purchase. `request_decision(root, shot_id, take_id, decision)`
 creates a signed accept/decline request, and `apply_decision(...)` applies its
 verified decision to the single EDL. Preview/export consumers must use
 `validate_cut_sources(root, edit)` and `require_accepted(...)`, never a notebook
-label. `audio_workspace.request_resolution` and `resolve_charge` serve both
-media families. This branch includes the open voice-and-music operations
-dependency; it must land before or with this branch.
+label. `media_spending.request_resolution` and `resolve_charge` serve both media
+families. The sound workspace imports those same operations for its current
+callers. The shared implementation lives in `lib/media_spending.py`.

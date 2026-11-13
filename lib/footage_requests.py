@@ -15,8 +15,7 @@ from pathlib import Path
 from lib import receipts, supervised_production as sp
 from lib.canonical_json import record_sha256
 from lib.project_config import load_current_verified_project_config, ProjectConfigError, read_project_config
-from lib.audio_workspace import gate_request, call_lock
-from tools.audio._governed import _root, _tracker, _money
+from lib.media_spending import gate_request, call_lock, _root, _tracker, _money, take_decisions, check_quote
 from tools.cost_tracker import reservation_lock, load_reservations, resume_check
 
 MODEL = 'fal-ai/kling-video/o3/pro/reference-to-video'
@@ -158,7 +157,7 @@ def check_current(root, record, *, check_allowance=True, saved=True):
     if record['provider'] != 'fal' or record['model'] != MODEL or record['aspect_ratio'] != '16:9' or record['generate_audio'] is not False:
         raise ValueError('The service, model or clip settings changed.')
     price = quote(root, record['model'], record['duration_seconds'])
-    if any(record[k] != v for k,v in price.items()):raise ValueError('The signed footage price changed. Prepare a new request.')
+    check_quote(record,price,'footage')
     config = load_current_verified_project_config(root)
     if config.digest != record['config_sha256']:raise ValueError('The signed production settings changed.')
     config.require_egress('fal','prompts','reference_images')
@@ -366,17 +365,9 @@ def decision_record(root, shot_id, take_id, decision):
     if decision not in ('accept','decline'):raise ValueError('Accept or decline this take.')
     take = _take(root,shot_id,take_id)
     subject = {'shot_id':shot_id,'take':take,'decision':decision}
-    decisions = receipts.verified_approvals(root,'footage_take',entity_id=take_id)
-    if any(r.get('record',{}).get('shot_id')==shot_id and r['record'].get('decision')=='decline'
-           and r['record'].get('take',{}).get('take_id')==take_id for r in decisions):
+    decisions = take_decisions(root,'footage_take',take_id,take,identity_key='take_id',subject={'shot_id':shot_id})
+    if any(old['decision']=='decline' for old in decisions):
         raise ValueError('This take was declined. Decline is final; request a new take.')
-    declined = False
-    for row in decisions:
-        old = row['record']
-        if old.get('shot_id') != shot_id or old.get('take') != take or old.get('decision') not in ('accept','decline'):
-            raise ValueError('The take decision history cannot be verified.')
-        declined = declined or old['decision']=='decline'
-    if declined:raise ValueError('This take was declined. Decline is final; request a new take.')
     if decision == 'accept':
         if decisions:raise ValueError('This take is already accepted.')
         record = _provenance(root,take)
@@ -395,13 +386,9 @@ def request_decision(root, shot_id, take_id, decision):
 
 def take_state(root, shot_id, take_id):
     take = _take(root,shot_id,take_id)
-    try:rows = receipts.verified_approvals(root,'footage_take',entity_id=take_id)
-    except receipts.ReceiptChainError:return 'Needs a fresh look'
-    if any(r.get('record',{}).get('shot_id')==shot_id and r['record'].get('decision')=='decline'
-           and r['record'].get('take',{}).get('take_id')==take_id for r in rows):return 'Declined'
-    valid = [r['record'] for r in rows if isinstance(r.get('record'),dict) and r['record'].get('shot_id')==shot_id and r['record'].get('take')==take]
+    try:valid = take_decisions(root,'footage_take',take_id,take,identity_key='take_id',subject={'shot_id':shot_id})
+    except (receipts.ReceiptChainError,ValueError):return 'Needs a fresh look'
     if any(r.get('decision')=='decline' for r in valid):return 'Declined'
-    if len(valid)!=len(rows):return 'Needs a fresh look'
     if not valid:return 'Waiting for your decision'
     if any(r.get('decision')!='accept' for r in valid) or len(valid)>1:return 'Needs a fresh look'
     try:

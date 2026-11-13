@@ -16,6 +16,7 @@ import os
 import threading
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
@@ -85,7 +86,13 @@ class CostTracker:
 
     @property
     def budget_remaining_usd(self) -> float:
-        return self.budget_total_usd - self.budget_spent_usd - self.budget_reserved_usd
+        remaining = Decimal(str(self.budget_total_usd))
+        for entry in self.entries:
+            if entry['status'] == EntryStatus.RESERVED.value:
+                remaining -= Decimal(str(entry.get('reserved_usd',0)))
+            elif entry['status'] in (EntryStatus.COMPLETED.value,EntryStatus.FAILED.value):
+                remaining -= Decimal(str(entry.get('actual_usd',0)))
+        return float(remaining)
 
     @property
     def usable_budget_usd(self) -> float:
@@ -720,8 +727,7 @@ def reserve_paid_call(
 ) -> str:
     """Reserve budget through ``tracker`` and persist a ``submitting`` reservation.
 
-    Ordinary calls raise budget refusals before writing the reservation log.
-    Dedicated signed requests first persist an intent, so a crash during the
+    Calls first persist an intent, so a crash during the
     hold cannot lose their one-use identity; a known refusal closes that intent
     without charge. Returns the reservation id,
     which doubles as the client idempotency key sent with the request.
@@ -760,24 +766,18 @@ def reserve_paid_call(
                 "output_hint": dict(output_hint) if output_hint else None,
                 **({"scope": guard.scope, "kind": guard.kind} if guard is not None else {}),
             }
-        # Dedicated signed requests must remain identifiable even if the
+        # Requests must remain identifiable even if the
         # process dies inside the budget hold. Publish their durable intent
         # before holding money; the existing unknown-outcome stop then covers
-        # both sides of that window. Ordinary legacy calls retain their order.
-        hint = output_hint or {}
-        signed = bool(hint.get('footage_approval_receipt_id') or hint.get('audio_approval_receipt_id'))
-        if signed:
-            _append_reservation_event(project_root,event)
+        # both sides of that window.
+        _append_reservation_event(project_root,event)
         try:
             tracker.reserve(entry_id)
         except Exception:
             tracker.refund(entry_id)
-            if signed:
-                _append_reservation_event(project_root,{'reservation_id':reservation_id,
-                    'state':'failed','actual_usd':0.0})
+            _append_reservation_event(project_root,{'reservation_id':reservation_id,
+                'state':'failed','actual_usd':0.0})
             raise
-        if not signed:
-            _append_reservation_event(project_root,event)
     return reservation_id
 
 
