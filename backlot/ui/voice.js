@@ -2,6 +2,15 @@ import {el,CAPABILITY_TOKEN_KEY} from '/ui/lib.js';
 import {musicForms,effectForms,TEST_ONLY} from '/ui/music.js';
 import {renderPriceSettings} from '/ui/audio_prices.js';
 let current=null;
+// Keep the exact media element while live board data rebuilds the drawer.
+// A different file or take gets a new player and never starts itself.
+let signingPlayer=null;
+function takePlayer(take){
+  const key=JSON.stringify([take.project_id,take.id,take.sha256]);
+  if(signingPlayer?.key!==key)signingPlayer={key,node:el('audio',{controls:'',preload:'metadata',src:`/api/project/${encodeURIComponent(take.project_id)}/audio-take/${take.id}/play`})};
+  return signingPlayer.node;
+}
+const licence=t=>`Imported from: ${t.source}. Licence note: ${t.licence_note}${/[.!?]$/.test(t.licence_note.trim())?'':'.'} No generation charge.`;
 const money=v=>`$${Number(v||0).toFixed(4)}`;
 const button=(label,fn)=>el('button',{type:'button',onclick:fn},label);
 const routeFor=kind=>kind==='effect'?'effects':kind==='music'?'music':'voice';
@@ -42,7 +51,7 @@ export function renderVoice(s,onSign){
         const field=el(key==='note'?'textarea':'input',key==='note'?{'aria-label':label}:{'aria-label':label,type:'number',step:'.0001'});field.value=d[key];field.oninput=()=>d[key]=key==='note'?field.value:Number(field.value);form.append(el('label',{},label,field));
         if(key!=='note'){field.disabled=!d.charged;amounts.push([key,field]);}
       }
-      form.append(button('Review and sign this account outcome',()=>act(async()=>{const g=await api(url+'/resolution',{reservation_id:id,...d});onSign(g.request_id);})),
+      form.append(button('Review and sign this account outcome',()=>act(async()=>{const g=await api(url+'/resolution',{reservation_id:id,...d});await onSign(g.request_id);return 'Account outcome ready for your signature.';})),
         button('Apply the signed account outcome',()=>act(async()=>{return (await api(`${url}/resolution/${id}/apply`,{})).message;})));content.append(form);
     }
     const protectedBox=el('aside',{class:'paper-panel'},el('h3',{},'Protected story lines'));
@@ -73,8 +82,10 @@ export function renderVoice(s,onSign){
         el('p',{},`Price expires ${new Date(r.price_expires_at*1000).toLocaleString()}`),
         el('p',{},effect?'The paper-cut moment stays here. Only the description, model, length and loop choice are sent.':music?TEST_ONLY:`Notes kept here, not sent: ${r.binding.performance_notes||'None'}`));
       const made=data.takes.some(t=>t.approved_request_id===r.request_id);
-      if(item.error)card.append(el('p',{role:'alert'},item.error));
-      else if(!made && item.approved)card.append(button('Make this approved take',()=>act(async()=>{const result=await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/send`,{});if(!result.success)throw Error(result.message);})));
+      if(item.recoverable)card.append(el('p',{},'A completed take is recorded in its receipt but is missing here. Recover it without another call or charge.'),
+        button('Recover recorded take',()=>act(async()=>{return (await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/recover`,{})).message;})));
+      else if(item.error)card.append(el('p',{role:'alert'},item.error));
+      else if(!made && item.approved)card.append(button('Make this approved take',()=>act(async()=>{const result=await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/send`,{});if(!result.success)throw Error(result.message);return 'Take ready. Listen, then sign keeping or declining it.';})));
       else if(!made && item.gate_request_id)card.append(button('Review and sign this request',()=>onSign(item.gate_request_id)));
       if(made)card.append(el('p',{},'This signature already made a take. Another take needs another spending card and signature.'));
       requests.append(card);
@@ -85,13 +96,13 @@ export function renderVoice(s,onSign){
       const music=t.kind==='music',effect=t.kind==='effect',noun=effect?'effect':'music',route=routeFor(t.kind),box=el('article',{class:'voice-take paper-panel','data-kind':t.kind},el('h4',{},t.status==='Accepted'?'Kept':t.status),
         el('p',{},effect?`Effect take · ${t.duration_seconds.toFixed(2)} seconds · ${moment(t.binding)}`:music?`Music take · ${t.duration_seconds.toFixed(2)} seconds`:`Spoken line ${t.binding.line_index+1} · ${t.voice_name} · ${t.duration_seconds.toFixed(2)} seconds`),el('blockquote',{},t.spoken_words));
       if(music&&t.origin==='generated')box.append(el('p',{},TEST_ONLY));
-      if(t.origin==='imported')box.append(el('p',{},`Imported from: ${t.source}. Licence note: ${t.licence_note}. No generation charge.`));
+      if(t.origin==='imported')box.append(el('p',{},licence(t)));
       let player=players.get(t.id);if(!player){player=el('audio',{controls:'',preload:'metadata',src:`/api/project/${encodeURIComponent(project)}/audio-take/${t.id}/play`,'aria-label':effect?'Listen to effect take':music?'Listen to music take':`Listen to line ${t.binding.line_index+1}`});players.set(t.id,player);}
       box.append(player);
       if(t.status!=='Declined'){
-        if(t.status==='Waiting for your decision')box.append(button('Keep this take',()=>act(async()=>{const g=await api(`/api/project/${encodeURIComponent(project)}/${route}/${t.id}/decision`,{decision:'accept'});onSign(g.request_id);})));
+        if(t.status==='Waiting for your decision')box.append(button('Keep this take',()=>act(async()=>{const g=await api(`/api/project/${encodeURIComponent(project)}/${route}/${t.id}/decision`,{decision:'accept'});await onSign(g.request_id);return 'Keep decision ready for your signature.';})));
         if(t.status==='Needs a fresh look')box.append(el('p',{},effect?'The effect brief, paper-cut moment or file changed. Save the brief, then make a new request or choose a new file and review it again.':music?'The brief or file changed. Make a new request or choose a new file, then review it again.':'The line or file changed. Prepare a new spending card for a new take; this take cannot be kept for changed words.'));
-        box.append(button('Decline this take permanently',()=>act(async()=>{const g=await api(`/api/project/${encodeURIComponent(project)}/${route}/${t.id}/decision`,{decision:'decline'});onSign(g.request_id);})));
+        box.append(button('Decline this take permanently',()=>act(async()=>{const g=await api(`/api/project/${encodeURIComponent(project)}/${route}/${t.id}/decision`,{decision:'decline'});await onSign(g.request_id);return 'Decline decision ready for your signature.';})));
       }else box.append(el('p',{},t.origin==='imported'?`Decline is final for this take. Choose another ${noun} file to review.`:'Decline is final. Ask for another take with its own spending card.'));
       box.append(button(t.origin==='imported'?`Choose another ${noun} file`:'Ask for another take',()=>{
         const target=node.querySelector(music||effect?`#${t.kind}-${t.origin==='imported'?'import':'compose'}`:`[data-voice-line="${t.binding.line_index}"]`);target?.scrollIntoView({block:'center'});
@@ -113,7 +124,7 @@ export function renderAudioSigning(detail,actions,onReturn,stale){
   const r=detail.packet?.record;
   const box=el('section',{class:'viewer-inner paper-editor'},el('h2',{},'Review and sign audio'));
   box.append(button('Return to audio',onReturn));
-  if(stale){box.append(el('p',{},'This request has been decided. Return to audio to continue.'));return box;}
+  if(stale){box.append(el('p',{},'This request has been decided. Return to audio to continue.'));if(!r||r.take||r.reservation_id||detail.packet.audio_prices)return box;}
   if(!r){box.append(el('p',{role:'alert'},detail.packet?.error||'The current audio evidence is unavailable. Return to audio and prepare a new request before signing.'));return box;}
   if(detail.packet.audio_prices){
     box.append(el('h3',{},'Account consent and maximum audio prices'),el('p',{},'This lets Front Lot send your voice words and instrumental music briefs to ElevenLabs after you sign each paid request.'));
@@ -138,12 +149,15 @@ export function renderAudioSigning(detail,actions,onReturn,stale){
   }else if(r.reservation_id){box.append(el('h3',{},'Record the account outcome'),el('blockquote',{},r.request.prompt),el('p',{},r.charged?'Charged':'Not charged'),el('p',{},`Cash ${money(r.cash_usd)} · credit replacement value ${money(r.credits_usd)}`),el('p',{},r.note),el('p',{},'This does not submit the request again or invent a take.'));
   }else if(r.take){box.append(el('h3',{},r.decision==='accept'?'Keep this take':'Decline this take permanently'),el('p',{},'This signs your decision about the exact saved audio. A decline is final.'),
     el('blockquote',{},detail.packet.spoken_words),
-    el('audio',{controls:'',src:`/api/project/${encodeURIComponent(r.take.project_id)}/audio-take/${r.take.id}/play`}),el('p',{},r.take.binding?.performance_notes||'No direction notes.'));
-    if(r.take.kind==='music')box.append(el('p',{},r.take.origin==='generated'?TEST_ONLY:`Imported from: ${r.take.source}. Licence note: ${r.take.licence_note}. No generation charge.`));
-    if(r.take.kind==='effect')box.append(el('p',{},moment(r.take.binding)),el('p',{},r.take.origin==='imported'?`Imported from: ${r.take.source}. Licence note: ${r.take.licence_note}. No generation charge.`:'Generated through your individually approved sound-effect request.'));
+    takePlayer(r.take));
+    if(r.take.kind==='speech')box.append(el('p',{},r.take.binding?.performance_notes||'No direction notes.'));
+    if(r.take.kind==='music')box.append(el('p',{},r.take.origin==='generated'?TEST_ONLY:licence(r.take)));
+    if(r.take.kind==='effect')box.append(el('p',{},moment(r.take.binding)),el('p',{},r.take.origin==='imported'?licence(r.take):'Generated through your individually approved sound-effect request.'));
   }else{box.append(el('p',{},`ElevenLabs · ${r.model} · ${r.kind==='effect'?'sound effect':r.kind==='music'?'instrumental':r.binding.voice_label||r.voice}`),el('blockquote',{},r.prompt),
     el('p',{},`${r.kind==='effect'?'Effect':r.kind==='music'?'Instrumental cue':'Line slot'}: ${r.duration_seconds} seconds · highest cash ${money(r.max_cash_usd)} · highest credit replacement value ${money(r.max_credits_usd)}`),
     el('p',{},`Bound expires ${new Date(r.price_expires_at*1000).toLocaleString()}`),el('p',{},'One signature buys one call. No retries or another provider.'),
     el('p',{},r.kind==='effect'?`${moment(r.binding)}. Placement stays here; only description, model, length and loop choice are sent.`:r.kind==='music'?TEST_ONLY:`Notes stay here and are not sent: ${r.binding.performance_notes||'None'}`));}
+  if(detail.packet.remaining_usd!==undefined)box.append(el('p',{},`Left under the production ceiling: ${money(detail.packet.remaining_usd)}.`));
+  if(detail.packet.budget_warning)box.append(el('p',{role:'alert'},detail.packet.budget_warning));
   box.append(actions);return box;
 }

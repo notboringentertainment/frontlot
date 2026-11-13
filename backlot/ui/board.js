@@ -1770,7 +1770,7 @@ const GATE_WORDS = {
   footage_spend: "Make this clip",
   footage_take: "Review this take",
 };
-const gateWords = (kind) => state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
+const gateWords = (kind,row={}) => kind==='config' && row.scope==='audio:project_config' ? 'Review audio prices and permissions' : state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
 
 const SLOT_OF_KIND = {
   look_lock: "look",
@@ -2014,7 +2014,7 @@ function historyList(rows) {
     el("span", { class: "dot", "aria-hidden": "true" }),
     el("span", {},
       el("button", { class: "text linkish", type: "button", onclick: () => selectGate(row.request_id), style: "all:unset;cursor:pointer" },
-        `${gateWords(row.kind)}: ${row.state === "done" ? "signed" : row.state}`),
+        `${gateWords(row.kind,row)}: ${row.state === "done" ? "signed" : row.state}`),
       el("small", {}, fmtGateTime(row.mtime))))));
 }
 
@@ -2050,7 +2050,7 @@ function renderEntityViewer(s, e) {
       el("b", {}, `${e.name} needs you. `),
       e.pending.map((row, i) => [i ? " " : "", el("button", {
         class: "quiet-btn", type: "button", style: "margin:0 0 0 6px", onclick: () => selectGate(row.request_id),
-      }, gateWords(row.kind))]))) : null;
+      }, gateWords(row.kind,row))]))) : null;
 
   return el("div", { class: "viewer-inner" },
     head,
@@ -2374,13 +2374,13 @@ function gateFrames(packet) {
   return frames;
 }
 
-function gateActions(s, summary, stale, packetError) {
+function gateActions(s, summary, stale, packetError, budgetWarning = null) {
   const lease = s.gates.run_lease || {};
   const matchingOpen = openGateSessions.find((session) => session.request_id === selectedGateId);
   const otherOpen = openGateSessions.find((session) => session.request_id !== selectedGateId);
   const socketOpen = gateSession.socket
     && [WebSocket.CONNECTING, WebSocket.OPEN].includes(gateSession.socket.readyState);
-  const actionablePacket = !stale && !packetError;
+  const actionablePacket = !stale && !packetError && !budgetWarning;
   const actionable = actionablePacket && !lease.held && !otherOpen && !socketOpen;
   const reconnectable = Boolean(matchingOpen && !socketOpen && actionablePacket && !otherOpen);
 
@@ -2399,6 +2399,7 @@ function gateActions(s, summary, stale, packetError) {
   if (otherOpen) blocker = "You're already signing something else. Finish that first.";
   else if (lease.held && !matchingOpen) blocker = `A production run is working on this film right now${lease.started ? ` (since ${fmtGateTime(lease.started)})` : ""}. Signing opens when it stops.`;
   else if (stale) blocker = "This is already decided. What you see is the record.";
+  else if (budgetWarning) blocker = "Signing waits until this request fits under the production ceiling.";
   else if (packetError) blocker = "Signing is off until every picture in this request can be shown.";
   else if (reconnectable) blocker = "A signing session for this is still open. Reconnect to pick up where you left off.";
   else if (socketOpen) blocker = "Answer the questions in the signing panel on the right.";
@@ -2460,7 +2461,7 @@ function renderGateViewer(s) {
   const header = summary || gateDetail.request || {};
   const stale = !summary || summary.state !== "pending" || gateDetail.state !== "pending";
   const packetError = Boolean(gateDetail.error || (gateDetail.packet && gateDetail.packet.packet_error));
-  if((['audio_spend','audio_take','audio_resolution'].includes(header.kind)&&!gateDetail.packet?.footage_resolution)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();},stale);
+  if((['audio_spend','audio_take','audio_resolution'].includes(header.kind)&&!gateDetail.packet?.footage_resolution)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError,gateDetail.packet?.budget_warning),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();},stale);
   let frames = gateFrames(gateDetail.packet);
   const key = entityKeyOf(header);
   const entity = key ? buildRoster(s).find((e) => e.key === key) : null;
@@ -2557,7 +2558,7 @@ function renderGateViewer(s) {
 function logLine(row, roster) {
   const key = entityKeyOf(row);
   const who = key ? ((roster.find((e) => e.key === key) || {}).name || titleCase(key.split(":")[1])) : null;
-  return who ? `${who}: ${gateWords(row.kind).toLowerCase()}` : gateWords(row.kind);
+  return who ? `${who}: ${gateWords(row.kind,row).toLowerCase()}` : gateWords(row.kind,row);
 }
 
 // Today's Story-drive canon against the approved snapshot. Read-only: it
@@ -2638,8 +2639,8 @@ function renderLog(s, roster) {
         "aria-label": ["footage_spend","footage_take"].includes(row.kind) || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind)}` : `Inspect ${row.kind} gate ${row.request_id}`,
         onclick: () => { selectedEntity = key; selectGate(row.request_id); },
       },
-        el("span", { class: "what" }, gateWords(row.kind)),
-        el("span", { class: "text" }, plain(row.summary) || gateWords(row.kind)),
+        el("span", { class: "what" }, gateWords(row.kind,row)),
+        el("span", { class: "text" }, plain(row.summary) || gateWords(row.kind,row)),
         who ? el("span", { class: "who" }, who) : null));
     }
     if (s.gates && s.gates.error) needs.append(el("div", { class: "alert", role: "alert" }, el("b", {}, "Couldn't read the approvals"), el("span", {}, s.gates.error)));

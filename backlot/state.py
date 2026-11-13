@@ -1680,7 +1680,14 @@ def _render_audio_spend(root: Path, req: dict[str, Any]) -> dict[str, Any]:
         validate_request(record, check_expiry=False)
     except (OSError, ValueError, TypeError):
         return {"packet_error": True, "error": "The saved audio request cannot be read."}
-    return {"summary": req.get("summary"), "record": record}
+    from lib.media_spending import _tracker
+    from lib.project_config import load_current_verified_project_config
+    try:remaining=_tracker(root,load_current_verified_project_config(root)).budget_remaining_usd
+    except (ValueError,RuntimeError,OSError):
+        return {'packet_error':True,'error':'The signed spending settings cannot be verified. Review them before making this take.'}
+    warning=('The remaining production ceiling no longer covers this request. Review held charges or prepare a new request before making a take.'
+             if record['max_cash_usd']+record['max_credits_usd']>remaining else None)
+    return {"summary": req.get("summary"), "record": record,'remaining_usd':remaining,'budget_warning':warning}
 
 
 def _render_text_only(root: Path, req: dict[str, Any]) -> dict[str, Any]:
