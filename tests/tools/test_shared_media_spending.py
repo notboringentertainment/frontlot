@@ -110,12 +110,12 @@ def test_a_signed_audio_request_with_only_typed_price_bounds_cannot_submit(proje
     assert (transport.calls,transport.downloads)==(0,0)
 
 
-def test_effects_have_no_signed_price_contract_and_cannot_submit(project):
+def test_effects_without_a_signed_rate_cannot_submit(project):
     from tests.tools.test_audio_governance import prepare as audio_request
     record=audio_request(project,kind='effect',voice=None)
     sign(project,'audio_spend',record,record['request_id'])
     transport=Transport()
-    with pytest.raises(ValueError,match='speech or instrumental music'):run(project,record,transport)
+    with pytest.raises(ValueError,match='sound-effect credits-per-second ceiling'):run(project,record,transport)
     assert (transport.calls,transport.downloads)==(0,0)
 
 

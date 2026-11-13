@@ -170,7 +170,7 @@ function onSignerTag(tag) {
     gateSession.inputReady = false;
     const [label, message, tone] = OUTCOME_WORDS[tag.outcome] || OUTCOME_WORDS.error;
     setTerminalStatus(label, message || tag.message || "The signing program stopped.", tone);
-    if(state?.is_trailer&&tag.outcome==="approved")afterFootageSignature(gateSession.requestId,gateDetail?.request?.kind);
+    if(state?.is_trailer&&tag.outcome==="approved"&&(['footage_spend','footage_take'].includes(gateDetail?.request?.kind)||gateDetail?.packet?.footage_resolution))afterFootageSignature(gateSession.requestId,gateDetail?.request?.kind);
   } else if (tag.ask === "note" && gateSession.note !== null && noteFits(gateSession.note, tag)) {
     const note = gateSession.note;
     gateSession.note = null;
