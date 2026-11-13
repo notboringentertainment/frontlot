@@ -17,12 +17,14 @@ explicitly; an uncertain used request stays blocked for a signed account review.
 The browser never treats a successful signing message as spending authority:
 the existing operations verify every signature again.
 
-The implementation will first prove the authenticated routes with counting
-stand-ins, then connect the board and exercise the whole one-shot journey in
-a browser. Refusal tests cover missing story, looks, pictures and signed prices,
+The authenticated routes and the complete one-shot browser journey have been
+proved with counting stand-ins. Refusal tests cover missing story, looks,
+pictures and signed prices,
 changed sources, invalid length/model, absent signatures, duplicate starts,
-uncertain outcomes, and a final decline. Screenshots and complete-suite results
-will be recorded after the controls work. No production material is used.
+uncertain outcomes, and a final decline. Screenshots are retained. The full
+comparison was interrupted when the filesystem refused writes for lack of
+space. It must be completed before this work is treated as fully verified.
+No production material is used.
 
 The scope decision is to reuse the existing cards, signer, player and money
 formatter. A separate application, transport, ledger or approval system would
@@ -36,7 +38,11 @@ pathname, unreadable inherited colours, missing settings hiding the panel, and
 the need to recover a signed keep after interruption. The decision is to finish
 the bounded refusal and recovery controls and test them. No new request system,
 provider adapter, approval rule or compatibility layer is needed. The running
-count is twenty-two, including the preceding financial work.
+count is twenty-three, including the preceding financial work and the
+subsequently reproduced loss of an account-review draft during refresh. That
+draft now stays in the same panel state as the other unsaved choices. Screenshot
+scrolling was also made independent of the live refresh. No spending code was
+changed to address either issue.
 
 ## For the tools
 

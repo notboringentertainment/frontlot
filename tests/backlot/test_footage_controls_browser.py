@@ -53,10 +53,15 @@ def picture(page,name,tmp_path):
     assert not path.exists()
     panel=page.get_by_role('article',name='Shot 1 footage',exact=True)
     if panel.count():
-        focus=panel.locator('.take-tile').last if name in ('take-waiting','kept','declined') else panel.get_by_role('status').first
+        focus=panel.locator('.take-tile').last if name in ('take-waiting','kept','declined','recovered-keep') else panel.get_by_role('status').first
         if name.startswith('missing-'):focus=panel.get_by_role('button',name='Create footage request',exact=True)
-        focus.scroll_into_view_if_needed()
-    page.screenshot(path=str(path),full_page=True)
+        if name=='unknown-charge':focus=panel.get_by_role('button',name='Review account outcome',exact=True)
+        if name=='approved-look':focus=panel.locator('.look-card').first
+        if name=='price-bound':focus=panel.locator('.spending-card').first
+        # Scrolling is synchronous in the page. Waiting for the old element
+        # handle to become stable races the board's live refresh and quote.
+        focus.evaluate('(node)=>node.scrollIntoView({block:"center",behavior:"instant"})')
+    page.screenshot(path=str(path),full_page=False)
 
 
 def sign(page,label):
@@ -91,6 +96,8 @@ def test_writer_complete_request_keep_decline_and_retake(film,provider,monkeypat
             panel.get_by_label('Clip length in seconds').press('Tab')
             panel.get_by_text('Highest charge: $0.5000',exact=False).wait_for()
             picture(page,'nothing-yet',tmp_path)
+            picture(page,'approved-look',tmp_path)
+            picture(page,'price-bound',tmp_path)
             assert panel.locator('img').count()>=1
             panel.get_by_role('button',name='Create footage request',exact=True).click()
             page.locator('[aria-label="Footage request details"]').wait_for()
@@ -109,6 +116,7 @@ def test_writer_complete_request_keep_decline_and_retake(film,provider,monkeypat
             page.wait_for_function("()=>[...document.querySelectorAll('video')].some(v=>v.ended)",timeout=12000)
             picture(page,'take-waiting',tmp_path)
             panel.get_by_role('button',name='Keep this take',exact=True).first.click()
+            page.locator('[aria-label="Footage request details"]').wait_for()
             picture(page,'keep-signing',tmp_path)
             sign(page,'decision')
             panel.get_by_role('status').filter(has_text='Kept').wait_for(timeout=20000)
@@ -214,7 +222,16 @@ def test_unknown_charge_review_is_signed_in_the_board(film,provider,monkeypatch,
             panel=page.get_by_role('article',name='Shot 1 footage',exact=True)
             panel.get_by_role('status').filter(has_text='Charge needs your review').wait_for()
             assert panel.get_by_role('button',name='Create a retake request',exact=True).is_disabled()
+            panel.get_by_text('Highest charge: $0.4000',exact=False).wait_for()
             panel.get_by_label('What you checked in the service account').fill('The invented account confirms no charge.')
+            panel.get_by_label('Clip length in seconds').fill('6')
+            panel.get_by_label('Clip length in seconds').press('Tab')
+            panel.get_by_text('Highest charge: $0.6000',exact=False).wait_for()
+            assert panel.get_by_label('What you checked in the service account').input_value()=='The invented account confirms no charge.'
+            with page.expect_response(lambda response:'/footage/quote' in response.url) as quote_response:
+                panel.get_by_role('button',name='Refresh price',exact=True).click()
+            assert quote_response.value.ok
+            assert panel.get_by_label('What you checked in the service account').input_value()=='The invented account confirms no charge.'
             picture(page,'unknown-charge',tmp_path)
             panel.get_by_role('button',name='Review account outcome',exact=True).click()
             page.get_by_text('Spending is blocked',exact=False).first.wait_for()

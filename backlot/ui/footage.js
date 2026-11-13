@@ -36,8 +36,9 @@ function draft(shot){
   return drafts.get(shot.id);
 }
 async function quote(shot,d){
-  try{d.quote=await footageAction("quote",{shot_id:shot.id,model:d.model,duration_seconds:d.length});d.error="";}
-  catch(error){d.quote=null;d.error=error.message;}
+  const version=d.quoteVersion=(d.quoteVersion||0)+1;
+  try{const value=await footageAction("quote",{shot_id:shot.id,model:d.model,duration_seconds:d.length});if(version!==d.quoteVersion)return;d.quote=value;d.error="";}
+  catch(error){if(version!==d.quoteVersion)return;d.quote=null;d.error=error.message;}
   hooks.render();
 }
 async function perform(d,action){d.busy=true;d.error="";hooks.render();try{await action();}catch(error){d.error=error.message;}finally{d.busy=false;await hooks.refresh();}}
@@ -83,13 +84,18 @@ function shotPanel(s,shot){
     if(req.running)panel.append(el("p",{role:"status"},"Generating this one clip. Keep this board open to watch it arrive; no retry will be made."));
     if(req.error)panel.append(el("p",{role:"alert"},req.error));
     if(req.reservation&&["submitting","submitted","pending_billing"].includes(req.reservation.state)&&!req.running){
+      d.reviews||=new Map();
+      if(!d.reviews.has(req.id))d.reviews.set(req.id,{charged:false,cash:"0",credits:"0",note:""});
+      const review=d.reviews.get(req.id);
       const charged=el("input",{type:"checkbox","aria-label":"The service charged this request"});
-      const cash=input("Cash charged in dollars",0,{type:"number",min:0,step:.0001});
-      const credits=input("Credit replacement value in dollars",0,{type:"number",min:0,step:.0001});
-      const note=input("What you checked in the service account","",{type:"text"});
+      charged.checked=review.charged;charged.onchange=()=>{review.charged=charged.checked;};
+      const cash=input("Cash charged in dollars",review.cash,{type:"number",min:0,step:.0001});
+      const credits=input("Credit replacement value in dollars",review.credits,{type:"number",min:0,step:.0001});
+      const note=input("What you checked in the service account",review.note,{type:"text"});
+      for(const [key,control] of [["cash",cash],["credits",credits],["note",note]])control.field.oninput=()=>{review[key]=control.field.value;};
       panel.append(el("p",{},"Spending is blocked. Check the service account, then sign its outcome. This will never submit the old request again."),
         el("label",{},charged,"The service charged this request"),cash.node,credits.node,note.node,
-        button("Review account outcome",()=>perform(d,async()=>{const result=await footageAction("resolve",{reservation_id:req.reservation.reservation_id,charged:charged.checked,cash:Number(cash.field.value),credits:Number(credits.field.value),note:note.field.value});await hooks.refresh();await hooks.selectGate(result.gate.request_id);}),d.busy));
+        button("Review account outcome",()=>perform(d,async()=>{const result=await footageAction("resolve",{reservation_id:req.reservation.reservation_id,charged:review.charged,cash:Number(review.cash),credits:Number(review.credits),note:review.note});await hooks.refresh();await hooks.selectGate(result.gate.request_id);}),d.busy));
     }
   }
   for(const take of shot.takes){
