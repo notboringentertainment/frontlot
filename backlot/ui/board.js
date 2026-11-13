@@ -1,10 +1,11 @@
 // Front Lot film board (the cutting room) — renders BoardState and stays live via SSE.
 
 import { renderPaperCut } from "/ui/trailer.js";
+import { setFootageState, renderFootageControls, afterFootageSignature, footageDecision } from "/ui/footage.js";
 import { mountSession } from "/ui/session.js";
 import {
   CAPABILITY_TOKEN_KEY, el, fmtAgo, fmtClock, fmtDuration, fmtMoney,
-  getJSON, mediaURL, subscribe, thumbURL, waveBars,
+  getJSON, mediaURL, subscribe, thumbURL, waveBars, spendingCard,
 } from "/ui/lib.js";
 
 const rawProjectPath = location.pathname.split("/p/")[1] || "";
@@ -166,6 +167,7 @@ function onSignerTag(tag) {
     gateSession.inputReady = false;
     const [label, message, tone] = OUTCOME_WORDS[tag.outcome] || OUTCOME_WORDS.error;
     setTerminalStatus(label, message || tag.message || "The signing program stopped.", tone);
+    if(state?.is_trailer&&tag.outcome==="approved")afterFootageSignature(gateSession.requestId,gateDetail?.request?.kind);
   } else if (tag.ask === "note" && gateSession.note !== null && noteFits(gateSession.note, tag)) {
     const note = gateSession.note;
     gateSession.note = null;
@@ -205,7 +207,7 @@ function askView(ask) {
       el("p", { class: "sign-question" }, ask.ask === "approve" ? "Approve this?" : "Sign the one you picked?"),
       note,
       choiceRow(
-        answerButton(ask.ask === "approve" ? "Approve and sign" : "Sign", "y", { primary: true, before: keep }),
+        answerButton(gateDetail?.request?.kind==="footage_spend" ? "Sign and make this clip" : gateDetail?.request?.kind==="footage_take" ? "Sign this decision" : ask.ask === "approve" ? "Approve and sign" : "Sign", "y", { primary: true, before: keep }),
         answerButton(ask.ask === "approve" ? "Decline" : "Go back", "n", { before: keep }),
         answerButton("Not now", "q"),
       ),
@@ -2181,6 +2183,13 @@ function sourceChangeText(s, changes) {
 }
 
 async function decideTake(shot, take, decision) {
+  if(state?.is_trailer){
+    takeBusy.add(take.take_id);takeErrors.delete(take.take_id);render();
+    try{await footageDecision(shot,take,decision==="approve"?"accept":"decline");}
+    catch(error){takeErrors.set(take.take_id,error.message);render();}
+    finally{takeBusy.delete(take.take_id);render();}
+    return;
+  }
   let token = null;
   try { token = sessionStorage.getItem(CAPABILITY_TOKEN_KEY); } catch { token = null; }
   if (!token) {
@@ -2242,17 +2251,17 @@ function renderTakeTile(s, shot, take, { decidable, othersWaiting }) {
       `Approving this take sets the other ${othersWaiting === 1 ? "one" : othersWaiting} aside.`));
   }
   const error = takeErrors.get(take.take_id);
-  tile.append(el("div", { class: "take-decide" }, nodes.note,
+  tile.append(el("div", { class: "take-decide" }, s.is_trailer ? null : nodes.note,
     el("div", { class: "take-actions" },
       el("button", {
-        type: "button", class: "gate-primary take-approve", disabled: busy || !take.playable || s.is_trailer ? "" : null,
+        type: "button", class: "gate-primary take-approve", disabled: busy || !take.playable || (s.is_trailer&&(take.selected||take.declined||take.status!=="Waiting for your decision")) ? "" : null,
         title: take.playable ? null : "A missing take can't be approved",
         onclick: () => decideTake(shot, take, "approve"),
-      }, busy ? "Saving…" : "Approve"),
+      }, busy ? "Saving…" : s.is_trailer ? "Keep this take" : "Approve"),
       el("button", {
-        type: "button", class: "quiet-btn take-decline", disabled: busy || s.is_trailer ? "" : null,
+        type: "button", class: "quiet-btn take-decline", disabled: busy || (s.is_trailer&&take.declined) ? "" : null,
         onclick: () => decideTake(shot, take, "decline"),
-      }, "Decline"))));
+      }, s.is_trailer ? "Decline this take" : "Decline"))));
   if (error) tile.append(el("p", { class: "take-error", role: "alert" }, error));
   return tile;
 }
@@ -2526,9 +2535,7 @@ function renderGateViewer(s) {
       el("h3",{},footageCard.decision ? `Your decision: ${footageCard.decision}` : "One clip, one signature"),
       el("p",{},footageCard.description),
       el("p",{},`${footageCard.length} seconds. ${footageCard.service || ""} ${footageCard.model || ""}`),
-      footageCard.highest_charge!=null ? el("div",{},
-        el("p",{},`Highest charge: $${footageCard.highest_charge.toFixed(4)} ($${footageCard.highest_cash.toFixed(4)} cash and $${footageCard.highest_credits.toFixed(4)} replacement value of credits).`),
-        el("p",{},`Left in the ceiling when prepared: $${footageCard.remaining.toFixed(4)}. Price figures expire ${footageCard.expiry}.`),
+      footageCard.highest_charge!=null ? el("div",{},spendingCard(footageCard),
         el("p",{},"The exact description and reference pictures shown here leave this computer for Fal. The approved looks below establish which pictures may be used; their text is not sent separately. This request is for silent widescreen footage. There are no automatic retries or changes of service or model.")) : el("p",{},footageCard.accounting),
       ...(footageCard.looks || []).map(spec=>lookCard(spec,"Approved look behind this request")),
       el("p",{},footageCard.decision ? "Declining is final for this take. Accepting completes no stage." : "A retake needs a new request and signature. Signing this request does not approve a stage.")) : null,
@@ -2894,10 +2901,11 @@ function renderBoard() {
 
   const viewer = el("main", { class: "viewer", id: "viewer", tabindex: "-1", "aria-label": "Viewer" });
   const drawer = renderDrawer(s);
-  if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(renderPaperCut(s));
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(
+    el("button",{type:"button",class:"quiet-btn",onclick:()=>viewer.querySelector('[aria-label="Footage workspace"]')?.scrollIntoView({block:"start"})},"Open footage requests"),renderPaperCut(s));
 
   if (shot) {
-    const inner = renderShotViewer(s, shot);
+    const inner = s.is_trailer ? renderFootageControls(s) : renderShotViewer(s, shot);
     if (drawer) inner.prepend(drawer);
     viewer.append(inner);
   } else if (authoredGates && (selectedGateId || roster.length > 0)) {
@@ -2922,6 +2930,7 @@ function renderBoard() {
     viewer.append(inner);
   }
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId && shot) viewer.append(renderPaperCut(s));
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(renderFootageControls(s));
   app.append(viewer);
 
   const { needs, history } = renderLog(s, roster);
@@ -2988,6 +2997,15 @@ async function refresh() {
         }),
     ]);
     if (generation !== refreshGeneration || controller.signal.aborted) return;
+    if(nextState.is_trailer&&!nextState.trailer_damaged){
+      let footage;
+      try{footage=await getJSON(`/api/project/${encodedProjectId}/footage`,{signal:controller.signal});}
+      catch(error){if(error.name==="AbortError")return;footage={error:"The footage panel could not be read. Check the saved story, looks and spending settings, then reopen this board.",shots:[]};}
+      if(generation!==refreshGeneration)return;
+      setFootageState(projectId,footage,{render,refresh,selectGate,lookCard,isRefreshing:()=>refreshController!==null,
+        take:(s,shot,take)=>renderTakeTile(s,shot,take,{decidable:true,othersWaiting:0}),
+        returnToShots:()=>{selectedGateId=null;gateDetail=null;closeSigning();}});
+    }
     const creationJustSigned = state?.trailer_setup_pending && nextState.is_trailer && !nextState.trailer_setup_pending;
     if(creationJustSigned){selectedGateId=null;gateDetail=null;}
     state = normalize(nextState);

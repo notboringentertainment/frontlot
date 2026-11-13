@@ -1084,3 +1084,13 @@ details.log-more[open] > summary { margin-bottom: 12px; }
 .paper-panel select { width:100%; padding:10px; background:#fffdf7; color:#252a24; font:inherit; }
 .paper-panel button { background:#353e34; color:#fffdf7; border:1px solid #596653; border-radius:4px; }
 .paper-panel button:disabled { background:#d5d5cc; color:#666; cursor:default; }
+.footage-controls { display:grid; gap:16px; margin:24px 0; }
+.footage-shot { display:grid; gap:10px; }
+.footage-shot label { display:grid; gap:4px; }
+.footage-shot select, .footage-shot input { font:inherit; max-width:100%; padding:8px; }
+.footage-status { font-weight:700; }
+.spending-card { border-left:3px solid #596653; padding:8px 12px; background:#efede6; color:#252a24; }
+.footage-shot .take-tile { min-width:0; }
+.footage-shot .look-row p, .footage-shot .look-row ul,
+.footage-shot .take-facts, .footage-shot .take-facts small { color:#252a24; }
+.footage-shot [role=alert] { color:#963c2d; }
