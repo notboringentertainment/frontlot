@@ -219,7 +219,8 @@ class AudioMixer(BaseTool):
             target = -16.0
         # Clamp to a sane loudness range to avoid malformed ffmpeg args.
         target = max(-40.0, min(0.0, target))
-        return f"[{in_label}]loudnorm=I={target}:LRA=11:TP=-1.5[{out_label}]"
+        peak = float(inputs.get('true_peak_target', -1.5))
+        return f"[{in_label}]loudnorm=I={target}:LRA=11:TP={peak}[{out_label}]"
 
     def _track_filters(self, track: dict[str, Any]) -> list[str]:
         """Build per-track filters on the source timeline before scheduling it.
@@ -229,6 +230,17 @@ class AudioMixer(BaseTool):
         a delayed track silent by the time it starts. Fade source samples first
         and add the timeline delay last so both fades follow the track itself.
         """
+        if 'source_in_frame' in track:
+            start, stop = track['source_in_frame'], track['source_out_frame']
+            filters = ['aresample=48000','aformat=sample_fmts=fltp:channel_layouts=stereo',
+                       f'atrim=start_sample={start*2000}:end_sample={stop*2000}', 'asetpts=PTS-STARTPTS',
+                       f'volume={track.get("level_db",0)}dB']
+            if track.get('fade_in_frames'):
+                filters.append(f'afade=t=in:st=0:d={track["fade_in_frames"]/24}')
+            if track.get('fade_out_frames'):
+                filters.append(f'afade=t=out:st={(stop-start-track["fade_out_frames"])/24}:d={track["fade_out_frames"]/24}')
+            filters.append(f'adelay={track["start_frame"]*2000}S:all=1')
+            return filters
         filters = []
         volume = track.get("volume", 1.0)
         delay_ms = int(track.get("start_seconds", 0) * 1000)
@@ -307,9 +319,8 @@ class AudioMixer(BaseTool):
 
         # Amix all processed streams
         mix_inputs = "".join(f"[a{i}]" for i in range(len(tracks)))
-        filter_parts.append(
-            f"{mix_inputs}amix=inputs={len(tracks)}:duration=longest:dropout_transition=2[mixed]"
-        )
+        sum_option = ':normalize=0' if inputs.get('sum_without_attenuation') else ''
+        filter_parts.append(f"{mix_inputs}amix=inputs={len(tracks)}:duration=longest:dropout_transition=2{sum_option}[mixed]")
 
         if normalize:
             filter_parts.append(self._loudnorm_filter(inputs, "mixed", "out"))
@@ -322,7 +333,10 @@ class AudioMixer(BaseTool):
         cmd = ["ffmpeg", "-y"]
         cmd.extend(input_args)
         cmd.extend(["-filter_complex", filter_complex])
-        cmd.extend(["-map", out_label, str(output_path)])
+        cmd.extend(["-map", out_label])
+        if inputs.get('float_output'):
+            cmd.extend(['-ar','48000','-ac','2','-c:a','pcm_f32le'])
+        cmd.append(str(output_path))
 
         self.run_command(cmd)
 
@@ -500,6 +514,9 @@ class AudioMixer(BaseTool):
                 "output_path": "mixed_audio.wav"
             }
         """
+        if 'timeline_tracks' in inputs:
+            from tools.audio.trailer_mix import mix_timeline
+            return mix_timeline(self, inputs)
         tracks = inputs.get("tracks", [])
         if not tracks:
             return ToolResult(success=False, error="No tracks provided for full_mix")

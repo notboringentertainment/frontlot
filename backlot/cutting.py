@@ -74,9 +74,11 @@ def mount(app,require_writer,safe_root,invalidate):
     @app.post('/api/project/{project_id}/cut/preview')
     async def preview(project_id:str,request:Request):
         require_writer(request);data=await request.json()
-        if not isinstance(data,dict) or set(data)!={'revision'}:raise HTTPException(400,'Save the cut before preparing playback.')
-        path=await run(cut.render_preview,safe_root(project_id),data['revision'])
-        return {'url':f'/api/project/{project_id}/cut/play/{path.name}'}
+        if not isinstance(data,dict) or not {'revision'}<=set(data) or set(data)-{'revision','comparison'}:raise HTTPException(400,'Save the cut before preparing playback.')
+        path=await run(cut.render_preview,safe_root(project_id),data['revision'],data.get('comparison','after'))
+        import json
+        review=json.loads(path.with_suffix('.review.json').read_text())
+        return {'url':f'/api/project/{project_id}/cut/play/{path.name}','review':review}
     @app.post('/api/project/{project_id}/cut/cards/{identity}/approval')
     async def approve_card(project_id:str,identity:str,request:Request):
         require_writer(request);data=await request.json();root=safe_root(project_id)
@@ -116,4 +118,11 @@ def mount(app,require_writer,safe_root,invalidate):
         if not saved or not name.startswith(saved['edit_revision_sha256']):raise HTTPException(400,'This preview is from an earlier cut. Prepare playback of the saved cut.')
         await run(lambda:cut.validate_cut(root,cut.editable(saved['timeline']),verify_files=True))
         path=await run(resolve_input,'artifacts/cut-previews/'+name,root)
+        import json
+        from lib.pathsafe import sha256_file
+        from lib.canonical_json import record_sha256
+        report=await run(resolve_input,'artifacts/cut-previews/'+path.with_suffix('.review.json').name,root)
+        review=json.loads(report.read_text())
+        if review.get('output_sha256')!=await run(sha256_file,path) or review.get('settings_sha256')!=record_sha256(saved['timeline']):
+            raise HTTPException(400,'This preview or its saved settings changed. Prepare fresh playback before reviewing it.')
         return FileResponse(path,media_type='video/mp4',headers={'Cache-Control':'no-store'})

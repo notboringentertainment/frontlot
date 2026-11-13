@@ -22,4 +22,8 @@ Prove the real board journey with invented signed kept media, cards and counting
 
 Review focus includes silence inside a scheduled voice, identical or correlated reference sounds that cannot be separated confidently, extreme but bounded colour controls, settings changed in a stale tab, and settings changed after a signed rough-cut approval.
 
+Progress: the first eighteen tests failed before implementation. The mixer and setting checks then passed twenty cases, including the existing segmented-music checks. The first real-board case failed at the absent colour control. The first preview-integration run passed twenty-one cases and caught the neutral-colour filter and missing encoded colour metadata. These are implementation corrections, not reasons to weaken the checks.
+
+Proportionality checkpoint: there are no external review rounds. Internal corrections now include effect identification under a loud bed, noisy numerical reductions, the neutral-colour filter, output colour metadata and a diagnostic command typo. The BWAM skill was applied. The decision is to finish the four colour controls, one speech-margin control and actual-file checks, retaining warnings where listening is necessary. No grading platform, mixing desk, new spending route or extra approval system will be added.
+
 Temporary parent: /private/tmp/fl-colour-mix-run-20261113-a.
