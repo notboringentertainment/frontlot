@@ -114,7 +114,6 @@ def read_request(root,request_id):
 
 def check_current(root,record):
     root=_root(root);validate_request(record)
-    config=load_current_verified_project_config(root)
     from lib.audio_prices import quote
     price=quote(root,record['kind'],record['prompt'],record['duration_seconds'])
     check_quote(record,price,'audio')
@@ -122,6 +121,7 @@ def check_current(root,record):
         from lib.audio_workspace import check_binding
         check_binding(root,record)
     if read_request(root,record['request_id'])!=record:raise ValueError('Saved audio request changed.')
+    config=load_current_verified_project_config(root)
     config.require_egress('elevenlabs',CLASSES[record['kind']])
     if config.digest!=record['config_sha256']:raise ValueError('Signed project settings changed after audio approval.')
     return config

@@ -117,3 +117,19 @@ def test_effects_have_no_signed_price_contract_and_cannot_submit(project):
     transport=Transport()
     with pytest.raises(ValueError,match='speech or instrumental music'):run(project,record,transport)
     assert (transport.calls,transport.downloads)==(0,0)
+
+
+def test_ceiling_changed_during_quote_is_checked_before_submit(project,monkeypatch):
+    from lib import audio_prices
+    from tests.tools.test_audio_governance import prepare as audio_request,approve as approve_audio
+    record=audio_request(project);approve_audio(project,record);transport=Transport()
+    original=audio_prices.quote
+    def change_ceiling(*args,**kwargs):
+        price=original(*args,**kwargs)
+        data=yaml.safe_load((project/'project.yaml').read_text());data['budget_usd_cap']=0
+        raw=yaml.safe_dump(data).encode();(project/'project.yaml').write_bytes(raw)
+        sign(project,'config',{'config_sha256':hashlib.sha256(raw).hexdigest()},'project_config')
+        return price
+    monkeypatch.setattr(audio_prices,'quote',change_ceiling)
+    with pytest.raises(ValueError,match='settings changed'):run(project,record,transport)
+    assert (transport.calls,transport.downloads)==(0,0)

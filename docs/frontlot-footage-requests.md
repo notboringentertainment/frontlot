@@ -81,6 +81,14 @@ The final decision is to keep this single coordination record and finish a
 fresh complete comparison, without replacing failed results with isolated
 passes or adding a migration or a second lock.
 
+A final boundary test found that the sound refactor read its spending settings
+too early: a newly signed ceiling could arrive during price validation and be
+missed. The current settings are now read at the end of validation, as in the
+footage path. The test signs a zero ceiling at that boundary and proves that
+no submission occurs. The running count is seventeen. No further mechanism
+was added; the decision is to finish the complete comparison with this final
+settings read in place.
+
 ## For the tools
 
 The operations live in `lib/footage_requests.py`. The transport remains

@@ -239,8 +239,8 @@ def test_restoring_an_older_signed_settings_file_does_not_reactivate_legacy_audi
 def test_protected_audio_requires_the_latest_settings_approval(project,route):
     import hashlib
     from lib.project_config import ProjectConfigError
-    original=(project/'project.yaml').read_bytes()
     r=prepare(project);approve(project,r);t=Transport()
+    original=(project/'project.yaml').read_bytes()
     data=yaml.safe_load(original);data['wall_time_minutes']=61
     changed=yaml.safe_dump(data).encode();(project/'project.yaml').write_bytes(changed)
     sign(project,'config',{'config_sha256':hashlib.sha256(changed).hexdigest()},'project_config')
