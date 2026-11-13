@@ -1507,6 +1507,15 @@ def _render_config(root: Path, req: dict[str, Any]) -> dict[str, Any]:
         text = raw.decode("utf-8", errors="replace")
     except OSError:
         return {"packet_error": True, "error": "project.yaml unreadable", "summary": req.get("summary")}
+    if req.get('scope')=='audio:project_config':
+        import hashlib,yaml
+        if (req.get('approval_record') or {}).get('config_sha256')!=hashlib.sha256(raw).hexdigest():
+            return {'packet_error':True,'error':'The audio prices changed. Prepare a new price-settings request.'}
+        settings=yaml.safe_load(text)
+        return {'audio_prices':settings['audio_price_basis'],'record':req['approval_record'],
+                'production_ceiling':settings['budget_usd_cap'],'outbound_permissions':settings['provider_egress'],
+                'cast_ceiling':settings['cast_cap'],'run_minutes':settings['wall_time_minutes'],
+                'footage_model':settings['default_video_endpoint'],'picture_judge':settings.get('qc')}
     return {"project_yaml": text, "summary": req.get("summary")}
 
 
@@ -1664,6 +1673,22 @@ def _render_text_only(root: Path, req: dict[str, Any]) -> dict[str, Any]:
             "preview_filenames": [Path(str(p)).name for p in req.get("preview_paths") or []]}
 
 
+def _render_audio_take(root,req):
+    from lib.audio_workspace import decision_record,approved_source_request
+    try:
+        record=decision_record(root,req['entity_id'],req['approval_record']['decision'])
+        take=record['take']
+        wording=approved_source_request(root,take)['prompt'] if take['origin']=='generated' else take['licence_note']
+        return {'record':record,'spoken_words':wording}
+    except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This take needs fresh review. Reopen its voice panel before signing.'}
+
+def _render_audio_resolution(root,req):
+    from lib.audio_workspace import resolution_record
+    r=req.get('approval_record') or {}
+    try:return {'record':resolution_record(root,req['entity_id'],r['charged'],r['cash_usd'],r['credits_usd'],r['note'])}
+    except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This account review changed. Prepare a new account review before signing.'}
+
+
 from lib.receipts import APPROVAL_KINDS
 
 
@@ -1706,8 +1731,8 @@ GATE_RENDERERS = _GateRendererMap({
     "artifact_review": _render_text_only,
     "cast_change": _render_cast_change,
     "audio_spend": _render_audio_spend,
-    "audio_take": _render_text_only,
-    "audio_resolution": _render_text_only,
+    "audio_take": _render_audio_take,
+    "audio_resolution": _render_audio_resolution,
 })
 assert set(GATE_RENDERERS) == set(APPROVAL_KINDS)
 

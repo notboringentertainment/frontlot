@@ -679,6 +679,8 @@ def _construct_config(root: Path, req: dict) -> Constructed:
     except ProjectConfigError as exc:
         raise GateHandlerError(str(exc)) from exc
     record = config_approval_record(digest)
+    if req.get('scope')=='audio:project_config' and req.get('approval_record')!=record:
+        raise GateHandlerError('The audio price settings changed. Prepare a new price-settings request before signing.')
     entity_id = req.get("entity_id") or "project_config"
     evidence = (
         f"project.yaml sha256 {digest}",

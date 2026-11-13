@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import shlex
+import sys
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -88,7 +89,7 @@ def gate_invocation(root: Path, request_id: str) -> dict[str, Any]:
         raise RunError(f"project slug {slug!r} must match [a-z0-9-]+")
     return {
         "cwd": REPO,
-        "argv": [str(REPO / ".venv" / "bin" / "python"), "scripts/gate_sign.py", "--project", slug, "--request", rid],
+        "argv": [sys.executable, "scripts/gate_sign.py", "--project", slug, "--request", rid],
     }
 
 

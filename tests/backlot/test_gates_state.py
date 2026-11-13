@@ -11,6 +11,7 @@ import json
 import os
 import shlex
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -514,7 +515,7 @@ def test_gate_summary_rows_are_exact_unique_and_pending_only_actionable(gate_wor
         "mtime": FIXED_MTIME,
         "next_command": (
             f"cd {shlex.quote(str(run_common.REPO))} && "
-            f"{shlex.join([str(run_common.REPO / '.venv/bin/python'), 'scripts/gate_sign.py', '--project', PROJECT, '--request', rids['headshot']])}"
+                f"{shlex.join([sys.executable, 'scripts/gate_sign.py', '--project', PROJECT, '--request', rids['headshot']])}"
         ),
     }
     def pending(request_id: str, kind: str, stage: str, scope: str, entity_id: str,
@@ -530,7 +531,7 @@ def test_gate_summary_rows_are_exact_unique_and_pending_only_actionable(gate_wor
             "mtime": FIXED_MTIME,
             "next_command": (
                 f"cd {shlex.quote(str(run_common.REPO))} && "
-                f"{shlex.join([str(run_common.REPO / '.venv/bin/python'), 'scripts/gate_sign.py', '--project', PROJECT, '--request', request_id])}"
+                f"{shlex.join([sys.executable, 'scripts/gate_sign.py', '--project', PROJECT, '--request', request_id])}"
             ),
         }
 

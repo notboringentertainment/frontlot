@@ -1,6 +1,7 @@
 // Front Lot film board (the cutting room) — renders BoardState and stays live via SSE.
 
 import { renderPaperCut } from "/ui/trailer.js";
+import {renderVoice,renderAudioSigning} from '/ui/voice.js';
 import { mountSession } from "/ui/session.js";
 import {
   CAPABILITY_TOKEN_KEY, el, fmtAgo, fmtClock, fmtDuration, fmtMoney,
@@ -26,6 +27,7 @@ let activeRender = 0;
 let replay = null;          // {t0, t1, t, playing} — replay mode when non-null
 let firstPaint = true;
 let selectedGateId = null;
+let trailerWorkbenchChosen = false;
 let gateDetail = null;
 let gateDetailState = "idle";
 let gateDetailError = "";
@@ -1389,6 +1391,7 @@ function focusGateDetail(preferHeading = false) {
 }
 
 async function selectGate(requestId, { background = false } = {}) {
+  if(!background)trailerWorkbenchChosen=false;
   const generation = ++gateSelectionGeneration;
   if (gateDetailController) gateDetailController.abort();
   const controller = new AbortController();
@@ -1758,6 +1761,9 @@ const GATE_WORDS = {
   pipeline_migration: "Move to a newer pipeline",
   cast_change: "Change the trailer cast",
   location: "Approve location pictures",
+  audio_spend: "Approve one audio request",
+  audio_take: "Decide about an audio take",
+  audio_resolution: "Review an audio charge",
 };
 const gateWords = (kind) => state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : GATE_WORDS[kind] || titleCase(kind);
 
@@ -2442,6 +2448,7 @@ function renderGateViewer(s) {
   const header = summary || gateDetail.request || {};
   const stale = !summary || summary.state !== "pending" || gateDetail.state !== "pending";
   const packetError = Boolean(gateDetail.error || (gateDetail.packet && gateDetail.packet.packet_error));
+  if(['audio_spend','audio_take','audio_resolution'].includes(header.kind)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();},stale);
   let frames = gateFrames(gateDetail.packet);
   const key = entityKeyOf(header);
   const entity = key ? buildRoster(s).find((e) => e.key === key) : null;
@@ -2874,8 +2881,12 @@ function renderBoard() {
   if (withBin) app.append(renderBin(s, roster));
 
   const viewer = el("main", { class: "viewer", id: "viewer", tabindex: "-1", "aria-label": "Viewer" });
+  if(s.is_trailer && !s.trailer_damaged && !selectedGateId)viewer.append(el('nav',{class:'voice-workspace-nav','aria-label':'Trailer workspaces'},
+    el('button',{type:'button',onclick:()=>viewer.querySelector('.paper-editor:not(.voice-panel)')?.scrollIntoView({block:'start'})},'Paper cut workspace'),
+    el('button',{type:'button',onclick:()=>viewer.querySelector('.voice-panel')?.scrollIntoView({block:'start'})},'Voice workspace')));
   const drawer = renderDrawer(s);
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(renderPaperCut(s));
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderVoice(s,async(id)=>{await refresh();await selectGate(id);}));
 
   if (shot) {
     const inner = renderShotViewer(s, shot);
@@ -2977,7 +2988,7 @@ async function refresh() {
     if (selectedGateId && gateRowById(state, selectedGateId)) {
       await selectGate(selectedGateId, { background: true });
     }
-    if (hasAuthoredGates(state) && !selectedGateId && openGateSessions.length && !(state.is_trailer && !state.trailer_setup_pending && openGateSessions.every(session=>gateRowById(state,session.request_id)?.state!=="pending"))) {
+    if (hasAuthoredGates(state) && !selectedGateId && !trailerWorkbenchChosen && openGateSessions.length && !(state.is_trailer && !state.trailer_setup_pending && openGateSessions.every(session=>gateRowById(state,session.request_id)?.state!=="pending"))) {
       selectGate(openGateSessions[0].request_id);
     }
   } catch (error) {

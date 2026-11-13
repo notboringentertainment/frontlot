@@ -157,9 +157,9 @@ def _decision_material(root,identity,decision):
     path=_checked_path(Path(root)/take['path']);path.relative_to(Path(root).resolve())
     if hashlib.sha256(path.read_bytes()).hexdigest()!=take['sha256']:raise ValueError('The audio file changed. Nothing was approved.')
     if take['origin']=='imported' and not take.get('licence_note','').strip():raise ValueError('A licence note is required.')
-    if take.get('binding') is not None:
+    if decision=='accept' and take.get('binding') is not None:
         check_binding(root,dict(kind=take['kind'],prompt=binding_source(root,take['binding'])['text'],duration_seconds=take.get('requested_duration_seconds',take['duration_seconds']),binding=take['binding']))
-    if take.get('line_index') is not None and record_sha256(line(root,take['line_index']))!=take.get('line_sha256'):
+    if decision=='accept' and take.get('line_index') is not None and record_sha256(line(root,take['line_index']))!=take.get('line_sha256'):
         raise ValueError('The spoken line changed. This take needs a fresh look.')
     return {'take':take,'decision':decision}
 
@@ -311,7 +311,7 @@ def check_binding(root,record):
     return current
 
 
-def prepare_request(root,kind,model,*,line_index=None,voice=None,brief_id=None):
+def prepare_request(root,kind,model,*,line_index=None,voice=None,brief_id=None,performance_notes='',voice_label=None):
     from lib.audio_prices import quote
     from tools.audio import _governed
     import re
@@ -323,6 +323,10 @@ def prepare_request(root,kind,model,*,line_index=None,voice=None,brief_id=None):
     elif kind=='music':binding['brief_id']=brief_id
     else:raise ValueError('Choose speech or instrumental music.')
     source=binding_source(root,binding);binding['source_sha256']=record_sha256(source)
+    if not isinstance(performance_notes,str) or len(performance_notes)>2000:
+        raise ValueError('Keep pronunciation and delivery notes under two thousand characters.')
+    if performance_notes or voice_label is not None:
+        binding.update(performance_notes=performance_notes,voice_label=voice_label,voice_rights_confirmed=True)
     seconds=source['duration_frames']/24 if kind=='speech' else source['duration_seconds']
     price=quote(root,kind,source['text'],seconds)
     record=_governed.prepare(root,kind=kind,model=model,voice=voice,prompt=source['text'],duration_seconds=seconds,
@@ -362,6 +366,11 @@ def require_accepted(root,identity):
     take=read(root,identity)
     if take_state(root,take)!='Accepted':raise ValueError('Only an accepted, unchanged audio take can be used.')
     return take
+
+def approved_source_request(root,take):
+    row=receipts.find_approval(root,'audio_spend',entity_id=take['id'],record_sha256=take['approval_record_sha256'])
+    if row is None:raise ValueError('The audio request cannot be verified. Stop and have its approval history checked.')
+    return row['record']
 
 
 from contextlib import contextmanager

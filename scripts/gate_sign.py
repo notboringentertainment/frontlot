@@ -62,7 +62,7 @@ _LIFECYCLE_SIGNALS = frozenset((signal.SIGINT, signal.SIGTERM, signal.SIGHUP, si
 
 def _gate_approve_argv(project: str, request_id: str) -> list[str]:
     """Private child argv; public callers use ``run_common.gate_invocation``."""
-    python = REPO / ".venv" / "bin" / "python"
+    python = Path(sys.executable)
     return [str(python), "scripts/gate_approve.py", "--project", project, "--request", request_id]
 
 

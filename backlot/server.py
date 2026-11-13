@@ -1,10 +1,9 @@
 """Backlot server — FastAPI app: board state API, SSE change feed, media.
 
-The watcher observes ``projects/`` with watchfiles; on any change it bumps a
-per-project version and wakes SSE subscribers, who tell the browser to
-refetch state. The server writes to a project directory in one place only:
-Ben's approve or decline on a video take card, which needs the app's
-capability token and the app's own origin, so nothing else can press it.
+The watcher observes ``projects/`` with watchfiles and wakes browser readers.
+Writes use narrow project operations checked against the app's origin and
+capability. Voice submits through the existing signed spending boundary;
+the board does not mint approvals or expose a general operation runner.
 """
 
 from __future__ import annotations
@@ -452,6 +451,9 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
             raise HTTPException(403, "This action must come from Front Lot.")
         if not expected or not given or not secrets.compare_digest(expected, given):
             raise HTTPException(401, "Reload Front Lot from its app icon before saving.")
+
+    from backlot.voice_panel import mount as mount_voice
+    mount_voice(app,require_writer,_safe_project_dir,_invalidate_summary)
 
     @app.post("/api/trailers")
     async def start_trailer(request: Request):

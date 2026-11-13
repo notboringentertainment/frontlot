@@ -547,8 +547,7 @@
         "wall_time_minutes",
         "cast_cap",
         "provider_egress",
-        "default_video_endpoint",
-        "qc"
+        "default_video_endpoint"
       ],
       "properties": {
         "version": {
