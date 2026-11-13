@@ -26,6 +26,8 @@ Progress: the first eighteen tests failed before implementation. The mixer and s
 
 The exact repaired titles head is merged, together with the approved cutting and footage parent. The only unmerged parent of this piece is now titles. Right-to-left lettering and final-resolution delivery remain outside this piece. Actual-file checks cannot prove every word is understandable or decide whether a silent pause is intentional; they report the evidence and ask the writer to listen. The invented voice reference is a tone, not a performance-quality proof. A before comparison preserves the chosen source levels and fades but leaves out the new colour adjustments and automatic balancing. Both comparisons still use standard picture conversion, saved timing and signed cards.
 
+The first whole run was interrupted after 596 passing cases because three new reproductions showed declared cinema and Display P3 primaries were not refused. The same narrow wide-colour refusal now covers them. This adds no conversion engine. The owner-folder inventory matched before and after the interruption. Only the complete run after that repair is the final suite result.
+
 Proportionality checkpoint: there are no external review rounds. Internal corrections now include effect identification under a loud bed, noisy numerical reductions, the neutral-colour filter, output colour metadata and a diagnostic command typo. The BWAM skill was applied. The decision is to finish the four colour controls, one speech-margin control and actual-file checks, retaining warnings where listening is necessary. No grading platform, mixing desk, new spending route or extra approval system will be added.
 
 Temporary parent: /private/tmp/fl-colour-mix-run-20261113-a.

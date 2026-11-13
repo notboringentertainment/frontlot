@@ -182,7 +182,7 @@ class ColorGrade(BaseTool):
         if 'trailer_adjustments' in inputs:
             c = self.trailer_adjustments(inputs['trailer_adjustments'])
             source = inputs.get('source_colour', {})
-            if source.get('color_transfer') in ('smpte2084', 'arib-std-b67') or source.get('color_primaries') == 'bt2020' or source.get('color_space') in ('bt2020nc','bt2020c'):
+            if source.get('color_transfer') in ('smpte2084', 'arib-std-b67') or source.get('color_primaries') in ('bt2020','smpte428','smpte431','smpte432') or source.get('color_space') in ('bt2020nc','bt2020c'):
                 raise ValueError('HDR or wide-colour picture cannot be matched here. Bring in a standard-range Rec.709 take first.')
             # Untagged YUV follows FFmpeg's conventional BT.601 matrix. The
             # preview report states this assumption; tags are never invented

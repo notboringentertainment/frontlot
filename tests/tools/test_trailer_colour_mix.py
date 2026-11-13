@@ -99,6 +99,13 @@ def test_wide_colour_is_not_mistaken_for_untagged_standard_picture(space):
     with pytest.raises(ValueError,match='wide-colour.*standard-range'):
         ColorGrade()._build_filter({'trailer_adjustments':NEUTRAL,'source_colour':{'color_space':space}})
 
+@pytest.mark.parametrize('primaries',['smpte431','smpte432','smpte428'])
+def test_declared_cinema_or_display_wide_primaries_are_refused(primaries):
+    from tools.enhancement.color_grade import ColorGrade
+    from lib.trailer_finishing import NEUTRAL
+    with pytest.raises(ValueError,match='wide-colour.*standard-range'):
+        ColorGrade()._build_filter({'trailer_adjustments':NEUTRAL,'source_colour':{'color_space':'bt709','color_primaries':primaries}})
+
 def test_silent_spoken_take_cannot_hide_under_music(signals):
     from lib.trailer_finishing import review_output
     root,paths=signals;paths[0]=write_signal(root/'silent-words.wav',np.zeros(6*RATE))
