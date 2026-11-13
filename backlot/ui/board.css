@@ -1099,3 +1099,8 @@ details.log-more[open] > summary { margin-bottom: 12px; }
 .voice-workspace-nav { display:flex; gap:12px; padding:12px 20px; border-bottom:1px solid #ddd; }
 @media(max-width:900px){.voice-lines { grid-template-columns:1fr; }.voice-lines > aside { position:static; }}
 .voice-spend,.voice-take { overflow-wrap:anywhere; }
+.audio-price-field { display:grid; grid-template-columns:minmax(180px,.8fr) minmax(240px,1.2fr); gap:22px; align-items:center; border-bottom:1px solid #c7c3b5; }
+.audio-price-field .price-help { font-size:14px; line-height:1.5; }
+.audio-price-field a { color:#355239; text-decoration:underline; }
+.audio-account-state[role=alert] { background:#f4e3b0; color:#342b15; padding:14px; border-left:4px solid #b18b20; }
+@media(max-width:1000px){.audio-price-field { grid-template-columns:1fr; gap:0; }}

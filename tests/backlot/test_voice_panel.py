@@ -181,7 +181,7 @@ def test_catalogue_failure_is_plain_and_never_submits_speech(voice_world,monkeyp
             def json(self):return {'voices':[]}
         def failed(*a,**k):gets.append(1);return Response()
         monkeypatch.setattr('requests.get',failed)
-    with pytest.raises(ValueError,match='Connect your ElevenLabs|account voices could not be loaded'):panel.catalogue(root)
+    with pytest.raises(ValueError,match='not connected' if case=='missing-key' else 'account voices could not be loaded'):panel.catalogue(root)
     assert posts==[] and len(gets)==(0 if case=='missing-key' else 1)
 
 def test_insufficient_ceiling_blocks_the_real_signer_before_contact(voice_world):

@@ -1,4 +1,5 @@
 import {el,CAPABILITY_TOKEN_KEY} from '/ui/lib.js';
+import {renderPriceSettings} from '/ui/audio_prices.js';
 let current=null;
 const money=v=>`$${Number(v||0).toFixed(4)}`;
 const button=(label,fn)=>el('button',{type:'button',onclick:fn},label);
@@ -10,35 +11,33 @@ export function renderVoice(s,onSign){
   if(current?.project===s.project_id){current.refresh();return current.node;}
   const project=s.project_id,url=`/api/project/${encodeURIComponent(project)}/voice`;
   const node=el('section',{class:'voice-panel paper-editor','aria-label':'Trailer voice'}),message=el('p',{role:'status','aria-live':'polite'}),content=el('div',{});
-  const drafts=new Map(),players=new Map(),prices={},outcomes=new Map();let voices=[],last='',busy=false,loading=false,pendingRefresh=false,pricesOpen=false;
+  const drafts=new Map(),players=new Map(),priceForm={},outcomes=new Map();let voices=[],last='',busy=false,loading=false,pendingRefresh=false;
   const act=async fn=>{if(busy)return;busy=true;message.textContent='Working…';try{const result=await fn();message.textContent=typeof result==='string'?result:'Saved. Review the request before signing.';}catch(e){message.textContent=e.message;}finally{busy=false;last='';refresh();}};
+  const loadVoices=button('Load account voices',()=>act(async()=>{voices=await api(url+'/catalogue',{});return 'Account voices loaded. Choose a voice for the saved line.';}));
   node.append(el('h2',{},'Voice'),el('p',{},'Choose a voice for each saved spoken line. One signature buys one take. Keeping or declining a take needs its own signature; a decline is final.'),
-    button('Load account voices',()=>act(async()=>{voices=await api(url+'/catalogue',{});return 'Account voices loaded. Choose a voice for the saved line.';})),
+    loadVoices,
     el('p',{class:'source'},'Loading voices reads the connected account only. It sends no story and buys no speech.'),message,content);
   function draw(data){
     content.replaceChildren();
+    loadVoices.disabled=!data.account.configured;
+    content.append(el('p',{class:'audio-account-state',role:data.account.configured?'note':'alert'},data.account.message));
     const b=data.budget;
     content.append(el('section',{class:'paper-panel voice-budget'},el('h3',{},'One production ceiling'),
       el('p',{},`${money(b.spent)} spent · ${money(b.held)} held · ${money(b.remaining)} remaining of ${money(b.ceiling)}`),
       el('p',{},`Recorded audio: ${money(b.audio_cash)} new cash · ${money(b.audio_credits)} replacement value of credits. Credits are counted once in the production total.`)));
-    const settings=el('details',{class:'paper-panel'},el('summary',{},'Audio account consent and price ceilings'),
-      el('p',{},'Enter ceilings verified for your account, not plan averages. No default prices are supplied. Signing these settings permits separately approved voice words to reach ElevenLabs; it buys no take. Saving a new draft pauses paid work until you sign it. Previous signed settings are kept.'),
-      el('p',{},'The music rate is recorded for the later music controls. This panel grants permission for speech only.'));
-    settings.open=pricesOpen;settings.ontoggle=()=>{if(settings.isConnected)pricesOpen=settings.open;};
-    const fields=[['Dollar replacement value per credit','dollars_per_credit'],['Highest speech credits per character','speech_credits_per_character'],['Highest music credits per minute','music_credits_per_minute'],['Highest voice rate multiplier','voice_multiplier_ceiling'],['Prices expire','expiry']];
-    for(const [label,key] of fields){const input=el('input',{type:key==='expiry'?'datetime-local':'number','aria-label':label,step:'any'});input.value=prices[key]||'';input.oninput=()=>prices[key]=input.value;settings.append(el('label',{},label,input));}
-    settings.append(button('Prepare price settings for signing',()=>act(async()=>{
-      const body={expires_at:Date.parse(prices.expiry)/1000};for(const [,k] of fields)if(k!=='expiry')body[k]=Number(prices[k]);
-      const g=await api(url+'/prices',body);onSign(g.request_id);
-    })),button('Restore previous signed settings',()=>act(async()=>{return (await api(url+'/prices/restore',{})).message;})));content.append(settings);
+    content.append(renderPriceSettings(data,priceForm,{api,act,onSign,url}));
     if(data.message)content.append(el('p',{role:'alert'},data.message));
     for(const item of data.unresolved_requests){
       const id=item.reservation.reservation_id,r=item.request,form=el('section',{class:'paper-panel'},el('h3',{},'Review an unresolved audio charge'),
         el('p',{role:'alert'},'Paid work is stopped. Check your ElevenLabs account; time passing will not resolve this charge.'),el('blockquote',{},r?.prompt||'The original signed request cannot be verified. Stop and investigate its approval history.'));
       const d=outcomes.get(id)||{charged:false,cash:0,credits:0,note:''};outcomes.set(id,d);
-      const charged=el('input',{type:'checkbox'});charged.checked=d.charged;charged.onchange=()=>d.charged=charged.checked;form.append(el('label',{},charged,'The account was charged.'));
+      const amounts=[],charged=el('input',{type:'checkbox'});charged.checked=d.charged;charged.onchange=()=>{
+        d.charged=charged.checked;
+        for(const [key,field] of amounts){if(!d.charged){d[key]=0;field.value='0';}field.disabled=!d.charged;}
+      };form.append(el('label',{},charged,'The account was charged.'),el('p',{},'Leave this unchecked if your account was not charged: both amounts stay at zero. If it was charged, tick it and enter the actual amounts you checked, not the request’s maximum.'));
       for(const [label,key] of [['Actual new cash dollars','cash'],['Actual credit replacement dollars','credits'],['What I checked in the account','note']]){
         const field=el(key==='note'?'textarea':'input',key==='note'?{'aria-label':label}:{'aria-label':label,type:'number',step:'.0001'});field.value=d[key];field.oninput=()=>d[key]=key==='note'?field.value:Number(field.value);form.append(el('label',{},label,field));
+        if(key!=='note'){field.disabled=!d.charged;amounts.push([key,field]);}
       }
       form.append(button('Review and sign this account outcome',()=>act(async()=>{const g=await api(url+'/resolution',{reservation_id:id,...d});onSign(g.request_id);})),
         button('Apply the signed account outcome',()=>act(async()=>{return (await api(`${url}/resolution/${id}/apply`,{})).message;})));content.append(form);
@@ -55,7 +54,7 @@ export function renderVoice(s,onSign){
       voices.forEach(v=>select.append(el('option',{value:v.id},v.name)));select.value=d.voice;select.onchange=()=>{d.voice=select.value;d.rights=false;rights.checked=false;};
       const notes=el('textarea',{'aria-label':`Pronunciation and delivery notes for line ${index+1}`,maxlength:2000});notes.value=d.notes;notes.oninput=()=>d.notes=notes.value;
       const rights=el('input',{type:'checkbox'});rights.checked=d.rights;rights.onchange=()=>d.rights=rights.checked;
-      const prepare=button('Prepare a spending card',()=>act(async()=>{await api(url+'/prepare',{line_index:index,voice:d.voice,notes:d.notes,rights_confirmed:d.rights});}));prepare.disabled=!data.usable;
+      const prepare=button('Prepare a spending card',()=>act(async()=>{await api(url+'/prepare',{line_index:index,voice:d.voice,notes:d.notes,rights_confirmed:d.rights});}));prepare.disabled=!data.usable||!data.account.configured||!data.price_settings_signed;
       box.append(el('label',{},'Account voice',select),el('label',{},'Pronunciation and delivery notes',notes),
         el('p',{class:'source'},'These notes stay with the signed take for your review. This speech model does not receive direction notes. The story material sent is the saved line’s exact wording; model and voice choices are sent too.'),
         el('label',{},rights,'I have permission to use this voice.'),el('p',{},'ElevenLabs · Multilingual v2 · the saved line’s exact words'),prepare);
