@@ -202,3 +202,13 @@ def test_unplayable_import_is_a_plain_refusal_with_no_spending(voice_world,tmp_p
     with pytest.raises(ValueError,match='playable music.*Choose'):
         music.import_selected(root,{'choice_id':chosen['choice_id'],'source':'My recording','licence_note':'Owned by me.'})
     assert posts==[] and gets==[]
+
+def test_disconnected_music_cannot_prepare_send_or_reserve_money(voice_world,monkeypatch):
+    from backlot import music_panel as music
+    from tools.cost_tracker import load_reservations
+    root,posts,gets=voice_world;record=prepare(root);sign(root,'audio_spend',record,record['request_id'])
+    monkeypatch.delenv('ELEVENLABS_API_KEY')
+    with pytest.raises(ValueError,match='not connected'):
+        music.prepare_music(root,{'brief_id':record['binding']['brief_id']})
+    result=music.send(root,record['request_id']);assert not result['success'] and 'restart the board' in result['message']
+    assert load_reservations(root)=={} and posts==[] and gets==[]

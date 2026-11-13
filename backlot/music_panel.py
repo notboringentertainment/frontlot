@@ -6,7 +6,7 @@ import time
 import uuid
 from pathlib import Path
 from lib import audio_workspace as audio
-from backlot.voice_panel import root_checked,_gate_id
+from backlot.voice_panel import root_checked,_gate_id,account_status
 
 MODEL='music_v1'
 _choices={}
@@ -23,6 +23,8 @@ def prepare_music(root,data):
     root=root_checked(root)
     if not isinstance(data,dict) or set(data)!={'brief_id'}:
         raise ValueError('Save the music brief, then prepare its spending card with the music controls.')
+    account=account_status()
+    if not account['configured']:raise ValueError(account['message'])
     from lib.project_config import load_current_verified_project_config,ProjectConfigError
     config=load_current_verified_project_config(root)
     try:config.require_egress('elevenlabs','music_prompt')
@@ -34,6 +36,8 @@ def prepare_music(root,data):
 def send(root,identity):
     from tools.audio.music_gen import MusicGen
     root=root_checked(root)
+    account=account_status()
+    if not account['configured']:return {'success':False,'message':account['message']}
     result=MusicGen().execute({'project_dir':str(root),'audio_request_id':identity})
     return {'success':result.success,**({'take':result.data['take']} if result.success else {'message':result.error+' Review the request and signed settings before trying again.'})}
 

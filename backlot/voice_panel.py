@@ -12,6 +12,19 @@ from tools.audio import _governed
 
 MODEL='eleven_multilingual_v2'
 _catalogues={}
+SIGN_PRICES_FIRST='Sign the price settings first, then load account voices or prepare paid audio. No story was sent.'
+
+def account_status():
+    configured=bool(os.environ.get('ELEVENLABS_API_KEY','').strip())
+    return {'configured':configured,'message':('Front Lot has an ElevenLabs account key. Load account voices to check access; a saved key does not prove prices or voice rights.' if configured else
+        'ElevenLabs is not connected to this board. Ask the person who starts Front Lot to connect the account securely and restart the board, then reload this page. Account connection is not available on this screen.')}
+
+def _price_config(root):
+    from lib.project_config import ProjectConfigError
+    try:config=load_current_verified_project_config(root)
+    except ProjectConfigError:raise ValueError(SIGN_PRICES_FIRST) from None
+    if not isinstance(config.data.get('audio_price_basis'),dict):raise ValueError(SIGN_PRICES_FIRST)
+    return config
 
 def root_checked(root):
     root=_governed._root(root)
@@ -23,10 +36,13 @@ def root_checked(root):
 def catalogue(root):
     import requests
     root=root_checked(root)
-    config=load_current_verified_project_config(root)
-    config.require_egress('elevenlabs','speech_text')
+    config=_price_config(root)
+    from lib.project_config import ProjectConfigError
+    try:config.require_egress('elevenlabs','speech_text')
+    except ProjectConfigError:raise ValueError(SIGN_PRICES_FIRST) from None
     key=os.environ.get('ELEVENLABS_API_KEY')
-    if not key:raise ValueError('Connect your ElevenLabs account on the server, then load its voices again.')
+    account=account_status()
+    if not account['configured']:raise ValueError(account['message'])
     try:
         response=requests.get('https://api.elevenlabs.io/v1/voices',headers={'xi-api-key':key},timeout=15,allow_redirects=False)
         response.raise_for_status()
@@ -51,8 +67,10 @@ def prepare_voice(root,data):
     root=root_checked(root)
     if not isinstance(data,dict) or set(data)-{'line_index','voice','rights_confirmed','notes'}:
         raise ValueError('Use the saved line and voice controls. Replacement words need a new paper cut.')
+    account=account_status()
+    if not account['configured']:raise ValueError(account['message'])
     cached=_catalogues.get(str(root));key=os.environ.get('ELEVENLABS_API_KEY','')
-    config=load_current_verified_project_config(root)
+    config=_price_config(root)
     if not cached or time.time()-cached[0]>600 or cached[1]!=config.digest or cached[2]!=hashlib.sha256(key.encode()).hexdigest():
         raise ValueError('Load account voices again before preparing this request.')
     selected=next((v for v in cached[3] if v['id']==data.get('voice')),None)
@@ -65,6 +83,8 @@ def prepare_voice(root,data):
 def send(root,identity):
     from tools.audio.elevenlabs_tts import ElevenLabsTTS
     root=root_checked(root)
+    account=account_status()
+    if not account['configured']:return {'success':False,'message':account['message']}
     result=ElevenLabsTTS().execute({'project_dir':str(root),'audio_request_id':identity})
     return {'success':result.success,**({'take':result.data['take']} if result.success else {'message':result.error+' Review the request and signed settings before trying again.'})}
 
@@ -93,16 +113,19 @@ def snapshot(root):
     root=root_checked(root)
     from lib.trailer_edit import paper_state
     paper=paper_state(root)
-    settings_error=None
+    settings_error=None;basis=None;config_sha=None
     try:
         config=load_current_verified_project_config(root)
         ceiling=config.budget_usd_cap
+        basis=config.data.get('audio_price_basis');config_sha=config.digest
+        if basis is None:settings_error=SIGN_PRICES_FIRST
     except RuntimeError:
         from lib.project_config import read_project_config
         draft,_=read_project_config(root)
         # An unsigned draft explains a stop. It grants no spending permission.
         ceiling=draft['budget_usd_cap']
-        settings_error='Sign the audio price settings below before preparing paid voice or music.'
+        settings_error=SIGN_PRICES_FIRST
+    account=account_status()
     tracker=_governed.AudioCostTracker(budget_total_usd=ceiling,reserve_pct=0,cost_log_path=root/'cost_log.json')
     state=audio.state(root)
     takes=[t for t in state['takes'] if t['kind'] in ('speech','music')]
@@ -129,6 +152,7 @@ def snapshot(root):
                 error='Not enough remains under the production ceiling. Resolve held charges or stop; this request cannot be approved.'
             if record['request_id'] in used:error='This signature has already been used. If no take was recovered, prepare a new spending card; it cannot buy another call.'
             if state['unresolved_requests']:error='Resolve the held audio charge in the account review above before submitting any request.'
+            if not account['configured'] and error is None:error=account['message']
         requests.append({'record':record,'approved':approved,'error':error,'gate_request_id':_gate_id(root,record['request_id'],'audio_spend')})
     charges={}
     for r in receipts.verified_generation_receipts(root):
@@ -142,6 +166,7 @@ def snapshot(root):
     except ValueError:music_brief=None
     return {'lines':(paper.get('current') or {}).get('paper_cut',{}).get('lines',[]),
             'music_brief':music_brief,
+            'account':account,'price_basis':basis,'price_config_sha256':config_sha,'price_settings_signed':basis is not None,
             'protected_lines':paper.get('protected_lines',[]),'usable':paper.get('usable_downstream',False),
             'message':settings_error or (None if paper.get('usable_downstream') else 'Review the approved story and save a checked paper cut before requesting voice or generated music.'),
             'takes':takes,'requests':requests,'unresolved_requests':state['unresolved_requests'],
@@ -199,11 +224,14 @@ def restore_prices(root):
         rows=receipts.verified_approvals(root,'config')
         if not rows:raise ValueError('No prior signed prices exist. Fill in the price form again instead.')
         sha=rows[-1]['record']['config_sha256']
+        current=audio._checked_path(root/'project.yaml')
+        if hashlib.sha256(current.read_bytes()).hexdigest()==sha:
+            return {'message':'These settings are already signed. To change them, edit the figures and sign a new settings request.'}
         path=audio._checked_path(root/'.audio-price-history'/(sha+'.yaml'))
         data=path.read_bytes()
         if hashlib.sha256(data).hexdigest()!=sha:raise ValueError('The prior settings cannot be verified. Nothing was restored.')
         atomic_write_bytes(root/'project.yaml',data)
-    return {'message':'The previous signed settings are restored. No new prices were approved.'}
+    return {'message':'The signed settings are restored. The unsigned draft was discarded; no new prices were approved.'}
 
 def apply_resolution(root,identity):
     root=root_checked(root)

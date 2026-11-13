@@ -20,7 +20,7 @@ export function musicForms(data,draft,{api,act,url}){
   const prepare=button('Prepare music spending card',()=>act(async()=>{
     if(!draft.briefId||draft.text!==draft.savedText||draft.seconds!==draft.savedSeconds)throw Error('Save the current music brief and length before preparing its spending card.');
     await api(url+'/prepare',{brief_id:draft.briefId});
-  }));prepare.disabled=!data.usable;compose.append(prepare);
+  }));prepare.disabled=!data.usable||!data.account.configured||!data.price_settings_signed;compose.append(prepare);
   const bring=el('section',{id:'music-import',class:'paper-panel'},el('h3',{},'Bring your own music'),
     el('p',{},'Choose a file with the Mac file chooser, then record its source and licence. Bringing it in costs nothing and sends nothing to a service. Listen before signing that you want to keep it.'),
     el('p',{},'The licence note is your statement about where this music came from. A changed or re-encoded file, or music made outside Front Lot, may have no generation receipt here.'));

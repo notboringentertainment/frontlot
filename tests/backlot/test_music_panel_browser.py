@@ -148,3 +148,21 @@ def test_price_review_leads_with_dollars_and_keeps_raw_settings_below(voice_worl
             assert posts==[] and gets==[] and not errors
             page.close()
         finally:browser.close()
+
+def test_disconnected_music_is_stopped_while_local_import_stays_available(voice_world,monkeypatch):
+    from tests.backlot.test_music_panel import prepare
+    from tests.tools.test_audio_governance import sign
+    root,posts,gets=voice_world;record=prepare(root);sign(root,'audio_spend',record,record['request_id'])
+    monkeypatch.delenv('ELEVENLABS_API_KEY')
+    with board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+            page.goto(f'{url}/p/{root.name}#k=invented-browser-proof');panel=page.locator('.voice-panel')
+            expect(panel).to_contain_text('not connected',timeout=15000)
+            expect(panel.get_by_role('button',name='Prepare music spending card',exact=True)).to_be_disabled()
+            expect(panel.get_by_role('button',name='Make this approved take',exact=True)).to_have_count(0)
+            expect(panel.get_by_role('button',name='Choose a music file',exact=True)).to_be_enabled()
+            assert posts==[] and gets==[] and not errors
+            page.close()
+        finally:browser.close()
