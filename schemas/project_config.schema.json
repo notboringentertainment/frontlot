@@ -757,6 +757,16 @@
                 }
               }
             },
+            "effect_credits_per_second": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["value", "set_at", "expires_at"],
+              "properties": {
+                "value": {"type": "number", "exclusiveMinimum": 0},
+                "set_at": {"type": "number", "minimum": 0},
+                "expires_at": {"type": "number", "minimum": 0}
+              }
+            },
             "voice_multiplier_ceiling": {
               "type": "object",
               "additionalProperties": false,

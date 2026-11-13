@@ -1502,6 +1502,7 @@ def _audio_price_summary(root,settings):
         return float((credits.to_integral_value(rounding=ROUND_CEILING)*value('dollars_per_credit')).quantize(Decimal('.0001'),rounding=ROUND_CEILING))
     return {'longest_line':longest,'longest_line_dollars':None if longest is None else dollars(Decimal(len(longest.encode('utf-8')))*value('speech_credits_per_character')*value('voice_multiplier_ceiling')),
             'music_minute_dollars':dollars(value('music_credits_per_minute')),
+            'effect_second_dollars':dollars(value('effect_credits_per_second')) if 'effect_credits_per_second' in basis else None,
             'expires_at':min(rate['expires_at'] for rate in basis.values())}
 
 
@@ -1695,7 +1696,7 @@ def _render_audio_take(root,req):
         take=record['take']
         wording=approved_source_request(root,take)['prompt'] if take['origin']=='generated' else take['licence_note']
         return {'record':record,'spoken_words':wording}
-    except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This take needs fresh review. Reopen its voice panel before signing.'}
+    except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This take needs fresh review. Reopen its audio panel before signing.'}
 
 def _render_audio_resolution(root,req):
     from lib.audio_workspace import resolution_record

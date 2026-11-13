@@ -13,6 +13,9 @@ const fields=[
   ['Highest voice rate multiplier','voice_multiplier_ceiling',
     'Some voices cost more than the base rate; a two-times multiplier doubles it. In ElevenLabs, open Voices, then Voice Library and read each chosen voice’s multiplier tag; Text to Speech also shows a notice. Enter a ceiling covering every voice you intend to use. Ask Support if a rate is unclear.',
     'https://elevenlabs.io/docs/help-center/product/voices/voice-library/what-are-custom-rates-and-credit-multipliers'],
+  ['Highest sound-effect credits per second','effect_credits_per_second',
+    'This is the maximum credit charge for one second of an explicitly timed effect. In ElevenLabs, open Sound Effects and check the API rate for Sound Effects v3 in the linked guide; confirm the ceiling for your account before signing. Leave it blank to keep effect generation unavailable. Front Lot never guesses a price or uses automatic duration.',
+    'https://elevenlabs.io/docs/overview/capabilities/sound-effects'],
   ['Prices expire','expiry',
     'This is when Front Lot must stop using these figures; it is your instruction, not an ElevenLabs setting. In your ElevenLabs profile, open Subscription to check renewal. Choose no later than the earliest confirmed rate expiry or known price change.',
     'https://elevenlabs.io/docs/overview/administration/billing'],
@@ -43,7 +46,7 @@ export function renderPriceSettings(data,state,{api,act,onSign,url}){
     box.append(el('div',{class:'audio-price-field'},el('label',{},label,input),el('p',{id,class:'price-help'},help,' ',el('a',{href:source,target:'_blank',rel:'noopener noreferrer'},'ElevenLabs guide'))));
   }
   box.append(el('button',{type:'button',onclick:()=>act(async()=>{
-    const body={expires_at:Date.parse(state.values.expiry)/1000};for(const [,key] of fields)if(key!=='expiry')body[key]=Number(state.values[key]);
+    const body={expires_at:Date.parse(state.values.expiry)/1000};for(const [,key] of fields)if(key!=='expiry'&&(key!=='effect_credits_per_second'||state.values[key]))body[key]=Number(state.values[key]);
     const request=await api(url+'/prices',body);state.dirty=false;state.digest=null;onSign(request.request_id);
   })},'Prepare price settings for signing'),
   el('button',{type:'button',onclick:()=>act(async()=>{

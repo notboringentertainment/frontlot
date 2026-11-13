@@ -37,10 +37,11 @@ def _money(value):
 def _payload(record):
     payload={k:record[k] for k in ('provider','kind','model','voice','prompt','duration_seconds')}
     if record['kind']=='music' and 'binding' in record:payload['force_instrumental']=True
+    if record['kind']=='effect':payload['loop']=record['loop']
     return payload
 
 def validate_request(record, *, check_expiry=True):
-    if not isinstance(record,dict) or not FIELDS <= set(record) or set(record)-FIELDS-{'binding','price_basis_sha256'}:
+    if not isinstance(record,dict) or not FIELDS <= set(record) or set(record)-FIELDS-{'binding','price_basis_sha256','loop'}:
         raise ValueError('Audio request fields changed or are incomplete.')
     try:
         if str(uuid.UUID(record['request_id']))!=record['request_id']:raise ValueError()
@@ -58,6 +59,9 @@ def validate_request(record, *, check_expiry=True):
     length=record['duration_seconds']
     if isinstance(length,bool) or not isinstance(length,(int,float)) or not math.isfinite(length) or not 0 < length <= 120:
         raise ValueError('Audio length must be positive and no more than two minutes.')
+    if record['kind']=='effect' and (type(record.get('loop')) is not bool or not .5<=length<=30 or length*24!=round(length*24)):
+        raise ValueError('An effect needs a loop choice and half a second to thirty seconds in whole frames.')
+    if record['kind']!='effect' and 'loop' in record:raise ValueError('Loop intent belongs only to a sound effect.')
     _money(record['max_cash_usd']);_money(record['max_credits_usd'])
     if record['max_cash_usd'] + record['max_credits_usd'] <= 0:
         raise ValueError('A positive upper charge bound is required for audio.')
@@ -92,7 +96,7 @@ def _tracker(root,config):
         single_action_approval_usd=float('inf'),require_approval_for_new_paid_tool=False,
         mode=BudgetMode.CAP,cost_log_path=root/'cost_log.json')
 
-def prepare(root, *, kind,model,voice,prompt,duration_seconds,max_cash_usd,max_credits_usd,price_expires_at,binding=None,price_basis_sha256=None):
+def prepare(root, *, kind,model,voice,prompt,duration_seconds,max_cash_usd,max_credits_usd,price_expires_at,binding=None,price_basis_sha256=None,loop=False):
     root=_root(root)
     # Bounds are validated even if the saved settings are damaged.
     _money(max_cash_usd);_money(max_credits_usd)
@@ -102,6 +106,7 @@ def prepare(root, *, kind,model,voice,prompt,duration_seconds,max_cash_usd,max_c
            price_expires_at=price_expires_at,config_sha256=config.digest)
     if binding is not None or price_basis_sha256 is not None:
         r.update(binding=copy.deepcopy(binding),price_basis_sha256=price_basis_sha256)
+    if kind=='effect':r['loop']=loop
     r['input_sha256']=record_sha256(_payload(r))
     # Expired quotes may be saved for inspection but cannot be signed or submitted.
     validate_request(r,check_expiry=False)
@@ -151,7 +156,7 @@ def check_current(root,record):
     if config.digest!=record['config_sha256']:raise ValueError('Signed project settings changed after audio approval.')
     return config
 
-def execute(root,record, *, submit,download):
+def execute(root,record, *, submit,download,validate_download=None):
     """Transport callbacks run only after a durable reservation. Any ambiguous
     failure leaves billing pending; only the existing reconciler may resolve it.
     """
@@ -196,6 +201,7 @@ def execute(root,record, *, submit,download):
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        if validate_download is not None:validate_download(staging)
         total=round(cash+credits,4)
         with reservation_lock(root):
             stage_generation_wal(root,execution_id=reservation,
