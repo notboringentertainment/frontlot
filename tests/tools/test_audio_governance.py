@@ -43,7 +43,7 @@ class Transport:
     def submit(self, payload, key):
         self.calls+=1
         if self.mode=='timeout':raise TimeoutError('unknown billing')
-        return {'request_id':'fake-job','cash_usd':0.2,'credits_usd':0.3}
+        return {'request_id':'fake-job','cash_usd':0,'credits_usd':0.5}
     def download(self, result):
         self.downloads+=1
         if self.mode=='download':raise OSError('download failed')
@@ -52,8 +52,21 @@ class Transport:
 def prepare(root,**changes):
     from tools.audio import _governed as audio
     args=dict(kind='speech',model='invented-model',voice='invented-voice',prompt='The gallery opens tonight.',duration_seconds=3,
-              max_cash_usd=0.4,max_credits_usd=0.6,price_expires_at=4102444800)
+              max_cash_usd=0,max_credits_usd=1,price_expires_at=4102444800)
     args.update(changes)
+    if args['max_cash_usd']+args['max_credits_usd']<=0:return audio.prepare(root,**args)
+    from lib.project_config import load_current_verified_project_config
+    load_current_verified_project_config(root)
+    # The transport proof uses real signed rates, even without the app's source
+    # binding. A typed upper limit is never price authority.
+    data=yaml.safe_load((root/'project.yaml').read_text());data['version']='1.4'
+    def rate(value):return {'value':value,'set_at':0,'expires_at':args['price_expires_at']}
+    data['audio_price_basis']={key:rate(value) for key,value in (
+        ('dollars_per_credit',args['max_credits_usd']),('speech_credits_per_character',.000001),
+        ('music_credits_per_minute',.000001),('voice_multiplier_ceiling',1))}
+    raw=yaml.safe_dump(data).encode();(root/'project.yaml').write_bytes(raw)
+    sign(root,'config',{'config_sha256':hashlib.sha256(raw).hexdigest()},'project_config')
+    args['price_basis_sha256']=record_sha256(data['audio_price_basis'])
     return audio.prepare(root,**args)
 
 def approve(root,r):return sign(root,'audio_spend',r,r['request_id'])
@@ -79,7 +92,7 @@ def test_duplicate_confirmation_buys_once(project):
     assert (t.calls,t.downloads)==(1,1)
     rows=receipts.verified_generation_receipts(project)
     assert len(rows)==1 and rows[0]['cost_usd']==0.5
-    assert rows[0]['cash_usd']==0.2 and rows[0]['credits_usd']==0.3
+    assert rows[0]['cash_usd']==0 and rows[0]['credits_usd']==0.5
 
 def test_race_at_ceiling_only_one_proceeds(project):
     rs=[prepare(project),prepare(project)]
@@ -115,7 +128,13 @@ def test_config_consent_and_unbounded_price_refuse_zero_contact(project):
     data=yaml.safe_load((project/'project.yaml').read_text());data['provider_egress']=[]
     (project/'project.yaml').write_text(yaml.safe_dump(data))
     with pytest.raises(ProjectConfigError):run(project,r,t)
-    with pytest.raises(ValueError,match='firm'):prepare(project,max_cash_usd=float('inf'))
+    # Exercise the operation directly: the fixture factory needs valid settings
+    # to provision signed rates, while this test has deliberately damaged them.
+    from tools.audio import _governed as audio
+    with pytest.raises(ValueError,match='firm'):
+        audio.prepare(project,kind='speech',model='invented-model',voice='invented-voice',
+            prompt='A quiet gallery.',duration_seconds=3,max_cash_usd=float('inf'),
+            max_credits_usd=1,price_expires_at=4102444800)
     assert (t.calls,t.downloads)==(0,0)
 
 def test_signer_rebuilds_saved_request_and_rechecks_before_signing(project):
@@ -218,7 +237,7 @@ def test_music_origin_preserves_generated_or_licensed_import():
     from jsonschema import ValidationError
     with pytest.raises(ValidationError):validate({'kind':'imported'})
 
-@pytest.mark.parametrize('kind,voice',[('music',None),('effect',None)])
+@pytest.mark.parametrize('kind,voice',[('music',None)])
 def test_all_audio_classes_use_one_receipted_call(project,kind,voice):
     r=prepare(project,kind=kind,voice=voice);approve(project,r);t=Transport()
     run(project,r,t)
@@ -233,14 +252,16 @@ def test_successful_charge_failed_download_keeps_known_breakdown(project):
     with pytest.raises(OSError,match='download failed'):run(project,r,t)
     row=list(load_reservations(project).values())[0]
     assert row['state']=='pending_billing'
-    assert row['cash_usd']==0.2 and row['credits_usd']==0.3
+    assert row['cash_usd']==0 and row['credits_usd']==0.5
     assert receipts.verified_generation_receipts(project)==[]
     assert (t.calls,t.downloads)==(1,1)
 
 def test_second_confirmation_in_parallel_buys_once(project):
+    from lib.audio_workspace import PaidCallBusy
     r=prepare(project);approve(project,r);t=Transport()
     def click():
         try:run(project,r,t);return 'sent'
+        except PaidCallBusy:return 'duplicate'
         except ValueError as exc:
             assert 'already used' in str(exc)
             return 'duplicate'

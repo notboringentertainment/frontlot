@@ -291,6 +291,8 @@ async def _lifespan(app: FastAPI):
         from backlot.claude_live import shutdown_claude
 
         await shutdown_claude(app)
+        if getattr(app.state,'footage_tasks',None):
+            await asyncio.gather(*list(app.state.footage_tasks),return_exceptions=True)
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
@@ -457,6 +459,10 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
     from backlot.music_panel import mount as mount_music
     mount_music(app,require_writer,_safe_project_dir,_invalidate_summary)
     mount_music(app,require_writer,_safe_project_dir,_invalidate_summary,kind='effect')
+    from backlot.cutting import mount as mount_cutting
+    mount_cutting(app,require_writer,_safe_project_dir,_invalidate_summary)
+    from backlot.footage_controls import install as install_footage_controls
+    install_footage_controls(app,require_writer,_safe_project_dir,_invalidate_summary)
 
     @app.post("/api/trailers")
     async def start_trailer(request: Request):

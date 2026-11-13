@@ -1700,9 +1700,43 @@ def _construct_audio_workspace(root: Path, req: dict) -> Constructed:
     record = build()
     def recheck():
         if build() != record:
-            raise GateHandlerError("The audio material changed. Nothing was approved.")
+            raise GateHandlerError("The material for this decision changed. Nothing was approved.")
     evidence = (json.dumps(record, ensure_ascii=False, indent=2),)
+    if req['kind']=='audio_resolution' and record['request'].get('provider')=='fal':
+        evidence=('Service: Fal. Exact shot: '+record['request']['prompt'],
+            'Service account outcome: '+('charged' if record['charged'] else 'not charged')+'.',
+            f"Cash: ${record['cash_usd']:.4f}. Replacement value of credits: ${record['credits_usd']:.4f}.",
+            'What you checked: '+record['note'],
+            'This records the account outcome only. It cannot submit another clip or complete a stage.')
     return Constructed(record, None, identity, evidence=evidence, pre_commit_check=recheck)
+
+
+def _construct_footage(root: Path, req: dict) -> Constructed:
+    from lib import footage_requests as footage
+    identity = _require_entity(req)
+    supplied = req.get('approval_record') or {}
+    def build():
+        if req['kind']=='footage_spend':
+            return footage.approval_material(root,footage._read(root,identity))
+        return footage.decision_record(root,supplied.get('shot_id'),identity,supplied.get('decision'))
+    record = build()
+    def recheck():
+        if build()!=record:raise GateHandlerError('The footage material changed. Nothing was approved.')
+    if req['kind']=='footage_spend':
+        evidence = (
+            'Service: Fal. Model: Kling o3 reference video.',
+            'Exact outgoing shot description: '+record['prompt'],
+            f"Clip length: {record['duration_seconds']} seconds. Silent widescreen footage.",
+            f"Highest cash charge: ${record['max_cash_usd']:.4f}. Replacement value of credits: ${record['max_credits_usd']:.4f}.",
+            f"Money left in the production ceiling: ${record['remaining_usd']:.4f}.",
+            'Reference pictures sent: '+', '.join(Path(r['path']).name for r in record['references']),
+            'Approved looks used to verify those pictures: '+', '.join(r['entity_id'].replace('-',' ') for r in record['look_refs']),
+            'One signature buys one clip. A retake needs a new request and signature.',
+        )
+    else:
+        evidence = ('Decision: '+record['decision']+'.', 'Watch the whole clip before signing. Declining is final.',
+                    'This decision completes no stage.')
+    return Constructed(record,None,identity,evidence=evidence,pre_commit_check=recheck)
 
 
 CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
@@ -1713,6 +1747,8 @@ CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
     "audio_spend": _construct_audio_spend,
     "audio_take": _construct_audio_workspace,
     "audio_resolution": _construct_audio_workspace,
+    "footage_spend": _construct_footage,
+    "footage_take": _construct_footage,
     "storyboard_batch": _construct_storyboard_batch,
     "artifact_review": _construct_artifact_review,
     "hero": _construct_character,
@@ -1757,6 +1793,12 @@ def canonical_text(obj: Any) -> str:
 
 def show_request(req: dict, root: Path, out=None, built: Optional[Constructed] = None) -> None:
     out = out or sys.stdout
+    footage_resolution=req['kind']=='audio_resolution' and ((built.record if built else req.get('approval_record') or {}).get('request') or {}).get('provider')=='fal'
+    if req['kind'] in {'footage_spend','footage_take'} or footage_resolution:
+        print('\nReview this account outcome' if footage_resolution else '\nReview this footage request' if req['kind']=='footage_spend' else '\nReview this take decision',file=out)
+        if built is not None:
+            for line in built.evidence:print(line,file=out)
+        return
     if 'trailer_creation' in (req.get('approval_record') or {}):
         print("\nReview trailer creation", file=out)
         print(req['summary'], file=out)

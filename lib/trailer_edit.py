@@ -303,6 +303,8 @@ def _commit(root, value, old, inputs=None):
     # There is never an archive entry for a save that did not happen.
     versions = _committed_versions(root, old)
     value = copy.deepcopy(value)
+    from lib.footage_requests import set_aside_declined
+    set_aside_declined(root,value)
     value.pop('edit_revision_sha256', None)
     value.pop('revision_history', None)
     value['previous_revision'] = (old or {}).get('edit_revision_sha256')
@@ -429,7 +431,14 @@ def restore_revision(root, revision, expected_revision):
         if source is None:
             raise ValueError('That saved version could not be found.')
         inputs = _inputs(root)
-        if 'paper_cut' in source:
+        if source.get('cutting_view'):
+            value = copy.deepcopy(source)
+            value['story_check'] = _validate_paper(root,value['paper_cut'])
+            value['unfinished'] = True
+            if value.get('inputs') != inputs:
+                value['paper_cut_pending'] = True
+                value['timing_message'] = 'The saved cut was restored, but its story inputs changed. Review the paper cut before saving or playing it.'
+        elif 'paper_cut' in source:
             value = _paper_value(root, source['paper_cut'], old, inputs)
         else:
             value = copy.deepcopy(source)

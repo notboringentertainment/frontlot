@@ -1046,6 +1046,11 @@ def paid_call_context(
         raise PaidCallContextError(f"{project_root} is not under {PROJECTS_DIR}") from exc
     if project_root.is_symlink() or not project_root.is_dir():
         raise PaidCallContextError(f"registered project directory missing or a symlink: {project_root}")
+    if media == 'video':
+        from lib.supervised_production import is_trailer
+        if is_trailer(project_root):
+            from lib.footage_requests import authorization
+            authorization(project_root,inputs)
 
     # Any nonterminal reservation (submitting / pending_billing) means a prior
     # paid call has no known outcome; refuse to spend again before a human runs
@@ -1055,7 +1060,9 @@ def paid_call_context(
         resume_check(project_root)  # raises IndeterminatePaidCallError
 
     config = load_verified_project_config(project_root)  # raises ProjectConfigError
-    verified = verify_look_governance(inputs, project_root, media=media)
+    # Reconciliation reads existing charges. It sends no visual material and
+    # cannot require a new shot's look selection to inspect the old account.
+    verified = verify_look_governance(inputs, project_root, media=media) if check_resume else {}
     if governance is not None:
         governance.update(verified)
     # Canon appeals: an open appeal that touches this job stops it here, read

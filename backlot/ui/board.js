@@ -2,10 +2,12 @@
 
 import { renderPaperCut } from "/ui/trailer.js";
 import {renderVoice,renderAudioSigning} from '/ui/voice.js';
+import {renderCutting} from '/ui/cutting.js';
+import { setFootageState, renderFootageControls, afterFootageSignature, footageDecision } from "/ui/footage.js";
 import { mountSession } from "/ui/session.js";
 import {
   CAPABILITY_TOKEN_KEY, el, fmtAgo, fmtClock, fmtDuration, fmtMoney,
-  getJSON, mediaURL, subscribe, thumbURL, waveBars,
+  getJSON, mediaURL, subscribe, thumbURL, waveBars, spendingCard,
 } from "/ui/lib.js";
 
 const rawProjectPath = location.pathname.split("/p/")[1] || "";
@@ -168,6 +170,7 @@ function onSignerTag(tag) {
     gateSession.inputReady = false;
     const [label, message, tone] = OUTCOME_WORDS[tag.outcome] || OUTCOME_WORDS.error;
     setTerminalStatus(label, message || tag.message || "The signing program stopped.", tone);
+    if(state?.is_trailer&&tag.outcome==="approved"&&(['footage_spend','footage_take'].includes(gateDetail?.request?.kind)||gateDetail?.packet?.footage_resolution))afterFootageSignature(gateSession.requestId,gateDetail?.request?.kind);
   } else if (tag.ask === "note" && gateSession.note !== null && noteFits(gateSession.note, tag)) {
     const note = gateSession.note;
     gateSession.note = null;
@@ -207,7 +210,7 @@ function askView(ask) {
       el("p", { class: "sign-question" }, ask.ask === "approve" ? "Approve this?" : "Sign the one you picked?"),
       note,
       choiceRow(
-        answerButton(ask.ask === "approve" ? "Approve and sign" : "Sign", "y", { primary: true, before: keep }),
+        answerButton(gateDetail?.request?.kind==="footage_spend" ? "Sign and make this clip" : gateDetail?.request?.kind==="footage_take" ? "Sign this decision" : ask.ask === "approve" ? "Approve and sign" : "Sign", "y", { primary: true, before: keep }),
         answerButton(ask.ask === "approve" ? "Decline" : "Go back", "n", { before: keep }),
         answerButton("Not now", "q"),
       ),
@@ -1764,8 +1767,10 @@ const GATE_WORDS = {
   audio_spend: "Approve one audio request",
   audio_take: "Decide about an audio take",
   audio_resolution: "Review an audio charge",
+  footage_spend: "Make this clip",
+  footage_take: "Review this take",
 };
-const gateWords = (kind) => state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : GATE_WORDS[kind] || titleCase(kind);
+const gateWords = (kind) => state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
 
 const SLOT_OF_KIND = {
   look_lock: "look",
@@ -2185,6 +2190,13 @@ function sourceChangeText(s, changes) {
 }
 
 async function decideTake(shot, take, decision) {
+  if(state?.is_trailer){
+    takeBusy.add(take.take_id);takeErrors.delete(take.take_id);render();
+    try{await footageDecision(shot,take,decision==="approve"?"accept":"decline");}
+    catch(error){takeErrors.set(take.take_id,error.message);render();}
+    finally{takeBusy.delete(take.take_id);render();}
+    return;
+  }
   let token = null;
   try { token = sessionStorage.getItem(CAPABILITY_TOKEN_KEY); } catch { token = null; }
   if (!token) {
@@ -2226,7 +2238,7 @@ function renderTakeTile(s, shot, take, { decidable, othersWaiting }) {
   const busy = takeBusy.has(take.take_id);
   const facts = [
     `Take ${number}`,
-    take.cost_usd != null ? fmtMoney(take.cost_usd) : "cost not recorded",
+    take.cost_usd != null ? `${fmtMoney(take.cost_usd)}${take.cost_basis==="signed_maximum"?" booked at signed maximum":""}` : "cost not recorded",
     take.duration_seconds != null ? `${Math.round(take.duration_seconds)} seconds` : null,
     take.made_at ? `made ${fmtGateTime(take.made_at)}` : null,
   ].filter(Boolean).join(" · ");
@@ -2246,17 +2258,17 @@ function renderTakeTile(s, shot, take, { decidable, othersWaiting }) {
       `Approving this take sets the other ${othersWaiting === 1 ? "one" : othersWaiting} aside.`));
   }
   const error = takeErrors.get(take.take_id);
-  tile.append(el("div", { class: "take-decide" }, nodes.note,
+  tile.append(el("div", { class: "take-decide" }, s.is_trailer ? null : nodes.note,
     el("div", { class: "take-actions" },
       el("button", {
-        type: "button", class: "gate-primary take-approve", disabled: busy || !take.playable || s.is_trailer ? "" : null,
+        type: "button", class: "gate-primary take-approve", disabled: busy || !take.playable || (s.is_trailer&&(take.selected||take.declined||take.status!=="Waiting for your decision")) ? "" : null,
         title: take.playable ? null : "A missing take can't be approved",
         onclick: () => decideTake(shot, take, "approve"),
-      }, busy ? "Saving…" : "Approve"),
+      }, busy ? "Saving…" : s.is_trailer ? "Keep this take" : "Approve"),
       el("button", {
-        type: "button", class: "quiet-btn take-decline", disabled: busy || s.is_trailer ? "" : null,
+        type: "button", class: "quiet-btn take-decline", disabled: busy || (s.is_trailer&&take.declined) ? "" : null,
         onclick: () => decideTake(shot, take, "decline"),
-      }, "Decline"))));
+      }, s.is_trailer ? "Decline this take" : "Decline"))));
   if (error) tile.append(el("p", { class: "take-error", role: "alert" }, error));
   return tile;
 }
@@ -2273,7 +2285,7 @@ function renderTakeReview(s, shot) {
     direction && direction !== label
       ? el("details", { class: "take-brief" }, el("summary", {}, "What the shot asked for, in full"), el("p", {}, direction)) : null,
     el("p", { class: "take-lead" }, s.is_trailer
-      ? "Signed take decisions are not available yet. You can watch this take, but accepting or declining it needs your signature; it cannot enter the cut."
+      ? "Watch the full take. Signed accept and decline requests are supported; creating those requests from these buttons is not built yet. Review a prepared request under Needs you. No stage is completed by choosing a take."
       : waiting.length === 1
       ? "Watch the take, then approve it to make it this shot's chosen take, or decline it."
       : `Watch the ${waiting.length} takes side by side. Approve the one you want; it becomes this shot's chosen take.`),
@@ -2284,7 +2296,7 @@ function renderShotViewer(s, shot) {
   const name = shotName(s, shot);
   const frames = shot.takes.map((take, i) => ({
     path: take.path,
-    label: `Take ${i + 1}${take.selected ? ", chosen" : ""}`,
+    label: `Take ${i + 1}${take.selected ? ", chosen" : take.needs_review ? ", needs a fresh look" : ""}`,
     state: take.selected ? "done" : "",
     missing: take.path ? null : "File missing",
   }));
@@ -2316,7 +2328,7 @@ function renderShotViewer(s, shot) {
       el("button", {
         class: "text linkish", type: "button", style: "all:unset;cursor:pointer",
         onclick: () => { selectedFrame = i; render(); },
-      }, [`Take ${i + 1}`, t.selected ? ", chosen" : t.waiting ? ", waiting for you" : t.declined ? ", declined" : "", t.cost_usd != null ? `, ${fmtMoney(t.cost_usd)}` : "",
+      }, [`Take ${i + 1}`, t.selected ? ", chosen" : t.waiting ? ", waiting for you" : t.declined ? ", declined" : t.needs_review ? ", needs a fresh look" : "", t.cost_usd != null ? `, ${fmtMoney(t.cost_usd)}${t.cost_basis==="signed_maximum"?" booked at signed maximum":""}` : "",
         t.duration_seconds != null ? `, ${Math.round(t.duration_seconds)} seconds` : ""].join("")),
       el("small", {}, `Made ${fmtGateTime(t.made_at)}${t.from_earlier_brief ? ", from an earlier brief" : ""}`))));
 
@@ -2413,13 +2425,13 @@ const LOOK_FIELDS = [
   ["negative_lines", "Ruled out"],
 ];
 const LOOK_SKIP = new Set(["version", "entity_id", "entity_kind", "depends_on"]);
-function lookCard(spec) {
+function lookCard(spec, label="The look you're locking") {
   const known = new Set(LOOK_FIELDS.map(([k]) => k));
   const rows = [...LOOK_FIELDS, ...Object.keys(spec).filter((k) => !known.has(k) && !LOOK_SKIP.has(k)).map((k) => [k, humanize(k)])];
   const value = (v) => Array.isArray(v)
     ? (v.length ? el("ul", {}, v.map((item) => el("li", {}, String(item)))) : null)
     : typeof v === "string" && v.trim() ? el("p", {}, v) : null;
-  return el("section", { class: "look-card", "aria-label": "The look you're locking" },
+  return el("section", { class: "look-card", "aria-label": label },
     rows.map(([k, label]) => {
       const body = value(spec[k]);
       return body ? el("div", { class: "look-row" }, el("h3", {}, label), body) : null;
@@ -2448,7 +2460,7 @@ function renderGateViewer(s) {
   const header = summary || gateDetail.request || {};
   const stale = !summary || summary.state !== "pending" || gateDetail.state !== "pending";
   const packetError = Boolean(gateDetail.error || (gateDetail.packet && gateDetail.packet.packet_error));
-  if(['audio_spend','audio_take','audio_resolution'].includes(header.kind)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();},stale);
+  if((['audio_spend','audio_take','audio_resolution'].includes(header.kind)&&!gateDetail.packet?.footage_resolution)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();},stale);
   let frames = gateFrames(gateDetail.packet);
   const key = entityKeyOf(header);
   const entity = key ? buildRoster(s).find((e) => e.key === key) : null;
@@ -2475,7 +2487,10 @@ function renderGateViewer(s) {
   const firstSentence = (named.match(/^.*?[.!?](?=\s|$)/) || [named])[0];
 
   const trailerCreation = Boolean(s.trailer_setup_pending && header.kind === "pipeline_migration");
-  const facts = trailerCreation ? [["What you are signing", "Trailer creation"], ["Stage approval", "None"], ["Spending permission", "None"]] : [
+  const footageCard=gateDetail.packet?.footage_card;
+  const resolutionCard=gateDetail.packet?.footage_resolution;
+  const footageGate=["footage_spend","footage_take"].includes(header.kind) || Boolean(resolutionCard);
+  const facts = footageGate ? [["What you are signing",gateWords(header.kind)],["Stage approval","None"]] : trailerCreation ? [["What you are signing", "Trailer creation"], ["Stage approval", "None"], ["Spending permission", "None"]] : [
     ["what", gateWords(header.kind)], ["kind", header.kind], ["stage", header.stage], ["scope", header.scope],
     ["entity", header.entity_id], ["snapshot", fmtGateTime(gateDetail.snapshot_at)],
   ];
@@ -2486,14 +2501,14 @@ function renderGateViewer(s) {
     header.summary ? textEvidence("the full request", header.summary) : null,
     el("dl", { class: "gate-meta-strip gate-detail-facts" }, facts.map(([label, value]) =>
       el("div", { class: "gate-meta-chip" }, el("dt", {}, label), el("dd", {}, value || "—")))),
-    trailerCreation ? el("p", {}, "Signing creates this trailer only. No stage or spending is approved. Separate signed spending settings are still required before any paid work.") : gateDetail.packet
+    footageGate ? el("p",{},"The signature is bound to the saved request, pictures and settings. The signer checks them again before recording your decision.") : trailerCreation ? el("p", {}, "Signing creates this trailer only. No stage or spending is approved. Separate signed spending settings are still required before any paid work.") : gateDetail.packet
       ? renderPacketEvidence(s, gateDetail.packet, { visuals: false })
       : el("div", {},
         textEvidence("request", gateDetail.request || {}),
         gateDetail.approval_receipt_id ? textEvidence("approval receipt id", gateDetail.approval_receipt_id) : null,
         gateDetail.declined_note ? textEvidence("declined note", gateDetail.declined_note) : null,
         gateDetail.unverified_ledger_row ? textEvidence(gateDetail.ledger_label || "unverified ledger row", gateDetail.unverified_ledger_row) : null),
-    command && !trailerCreation ? el("div", { class: "gate-command" },
+    command && !trailerCreation && !footageGate ? el("div", { class: "gate-command" },
       el("p", { class: "source" }, "Prefer your own Terminal? This command does the same signing."),
       el("code", {}, command),
       el("button", { type: "button", onclick: () => copyCommand(command) }, "Copy command"),
@@ -2520,7 +2535,19 @@ function renderGateViewer(s) {
     packetError ? el("div", { class: "alert", role: "alert" }, el("b", {}, "Some evidence is missing or changed"),
       el("span", {}, gateDetail.packet && gateDetail.packet.error ? gateDetail.packet.error : "Signing stays off until it's complete.")) : null,
     lookSpec ? gateActions(s, summary, stale, packetError) : null,
-    lookSpec ? lookCard(lookSpec) : renderScreen(s, frames[selectedFrame], blank),
+    resolutionCard ? el("section",{class:"paper-panel"},el("h3",{},"Spending is blocked until this account outcome is signed and applied"),
+      el("p",{},resolutionCard.description),el("p",{},resolutionCard.charged?"You found a charge in the service account.":"You confirmed that the service did not charge this request."),
+      el("p",{},`Cash: $${resolutionCard.cash.toFixed(4)}. Replacement value of credits: $${resolutionCard.credits.toFixed(4)}.`),
+      el("p",{},resolutionCard.note),el("p",{},"This records the account outcome. It cannot buy or resubmit a clip, approve a take or complete a stage.")) : null,
+    footageCard ? el("section",{class:"paper-panel footage-review","aria-label":"Footage request details"},
+      el("h3",{},footageCard.decision ? `Your decision: ${footageCard.decision}` : "One clip, one signature"),
+      el("p",{},footageCard.description),
+      el("p",{},`${footageCard.length} seconds. ${footageCard.service || ""} ${footageCard.model || ""}`),
+      footageCard.highest_charge!=null ? el("div",{},spendingCard(footageCard),
+        el("p",{},"The exact description and reference pictures shown here leave this computer for Fal. The approved looks below establish which pictures may be used; their text is not sent separately. This request is for silent widescreen footage. There are no automatic retries or changes of service or model.")) : el("p",{},footageCard.accounting),
+      ...(footageCard.looks || []).map(spec=>lookCard(spec,"Approved look behind this request")),
+      el("p",{},footageCard.decision ? "Declining is final for this take. Accepting completes no stage." : "A retake needs a new request and signature. Signing this request does not approve a stage.")) : null,
+    gateDetail.packet?.footage_take ? el("video",{controls:"",preload:"metadata",src:mediaURL(s.project_id,gateDetail.packet.footage_take.path),"aria-label":"Full footage take",style:"width:100%;max-height:65vh"}) : lookSpec ? lookCard(lookSpec) : renderScreen(s, frames[selectedFrame], blank),
     lookSpec ? null : renderFrameStrip(s, frames, "Request"),
     evidence,
     lookSpec ? null : gateActions(s, summary, stale, packetError),
@@ -2608,7 +2635,7 @@ function renderLog(s, roster) {
         class: "need",
         type: "button",
         "aria-current": selectedGateId === row.request_id ? "true" : null,
-        "aria-label": `Inspect ${row.kind} gate ${row.request_id}`,
+        "aria-label": ["footage_spend","footage_take"].includes(row.kind) || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind)}` : `Inspect ${row.kind} gate ${row.request_id}`,
         onclick: () => { selectedEntity = key; selectGate(row.request_id); },
       },
         el("span", { class: "what" }, gateWords(row.kind)),
@@ -2630,7 +2657,7 @@ function renderLog(s, roster) {
           el("button", {
             class: "text",
             type: "button",
-            "aria-label": `Inspect ${row.kind} gate ${row.request_id}`,
+            "aria-label": ["footage_spend","footage_take"].includes(row.kind) || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind)}` : `Inspect ${row.kind} gate ${row.request_id}`,
             onclick: () => { selectedEntity = entityKeyOf(row); selectGate(row.request_id); },
           }, logLine(row, roster)),
           el("small", {}, `${row.state === "done" ? "Signed" : row.state === "declined" ? "Declined" : "Dropped"} · ${fmtGateTime(row.mtime)}`)))));
@@ -2885,13 +2912,16 @@ function renderBoard() {
     el('button',{type:'button',onclick:()=>viewer.querySelector('.paper-editor:not(.voice-panel)')?.scrollIntoView({block:'start'})},'Paper cut workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('.voice-lines')?.scrollIntoView({block:'start'})},'Voice workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('#music-compose')?.scrollIntoView({block:'start'})},'Music workspace'),
-    el('button',{type:'button',onclick:()=>viewer.querySelector('#effect-compose')?.scrollIntoView({block:'start'})},'Sound effects workspace')));
+    el('button',{type:'button',onclick:()=>viewer.querySelector('#effect-compose')?.scrollIntoView({block:'start'})},'Sound effects workspace'),
+    el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Cutting view"]')?.scrollIntoView({block:'start'})},'Cutting workspace')));
   const drawer = renderDrawer(s);
-  if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(renderPaperCut(s));
-  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderVoice(s,async(id)=>{await refresh();await selectGate(id);}));
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(
+    el("button",{type:"button",class:"quiet-btn",onclick:()=>viewer.querySelector('[aria-label="Footage workspace"]')?.scrollIntoView({block:"start"})},"Open footage requests"),renderPaperCut(s));
 
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderVoice(s,async(id)=>{await refresh();await selectGate(id);}));
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderCutting(s));
   if (shot) {
-    const inner = renderShotViewer(s, shot);
+    const inner = s.is_trailer ? renderFootageControls(s) : renderShotViewer(s, shot);
     if (drawer) inner.prepend(drawer);
     viewer.append(inner);
   } else if (authoredGates && (selectedGateId || roster.length > 0)) {
@@ -2916,6 +2946,7 @@ function renderBoard() {
     viewer.append(inner);
   }
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId && shot) viewer.append(renderPaperCut(s));
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(renderFootageControls(s));
   app.append(viewer);
 
   const { needs, history } = renderLog(s, roster);
@@ -2982,6 +3013,15 @@ async function refresh() {
         }),
     ]);
     if (generation !== refreshGeneration || controller.signal.aborted) return;
+    if(nextState.is_trailer&&!nextState.trailer_damaged){
+      let footage;
+      try{footage=await getJSON(`/api/project/${encodedProjectId}/footage`,{signal:controller.signal});}
+      catch(error){if(error.name==="AbortError")return;footage={error:"The footage panel could not be read. Check the saved story, looks and spending settings, then reopen this board.",shots:[]};}
+      if(generation!==refreshGeneration)return;
+      setFootageState(projectId,footage,{render,refresh,selectGate,lookCard,isRefreshing:()=>refreshController!==null,
+        take:(s,shot,take)=>renderTakeTile(s,shot,take,{decidable:true,othersWaiting:0}),
+        returnToShots:()=>{selectedGateId=null;gateDetail=null;closeSigning();}});
+    }
     const creationJustSigned = state?.trailer_setup_pending && nextState.is_trailer && !nextState.trailer_setup_pending;
     if(creationJustSigned){selectedGateId=null;gateDetail=null;}
     state = normalize(nextState);

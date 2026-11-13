@@ -456,7 +456,10 @@ def test_failure_after_acceptance_is_pending_billing(env, stage):
     res = list(load_reservations(env).values())[0]
     assert res["state"] == "pending_billing" and res["provider_request_id"] == "req-x"
     assert res["actual_usd"] == pytest.approx(res["reserved_usd"])
-    assert project_tracker(env).budget_spent_usd == pytest.approx(res["reserved_usd"], abs=1e-4)
+    tracker = project_tracker(env)
+    assert tracker.budget_spent_usd == 0
+    assert tracker.budget_reserved_usd == pytest.approx(res["reserved_usd"], abs=1e-4)
+    assert tracker.budget_remaining_usd == pytest.approx(tracker.budget_total_usd-res["reserved_usd"], abs=1e-4)
     assert not (env / "assets" / "video" / "shot.mp4").exists()
     assert not (env / ".staging").exists() or not any((env / ".staging").iterdir())
     with pytest.raises(IndeterminatePaidCallError, match="pending_billing"):

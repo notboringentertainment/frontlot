@@ -38,7 +38,7 @@ def _unsafe_locations(environ):
 
 
 def _install_test_locations():
-    root = Path(tempfile.mkdtemp(prefix='frontlot-tests-', dir='/tmp' if os.name == 'posix' else None))
+    root = Path(tempfile.mkdtemp(prefix='frontlot-tests-', dir=os.environ.get('TMPDIR')))
     home, gates = root / 'home', root / 'gates'
     home.mkdir()
     gates.mkdir()

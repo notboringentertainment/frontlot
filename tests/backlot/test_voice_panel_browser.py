@@ -21,7 +21,7 @@ def capture(page,name,target=None):
 @pytest.fixture(autouse=True)
 def short_signing_folder(monkeypatch,_isolated_gates_dir):
     import tempfile
-    folder=tempfile.mkdtemp(prefix='vp-sign-',dir='/tmp')
+    folder=tempfile.mkdtemp(prefix='vp-sign-',dir=os.environ.get('OPENMONTAGE_HOME') or '/tmp')
     monkeypatch.setenv('OPENMONTAGE_GATES_DIR',folder)
     monkeypatch.setenv('FRONTLOT_CLAUDE','/nonexistent/frontlot-no-assistant')
 
@@ -30,9 +30,7 @@ def board(root,monkeypatch):
     import uvicorn
     import backlot.server as server
     from lib.gates import gates_dir
-    assert str(Path.home()).startswith('/tmp/') or Path.home().is_relative_to(Path(os.environ['FRONTLOT_TEST_RUN_ROOT']))
-    assert gates_dir().is_relative_to(Path('/tmp')) or gates_dir().is_relative_to(Path('/private/var'))
-    assert server.backlot_metadata_dir().is_relative_to(Path(os.environ['FRONTLOT_TEST_RUN_ROOT']))
+    assert_board_locations(Path.home(),gates_dir(),server.backlot_metadata_dir())
     with (root/'browser-isolation.json').open('x') as f:json.dump({'home':str(Path.home()),'signing':str(gates_dir()),'metadata':str(server.backlot_metadata_dir())},f)
     monkeypatch.setenv('OPENMONTAGE_PROJECTS_DIR',str(root.parent))
     monkeypatch.setattr(server,'PROJECTS_DIR',root.parent)
@@ -56,6 +54,14 @@ def board(root,monkeypatch):
                 import signal
                 try:os.kill(pid,signal.SIGTERM)
                 except ProcessLookupError:pass
+
+def assert_board_locations(home,signing,metadata):
+    import tempfile
+    run=Path(os.environ['FRONTLOT_TEST_RUN_ROOT']).resolve()
+    temporary=[Path('/tmp').resolve(),Path(tempfile.gettempdir()).resolve(),run]
+    assert Path(home).resolve().is_relative_to(run)
+    assert any(Path(signing).resolve().is_relative_to(base) for base in temporary)
+    assert Path(metadata).resolve().is_relative_to(run)
 
 def test_writer_voice_controls_sign_play_keep_decline_and_retake(voice_world,monkeypatch):
     root,posts,gets=voice_world

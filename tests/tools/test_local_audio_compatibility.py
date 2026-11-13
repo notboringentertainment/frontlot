@@ -13,16 +13,15 @@ def no_outside_calls(monkeypatch):
     assert calls==[]
 
 @pytest.mark.parametrize('signed',[False,True,'unsigned-settings'])
-def test_local_piper_keeps_older_production_without_or_with_settings(tmp_path,monkeypatch,signed):
+def test_local_piper_has_no_exception_from_the_request_rule(tmp_path,monkeypatch,signed):
     from tools.audio.piper_tts import PiperTTS
-    root=tmp_path/'older-local';root.mkdir()
+    root=tmp_path/'invented-local';root.mkdir()
     (root/'project.json').write_text(json.dumps({'id':root.name,'pipeline_type':'authored-film'}))
     monkeypatch.setattr('lib.paths.PROJECTS_DIR',tmp_path)
     monkeypatch.setattr('lib.events.PROJECTS_DIR',tmp_path)
     if signed is True:
-        from tests.contracts.test_kling_tts import verified_older_audio_production
-        # The existing fixture creates a separate canonical signed production.
-        root=verified_older_audio_production.__wrapped__(tmp_path,monkeypatch)
+        from tests.tools.test_audio_governance import project
+        root=project.__wrapped__(tmp_path,monkeypatch)
     elif signed=='unsigned-settings':
         (root/'project.yaml').write_text('version: "1.2"\n')
     calls=[]
@@ -34,10 +33,9 @@ def test_local_piper_keeps_older_production_without_or_with_settings(tmp_path,mo
     monkeypatch.setattr('tools.audio.piper_tts.shutil.which',lambda name:'/invented/piper')
     monkeypatch.setattr('tools.audio.piper_tts.subprocess.run',local)
     result=PiperTTS().execute({'project_dir':str(root),'text':'A quiet gallery.','output_path':str(root/'voice.wav')})
-    assert result.success,result.error
-    assert len(calls)==1 and calls[0][1]=='A quiet gallery.'
-    assert calls[0][0]==['piper','--model','en_US-lessac-medium','--speaker','0','--length-scale','1.0','--sentence-silence','0.3','--output_file',str(root/'voice.wav')]
-    assert result.cost_usd==0
+    assert not result.success
+    assert 'approved request' in result.error if signed is True else 'signed settings' in result.error
+    assert calls==[]
 
 @pytest.mark.parametrize('case,reason',[('trailer','approved request'),('missing-settings','signed settings'),('linked','must not use links')])
 def test_audio_refusals_give_the_actual_reason(tmp_path,monkeypatch,case,reason):
@@ -71,5 +69,5 @@ def test_local_audio_does_not_ignore_a_broken_signed_history(tmp_path,monkeypatc
     from tools.audio._legacy_guard import refusal
     root=verified_older_audio_production.__wrapped__(tmp_path,monkeypatch)
     (root/'approvals.jsonl').write_text('{}\n')
-    result=refusal({'project_dir':str(root),'output_path':str(root/'voice.wav')},local_only=True)
+    result=refusal({'project_dir':str(root),'output_path':str(root/'voice.wav')})
     assert 'approval history cannot be verified' in result and 'paths' not in result

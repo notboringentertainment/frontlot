@@ -361,6 +361,7 @@ img { display: block; }
 .look-row p, .look-row ul { margin: 0; color: var(--ink-2); max-width: 68ch; line-height: 1.5; }
 .look-row ul { padding-left: 0; list-style: none; }
 .look-row li + li { margin-top: 4px; }
+.footage-review .look-row p, .footage-review .look-row ul { color: #252a24; }
 
 /* the frame strip under the screen */
 .strip {
@@ -1105,3 +1106,13 @@ details.log-more[open] > summary { margin-bottom: 12px; }
 .audio-price-field a { color:#355239; text-decoration:underline; }
 .audio-account-state[role=alert] { background:#f4e3b0; color:#342b15; padding:14px; border-left:4px solid #b18b20; }
 @media(max-width:1000px){.audio-price-field { grid-template-columns:1fr; gap:0; }}
+.footage-controls { display:grid; gap:16px; margin:24px 0; }
+.footage-shot { display:grid; gap:10px; }
+.footage-shot label { display:grid; gap:4px; }
+.footage-shot select, .footage-shot input { font:inherit; max-width:100%; padding:8px; }
+.footage-status { font-weight:700; }
+.spending-card { border-left:3px solid #596653; padding:8px 12px; background:#efede6; color:#252a24; }
+.footage-shot .take-tile { min-width:0; }
+.footage-shot .look-row p, .footage-shot .look-row ul,
+.footage-shot .take-facts, .footage-shot .take-facts small { color:#252a24; }
+.footage-shot [role=alert] { color:#963c2d; }

@@ -31,7 +31,7 @@ def _free_port() -> int:
 
 @pytest.fixture(scope="module")
 def session_server():
-    root = Path(tempfile.mkdtemp(prefix="om-ui-", dir="/tmp"))   # AF_UNIX path limit
+    root = Path(tempfile.mkdtemp(prefix="om-ui-", dir=os.environ.get('OPENMONTAGE_HOME') or '/tmp'))   # AF_UNIX path limit
     gates = root / "g"
     gates.mkdir()
     home = root / "home"

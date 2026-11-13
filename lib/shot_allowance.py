@@ -36,7 +36,13 @@ class ShotGuard:
     def check(self, project_root, estimated_usd, *, tool=None):
         from lib.supervised_production import is_trailer
         if is_trailer(project_root):
-            raise ShotAllowanceError('A signed footage request is required. Trailer footage spending is not available yet; nothing was sent.')
+            from lib.footage_requests import authorization
+            try:authorization(project_root,self.inputs,estimated_usd,tool)
+            except ValueError as exc:raise ShotAllowanceError(str(exc)) from exc
+        return self.check_limits(project_root,estimated_usd,tool=tool)
+
+    def check_limits(self, project_root, estimated_usd, *, tool=None):
+        """Read-only preparation can check limits before a request is signed."""
         from lib.supervised_production import read_brief, history
         from tools.cost_tracker import load_reservations
         brief = read_brief(project_root, self.shot_id)

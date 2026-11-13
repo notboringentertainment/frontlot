@@ -16,6 +16,7 @@ import os
 import threading
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
@@ -85,7 +86,13 @@ class CostTracker:
 
     @property
     def budget_remaining_usd(self) -> float:
-        return self.budget_total_usd - self.budget_spent_usd - self.budget_reserved_usd
+        remaining = Decimal(str(self.budget_total_usd))
+        for entry in self.entries:
+            if entry['status'] == EntryStatus.RESERVED.value:
+                remaining -= Decimal(str(entry.get('reserved_usd',0)))
+            elif entry['status'] in (EntryStatus.COMPLETED.value,EntryStatus.FAILED.value):
+                remaining -= Decimal(str(entry.get('actual_usd',0)))
+        return float(remaining)
 
     @property
     def usable_budget_usd(self) -> float:
@@ -720,8 +727,9 @@ def reserve_paid_call(
 ) -> str:
     """Reserve budget through ``tracker`` and persist a ``submitting`` reservation.
 
-    Raises the tracker's BudgetExceededError / ApprovalRequiredError before
-    anything is written to the reservation log. Returns the reservation id,
+    Calls first persist an intent, so a crash during the
+    hold cannot lose their one-use identity; a known refusal closes that intent
+    without charge. Returns the reservation id,
     which doubles as the client idempotency key sent with the request.
     ``output_hint`` (e.g. ``{"kind": "video", "output_path": ...}`` or
     ``{"kind": "image", "objects_dir": ...}``) lets the offline reconciler
@@ -744,15 +752,8 @@ def reserve_paid_call(
         if guard is not None:
             guard.check(project_root, reserved_usd, tool=tool)
         entry_id = tracker.estimate(tool, endpoint, reserved_usd)
-        try:
-            tracker.reserve(entry_id)
-        except Exception:
-            tracker.refund(entry_id)
-            raise
         reservation_id = str(uuid.uuid4())
-        _append_reservation_event(
-            project_root,
-            {
+        event = {
                 "reservation_id": reservation_id,
                 "idempotency_key": reservation_id,
                 "cost_entry_id": entry_id,
@@ -764,8 +765,19 @@ def reserve_paid_call(
                 "provider_request_id": None,
                 "output_hint": dict(output_hint) if output_hint else None,
                 **({"scope": guard.scope, "kind": guard.kind} if guard is not None else {}),
-            },
-        )
+            }
+        # Requests must remain identifiable even if the
+        # process dies inside the budget hold. Publish their durable intent
+        # before holding money; the existing unknown-outcome stop then covers
+        # both sides of that window.
+        _append_reservation_event(project_root,event)
+        try:
+            tracker.reserve(entry_id)
+        except Exception:
+            tracker.refund(entry_id)
+            _append_reservation_event(project_root,{'reservation_id':reservation_id,
+                'state':'failed','actual_usd':0.0})
+            raise
     return reservation_id
 
 
@@ -796,9 +808,8 @@ def reconcile_paid_call(
     """Record the state of a paid call; also reconciles the tracker entry when given.
 
     ``completed`` / ``failed`` are terminal. ``pending_billing`` keeps the
-    reserved amount charged against the budget (the tracker entry is settled
-    at ``actual_usd``, which callers pass as the reserved amount) until the
-    reconciler learns the provider's real outcome. A terminal reservation
+    reserved amount held against the budget without booking it as spent until
+    the reconciler learns the provider's real outcome. A terminal reservation
     cannot be reconciled again.
 
     C2: ``failed`` is the ONE state that releases a shot's dollars and its
@@ -819,7 +830,7 @@ def reconcile_paid_call(
             raise ValueError(
                 f"reservation {reservation_id} is already {reservation['state']}; refusing to re-reconcile"
             )
-        if tracker is not None and reservation.get("cost_entry_id"):
+        if state != "pending_billing" and tracker is not None and reservation.get("cost_entry_id"):
             tracker.reconcile(reservation["cost_entry_id"], actual_usd, success=(state != "failed"))
         _append_reservation_event(
             project_root,

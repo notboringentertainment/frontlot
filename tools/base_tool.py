@@ -161,6 +161,7 @@ _VOLATILE_INPUT_KEYS = frozenset({
     "project_dir", "project_path", "output_path", "output_dir", "output_file",
     "objects_dir", "scene_id", "execution_id", "cost_tracker", "api_key",
     "budget_usd_cap", "poll_s", "deadline_s", "timeout_s",
+    "footage_request_id",  # consent identity; bound separately by the signed receipt
 })
 _PATH_KEY_SUFFIXES = ("_path", "_paths", "_dir", "_file")
 
@@ -320,7 +321,7 @@ def _instrument_execute(fn: Callable) -> Callable:
                 getattr(self,'capability','') in {'tts','music_generation','sfx','sound_effects','audio_generation','speech_to_text'}
                 or (self.__class__.__module__.startswith('tools.audio.') or getattr(self,'name','') in {'azure_stt','dashscope_asr'}) and getattr(runtime,'value',runtime)=='api'):
                 from tools.audio._legacy_guard import refusal
-                denied=refusal(inputs,local_only=getattr(runtime,'value',runtime)=='local')
+                denied=refusal(inputs)
                 if denied:return ToolResult(success=False,error=denied)
             return fn(self, inputs, *args, **kwargs)
 
@@ -343,7 +344,7 @@ def _instrument_execute(fn: Callable) -> Callable:
         audio_service = (self.__class__.__module__.startswith("tools.audio.") or getattr(self,'name','') in {'azure_stt','dashscope_asr'}) and getattr(runtime, "value", runtime) == "api"
         if getattr(self, "name", "") not in {"elevenlabs_tts", "music_gen", "elevenlabs_sfx", "tts_selector"} and (audio_generator or audio_service):
             from tools.audio._legacy_guard import refusal
-            denied = refusal(inputs,local_only=getattr(runtime,'value',runtime)=='local')
+            denied = refusal(inputs)
             if denied:
                 return ToolResult(success=False, error=denied)
 

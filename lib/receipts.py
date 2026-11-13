@@ -55,7 +55,7 @@ QC_RECEIPTS_FILENAME = "qc-receipts.jsonl"
 
 APPROVAL_KINDS = frozenset(
     {
-        "hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review", "audio_spend", "audio_take", "audio_resolution",
+        "hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review", "audio_spend", "audio_take", "audio_resolution", "footage_spend", "footage_take",
         # Plan D10 (look locks) and Slice A' (headshots, reference import, manifest pins).
         "look_lock", "headshot", "reference_import", "pipeline_migration",
         # D19.4: a human accepting specific failed QC items of ONE verdict.
@@ -434,6 +434,10 @@ def validate_envelope(
         validate_request(record)
         if entity_id != record["request_id"]:
             raise ValueError("audio approval request identity changed")
+    if kind == 'footage_spend':
+        from lib.footage_requests import validate_request
+        validate_request(record)
+        if entity_id != record['request_id']:raise ValueError('Footage approval request identity changed.')
     spec = ENVELOPE_FIELDS.get(kind)
     env = dict(envelope or {})
     if spec is None:
@@ -794,6 +798,7 @@ def _build_generation_receipt(
     import_receipt_id: Optional[str] = None,
     normalized_pixel_hash: Optional[str] = None,
     audio_charge: Optional[dict] = None,
+    footage_charge: Optional[dict] = None,
     prompt_recipe: Optional[dict] = None,
 ) -> dict:
     """Validate the fields and return a signed (not yet persisted) receipt.
@@ -872,18 +877,31 @@ def _build_generation_receipt(
         "started_at": started_at,
         "finished_at": finished_at,
     }
-    if audio_charge is not None:
-        import math
-        if set(audio_charge) != {"cash_usd", "credits_usd", "audio_approval_receipt_id"}:
-            raise ValueError("audio charge requires cash, replacement-value credits and its approval")
-        amounts = [audio_charge[k] for k in ("cash_usd", "credits_usd")]
-        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 for v in amounts):
-            raise ValueError("invalid audio charge")
-        if round(sum(amounts), 6) != round(float(cost_usd), 6):
-            raise ValueError("audio total must count cash and replacement-value credits exactly once")
-        receipt.update(audio_charge)
+    if audio_charge is not None and footage_charge is not None:
+        raise ValueError('One generation receipt cannot charge both audio and footage.')
+    for family,charge in [('audio',audio_charge),('footage',footage_charge)]:
+        if charge is not None:_bind_paid_charge(receipt,charge,family,cost_usd)
     receipt["signature"] = gates.sign_receipt(receipt)
     return receipt
+
+
+def _bind_paid_charge(receipt,charge,family,cost_usd):
+    """Economic consent is signed without relabelling physical asset lineage."""
+    import math
+    fields={'cash_usd','credits_usd',family+'_approval_receipt_id'}
+    if family=='footage':fields.update({'footage_request_id','footage_charge_basis'})
+    if set(charge)!=fields:
+        raise ValueError(f'{family} charge requires cash, replacement-value credits and its approval')
+    amounts=[charge[k] for k in ('cash_usd','credits_usd')]
+    if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v<0 for v in amounts):
+        raise ValueError(f'invalid {family} charge')
+    if round(sum(amounts),6)!=round(float(cost_usd),6):
+        raise ValueError(f'{family} total must count cash and replacement-value credits exactly once')
+    if family=='footage' and any(not isinstance(charge[k],str) or not charge[k] for k in fields-{'cash_usd','credits_usd'}):
+        raise ValueError('The footage charge needs its signed request and approval identities.')
+    if family=='footage' and charge['footage_charge_basis'] not in {'signed_maximum','service_report'}:
+        raise ValueError('The footage charge must say whether the maximum was booked or a charge was reported.')
+    receipt.update(charge)
 
 
 REFERENCE_FIELDS = ("asset_id", "path", "role", "visual_bible_entity_id", "shot_id")
