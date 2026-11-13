@@ -126,7 +126,8 @@ def snapshot(root):
         ceiling=draft['budget_usd_cap']
         settings_error=SIGN_PRICES_FIRST
     account=account_status()
-    tracker=_governed.AudioCostTracker(budget_total_usd=ceiling,reserve_pct=0,cost_log_path=root/'cost_log.json')
+    from tools.cost_tracker import CostTracker
+    tracker=CostTracker(budget_total_usd=ceiling,reserve_pct=0,cost_log_path=root/'cost_log.json')
     state=audio.state(root)
     takes=[t for t in state['takes'] if t['kind'] in ('speech','music','effect')]
     for take in takes:
@@ -216,7 +217,7 @@ def prepare_prices(root,data):
         raw=yaml.safe_dump(settings,sort_keys=True).encode()
         atomic_write_bytes(path,raw)
         return audio.gate_request(root,'config','project_config',{'config_sha256':hashlib.sha256(raw).hexdigest()},
-            'Review the account price ceilings and permission to send separately approved voice words, instrumental music briefs and any priced sound-effect descriptions. This signature buys no audio.')
+            'Review the account price ceilings and permission to send separately approved voice words, instrumental music briefs and any priced sound-effect descriptions. This signature buys no audio.',scope='audio:project_config')
 
 def prepare_resolution(root,data):
     if not isinstance(data,dict) or set(data)!={'reservation_id','charged','cash','credits','note'}:raise ValueError('Fill in the charge outcome and what you checked in the account.')

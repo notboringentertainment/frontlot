@@ -31,7 +31,7 @@ def board(root,monkeypatch):
     import backlot.server as server
     from lib.gates import gates_dir
     assert str(Path.home()).startswith('/tmp/') or Path.home().is_relative_to(Path(os.environ['FRONTLOT_TEST_RUN_ROOT']))
-    assert gates_dir().is_relative_to(Path('/tmp')) or gates_dir().is_relative_to(Path('/private/var'))
+    assert gates_dir().is_relative_to(Path('/tmp').resolve()) or gates_dir().is_relative_to(Path('/private/var'))
     assert server.backlot_metadata_dir().is_relative_to(Path(os.environ['FRONTLOT_TEST_RUN_ROOT']))
     with (root/'browser-isolation.json').open('x') as f:json.dump({'home':str(Path.home()),'signing':str(gates_dir()),'metadata':str(server.backlot_metadata_dir())},f)
     monkeypatch.setenv('OPENMONTAGE_PROJECTS_DIR',str(root.parent))

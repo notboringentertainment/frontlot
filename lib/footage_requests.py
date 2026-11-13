@@ -467,6 +467,8 @@ def _apply_decision(root, shot_id, take_id, decision):
     with edit._edit_lock(root):
         old = edit._read_current(root)
         if not old:raise ValueError('The saved paper cut is missing. The signed decision was kept.')
+        if decision=='accept' and old.get('cutting_view'):
+            return old  # Keeping a take does not replace clips in the writer's cut.
         value = copy.deepcopy(old)
         for picture in value.get('timeline',{}).get('picture',[]):
             if picture.get('id') != shot_id:continue

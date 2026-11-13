@@ -2,6 +2,7 @@
 
 import { renderPaperCut } from "/ui/trailer.js";
 import {renderVoice,renderAudioSigning} from '/ui/voice.js';
+import {renderCutting} from '/ui/cutting.js';
 import { setFootageState, renderFootageControls, afterFootageSignature, footageDecision } from "/ui/footage.js";
 import { mountSession } from "/ui/session.js";
 import {
@@ -2911,12 +2912,14 @@ function renderBoard() {
     el('button',{type:'button',onclick:()=>viewer.querySelector('.paper-editor:not(.voice-panel)')?.scrollIntoView({block:'start'})},'Paper cut workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('.voice-lines')?.scrollIntoView({block:'start'})},'Voice workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('#music-compose')?.scrollIntoView({block:'start'})},'Music workspace'),
-    el('button',{type:'button',onclick:()=>viewer.querySelector('#effect-compose')?.scrollIntoView({block:'start'})},'Sound effects workspace')));
+    el('button',{type:'button',onclick:()=>viewer.querySelector('#effect-compose')?.scrollIntoView({block:'start'})},'Sound effects workspace'),
+    el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Cutting view"]')?.scrollIntoView({block:'start'})},'Cutting workspace')));
   const drawer = renderDrawer(s);
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(
     el("button",{type:"button",class:"quiet-btn",onclick:()=>viewer.querySelector('[aria-label="Footage workspace"]')?.scrollIntoView({block:"start"})},"Open footage requests"),renderPaperCut(s));
 
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderVoice(s,async(id)=>{await refresh();await selectGate(id);}));
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderCutting(s));
   if (shot) {
     const inner = s.is_trailer ? renderFootageControls(s) : renderShotViewer(s, shot);
     if (drawer) inner.prepend(drawer);

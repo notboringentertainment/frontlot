@@ -459,6 +459,8 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
     from backlot.music_panel import mount as mount_music
     mount_music(app,require_writer,_safe_project_dir,_invalidate_summary)
     mount_music(app,require_writer,_safe_project_dir,_invalidate_summary,kind='effect')
+    from backlot.cutting import mount as mount_cutting
+    mount_cutting(app,require_writer,_safe_project_dir,_invalidate_summary)
     from backlot.footage_controls import install as install_footage_controls
     install_footage_controls(app,require_writer,_safe_project_dir,_invalidate_summary)
 
