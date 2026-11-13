@@ -6,6 +6,7 @@ from tests.backlot.test_voice_panel_browser import board,short_signing_folder
 from tests.lib.test_cutting_signed import signed_cut
 from tests.lib.test_trailer_titles import card
 from tests.tools.test_signed_footage import film,provider,looks,workspace,sign
+from tests.title_renderer import require_title_renderer
 
 def test_colour_mix_controls_before_after_save_reopen_and_play(signed_cut,monkeypatch):
  from lib import trailer_edit,cutting_view,audio_workspace as a,trailer_titles as titles
@@ -32,6 +33,7 @@ def test_colour_mix_controls_before_after_save_reopen_and_play(signed_cut,monkey
   directory=Path(destination);directory.mkdir(parents=True,exist_ok=True);path=directory/(os.environ.get('COLOUR_MIX_PREFIX','')+name+'.png');assert not path.exists()
   target.evaluate('(e)=>e.scrollIntoView({block:"center",behavior:"instant"})');expect(target).to_be_in_viewport();page.screenshot(path=str(path))
  with board(root,monkeypatch) as url,sync_playwright() as pw:
+  if destination:print('Invented colour board:',url+'/p/'+root.name+'#k=invented-browser-proof',flush=True)
   browser=pw.chromium.launch(headless=True)
   try:
    page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
@@ -46,6 +48,8 @@ def test_colour_mix_controls_before_after_save_reopen_and_play(signed_cut,monkey
    player.evaluate('(v)=>v.play()');page.wait_for_timeout(250);player.evaluate('(v)=>v.pause()');capture(page,'before',player)
    for _ in range(4):panel.get_by_label('Brighter or darker for picture 1',exact=True).press('ArrowRight')
    for _ in range(4):panel.get_by_label('Warmer or cooler for picture 2',exact=True).press('ArrowLeft')
+   for _ in range(2):panel.get_by_label('More or less contrast for picture 1',exact=True).press('ArrowRight')
+   for _ in range(2):panel.get_by_label('More or less colour for picture 2',exact=True).press('ArrowLeft')
    for _ in range(3):panel.get_by_label('Space below speech',exact=True).press('ArrowRight')
    expect(panel.get_by_label('Brighter or darker for picture 1',exact=True)).to_have_value('20')
    expect(player).not_to_have_attribute('src')
@@ -61,6 +65,8 @@ def test_colour_mix_controls_before_after_save_reopen_and_play(signed_cut,monkey
    page.reload();panel=page.get_by_role('region',name='Cutting view')
    expect(panel.get_by_label('Brighter or darker for picture 1',exact=True)).to_have_value('20',timeout=30000)
    expect(panel.get_by_label('Warmer or cooler for picture 2',exact=True)).to_have_value('-20')
+   expect(panel.get_by_label('More or less contrast for picture 1',exact=True)).to_have_value('10')
+   expect(panel.get_by_label('More or less colour for picture 2',exact=True)).to_have_value('-10')
    expect(panel.get_by_label('Space below speech',exact=True)).to_have_value('15')
    panel.get_by_role('button',name='Prepare saved playback',exact=True).click();expect(panel.get_by_role('status')).to_contain_text('ready',timeout=240000)
    player=panel.locator('video');expect(player).to_have_js_property('readyState',4,timeout=20000)

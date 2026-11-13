@@ -92,6 +92,13 @@ def test_missing_or_hdr_colour_is_handled_honestly():
         tool._build_filter({'trailer_adjustments':neutral,'source_colour':{'color_transfer':'smpte2084'}})
     assert 'bt709' in tool._build_filter({'trailer_adjustments':neutral,'source_colour':{}})
 
+@pytest.mark.parametrize('space',['bt2020nc','bt2020c'])
+def test_wide_colour_is_not_mistaken_for_untagged_standard_picture(space):
+    from tools.enhancement.color_grade import ColorGrade
+    from lib.trailer_finishing import NEUTRAL
+    with pytest.raises(ValueError,match='wide-colour.*standard-range'):
+        ColorGrade()._build_filter({'trailer_adjustments':NEUTRAL,'source_colour':{'color_space':space}})
+
 def test_silent_spoken_take_cannot_hide_under_music(signals):
     from lib.trailer_finishing import review_output
     root,paths=signals;paths[0]=write_signal(root/'silent-words.wav',np.zeros(6*RATE))

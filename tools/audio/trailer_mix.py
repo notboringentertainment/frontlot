@@ -27,11 +27,31 @@ def mix_timeline(tool,inputs):
     if type(frames) is not int or not 1<=frames<=2880:raise ValueError('Keep the mix within the trailer’s two-minute timeline.')
     margin=mix_settings({'speech_margin_db':inputs['speech_margin_db']})['speech_margin_db']
     automatic=inputs.get('automatic',True);count=frames*2000
-    target=Path(inputs['output_path']);directory=target.parent/(target.stem+'-parts')
-    directory.mkdir();warnings=[];effects=[]
+    if not isinstance(tracks,list) or len(tracks)>24:raise ValueError('Use up to twenty-four kept sound clips in this trailer.')
+    for t in tracks:
+        if not isinstance(t,dict) or t.get('role') not in ('speech','music','sfx'):
+            raise ValueError('Choose kept voice, music or effects for the sound mix.')
+        if any(type(t.get(k)) is not int or t[k]<0 for k in ('start_frame','source_in_frame','source_out_frame','fade_in_frames','fade_out_frames')):
+            raise ValueError('Sound timing and fades must use non-negative whole frames.')
+        duration=t['source_out_frame']-t['source_in_frame']
+        if duration<=0 or t['start_frame']+duration>frames or t['fade_in_frames']+t['fade_out_frames']>duration:
+            raise ValueError('Keep each sound trim, position and fades inside the cut using whole frames.')
+        level=t.get('level_db')
+        if type(level) not in (int,float) or not math.isfinite(level) or not -60<=level<=6:
+            raise ValueError('Set a sound level between minus sixty and plus six decibels.')
+    # Validate every control before any decoder or output starts. Check the
+    # selected source only: an unused damaged ending is not part of this cut.
+    warnings=[];effects=[]
     for i,t in enumerate(tracks,1):
-        if _flat_clip(decode_audio(t['path'])):
+        samples=decode_audio(t.get('path',''))
+        if t['source_out_frame']*2000>len(samples):raise ValueError('The sound trim is outside the local recording. Choose a shorter source range.')
+        selected=samples[t['source_in_frame']*2000:t['source_out_frame']*2000]
+        if _flat_clip(selected):
             warnings.append(f'Sound {i} already clips or has flat full-scale peaks. Listen to the original and choose another take if it is distorted; turning it down cannot repair the recording.')
+        if t['role']=='speech' and np.max(np.abs(selected))*10**(t['level_db']/20)<1e-5:
+            warnings.append(f'Sound {i} has no audible speech in its chosen trim. Choose an audible voice take or raise its level, then prepare playback again.')
+    target=Path(inputs['output_path']);directory=target.parent/(target.stem+'-parts')
+    directory.mkdir()
     def stem(rows,name):
         path=directory/(name+'.wav')
         if rows:

@@ -16,6 +16,9 @@ def mix_settings(value):
     return {'speech_margin_db':n}
 
 def decode_audio(path):
+    path=Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('Choose an existing local file from a kept sound take before preparing playback.')
     result=subprocess.run(['ffmpeg','-v','error','-i',str(path),'-map','0:a:0','-ar','48000','-ac','2','-f','f32le','pipe:1'],capture_output=True,timeout=180)
     if result.returncode:raise ValueError('This file has no readable sound. Choose a kept sound take and prepare playback again.')
     data=np.frombuffer(result.stdout,dtype='<f4').reshape(-1,2).copy()
