@@ -53,6 +53,8 @@ def test_colour_mix_controls_before_after_save_reopen_and_play(signed_cut,monkey
    for _ in range(3):panel.get_by_label('Space below speech',exact=True).press('ArrowRight')
    expect(panel.get_by_label('Brighter or darker for picture 1',exact=True)).to_have_value('20')
    expect(player).not_to_have_attribute('src')
+   expect(panel.get_by_role('status')).to_contain_text('Unsaved changes')
+   capture(page,'unsaved-changes',panel.get_by_role('status'))
    panel.get_by_role('button',name='Compare before colour and mix',exact=True).click();expect(panel.get_by_role('status')).to_contain_text('Save the cut')
    capture(page,'two-shot-adjustments',panel.locator('[data-colour-picture="2"]'))
    panel.get_by_role('button',name='Save cut',exact=True).click();expect(panel.get_by_role('status')).to_contain_text('saved',timeout=30000)

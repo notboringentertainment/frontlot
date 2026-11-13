@@ -43,7 +43,7 @@ export function renderCutting(s,onSign){
  function identification(item){return el('div',{class:'cut-source'},item?.thumbnail?el('img',{src:item.thumbnail,alt:'Picture or waveform from this take',loading:'lazy',style:'width:160px;max-height:90px;object-fit:contain;background:#171716'}):null,el('p',{},item?.label||'Original take is no longer available. Choose a replacement below.'));}
  function slider(box,label,value,min,max,step,onChange,words){
   const input=el('input',{type:'range',min,max,step,'aria-label':label});input.value=value;
-  const output=el('span',{},words(value));input.oninput=()=>{const v=Number(input.value);output.textContent=words(v);onChange(v);changed();};box.append(el('label',{},label,input,output));
+  const output=el('span',{},words(value));input.oninput=()=>{const v=Number(input.value);output.textContent=words(v);onChange(v);changed();message.textContent='Unsaved changes. Save the cut before comparing or preparing playback.';};box.append(el('label',{},label,input,output));
  }
  function showReview(review){
   reviewNode.hidden=false;reviewNode.replaceChildren(el('h3',{},'Measured from this preview file'),el('p',{},review.comparison==='before'?'Before matching and automatic balancing.':'Saved colour and speech-first sound.'));

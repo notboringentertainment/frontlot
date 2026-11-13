@@ -28,6 +28,8 @@ The exact repaired titles head is merged, together with the approved cutting and
 
 The first whole run was interrupted after 596 passing cases because three new reproductions showed declared cinema and Display P3 primaries were not refused. The same narrow wide-colour refusal now covers them. This adds no conversion engine. The owner-folder inventory matched before and after the interruption. Only the complete run after that repair is the final suite result.
 
+Two final display reproductions also failed: a silent effect pointed listening to zero instead of its saved moment, and a changed slider retained an old ready sentence. Those now use the saved moment and an immediate unsaved notice. A fresh capture and finishing set passed thirty-nine cases, without page errors. A second partial whole run was stopped for these repairs and is not a completed result. The BWAM decision is to finish these concrete faults and the required complete run, with no additional controls, measurement features or optional implementation. All owner-folder inventories still match. The final code is frozen before that complete run.
+
 Proportionality checkpoint: there are no external review rounds. Internal corrections now include effect identification under a loud bed, noisy numerical reductions, the neutral-colour filter, output colour metadata and a diagnostic command typo. The BWAM skill was applied. The decision is to finish the four colour controls, one speech-margin control and actual-file checks, retaining warnings where listening is necessary. No grading platform, mixing desk, new spending route or extra approval system will be added.
 
 Temporary parent: /private/tmp/fl-colour-mix-run-20261113-a.

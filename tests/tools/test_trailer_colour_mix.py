@@ -112,6 +112,18 @@ def test_silent_spoken_take_cannot_hide_under_music(signals):
     target,refs=mix(signals);report=review_output(target,refs)
     assert any('no audible speech' in s for s in report['messages'])
 
+def test_silent_effect_report_names_its_saved_moment(signals):
+    from lib.trailer_finishing import review_output
+    root,paths=signals;paths[2]=write_signal(root/'silent-effect.wav',np.zeros(6*RATE))
+    target,refs=mix(signals)
+    # An all-silent reference has the same samples at any position. Its saved
+    # position, not an invented waveform onset at zero, must guide listening.
+    refs['effects'][0]['start_frame']=96
+    report=review_output(target,refs)
+    assert report['effect_checks'][0]['status']=='uncertain'
+    assert report['effect_checks'][0]['expected_frame']==96
+    assert any('not be identified confidently near 0:04.000' in s for s in report['messages'])
+
 def test_unused_clipped_part_is_not_reported_as_clipping_in_the_cut(signals):
     from tools.audio.audio_mixer import AudioMixer
     root,paths=signals;t=np.arange(6*RATE)/RATE

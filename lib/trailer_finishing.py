@@ -68,12 +68,12 @@ def _speech_checks(actual,speech,background,margin):
         result.update(margin_db=round(measured,2),status='clear' if vr>1e-6 and measured>=margin-1 else 'hard_to_hear');checks.append(result)
     return checks
 
-def _effect_check(actual,ref,number):
+def _effect_check(actual,ref,number,start_frame=0):
     # Downsampling is for measurement only. Rendering and placement stay at
     # 48 kHz. A distinctive reference is required before claiming a match.
     y=actual.mean(axis=1)[::8].astype(float);r=ref.mean(axis=1)[::8].astype(float)
     active=np.flatnonzero(np.abs(r)>1e-5)
-    if not len(active):return {'number':number,'status':'uncertain','expected_frame':0,'observed_frame':None}
+    if not len(active):return {'number':number,'status':'uncertain','expected_frame':start_frame,'observed_frame':None}
     first,last=int(active[0]),int(active[-1])+1;r=r[first:last]
     expected=round(first/6000*24)
     if len(r)>len(y):return {'number':number,'status':'uncertain','expected_frame':expected,'observed_frame':None}
@@ -98,7 +98,7 @@ def review_output(path,refs):
     n=refs['target_frames']*2000;actual=_fit(decode_audio(path),n)
     speech=_fit(decode_audio(refs['speech_path']),n);bed=_fit(decode_audio(refs['background_path']),n)
     checks=_speech_checks(actual,speech,bed,refs['speech_margin_db'])
-    effects=[_effect_check(actual,_fit(decode_audio(e['path']),n),e['number']) for e in refs.get('effects',[])]
+    effects=[_effect_check(actual,_fit(decode_audio(e['path']),n),e['number'],e.get('start_frame',0)) for e in refs.get('effects',[])]
     block=2400;quiet=[float(np.sqrt(np.mean(actual[i:i+block]**2)))<.001 for i in range(0,n,block)]
     silences=_intervals(quiet,block,n,.25)
     integrated=_finite(stats['input_i']);peak=_finite(stats['input_tp'])
