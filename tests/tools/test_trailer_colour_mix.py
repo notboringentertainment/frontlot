@@ -91,3 +91,35 @@ def test_missing_or_hdr_colour_is_handled_honestly():
     with pytest.raises(ValueError,match='HDR.*standard-range'):
         tool._build_filter({'trailer_adjustments':neutral,'source_colour':{'color_transfer':'smpte2084'}})
     assert 'bt709' in tool._build_filter({'trailer_adjustments':neutral,'source_colour':{}})
+
+def test_silent_spoken_take_cannot_hide_under_music(signals):
+    from lib.trailer_finishing import review_output
+    root,paths=signals;paths[0]=write_signal(root/'silent-words.wav',np.zeros(6*RATE))
+    target,refs=mix(signals);report=review_output(target,refs)
+    assert any('no audible speech' in s for s in report['messages'])
+
+def test_unused_clipped_part_is_not_reported_as_clipping_in_the_cut(signals):
+    from tools.audio.audio_mixer import AudioMixer
+    root,paths=signals;t=np.arange(6*RATE)/RATE
+    paths[0]=write_signal(root/'clipped-after-trim.wav',np.where(t<1,.1*np.sin(2*np.pi*997*t),np.clip(3*np.sin(2*np.pi*3100*t),-1,1)))
+    result=AudioMixer()._full_mix({'timeline_tracks':[dict(path=paths[0],role='speech',start_frame=0,source_in_frame=0,source_out_frame=24,level_db=0,fade_in_frames=0,fade_out_frames=0)],'target_frames':24,'speech_margin_db':12,'output_path':str(root/'trimmed.wav')})
+    assert result.success and not any('already clips' in s for s in result.data['source_warnings'])
+
+@pytest.mark.parametrize('key,value',[('start_frame',True),('start_frame',-.5),('source_out_frame',1.5),('level_db',float('inf')),('role','unknown')])
+def test_new_mix_path_refuses_bad_controls_before_starting_a_process(tmp_path,monkeypatch,key,value):
+    from tools.audio.audio_mixer import AudioMixer
+    calls=[]
+    def refuse(*a,**kw):calls.append(a);raise AssertionError('No process should start for an invalid mix.')
+    monkeypatch.setattr(subprocess,'run',refuse)
+    track=dict(path=str(tmp_path/'not-read.wav'),role='speech',start_frame=0,source_in_frame=0,source_out_frame=24,level_db=0,fade_in_frames=0,fade_out_frames=0);track[key]=value
+    with pytest.raises(ValueError,match='whole frames|sound level|voice, music or effects'):
+        AudioMixer()._full_mix({'timeline_tracks':[track],'target_frames':24,'speech_margin_db':12,'output_path':str(tmp_path/'not-written.wav')})
+    assert calls==[]
+
+def test_decoder_accepts_only_local_files_before_starting_a_process(monkeypatch):
+    from lib.trailer_finishing import decode_audio
+    calls=[]
+    def fake(*a,**kw):calls.append(a);return subprocess.CompletedProcess(a,1,b'',b'')
+    monkeypatch.setattr(subprocess,'run',fake)
+    with pytest.raises(ValueError,match='local file'):decode_audio('https://invented.invalid/not-contacted.wav')
+    assert calls==[]
