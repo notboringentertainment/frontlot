@@ -39,7 +39,7 @@ async function quote(shot,d){
   const version=d.quoteVersion=(d.quoteVersion||0)+1;
   try{const value=await footageAction("quote",{shot_id:shot.id,model:d.model,duration_seconds:d.length});if(version!==d.quoteVersion)return;d.quote=value;d.error="";}
   catch(error){if(version!==d.quoteVersion)return;d.quote=null;d.error=error.message;}
-  hooks.render();
+  d.updateQuote?.();
 }
 async function perform(d,action){d.busy=true;d.error="";hooks.render();try{await action();}catch(error){d.error=error.message;}finally{d.busy=false;await hooks.refresh();}}
 
@@ -52,7 +52,7 @@ function shotPanel(s,shot){
   const model=el("select",{"aria-label":"Footage model",onchange:()=>{d.model=model.value;quote(shot,d);}},
     ...data.models.map(m=>el("option",{value:m.id},m.label)));model.value=d.model;
   const length=input("Clip length in seconds",d.length,{type:"number",min:3,max:15,step:1});
-  length.field.addEventListener("input",()=>{d.length=length.field.value===""?null:Number(length.field.value);d.quote=null;d.quoteVersion=(d.quoteVersion||0)+1;});
+  length.field.addEventListener("input",()=>{d.length=length.field.value===""?null:Number(length.field.value);d.quote=null;d.error="";d.quoteVersion=(d.quoteVersion||0)+1;d.updateQuote?.();});
   length.field.addEventListener("change",()=>{d.length=length.field.value===""?null:Number(length.field.value);quote(shot,d);});
   panel.append(el("label",{},el("span",{},"Model"),model),el("p",{},"Only this model has a signed footage operation here. Other models are not built yet."),length.node);
   for(const [index,path] of shot.references.entries()){
@@ -65,16 +65,23 @@ function shotPanel(s,shot){
   const selected=new Set(Object.values(d.looks));
   for(const look of data.looks.filter(l=>selected.has(l.key)))panel.append(hooks.lookCard(look.payload,"Approved look behind the picture"));
   if(!d.quote&&!d.quoteStarted){d.quoteStarted=true;queueMicrotask(()=>quote(shot,d));}
-  if(d.quote)panel.append(spendingCard({highest_charge:d.quote.highest_usd,highest_cash:d.quote.max_cash_usd,
-    highest_credits:d.quote.max_credits_usd,remaining:d.quote.remaining_usd,expiry:new Date(d.quote.price_expires_at*1000).toLocaleString()}));
+  const price=el("div",{"aria-live":"polite"});panel.append(price);
   panel.append(button("Refresh price",()=>quote(shot,d),d.busy));
   const create=async(retake)=>perform(d,async()=>{
     const result=await footageAction("create",{shot_id:shot.id,model:d.model,duration_seconds:d.length,looks:d.looks,...(retake?{retake_of:retake}:{} )});
     await hooks.refresh();await hooks.selectGate(result.gate.request_id);
   });
   const activeRequest=shot.requests.some(r=>r.running||(!r.approved&&r.gate_id)||(r.reservation&&["submitting","submitted","pending_billing"].includes(r.reservation.state)));
-  const blocked=d.busy||activeRequest||!d.quote||!data.story_ready||!shot.references.length||shot.references.some(p=>!d.looks[p]);
-  panel.append(button(latest?"Create a retake request":"Create footage request",()=>create(latest?.id),blocked));
+  const blocked=()=>d.busy||activeRequest||!d.quote||!data.story_ready||!shot.references.length||shot.references.some(p=>!d.looks[p]);
+  const requestButton=button(latest?"Create a retake request":"Create footage request",()=>create(latest?.id),blocked());panel.append(requestButton);
+  d.updateQuote=()=>{
+    price.replaceChildren();
+    if(d.quote)price.append(spendingCard({highest_charge:d.quote.highest_usd,highest_cash:d.quote.max_cash_usd,
+      highest_credits:d.quote.max_credits_usd,remaining:d.quote.remaining_usd,expiry:new Date(d.quote.price_expires_at*1000).toLocaleString()}));
+    if(d.error)price.append(el("p",{role:"alert"},d.error));
+    requestButton.disabled=blocked();
+  };
+  d.updateQuote();
   if(!shot.references.length)panel.append(el("p",{role:"note"},"Add reference pictures in the paper-cut shot before creating a request."));
   if(shot.references.length&&!data.looks.length)panel.append(el("p",{role:"note"},"No look is approved yet. Approve its look outside these panels before creating a footage request."));
   if(data.refusal)panel.append(el("p",{role:"note"},data.refusal));
@@ -104,7 +111,6 @@ function shotPanel(s,shot){
     if(take.declined)panel.append(el("p",{},"Declined. This decision is final for this take; create a retake request for another clip."));
     if(take.status==="Needs a fresh look")panel.append(el("p",{},"The shot or its inputs changed. This take cannot enter the cut. Review the current shot and create a fresh request."));
   }
-  if(d.error)panel.append(el("p",{role:"alert"},d.error));
   return panel;
 }
 export function renderFootageControls(s){

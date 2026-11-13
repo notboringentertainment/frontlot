@@ -38,8 +38,12 @@ def test_quote_refresh_preserves_account_review_draft():
             page.get_by_label('Cash charged in dollars').fill('0.4')
             page.get_by_label('Credit replacement value in dollars').fill('0.1')
             count=page.evaluate('window.draws')
-            page.get_by_role('button',name='Refresh price',exact=True).click()
-            page.wait_for_function('(count)=>window.draws>count',arg=count)
+            field=note.element_handle()
+            with page.expect_response(lambda response:response.url.endswith('/footage/quote')) as response:
+                page.get_by_role('button',name='Refresh price',exact=True).click()
+            response.value.finished()
+            page.wait_for_timeout(100)
+            assert field.evaluate('(node)=>node.isConnected'),'A quote must not replace the form the writer is using.'
             assert note.input_value()=='The invented account confirms this charge.'
             assert page.get_by_label('The service charged this request',exact=True).is_checked()
             assert page.get_by_label('Cash charged in dollars').input_value()=='0.4'
