@@ -237,6 +237,8 @@ class KlingTTS(BaseTool):
         directly from POST /v1/audio/tts. Older/async behavior still requires
         polling GET /v1/audio/tts/{task_id}, so support both shapes.
         """
+        from tools.audio._legacy_guard import require_legacy_audio
+        require_legacy_audio(inputs)
         if hasattr(client, "post"):
             data = client.post(request["path"], request["payload"])
             payload = data.get("data") or {}

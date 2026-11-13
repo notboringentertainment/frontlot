@@ -6,6 +6,8 @@ A saved reservation comes before submission. Each approval buys one call, with n
 
 The voice-and-music operations now connect the older ElevenLabs wrappers to this protection for every production. Their previous direct route is closed even for verified older settings. Older settings and receipts remain readable without being rewritten, but a new audio request needs Ben's signed price basis and individual approval. The later sound-effects work must use the same boundary too.
 
+Alternate outside audio routes, including search and transcription, refuse a trailer or any call that cannot positively verify a registered older non-trailer production. An unavailable event layer cannot turn that refusal off. Local mixing, probing and analysis do not acquire spending permission. Voice and trailer music wait for the paper cut's checked, current downstream-use state before approval and sending.
+
 The current price basis, transport, imported music provenance, signed take decisions and signed account-outcome resolution are described in the voice-and-music operations document. This is still the first half of that piece: no voice catalogue, audio panels, player, spending card, direction fields or chooser integration is provided yet. It does not claim that connecting an account clears commercial music rights.
 
 A signature proves integrity under Frontlot's local signing key and recorded approval path. It is not proof against another program running as the owner with access to that key.

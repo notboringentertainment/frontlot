@@ -4,11 +4,17 @@ This is the service and take-record half of voice and music. It adds no panels, 
 
 An operation prepares a request from an exact saved spoken line or an instrumental music brief. Speech keeps the line's wording and whole-frame timing. Music keeps its exact brief and requested whole-frame duration. The existing signing gate reconstructs that request and checks it again before Ben signs. A caller cannot override the words, voice, model, duration or price when submitting it.
 
+Voice requires the paper cut's current “usable by later stages” result, not an editable saved check flag. This is checked when preparing, signing and sending, and when using an accepted take. Unchecked story material, changed inputs and a pending paper-cut revision refuse audio. Trailer music briefs require the same checked, current paper cut: this half has no separate declaration that a trailer brief is independent of its story. Older independent briefs without a paper cut keep their existing protected route.
+
+The voice line is read from the exact saved snapshot that passed those checks. A concurrent save cannot replace it with unchecked words between checking the story and looking up the line.
+
 Prices come from Ben's signed production settings. Each rate has its own date and expiry. The settings name the dollar replacement value of a credit, the highest speech credits per character, the highest music credits per minute and, for voice selection, a multiplier ceiling. There are no default rates. Until the catalogue can establish which voices have standard rates, every speech request requires a signed multiplier ceiling. Missing, future-dated or expired rates refuse approval. Changing the settings requires a new request and approval.
 
 The operation reserves the computed maximum before making one service submission. It neither retries nor follows redirects. Successful audio with usable billing evidence is saved through the existing recovery record, signed generation receipt and production spending ledger. The credit charge is valued using the signed rate and counted once; it is not also entered as a new cash purchase. No top-up or plan change is performed. Missing billing evidence, excess charges, interrupted downloads and uncertain outcomes retain the reservation for account review.
 
 A generated take records its approved request and generation receipt. An imported music take records its source, licence note and file fingerprint. Imports require a plain, supported audio file without linked folders, linked files or path tricks. The caller must already have obtained the path from the native chooser; this half does not open that chooser. Files are copied into the production, probed locally and kept under new names. A licence note records Ben's evidence; it does not establish legal clearance.
+
+An import is refused if its bytes match any generation receipt in this production. Editing a generated take to claim that it was imported is also refused: the signed generation and spending receipts retain its origin and kind. This check does not recognise a generated file that was re-encoded or altered elsewhere, or generated in another production whose receipts are not here. Different bytes have a different fingerprint. In that case the licence note remains Ben's own statement about where the music came from; the software does not certify it.
 
 Every generated music take and its signing evidence say: “For the test trailer only until a person at ElevenLabs confirms otherwise in writing.” Music submission always requests instrumental output. A caller cannot opt into vocals.
 
@@ -19,6 +25,8 @@ Account review is a separate signed operation. Ben records what he checked, whet
 All older ElevenLabs voice and music calls now need approval of each request too. Valid older settings no longer open an unapproved route. They still load under their unchanged schemas, but audio needs new signed price settings and an individual signed request. There is no automatic migration. Voice selection never falls back to another provider or account. Explicit older selections of a different provider remain explicit selections, and a known unresolved audio reservation blocks their network-audio calls too.
 
 A signature has the same limits as Frontlot's other local signatures. It proves integrity under the local signing key and the recorded approval path. It does not prove safety against another program running as the owner with access to that key.
+
+For a trailer, other voice, music-generation and outside audio tools refuse before service contact. They also refuse when the production is unidentified, unregistered, linked, copied outside its registered place or cannot verify its signed settings and history. The remaining legacy route requires a positively verified registered older production with the older settings. Local mixing, enhancement, library lookup and probing stay local and make no outside call. Optional event reporting cannot disable this refusal. The protected ElevenLabs route and voice selector continue to require an individual signed request for every production.
 
 ## For the tools
 

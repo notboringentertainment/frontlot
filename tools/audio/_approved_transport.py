@@ -11,6 +11,7 @@ REFUSAL = 'Audio now needs your signed approval of each request. Audio controls 
 def _execute_locked(inputs,kind):
     if not inputs.get('project_dir') or not inputs.get('audio_request_id'):
         return ToolResult(success=False,error=REFUSAL)
+    contacted=False
     try:
         if set(inputs)-{'project_dir','audio_request_id','output_path','preferred_provider','force_instrumental'}:
             raise ValueError('Audio inputs changed. Prepare a new request instead of overriding approved material.')
@@ -39,6 +40,7 @@ def _execute_locked(inputs,kind):
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',record['model']) or (kind=='speech' and not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',record['voice'])):
             raise ValueError('The approved model or voice identifier is invalid.')
         def submit(payload,reservation):
+            nonlocal contacted
             import requests
             key=os.environ.get('ELEVENLABS_API_KEY')
             if not key:raise ValueError('Connect your ElevenLabs account before submitting audio.')
@@ -52,6 +54,7 @@ def _execute_locked(inputs,kind):
             config=_governed.check_current(root,record)
             rate=Decimal(str(config.data['audio_price_basis']['dollars_per_credit']['value']))
             try:
+                contacted=True
                 response=requests.post(url,headers={'xi-api-key':key,'Content-Type':'application/json'},json=body,timeout=120,allow_redirects=False)
                 response.raise_for_status()
             except Exception:
@@ -68,7 +71,7 @@ def _execute_locked(inputs,kind):
     except Exception as exc:
         # Never put raw provider messages, credentials or payload echoes on a page.
         from tools.cost_tracker import IndeterminatePaidCallError
-        message=str(exc) if isinstance(exc,(ValueError,IndeterminatePaidCallError)) else 'The audio request did not finish. Its charge may still be reserved. Check the request before trying another.'
+        message=str(exc) if isinstance(exc,(ValueError,IndeterminatePaidCallError)) else ('The audio request did not finish. Check its recorded receipt and billing outcome before another request.' if contacted else 'Nothing was sent. Check this production\'s signed settings, approved request and remaining budget.')
         return ToolResult(success=False,error=message)
 
 

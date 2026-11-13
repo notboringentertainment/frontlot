@@ -138,6 +138,8 @@ class OpenAITTS(BaseTool):
         return result
 
     def _generate(self, inputs: dict[str, Any]) -> ToolResult:
+        from tools.audio._legacy_guard import require_legacy_audio
+        require_legacy_audio(inputs)
         from openai import OpenAI
 
         from tools.analysis.audio_probe import probe_duration

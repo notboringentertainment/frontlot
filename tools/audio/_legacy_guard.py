@@ -99,3 +99,9 @@ def refusal(inputs):
         # configuration into permission to use the old paid route.
         return UNVERIFIED
     return None
+
+
+def require_legacy_audio(inputs):
+    """Private provider submission helpers enforce the same positive rule."""
+    denied=refusal(inputs)
+    if denied:raise ValueError(denied)
