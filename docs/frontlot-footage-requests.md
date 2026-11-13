@@ -70,6 +70,13 @@ The copied settings format has also been removed. The current sound settings
 now hold footage figures alongside sound figures, without a separate version
 or a conversion path.
 
+One sound test setup then needed a correction: after deliberately damaging
+settings, its signed-rate factory failed before the invalid-price operation
+could be tested. That test now calls the operation directly and proves its
+original refusal. The running count is fifteen. The final decision is to keep
+production code frozen and finish a fresh complete comparison after this test
+correction, without replacing failed results with isolated passes.
+
 ## For the tools
 
 The operations live in `lib/footage_requests.py`. The transport remains

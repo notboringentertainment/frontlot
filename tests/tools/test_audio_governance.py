@@ -128,7 +128,13 @@ def test_config_consent_and_unbounded_price_refuse_zero_contact(project):
     data=yaml.safe_load((project/'project.yaml').read_text());data['provider_egress']=[]
     (project/'project.yaml').write_text(yaml.safe_dump(data))
     with pytest.raises(ProjectConfigError):run(project,r,t)
-    with pytest.raises(ValueError,match='firm'):prepare(project,max_cash_usd=float('inf'))
+    # Exercise the operation directly: the fixture factory needs valid settings
+    # to provision signed rates, while this test has deliberately damaged them.
+    from tools.audio import _governed as audio
+    with pytest.raises(ValueError,match='firm'):
+        audio.prepare(project,kind='speech',model='invented-model',voice='invented-voice',
+            prompt='A quiet gallery.',duration_seconds=3,max_cash_usd=float('inf'),
+            max_credits_usd=1,price_expires_at=4102444800)
     assert (t.calls,t.downloads)==(0,0)
 
 def test_signer_rebuilds_saved_request_and_rechecks_before_signing(project):
