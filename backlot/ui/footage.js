@@ -52,7 +52,7 @@ function shotPanel(s,shot){
   const model=el("select",{"aria-label":"Footage model",onchange:()=>{d.model=model.value;quote(shot,d);}},
     ...data.models.map(m=>el("option",{value:m.id},m.label)));model.value=d.model;
   const length=input("Clip length in seconds",d.length,{type:"number",min:3,max:15,step:1});
-  length.field.addEventListener("input",()=>{d.length=length.field.value===""?null:Number(length.field.value);d.quote=null;});
+  length.field.addEventListener("input",()=>{d.length=length.field.value===""?null:Number(length.field.value);d.quote=null;d.quoteVersion=(d.quoteVersion||0)+1;});
   length.field.addEventListener("change",()=>{d.length=length.field.value===""?null:Number(length.field.value);quote(shot,d);});
   panel.append(el("label",{},el("span",{},"Model"),model),el("p",{},"Only this model has a signed footage operation here. Other models are not built yet."),length.node);
   for(const [index,path] of shot.references.entries()){

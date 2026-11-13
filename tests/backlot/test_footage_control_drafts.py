@@ -44,5 +44,18 @@ def test_quote_refresh_preserves_account_review_draft():
             assert page.get_by_label('The service charged this request',exact=True).is_checked()
             assert page.get_by_label('Cash charged in dollars').input_value()=='0.4'
             assert page.get_by_label('Credit replacement value in dollars').input_value()=='0.1'
+            pending=[]
+            page.route('**/footage/quote',lambda route:pending.append(route))
+            page.get_by_role('button',name='Refresh price',exact=True).click()
+            for _ in range(50):
+                if pending:break
+                page.wait_for_timeout(20)
+            assert pending
+            count=page.evaluate('window.draws')
+            page.get_by_label('Clip length in seconds').fill('6')
+            pending.pop().fulfill(content_type='application/json',body=json.dumps({'highest_usd':.5,'max_cash_usd':.5,
+                'max_credits_usd':0,'remaining_usd':49.5,'price_expires_at':4102444800}))
+            page.wait_for_timeout(100)
+            assert page.evaluate('window.draws')==count,'An older quote must not redraw an input being edited.'
             assert not errors
         finally:browser.close()
