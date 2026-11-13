@@ -1786,7 +1786,16 @@ class _GateRendererMap(dict[str, Any]):
 
 # Keep this map exhaustive: adding a gate kind without a board packet is an
 # intentional test failure.
+def _render_trailer_card(root,req):
+    import base64
+    from lib.trailer_titles import approval_record,card_png
+    try:
+        card=approval_record(root,req['entity_id'])['card']
+        return {'title_card':card,'card_image':'data:image/png;base64,'+base64.b64encode(card_png(card)).decode()}
+    except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This card changed. Save the cut and prepare a new review.'}
+
 GATE_RENDERERS = _GateRendererMap({
+    "trailer_card": _render_trailer_card,
     "headshot": _render_headshot,
     "sheet": _render_sheet,
     "qc_override": _render_qc_override,

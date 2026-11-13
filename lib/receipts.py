@@ -65,7 +65,7 @@ APPROVAL_KINDS = frozenset(
         "headshot_grandfather",
         # A human changing the approved trailer cast without editing the
         # fingerprinted proposal checkpoint (lib/cast_change.py).
-        "cast_change",
+        "cast_change", "trailer_card",
     }
 )
 HEADSHOT_GRANDFATHER_FIELDS = ("entity_kind", "entity_id", "legacy_headshot_receipt_id", "asset_id", "look_hash", "qc_receipt_id")

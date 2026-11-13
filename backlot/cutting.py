@@ -14,8 +14,10 @@ def snapshot(root):
         if take['status']=='Accepted':sounds.append({'take_id':take['id'],'frames':int(take['duration_seconds']*24),'label':{'speech':'Voice','music':'Music','effect':'Sound effect'}[take['kind']]+(' · test trailer only' if take.get('release_note') else '')})
     timeline=(saved or {}).get('timeline',{})
     ready=timeline.get('picture') and all(x.get('kind')=='footage' for x in timeline['picture'])
+    from lib import trailer_titles as titles
     return {'revision':(saved or {}).get('edit_revision_sha256'),'number':(saved or {}).get('revision_number'),
-            'timeline':cut.editable(timeline) if ready else {'fps':24,'picture':[],'audio':[]},'pictures':pictures,'sounds':sounds}
+            'timeline':cut.editable(timeline) if ready else {'fps':24,'picture':[],'audio':[]},'pictures':pictures,'sounds':sounds,
+            'fonts':titles.fonts(),'card_states':{c['id']:titles.status(root,c) for c in timeline.get('cards',[])}}
 
 def mount(app,require_writer,safe_root,invalidate):
     import asyncio,re
@@ -39,6 +41,15 @@ def mount(app,require_writer,safe_root,invalidate):
         if not isinstance(data,dict) or set(data)!={'revision'}:raise HTTPException(400,'Save the cut before preparing playback.')
         path=await run(cut.render_preview,safe_root(project_id),data['revision'])
         return {'url':f'/api/project/{project_id}/cut/play/{path.name}'}
+    @app.post('/api/project/{project_id}/cut/cards/{identity}/approval')
+    async def approve_card(project_id:str,identity:str,request:Request):
+        require_writer(request);data=await request.json();root=safe_root(project_id)
+        if not isinstance(data,dict) or set(data)!={'revision'}:raise HTTPException(400,'Save the cut before preparing this card’s review.')
+        saved=await run(trailer_edit.read_revision,root)
+        if not saved or saved['edit_revision_sha256']!=data['revision']:raise HTTPException(400,'The cut changed. Reopen the saved cut before reviewing this card.')
+        from lib.trailer_titles import request_approval
+        gate=await run(request_approval,root,identity);invalidate(project_id)
+        return {'gate_request_id':gate['request_id']}
     @app.get('/api/project/{project_id}/cut/play/{name}')
     async def play(project_id:str,name:str):
         if not re.fullmatch('[a-f0-9]{64}-[a-f0-9]{32}\\.mp4',name):raise HTTPException(404)

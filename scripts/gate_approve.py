@@ -1739,7 +1739,21 @@ def _construct_footage(root: Path, req: dict) -> Constructed:
     return Constructed(record,None,identity,evidence=evidence,pre_commit_check=recheck)
 
 
+def _construct_trailer_card(root: Path, req: dict) -> Constructed:
+    from lib.trailer_titles import approval_record
+    identity=_require_entity(req)
+    record=approval_record(root,identity)
+    def recheck():
+        if approval_record(root,identity)!=record:
+            raise GateHandlerError('The card changed. Save it and prepare a new review; nothing was signed.')
+    card=record['card']
+    return Constructed(record,None,identity,evidence=(
+        'Exact card words follow without rewriting:',card['text'],
+        f"Patrick Hand, {card['font_size']} pixels. Starts at frame {card['start_frame']} ({card['start_frame']/24:.3f} seconds); lasts {card['duration_frames']} frames ({card['duration_frames']/24:.3f} seconds).",
+        'This signature approves this card only. It permits no spending and completes no stage.'),pre_commit_check=recheck)
+
 CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
+    "trailer_card": _construct_trailer_card,
     "look_lock": _construct_look_lock,
     "reference_import": _construct_reference_import,
     "pipeline_migration": _construct_pipeline_migration,

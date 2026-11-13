@@ -53,14 +53,14 @@ def take_decisions(root, kind, identity, take, *, identity_key, subject=None, la
         raise ValueError(f'The {label} decision history cannot be verified. Nothing can be used.')
     return records
 
-def gate_request(root,kind,entity,record,summary,*,scope=None):
+def gate_request(root,kind,entity,record,summary,*,scope=None,stage='assets'):
     from lib.run_common import request_paths
     identity='media-'+str(uuid.uuid4())
     directory=Path(root)/'.gate-requests'
     if directory.is_symlink():raise ValueError('Signing requests must not use links.')
     directory.mkdir(exist_ok=True)
     request={'request_id':identity,'kind':kind,'entity_id':entity,'approval_record':record,
-             'record_sha256':record_sha256(record),'summary':summary,'stage':'assets','status':'pending','project_id':Path(root).name,'scope':scope or 'media:'+entity}
+             'record_sha256':record_sha256(record),'summary':summary,'stage':stage,'status':'pending','project_id':Path(root).name,'scope':scope or 'media:'+entity}
     with request_paths(root,identity)['pending'].open('x') as f:json.dump(request,f,indent=2)
     return request
 
