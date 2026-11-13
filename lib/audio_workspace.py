@@ -82,8 +82,9 @@ def require_checked_paper(root):
 
 
 def import_music(root,source,origin,licence,*,kind='music',brief_id=None):
-    if not isinstance(licence,str) or not licence.strip():raise ValueError('Write a licence note before importing music.')
-    if not isinstance(origin,str) or not origin.strip():raise ValueError('Record where this music came from.')
+    noun='effect' if kind=='effect' else 'music'
+    if not isinstance(licence,str) or not licence.strip():raise ValueError(f'Write a licence note before importing this {noun}.')
+    if not isinstance(origin,str) or not origin.strip():raise ValueError(f'Record where this {noun} came from before importing it.')
     raw=Path(source).expanduser()
     if not raw.is_absolute() or '..' in raw.parts:raise ValueError('Choose a direct file path without path tricks or links.')
     path=_checked_path(raw)
@@ -332,7 +333,7 @@ def save_effect_brief(root,text,seconds,loop,start_frame,shot_index,identity=Non
 
 
 def binding_source(root,binding):
-    if not isinstance(binding,dict):raise ValueError('This audio needs its exact spoken line or music brief.')
+    if not isinstance(binding,dict):raise ValueError('This audio needs its exact saved line or cue brief.')
     if binding.get('kind')=='speech':return line(root,binding.get('line_index'))
     if binding.get('kind')=='effect':
         identity=binding.get('brief_id')
@@ -381,7 +382,7 @@ def prepare_request(root,kind,model,*,line_index=None,voice=None,brief_id=None,p
     binding={'kind':kind}
     if kind=='speech':binding['line_index']=line_index
     elif kind in ('music','effect'):binding['brief_id']=brief_id
-    else:raise ValueError('Choose speech or instrumental music.')
+    else:raise ValueError('Choose voice, instrumental music or a sound effect.')
     source=binding_source(root,binding);binding['source_sha256']=record_sha256(source)
     if kind=='effect':binding.update({key:source[key] for key in ('start_frame','shot_index','loop')})
     if not isinstance(performance_notes,str) or len(performance_notes)>2000:

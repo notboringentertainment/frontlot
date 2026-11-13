@@ -133,7 +133,7 @@ def test_effect_import_uses_shared_chooser_licence_provenance_and_moment(effect_
     monkeypatch.setattr(cues,'choose_file',lambda **kw:str(source))
     choice=cues.choose(root,kind='effect')
     data={'choice_id':choice['choice_id'],'source':'My latch recording','licence_note':'','brief_id':b['brief_id']}
-    with pytest.raises(ValueError,match='licence note'):cues.import_selected(root,data,kind='effect')
+    with pytest.raises(ValueError,match='Write a licence note before importing this effect'):cues.import_selected(root,data,kind='effect')
     t=cues.import_selected(root,dict(data,licence_note='I own this recording.'),kind='effect')['take']
     assert t['kind']=='effect' and t['origin']=='imported' and t['binding']['brief_id']==b['brief_id']
     gate=cues.decide(root,t['id'],'accept',kind='effect');sign(root,'audio_take',gate['approval_record'],t['id'])

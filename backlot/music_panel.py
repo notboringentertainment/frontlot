@@ -31,7 +31,7 @@ def prepare_music(root,data):return prepare_cue(root,data,kind='music')
 def prepare_cue(root,data,*,kind):
     root=root_checked(root)
     if not isinstance(data,dict) or set(data)!={'brief_id'}:
-        raise ValueError('Save the music brief, then prepare its spending card with the music controls.')
+        raise ValueError('Save the cue brief, then prepare its spending card with the matching audio controls.')
     account=account_status()
     if not account['configured']:raise ValueError(account['message'])
     from lib.project_config import load_current_verified_project_config,ProjectConfigError

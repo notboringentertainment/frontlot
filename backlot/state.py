@@ -1696,7 +1696,7 @@ def _render_audio_take(root,req):
         take=record['take']
         wording=approved_source_request(root,take)['prompt'] if take['origin']=='generated' else take['licence_note']
         return {'record':record,'spoken_words':wording}
-    except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This take needs fresh review. Reopen its voice panel before signing.'}
+    except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This take needs fresh review. Reopen its audio panel before signing.'}
 
 def _render_audio_resolution(root,req):
     from lib.audio_workspace import resolution_record
