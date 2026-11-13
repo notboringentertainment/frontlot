@@ -1689,9 +1689,18 @@ def _render_footage(root: Path, req: dict[str, Any]) -> dict[str, Any]:
             'highest_charge':round(record['max_cash_usd']+record['max_credits_usd'],4),
             'remaining':record['remaining_usd'],
             'expiry':datetime.fromtimestamp(record['price_expires_at'],timezone.utc).strftime('%d %B %Y, %H:%M UTC'),
-            'looks':[m['payload'] for m in record['look_material']]},'visuals':pictures}
+            'looks':[{k:_footage_look_words(v) if isinstance(v,dict) or (isinstance(v,list) and any(isinstance(x,dict) for x in v)) else v
+                      for k,v in m['payload'].items()} for m in record['look_material']]},'visuals':pictures}
     except (ValueError,OSError,TypeError,KeyError,receipts.ReceiptChainError) as exc:
         return {'packet_error':True,'error':str(exc) if isinstance(exc,ValueError) else 'The footage request cannot be verified. Nothing can be signed.'}
+
+
+def _footage_look_words(value):
+    """Readable copies of approved look facts; never alter the signed payload."""
+    if isinstance(value,dict):return '. '.join(str(k).replace('_',' ').capitalize()+': '+_footage_look_words(v) for k,v in value.items())
+    if isinstance(value,list):return ', '.join(_footage_look_words(v) for v in value)
+    if isinstance(value,bool):return 'yes' if value else 'no'
+    return str(value)
 
 
 def _render_account_review(root: Path, req: dict[str, Any]) -> dict[str, Any]:

@@ -30,6 +30,8 @@ def test_signed_request_take_and_timing_states_in_browser(film,provider,tmp_path
             details=page.locator('[aria-label="Footage request details"]')
             assert 'Highest charge: $0.5000' in details.inner_text()
             assert record['prompt'] in details.inner_text()
+            assert '[object Object]' not in details.inner_text()
+            assert 'dress blues' in details.inner_text()
             assert 'Fal' in details.inner_text() and 'Kling o3 reference video' in details.inner_text()
             assert page.locator('#gate-detail .screen img').count()==1
             assert page.locator('.footage-review .look-row p').first.evaluate('(n)=>getComputedStyle(n).color')=='rgb(37, 42, 36)'
