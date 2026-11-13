@@ -112,7 +112,7 @@ export function renderAudioSigning(detail,actions,onReturn,stale){
   if(stale){box.append(el('p',{},'This request has been decided. Return to audio to continue.'));return box;}
   if(!r){box.append(el('p',{role:'alert'},detail.packet?.error||'The current audio evidence is unavailable. Return to audio and prepare a new request before signing.'));return box;}
   if(detail.packet.audio_prices){
-    box.append(el('h3',{},'Account consent and maximum audio prices'),el('p',{},'This signature approves the audio price ceilings and account permissions below; each paid request still needs your separate signature.'));
+    box.append(el('h3',{},'Account consent and maximum audio prices'),el('p',{},'This lets Front Lot send your voice words and instrumental music briefs to ElevenLabs after you sign each paid request.'));
     const p=detail.packet,q=p.audio_price_summary;
     box.append(el('p',{},q.longest_line_dollars===null?'No spoken line is saved yet. Save your lines to see their maximum price.':`For the longest saved spoken line: at most ${money(q.longest_line_dollars)}.`),
       el('p',{},`For one minute of instrumental music: at most ${money(q.music_minute_dollars)}.`),
