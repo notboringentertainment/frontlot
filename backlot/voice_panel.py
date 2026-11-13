@@ -110,6 +110,8 @@ def snapshot(root):
         source=_voice_record(root,take)
         take['spoken_words']=source['prompt'];take['voice_name']=source['binding'].get('voice_label') or source['voice']
     requests=[]
+    from tools.cost_tracker import load_reservations
+    used={r.get('output_hint',{}).get('request_id') for r in load_reservations(root).values()}
     audio._checked_path(root/'.audio-requests')
     for path in (root/'.audio-requests').glob('*.json'):
         record=_governed.read_request(root,path.stem);_governed.validate_request(record,check_expiry=False)
@@ -117,10 +119,14 @@ def snapshot(root):
         from lib.canonical_json import record_sha256
         approved=receipts.find_approval(root,'audio_spend',entity_id=record['request_id'],record_sha256=record_sha256(record)) is not None
         error=None
-        try:audio.check_price(root,record)
-        except Exception:error='This request needs fresh review. Check the paper cut and signed price settings, then prepare another request.'
-        if record['max_cash_usd']+record['max_credits_usd']>tracker.budget_remaining_usd:
-            error='Not enough remains under the production ceiling. Resolve held charges or stop; this request cannot be approved.'
+        made=any(t['approved_request_id']==record['request_id'] for t in takes)
+        if not made:
+            try:audio.check_price(root,record)
+            except Exception:error='This request needs fresh review. Check the paper cut and signed price settings, then prepare another request.'
+            if record['max_cash_usd']+record['max_credits_usd']>tracker.budget_remaining_usd:
+                error='Not enough remains under the production ceiling. Resolve held charges or stop; this request cannot be approved.'
+            if record['request_id'] in used:error='This signature has already been used. If no take was recovered, prepare a new spending card; it cannot buy another call.'
+            if state['unresolved_requests']:error='Resolve the held audio charge in the account review above before submitting any request.'
         requests.append({'record':record,'approved':approved,'error':error,'gate_request_id':_gate_id(root,record['request_id'],'audio_spend')})
     charges={}
     for r in receipts.verified_generation_receipts(root):

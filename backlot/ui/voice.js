@@ -83,7 +83,8 @@ export function renderVoice(s,onSign){
       let player=players.get(t.id);if(!player){player=el('audio',{controls:'',preload:'metadata',src:`/api/project/${encodeURIComponent(project)}/audio-take/${t.id}/play`,'aria-label':`Listen to line ${t.binding.line_index+1}`});players.set(t.id,player);}
       box.append(player);
       if(t.status!=='Declined'){
-        if(t.status!=='Accepted')box.append(button('Keep this take',()=>act(async()=>{const g=await api(`${url}/${t.id}/decision`,{decision:'accept'});onSign(g.request_id);})));
+        if(t.status==='Waiting for your decision')box.append(button('Keep this take',()=>act(async()=>{const g=await api(`${url}/${t.id}/decision`,{decision:'accept'});onSign(g.request_id);})));
+        if(t.status==='Needs a fresh look')box.append(el('p',{},'The line or file changed. Prepare a new spending card for a new take; this take cannot be kept for changed words.'));
         box.append(button('Decline this take permanently',()=>act(async()=>{const g=await api(`${url}/${t.id}/decision`,{decision:'decline'});onSign(g.request_id);})));
       }else box.append(el('p',{},'Decline is final. Ask for another take with its own spending card.'));
       box.append(button('Ask for another take',()=>{const target=node.querySelector(`[data-voice-line="${t.binding.line_index}"]`);target?.scrollIntoView({block:'center'});message.textContent='Prepare another spending card for this line. A new signature is required.';}));takes.append(box);
@@ -108,6 +109,12 @@ export function renderAudioSigning(detail,actions,onReturn,stale){
   if(!r){box.append(el('p',{role:'alert'},detail.packet?.error||'The current audio evidence is unavailable. Return to voice and prepare a new request before signing.'));return box;}
   if(detail.packet.audio_prices){
     box.append(el('h3',{},'Account consent and maximum audio prices'),el('p',{},'This signature buys no audio. It permits ElevenLabs to receive voice words only after you sign an individual request. All other saved production settings are part of this same settings signature.'));
+    const p=detail.packet;
+    box.append(el('p',{},`Production ceiling: ${money(p.production_ceiling)}. Run limit: ${p.run_minutes} minutes. Cast ceiling: ${p.cast_ceiling.characters} characters and ${p.cast_ceiling.locations} places.`),
+      el('p',{},`Saved footage model: ${p.footage_model==='not-selected'?'Not selected':p.footage_model}`),
+      el('p',{},p.picture_judge?`Saved picture judge: ${p.picture_judge.judge_provider} / ${p.picture_judge.judge_model}`:'No paid picture judge is selected.'));
+    const classes={prompts:'text prompts',reference_images:'reference pictures',generated_sheet_images:'generated character sheets',speech_text:'spoken words',music_prompt:'music descriptions',effect_prompt:'sound-effect descriptions'};
+    for(const permission of p.outbound_permissions)box.append(el('p',{},`${permission.provider}: may receive ${permission.content_classes.map(x=>classes[x]).join(', ')}. Paid requests still need their individual approval.`));
     const labels={dollars_per_credit:'Dollar replacement value per credit',speech_credits_per_character:'Highest speech credits per character',music_credits_per_minute:'Highest music credits per minute',voice_multiplier_ceiling:'Highest voice rate multiplier'};
     for(const [k,v] of Object.entries(detail.packet.audio_prices))box.append(el('p',{},`${labels[k]}: ${v.value}. Set ${new Date(v.set_at*1000).toLocaleString()}; expires ${new Date(v.expires_at*1000).toLocaleString()}.`));
   }else if(r.reservation_id){box.append(el('h3',{},'Record the account outcome'),el('blockquote',{},r.request.prompt),el('p',{},r.charged?'Charged':'Not charged'),el('p',{},`Cash ${money(r.cash_usd)} · credit replacement value ${money(r.credits_usd)}`),el('p',{},r.note),el('p',{},'This does not submit the request again or invent a take.'));

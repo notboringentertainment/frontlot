@@ -6,7 +6,16 @@ from tests.tools.test_audio_half_transport import priced, http, speech_request
 
 @pytest.fixture
 def voice_world(priced,http,monkeypatch):
-    speech_request(priced)
+    from lib.checkpoint import init_project
+    from lib.pipeline_pin import migration_record
+    from lib.pipeline_loader import manifest_digest
+    from lib.trailer_edit import save_revision
+    from tests.lib.test_trailer_edit import signed_story,paper
+    init_project(priced.name,title='Quiet Observatory',pipeline_type='authored-film@1.6',pipeline_dir=priced.parent,target_duration_seconds=28)
+    sign(priced,'pipeline_migration',migration_record('authored-film','1.6',manifest_digest('authored-film@1.6')),'authored-film')
+    signed_story(priced);draft=paper();draft['shots'][0]['duration_frames']=672
+    draft['lines']=[{'text':'The gallery is closed.','start_frame':0,'duration_frames':72}]
+    save_revision(priced,draft,None)
     gets=[]
     class Response:
         def raise_for_status(self):pass
@@ -106,6 +115,7 @@ def test_unknown_charge_requires_signed_account_review(voice_world,monkeypatch,c
     panel.apply_resolution(root,identity)
     assert not panel.snapshot(root)['unresolved_requests'] and len(posts)==1
     assert panel.snapshot(root)['budget']['audio_credits']==(.0002 if charged else 0)
+    assert 'used' in panel.snapshot(root)['requests'][0]['error']
 
 def test_fresh_trailer_can_sign_audio_prices_without_a_picture_judge(tmp_path,monkeypatch):
     from lib.trailer_edit import create_trailer

@@ -1511,7 +1511,11 @@ def _render_config(root: Path, req: dict[str, Any]) -> dict[str, Any]:
         import hashlib,yaml
         if (req.get('approval_record') or {}).get('config_sha256')!=hashlib.sha256(raw).hexdigest():
             return {'packet_error':True,'error':'The audio prices changed. Prepare a new price-settings request.'}
-        return {'audio_prices':yaml.safe_load(text)['audio_price_basis'],'record':req['approval_record']}
+        settings=yaml.safe_load(text)
+        return {'audio_prices':settings['audio_price_basis'],'record':req['approval_record'],
+                'production_ceiling':settings['budget_usd_cap'],'outbound_permissions':settings['provider_egress'],
+                'cast_ceiling':settings['cast_cap'],'run_minutes':settings['wall_time_minutes'],
+                'footage_model':settings['default_video_endpoint'],'picture_judge':settings.get('qc')}
     return {"project_yaml": text, "summary": req.get("summary")}
 
 
