@@ -37,7 +37,7 @@ def film(tmp_path, monkeypatch):
     monkeypatch.setenv('FAL_KEY', 'invented-only')
     root = create_trailer(tmp_path, 'An invented gallery trailer', 4, 50)
     looks.approve_request(json.loads(next((root/'.gate-requests').glob('*.json')).read_text()), root)
-    config = {'version':'1.5', 'budget_usd_cap':50, 'wall_time_minutes':60,
+    config = {'version':'1.4', 'budget_usd_cap':50, 'wall_time_minutes':60,
         'cast_cap':{'characters':1,'locations':1},
         'provider_egress':[{'provider':'fal','content_classes':['prompts','reference_images']}],
         'default_video_endpoint':'fal-ai/kling-video/o3/pro/reference-to-video',

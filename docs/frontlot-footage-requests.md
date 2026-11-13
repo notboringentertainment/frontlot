@@ -66,6 +66,9 @@ operations and their evidence, without request controls, another workbench or
 a compatibility project. The special local-audio exception for older
 productions and the separate reservation ordering for older calls have been
 removed. Tests now check the current refusal and the single crash-safe order.
+The copied settings format has also been removed. The current sound settings
+now hold footage figures alongside sound figures, without a separate version
+or a conversion path.
 
 ## For the tools
 
