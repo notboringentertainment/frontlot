@@ -40,13 +40,16 @@ def _read_marker(path):
         raise ValueError(UNVERIFIED)
     return value
 
-def refusal(inputs):
+def refusal(inputs, *, local_only=False):
     """No verification failure or missing attribution can authorize a POST."""
     from lib.project_config import load_current_verified_project_config
-    from lib.run_common import resolve_project_root
+    from lib.run_common import ENTITY_ID_RE
+    from lib.paths import PROJECTS_DIR
     from lib.trailer_contract import signed_trailer_pin
+    no_production = 'Local audio needs one identified, registered production with verifiable approval history.' if local_only else NO_PRODUCTION
+    unverified = 'This production\'s identity, signed settings or approval history cannot be verified. No local audio was made.' if local_only else UNVERIFIED
     if not isinstance(inputs, dict):
-        return NO_PRODUCTION
+        return no_production
     try:
         explicit = _checked_path(inputs['project_dir']) if inputs.get('project_dir') else None
         output = _checked_path(inputs.get('output_path') or (Path.cwd() / 'legacy-audio'))
@@ -57,11 +60,11 @@ def refusal(inputs):
                 continue
             found = _enclosing_root(path)
             if path == explicit and found is None:
-                return NO_PRODUCTION
+                return no_production
             if found is not None:
                 roots.add(found)
         if not roots:
-            return NO_PRODUCTION
+            return no_production
         if len(roots) != 1:
             return BAD_PATH
         root = roots.pop()
@@ -73,7 +76,7 @@ def refusal(inputs):
         # and not even a configured registry may hide an enclosing production.
         if _enclosing_root(root.parent) is not None:
             return BAD_PATH
-        if _checked_path(resolve_project_root(root.name)) != root:
+        if not ENTITY_ID_RE.fullmatch(root.name) or _checked_path(Path(PROJECTS_DIR)/root.name) != root:
             return BAD_PATH
     except (OSError, ValueError, TypeError, RuntimeError):
         return BAD_PATH
@@ -89,6 +92,18 @@ def refusal(inputs):
                 return MESSAGE
         for name in ('project.yaml', 'approvals.jsonl'):
             _checked_path(root / name)
+        if local_only:
+            from lib.receipts import chained_rows
+            rows=chained_rows(root,'approval')
+            if signed_trailer_pin(root) is not None:
+                return MESSAGE
+            if marker.get('id',root.name)!=root.name or marker.get('project_id',root.name)!=root.name:
+                return unverified
+            # Offline work needs verified identity/history, not a spending
+            # configuration. A signed configuration must still verify.
+            if any(row.get('kind')=='config' for row in rows):
+                load_current_verified_project_config(root)
+            return None
         config = load_current_verified_project_config(root)
         if config.version not in ('1.0','1.1','1.2') or signed_trailer_pin(root) is not None:
             return MESSAGE
@@ -97,7 +112,7 @@ def refusal(inputs):
     except Exception:
         # Never convert a missing signature, damaged chain or unreadable
         # configuration into permission to use the old paid route.
-        return UNVERIFIED
+        return unverified
     return None
 
 
