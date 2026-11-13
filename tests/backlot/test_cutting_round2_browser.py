@@ -10,7 +10,8 @@ from tests.tools.test_signed_footage import film,provider,looks,workspace
 def picture(page,name,target):
     folder=os.environ.get('CUTTING_R2_CAPTURE')
     if not folder:return
-    target.evaluate('(e)=>e.scrollIntoView({block:"center"})')
+    target.evaluate('(e)=>e.scrollIntoView({block:"center",behavior:"instant"})')
+    expect(target).to_be_in_viewport()
     path=Path(folder)/('round2-'+os.environ.get('CUTTING_R2_CAPTURE_TAG','')+name+'.png');assert not path.exists()
     page.screenshot(path=str(path))
 

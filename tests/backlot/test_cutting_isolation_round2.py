@@ -9,7 +9,9 @@ def test_board_accepts_tmp_alias_without_any_private_redirect(voice_world,monkey
     from tests.backlot.test_voice_panel_browser import board
     from lib import gates
     root,*_=voice_world
-    monkeypatch.setattr(gates,'gates_dir',lambda:Path('/tmp')/'fl-cutting-run-20261113-a'/'r2-gates')
+    signing=gates.gates_dir()
+    alias=Path(str(signing).replace('/private/tmp/','/tmp/',1))
+    monkeypatch.setattr(gates,'gates_dir',lambda:alias)
     with board(root,monkeypatch):pass
 
 def test_slow_broker_hello_is_unavailable_not_an_unhandled_timeout(tmp_path,monkeypatch):

@@ -95,7 +95,7 @@ def web_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
     project, request = write_project(projects)
     # Darwin caps AF_UNIX paths at roughly 104 bytes; pytest's descriptive
     # tmp_path is intentionally much longer, so keep this private root short.
-    gates = Path(tempfile.mkdtemp(prefix="om-gates-", dir="/tmp"))
+    gates = Path(tempfile.mkdtemp(prefix="om-gates-", dir=os.environ.get('OPENMONTAGE_HOME') or tempfile.gettempdir()))
     owner = DisposableResources()
     signer = fake_signer(tmp_path)
     monkeypatch.setenv("OPENMONTAGE_GATES_DIR", str(gates))
@@ -781,7 +781,7 @@ def test_two_real_apps_racing_websocket_routes_yield_one_usable_session_and_one_
 
 
 def test_attach_rejects_real_socket_hello_sidecar_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    gates = Path(tempfile.mkdtemp(prefix="om-gates-", dir="/tmp"))
+    gates = Path(tempfile.mkdtemp(prefix="om-gates-", dir=os.environ.get('OPENMONTAGE_HOME') or tempfile.gettempdir()))
     monkeypatch.setenv("OPENMONTAGE_GATES_DIR", str(gates))
 
     async def scenario() -> None:
