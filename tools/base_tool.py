@@ -321,7 +321,7 @@ def _instrument_execute(fn: Callable) -> Callable:
                 getattr(self,'capability','') in {'tts','music_generation','sfx','sound_effects','audio_generation','speech_to_text'}
                 or (self.__class__.__module__.startswith('tools.audio.') or getattr(self,'name','') in {'azure_stt','dashscope_asr'}) and getattr(runtime,'value',runtime)=='api'):
                 from tools.audio._legacy_guard import refusal
-                denied=refusal(inputs)
+                denied=refusal(inputs,local_only=getattr(runtime,'value',runtime)=='local')
                 if denied:return ToolResult(success=False,error=denied)
             return fn(self, inputs, *args, **kwargs)
 
@@ -344,7 +344,7 @@ def _instrument_execute(fn: Callable) -> Callable:
         audio_service = (self.__class__.__module__.startswith("tools.audio.") or getattr(self,'name','') in {'azure_stt','dashscope_asr'}) and getattr(runtime, "value", runtime) == "api"
         if getattr(self, "name", "") not in {"elevenlabs_tts", "music_gen", "tts_selector"} and (audio_generator or audio_service):
             from tools.audio._legacy_guard import refusal
-            denied = refusal(inputs)
+            denied = refusal(inputs,local_only=getattr(runtime,'value',runtime)=='local')
             if denied:
                 return ToolResult(success=False, error=denied)
 
