@@ -155,6 +155,9 @@ def _execute_locked(root,record, *, submit,download):
             output_hint={'kind':'audio','audio_approval_receipt_id':approval['receipt_id'],'request_id':record['request_id']})
     started=datetime.now(timezone.utc).isoformat()
     try:
+        # Match footage: a durable hold is not authority to send changed or
+        # expired material. Recheck immediately before the one paid contact.
+        check_current(root,record)
         result=submit(copy.deepcopy(_payload(record)),reservation)
         attach_request_id(root,reservation,result['request_id'])
         cash=_money(result['cash_usd']);credits=_money(result['credits_usd'])

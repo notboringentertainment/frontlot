@@ -808,9 +808,8 @@ def reconcile_paid_call(
     """Record the state of a paid call; also reconciles the tracker entry when given.
 
     ``completed`` / ``failed`` are terminal. ``pending_billing`` keeps the
-    reserved amount charged against the budget (the tracker entry is settled
-    at ``actual_usd``, which callers pass as the reserved amount) until the
-    reconciler learns the provider's real outcome. A terminal reservation
+    reserved amount held against the budget without booking it as spent until
+    the reconciler learns the provider's real outcome. A terminal reservation
     cannot be reconciled again.
 
     C2: ``failed`` is the ONE state that releases a shot's dollars and its
@@ -831,7 +830,7 @@ def reconcile_paid_call(
             raise ValueError(
                 f"reservation {reservation_id} is already {reservation['state']}; refusing to re-reconcile"
             )
-        if tracker is not None and reservation.get("cost_entry_id"):
+        if state != "pending_billing" and tracker is not None and reservation.get("cost_entry_id"):
             tracker.reconcile(reservation["cost_entry_id"], actual_usd, success=(state != "failed"))
         _append_reservation_event(
             project_root,
