@@ -6,7 +6,7 @@ request is for one clip, with its exact shot, references, approved look, model,
 length, signed price figures and remaining ceiling. Accepting a take never
 completes a stage.
 
-The work remains in progress. Eleven concrete findings across the footage work
+The bounded implementation is complete. Eleven concrete findings across the footage work
 have required corrections: the original spending gap, unsigned decisions treated
 as authority, older shots disappearing, an early reservation gap, a stale card
 which could not refresh its remaining ceiling, and an unsigned reconciliation
@@ -16,6 +16,13 @@ windows, and rejecting edited take metadata. The proportionality decision is to 
 readable signing cards, retaining the financial proofs. A full request workbench
 and automatic dispatch are deferred. The existing signer and transport remain
 the foundation.
+
+A final proportionality check found that repeated integrated test starts were
+adding avoidable work. The remaining change was a browser test waiting for the
+page to finish loading, rather than asserting before it had loaded. The decision
+was to freeze the implementation after that correction, finish one complete
+comparison and report its raw results. No additional interface work or recovery
+mechanism was added.
 
 The normal service response supplies a clip rather than an invoice. The app
 therefore books the entire signed maximum against the ceiling, and says that
@@ -49,4 +56,15 @@ The operations live in `lib/footage_requests.py`. The transport remains
 account resolution are reused. An in-process scoped authorization is created
 only after verifying a saved `footage_spend` receipt. Tool input flags cannot
 create that authorization. This document will record the final operation
-interfaces and limitations when verification is complete.
+interfaces below.
+
+`prepare_request(root, shot_id, duration_seconds=..., model=..., retake_of=...)`
+creates a free, immutable request. `request_approval(root, request_id)` creates
+its existing board signing request. `execute(root, request_id)` dispatches the
+verified one-use purchase. `request_decision(root, shot_id, take_id, decision)`
+creates a signed accept/decline request, and `apply_decision(...)` applies its
+verified decision to the single EDL. Preview/export consumers must use
+`validate_cut_sources(root, edit)` and `require_accepted(...)`, never a notebook
+label. `audio_workspace.request_resolution` and `resolve_charge` serve both
+media families. This branch includes the open voice-and-music operations
+dependency; it must land before or with this branch.

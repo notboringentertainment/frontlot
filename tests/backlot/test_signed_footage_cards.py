@@ -25,7 +25,7 @@ def test_signed_request_take_and_timing_states_in_browser(film,provider,tmp_path
             page=browser.new_page(viewport={'width':1440,'height':1100});errors=[]
             page.on('pageerror',lambda error:errors.append(str(error)))
             page.goto(f'{url}/p/{root.name}?static=1')
-            assert page.get_by_role('button',name='Review: Make this clip',exact=True).count()==1
+            page.get_by_role('button',name='Review: Make this clip',exact=True).wait_for()
             page.locator('#gates .need').filter(has_text='Make this clip').first.click()
             details=page.locator('[aria-label="Footage request details"]')
             assert 'Highest charge: $0.5000' in details.inner_text()
