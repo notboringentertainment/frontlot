@@ -454,6 +454,8 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
 
     from backlot.voice_panel import mount as mount_voice
     mount_voice(app,require_writer,_safe_project_dir,_invalidate_summary)
+    from backlot.music_panel import mount as mount_music
+    mount_music(app,require_writer,_safe_project_dir,_invalidate_summary)
 
     @app.post("/api/trailers")
     async def start_trailer(request: Request):

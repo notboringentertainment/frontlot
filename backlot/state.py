@@ -1491,6 +1491,20 @@ def _render_writeros_look_lock(root: Path, req: dict[str, Any], entity_kind: str
             "supersedes": (current or {}).get("look_hash"), "look_spec": look.payload}
 
 
+def _audio_price_summary(root,settings):
+    from decimal import Decimal,ROUND_CEILING
+    from lib.trailer_edit import paper_state
+    basis=settings['audio_price_basis']
+    lines=((paper_state(root).get('current') or {}).get('paper_cut') or {}).get('lines',[])
+    longest=max((line['text'] for line in lines),key=lambda text:len(text.encode('utf-8')),default=None)
+    def value(key):return Decimal(str(basis[key]['value']))
+    def dollars(credits):
+        return float((credits.to_integral_value(rounding=ROUND_CEILING)*value('dollars_per_credit')).quantize(Decimal('.0001'),rounding=ROUND_CEILING))
+    return {'longest_line':longest,'longest_line_dollars':None if longest is None else dollars(Decimal(len(longest.encode('utf-8')))*value('speech_credits_per_character')*value('voice_multiplier_ceiling')),
+            'music_minute_dollars':dollars(value('music_credits_per_minute')),
+            'expires_at':min(rate['expires_at'] for rate in basis.values())}
+
+
 def _render_config(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     """Authoritative source: project.yaml text, shown with the request summary."""
     path = root / "project.yaml"
@@ -1513,6 +1527,7 @@ def _render_config(root: Path, req: dict[str, Any]) -> dict[str, Any]:
             return {'packet_error':True,'error':'The audio prices changed. Prepare a new price-settings request.'}
         settings=yaml.safe_load(text)
         return {'audio_prices':settings['audio_price_basis'],'record':req['approval_record'],
+                'audio_price_summary':_audio_price_summary(root,settings),
                 'production_ceiling':settings['budget_usd_cap'],'outbound_permissions':settings['provider_egress'],
                 'cast_ceiling':settings['cast_cap'],'run_minutes':settings['wall_time_minutes'],
                 'footage_model':settings['default_video_endpoint'],'picture_judge':settings.get('qc')}
