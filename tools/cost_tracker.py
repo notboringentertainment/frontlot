@@ -739,7 +739,7 @@ def reserve_paid_call(
     """
     from lib.shot_allowance import resolve
 
-    guard = resolve(project_root, inputs, kind=kind) if inputs is not None else None
+    guard = resolve(project_root, inputs, kind=kind) if inputs is not None or kind in ('image','video') else None
     with reservation_lock(project_root):
         if guard is not None:
             guard.check(project_root, reserved_usd, tool=tool)

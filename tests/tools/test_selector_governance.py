@@ -81,9 +81,9 @@ def image(monkeypatch):
 
 def test_legacy_call_without_project_is_unchanged(video, image):
     loose_v, bound_v = video
-    assert VideoSelector().execute({"prompt": "fog"}).success and loose_v.calls and not bound_v.calls
+    assert not VideoSelector().execute({"prompt": "fog"}).success and not loose_v.calls and not bound_v.calls
     loose_i, bound_i = image
-    assert ImageSelector().execute({"prompt": "fog"}).success and loose_i.calls and not bound_i.calls
+    assert not ImageSelector().execute({"prompt": "fog"}).success and not loose_i.calls and not bound_i.calls
 
 
 @pytest.mark.parametrize('selector_cls, fixture, provider', [
@@ -171,7 +171,7 @@ def test_governance_refusal_stops_delegation(env, verifiers, request, selector_c
     # Governed keys without a resolvable project are refused too (no ungoverned escape).
     verifiers.refuse_look = False
     r = selector_cls().execute({"prompt": "fog", "look_refs": [CHAR_REF]})
-    assert not r.success and "refused before delegation" in r.error and not loose.calls and not bound.calls
+    assert not r.success and "registered production" in r.error and not loose.calls and not bound.calls
 
 
 def test_governed_project_by_signed_pin_needs_no_keys(env, verifiers, image, monkeypatch):

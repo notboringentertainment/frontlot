@@ -1074,7 +1074,8 @@ def paid_call_context(
     # C2, first of two checks: before any upload, and before the tracker
     # exists, a shot call must fit the shot's approved dollars and takes.
     # Calls without a supervised brief retain their existing contract.
-    check_call(project_root, inputs, kind=media, estimated_usd=estimated_usd)
+    if check_resume:
+        check_call(project_root, inputs, kind=media, estimated_usd=estimated_usd)
     tracker = CostTracker(
         budget_total_usd=float(config.budget_usd_cap),
         reserve_pct=0.0,

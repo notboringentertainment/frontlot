@@ -2235,7 +2235,7 @@ function renderTakeTile(s, shot, take, { decidable, othersWaiting }) {
     tile.append(el("p", { class: "take-facts" }, tape("done", "Chosen now")));
     return tile;
   }
-  if (othersWaiting > 0) {
+  if (othersWaiting > 0 && !s.is_trailer) {
     tile.append(el("p", { class: "take-aside" },
       `Approving this take sets the other ${othersWaiting === 1 ? "one" : othersWaiting} aside.`));
   }
@@ -2243,12 +2243,12 @@ function renderTakeTile(s, shot, take, { decidable, othersWaiting }) {
   tile.append(el("div", { class: "take-decide" }, nodes.note,
     el("div", { class: "take-actions" },
       el("button", {
-        type: "button", class: "gate-primary take-approve", disabled: busy || !take.playable ? "" : null,
+        type: "button", class: "gate-primary take-approve", disabled: busy || !take.playable || s.is_trailer ? "" : null,
         title: take.playable ? null : "A missing take can't be approved",
         onclick: () => decideTake(shot, take, "approve"),
       }, busy ? "Saving…" : "Approve"),
       el("button", {
-        type: "button", class: "quiet-btn take-decline", disabled: busy ? "" : null,
+        type: "button", class: "quiet-btn take-decline", disabled: busy || s.is_trailer ? "" : null,
         onclick: () => decideTake(shot, take, "decline"),
       }, "Decline"))));
   if (error) tile.append(el("p", { class: "take-error", role: "alert" }, error));
@@ -2266,7 +2266,9 @@ function renderTakeReview(s, shot) {
   return el("section", { class: "take-review", "aria-label": "Takes to review" },
     direction && direction !== label
       ? el("details", { class: "take-brief" }, el("summary", {}, "What the shot asked for, in full"), el("p", {}, direction)) : null,
-    el("p", { class: "take-lead" }, waiting.length === 1
+    el("p", { class: "take-lead" }, s.is_trailer
+      ? "Signed take decisions are not available yet. You can watch this take, but accepting or declining it needs your signature; it cannot enter the cut."
+      : waiting.length === 1
       ? "Watch the take, then approve it to make it this shot's chosen take, or decline it."
       : `Watch the ${waiting.length} takes side by side. Approve the one you want; it becomes this shot's chosen take.`),
     el("div", { class: `take-grid n${Math.min(tiles.length, 3)}` }, tiles));

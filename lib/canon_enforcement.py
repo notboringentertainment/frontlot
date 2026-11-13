@@ -266,6 +266,14 @@ def _resembles_protected(text, protected):
             or (shared >= 3 and shared/max(len(a),len(b)) >= .75))
 
 
+def _short_protected_run(text, protected):
+    """Only the short-substring rule relaxes; near-exact matches stay refused."""
+    a, b = _protected_words(text), _protected_words(protected)
+    return (2 <= len(a) <= 3 and len(a) < len(b)
+            and any(b[i:i+len(a)] == a for i in range(len(b)-len(a)+1))
+            and not (len(a) >= 3 and len(a)/len(b) >= .75))
+
+
 def _trailer_spoiler(text, refs, lock):
     if lock.get('id') in _split_refs(refs or ''):
         return True
@@ -305,7 +313,10 @@ def check_trailer_text(paper, canon):
             for protected in canon.get('protected_lines', []):
                 wording = protected.get('line', '')
                 if wording and text != wording and _resembles_protected(text, wording):
-                    errors.append(f'{label} {n} changes a protected line. Use the protected wording exactly: “{wording}”')
+                    if _short_protected_run(text, wording):
+                        warnings.append(f'{label} {n} resembles part of a protected line: “{wording}” This short phrase is a warning, not clearance.')
+                    else:
+                        errors.append(f'{label} {n} changes a protected line. Use the protected wording exactly: “{wording}”')
             for lock in canon.get('locks', []):
                 if lock.get('spoiler') and _trailer_spoiler(text, row.get('source_ref'), lock):
                     errors.append(f'{label} {n} reveals protected story material. Keep that reveal out of the trailer.')
