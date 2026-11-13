@@ -1083,3 +1083,18 @@ details.log-more[open] > summary { margin-bottom: 12px; }
 .paper-panel select { width:100%; padding:10px; background:#fffdf7; color:#252a24; font:inherit; }
 .paper-panel button { background:#353e34; color:#fffdf7; border:1px solid #596653; border-radius:4px; }
 .paper-panel button:disabled { background:#d5d5cc; color:#666; cursor:default; }
+/* Trailer voice uses the same readable paper panels and natural page height. */
+.voice-panel { border-top:1px solid var(--line, #ddd); margin-top:24px; padding-top:24px; }
+.voice-panel label { display:grid; gap:6px; margin:12px 0; }
+.voice-panel label:has(input[type=checkbox]) { display:flex; align-items:center; }
+.voice-panel textarea { min-height:70px; width:100%; }
+.voice-panel select { max-width:100%; }
+.voice-panel audio { width:100%; margin:10px 0; }
+.voice-panel blockquote { margin:12px 0; padding:12px; border-left:3px solid #8b8067; white-space:pre-wrap; }
+.voice-lines { display:grid; grid-template-columns:minmax(140px, .65fr) minmax(0, 1.5fr); gap:16px; align-items:start; }
+.voice-lines > aside { position:sticky; top:12px; }
+.voice-panel input,.voice-panel select,.voice-panel textarea { font:inherit; padding:8px; }
+.voice-panel button { margin:6px 10px 6px 0; }
+.voice-workspace-nav { display:flex; gap:12px; padding:12px 20px; border-bottom:1px solid #ddd; }
+@media(max-width:900px){.voice-lines { grid-template-columns:1fr; }.voice-lines > aside { position:static; }}
+.voice-spend,.voice-take { overflow-wrap:anywhere; }
