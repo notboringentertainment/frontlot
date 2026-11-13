@@ -1761,7 +1761,7 @@ const GATE_WORDS = {
   footage_spend: "Make this clip",
   footage_take: "Review this take",
 };
-const gateWords = (kind) => state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : GATE_WORDS[kind] || titleCase(kind);
+const gateWords = (kind) => state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
 
 const SLOT_OF_KIND = {
   look_lock: "look",
@@ -2222,7 +2222,7 @@ function renderTakeTile(s, shot, take, { decidable, othersWaiting }) {
   const busy = takeBusy.has(take.take_id);
   const facts = [
     `Take ${number}`,
-    take.cost_usd != null ? fmtMoney(take.cost_usd) : "cost not recorded",
+    take.cost_usd != null ? `${fmtMoney(take.cost_usd)}${take.cost_basis==="signed_maximum"?" booked at signed maximum":""}` : "cost not recorded",
     take.duration_seconds != null ? `${Math.round(take.duration_seconds)} seconds` : null,
     take.made_at ? `made ${fmtGateTime(take.made_at)}` : null,
   ].filter(Boolean).join(" · ");
@@ -2280,7 +2280,7 @@ function renderShotViewer(s, shot) {
   const name = shotName(s, shot);
   const frames = shot.takes.map((take, i) => ({
     path: take.path,
-    label: `Take ${i + 1}${take.selected ? ", chosen" : ""}`,
+    label: `Take ${i + 1}${take.selected ? ", chosen" : take.needs_review ? ", needs a fresh look" : ""}`,
     state: take.selected ? "done" : "",
     missing: take.path ? null : "File missing",
   }));
@@ -2312,7 +2312,7 @@ function renderShotViewer(s, shot) {
       el("button", {
         class: "text linkish", type: "button", style: "all:unset;cursor:pointer",
         onclick: () => { selectedFrame = i; render(); },
-      }, [`Take ${i + 1}`, t.selected ? ", chosen" : t.waiting ? ", waiting for you" : t.declined ? ", declined" : "", t.cost_usd != null ? `, ${fmtMoney(t.cost_usd)}` : "",
+      }, [`Take ${i + 1}`, t.selected ? ", chosen" : t.waiting ? ", waiting for you" : t.declined ? ", declined" : t.needs_review ? ", needs a fresh look" : "", t.cost_usd != null ? `, ${fmtMoney(t.cost_usd)}${t.cost_basis==="signed_maximum"?" booked at signed maximum":""}` : "",
         t.duration_seconds != null ? `, ${Math.round(t.duration_seconds)} seconds` : ""].join("")),
       el("small", {}, `Made ${fmtGateTime(t.made_at)}${t.from_earlier_brief ? ", from an earlier brief" : ""}`))));
 
@@ -2471,7 +2471,8 @@ function renderGateViewer(s) {
 
   const trailerCreation = Boolean(s.trailer_setup_pending && header.kind === "pipeline_migration");
   const footageCard=gateDetail.packet?.footage_card;
-  const footageGate=["footage_spend","footage_take"].includes(header.kind);
+  const resolutionCard=gateDetail.packet?.footage_resolution;
+  const footageGate=["footage_spend","footage_take"].includes(header.kind) || Boolean(resolutionCard);
   const facts = footageGate ? [["What you are signing",gateWords(header.kind)],["Stage approval","None"]] : trailerCreation ? [["What you are signing", "Trailer creation"], ["Stage approval", "None"], ["Spending permission", "None"]] : [
     ["what", gateWords(header.kind)], ["kind", header.kind], ["stage", header.stage], ["scope", header.scope],
     ["entity", header.entity_id], ["snapshot", fmtGateTime(gateDetail.snapshot_at)],
@@ -2517,7 +2518,11 @@ function renderGateViewer(s) {
     packetError ? el("div", { class: "alert", role: "alert" }, el("b", {}, "Some evidence is missing or changed"),
       el("span", {}, gateDetail.packet && gateDetail.packet.error ? gateDetail.packet.error : "Signing stays off until it's complete.")) : null,
     lookSpec ? gateActions(s, summary, stale, packetError) : null,
-    footageCard ? el("section",{class:"paper-panel","aria-label":"Footage request details"},
+    resolutionCard ? el("section",{class:"paper-panel"},el("h3",{},"Spending is blocked until this account outcome is signed and applied"),
+      el("p",{},resolutionCard.description),el("p",{},resolutionCard.charged?"You found a charge in the service account.":"You confirmed that the service did not charge this request."),
+      el("p",{},`Cash: $${resolutionCard.cash.toFixed(4)}. Replacement value of credits: $${resolutionCard.credits.toFixed(4)}.`),
+      el("p",{},resolutionCard.note),el("p",{},"This records the account outcome. It cannot buy or resubmit a clip, approve a take or complete a stage.")) : null,
+    footageCard ? el("section",{class:"paper-panel footage-review","aria-label":"Footage request details"},
       el("h3",{},footageCard.decision ? `Your decision: ${footageCard.decision}` : "One clip, one signature"),
       el("p",{},footageCard.description),
       el("p",{},`${footageCard.length} seconds. ${footageCard.service || ""} ${footageCard.model || ""}`),

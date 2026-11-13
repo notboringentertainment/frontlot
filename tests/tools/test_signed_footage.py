@@ -180,6 +180,8 @@ def test_unknown_charge_uses_the_shared_signed_audio_resolution(film, provider, 
     with pytest.raises(ValueError,match='signed'):
         audio_workspace.resolve_charge(root,reservation['reservation_id'],False,0,0,'Checked the invented service account.')
     req = audio_workspace.request_resolution(root,reservation['reservation_id'],False,0,0,'Checked the invented service account.')
+    from backlot.state import GATE_RENDERERS
+    assert GATE_RENDERERS['audio_resolution'](root,req)['footage_resolution']['description']==record['prompt']
     looks.approve_request(req,root)
     audio_workspace.resolve_charge(root,reservation['reservation_id'],False,0,0,'Checked the invented service account.')
     assert load_reservations(root)[reservation['reservation_id']]['state']=='failed'
@@ -212,6 +214,8 @@ def test_accepted_take_becomes_stale_after_paper_change(film, provider):
     revised=copy.deepcopy(current['paper_cut']);revised['shots'][0]['references']=[]
     save_revision(root,revised,current['edit_revision_sha256'])
     assert workspace().take_state(root,shot,take['take_id'])=='Needs a fresh look'
+    from backlot.state import load_board_state
+    assert load_board_state(root)['shots'][0]['takes'][0]['needs_review']
     with pytest.raises(ValueError):workspace().require_accepted(root,shot,take['take_id'])
 
 
@@ -547,3 +551,19 @@ def test_two_confirmations_in_parallel_and_restart_buy_one_clip(film,provider,mo
     # A fresh operation has no remembered in-process authorization.
     assert workspace().execute(root,record['request_id'])==take
     assert len(provider['uploads'])==len(provider['posts'])==1
+
+
+@pytest.mark.parametrize('field,value',[('prompt','A relabelled shot.'),('references',[]),('duration_seconds',900),
+    ('cost_usd',0),('cost_basis','service_report'),('path','assets/keeper.png')])
+def test_relabelled_take_cannot_obtain_acceptance(film,provider,field,value):
+    root,shot=film;record=prepare(film);approve(root,record)
+    if field=='cost_basis':value='invented_invoice'
+    take=workspace().execute(root,record['request_id'])
+    # Rewrite only an invented notebook to reproduce an edited take record.
+    candidates=[p for p in sp.shot_dir(root,shot).glob('*.jsonl')]
+    assert len(candidates)==1
+    path=candidates[0];rows=[json.loads(line) for line in path.read_text().splitlines()]
+    next(r for r in rows if r.get('take_id')==take['take_id'])[field]=value
+    path.write_text(''.join(json.dumps(r)+'\n' for r in rows))
+    with pytest.raises(ValueError):workspace().request_decision(root,shot,take['take_id'],'accept')
+    assert len(provider['posts'])==1

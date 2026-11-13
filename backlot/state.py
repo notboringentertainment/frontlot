@@ -607,6 +607,8 @@ def _shot_entry(project_dir: Path, shot_id: str) -> Optional[dict]:
                 "playable": path is not None,
                 "made_at": row.get("at"),
                 "cost_usd": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+                **({'cost_basis':row.get('cost_basis'),'signed_footage_request':bool(row.get('footage_request_id')),
+                    'needs_review':take_standing=='needs_review'} if sp.is_trailer(project_dir) else {}),
                 "duration_seconds": row.get("duration_seconds"),
                 "from_earlier_brief": bool(revision and made_from != revision),
                 "selected": take_standing == "chosen",
@@ -1692,6 +1694,20 @@ def _render_footage(root: Path, req: dict[str, Any]) -> dict[str, Any]:
         return {'packet_error':True,'error':str(exc) if isinstance(exc,ValueError) else 'The footage request cannot be verified. Nothing can be signed.'}
 
 
+def _render_account_review(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    supplied=req.get('approval_record') or {}
+    if (supplied.get('request') or {}).get('provider')!='fal':return _render_text_only(root,req)
+    from lib import audio_workspace,receipts
+    try:
+        record=audio_workspace.resolution_record(root,req.get('entity_id'),supplied.get('charged'),
+            supplied.get('cash_usd'),supplied.get('credits_usd'),supplied.get('note'))
+        if record['request'].get('provider')!='fal':raise ValueError('This account review is for a different service.')
+        return {'footage_resolution':{'description':record['request']['prompt'],'charged':record['charged'],
+            'cash':record['cash_usd'],'credits':record['credits_usd'],'note':record['note']}}
+    except (ValueError,OSError,TypeError,KeyError,receipts.ReceiptChainError):
+        return {'packet_error':True,'error':'The original signed footage request or proposed account outcome cannot be verified. Nothing was resolved.'}
+
+
 from lib.receipts import APPROVAL_KINDS
 
 
@@ -1735,7 +1751,7 @@ GATE_RENDERERS = _GateRendererMap({
     "cast_change": _render_cast_change,
     "audio_spend": _render_audio_spend,
     "audio_take": _render_text_only,
-    "audio_resolution": _render_text_only,
+    "audio_resolution": _render_account_review,
     "footage_spend": _render_footage,
     "footage_take": _render_footage,
 })

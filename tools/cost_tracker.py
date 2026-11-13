@@ -720,8 +720,10 @@ def reserve_paid_call(
 ) -> str:
     """Reserve budget through ``tracker`` and persist a ``submitting`` reservation.
 
-    Raises the tracker's BudgetExceededError / ApprovalRequiredError before
-    anything is written to the reservation log. Returns the reservation id,
+    Ordinary calls raise budget refusals before writing the reservation log.
+    Dedicated signed requests first persist an intent, so a crash during the
+    hold cannot lose their one-use identity; a known refusal closes that intent
+    without charge. Returns the reservation id,
     which doubles as the client idempotency key sent with the request.
     ``output_hint`` (e.g. ``{"kind": "video", "output_path": ...}`` or
     ``{"kind": "image", "objects_dir": ...}``) lets the offline reconciler

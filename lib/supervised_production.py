@@ -352,7 +352,7 @@ def take_decisions(rows, *, final_declines=False):
     return standing
 
 
-TRAILER_DECISIONS_UNAVAILABLE = 'Trailer take decisions require your signature. Signed take decisions are not available yet; nothing was decided.'
+TRAILER_DECISIONS_UNAVAILABLE = 'Trailer take decisions require your signature. Review a prepared signed take request under Needs you; this button cannot sign it. Nothing was decided.'
 
 
 def decision_rows(root, rows):

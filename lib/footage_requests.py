@@ -330,6 +330,8 @@ def _take(root, shot_id, take_id):
 def _provenance(root, take):
     reservation = load_reservations(root).get(take.get('reservation_id'))
     hint = (reservation or {}).get('output_hint') or {}
+    if not isinstance(hint.get('footage_request_id'),str):
+        raise ValueError('This take has no signed footage request and matching generated clip. It cannot be accepted as trailer footage.')
     record = _read(root,hint.get('footage_request_id'))
     approval = receipts.find_approval(root,'footage_spend',record_sha256=record_sha256(record),entity_id=record['request_id'])
     from tools.base_tool import normalized_inputs_hash
@@ -344,6 +346,19 @@ def _provenance(root, take):
             or found.get('normalized_inputs_hash') != normalized_inputs_hash(tool_inputs(root,record))
             or reservation.get('normalized_inputs_hash') != found.get('normalized_inputs_hash')):
         raise ValueError('The take does not match its signed request and generation receipt.')
+    expected=f"production/shots/{record['shot_id']}/takes/{take['sha256']}.mp4"
+    if (take.get('path')!=expected or take.get('prompt')!=record['prompt'] or take.get('references')!=record['references']
+            or take.get('cost_usd')!=found['cost_usd'] or take.get('cost_basis')!=found.get('footage_charge_basis')):
+        raise ValueError('The take description, references, file or booked charge changed. It cannot be accepted.')
+    from lib.pathsafe import resolve_input, PathSafetyError, sha256_file
+    from tools.video._shared import verify_video_file
+    try:
+        path=resolve_input(take['path'],root)
+        if sha256_file(path)!=take['sha256']:raise ValueError('The take file changed.')
+        measured=verify_video_file(path)['duration_seconds']
+    except (PathSafetyError,OSError) as exc:
+        raise ValueError('The take file is missing, linked or outside this production.') from exc
+    if take.get('duration_seconds')!=measured:raise ValueError('The saved take length differs from the clip. It cannot be accepted.')
     return record
 
 

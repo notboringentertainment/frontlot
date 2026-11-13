@@ -406,6 +406,8 @@ class KlingReferenceVideo(BaseTool):
                 allowed_mime_prefixes=("video/", "application/octet-stream"),
             )
             probed = _shared.verify_video_file(staging, require_audio=bool(payload["generate_audio"]))
+            if signed_bound is not None and (not 0<probed['duration_seconds']<=float(inputs['duration'])+1/24):
+                raise ValueError('The returned clip length exceeds its signed request. Billing needs signed review.')
             receipts.stage_generation_wal(
                 project_root,
                 execution_id=execution_id,

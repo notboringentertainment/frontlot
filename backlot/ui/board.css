@@ -361,6 +361,7 @@ img { display: block; }
 .look-row p, .look-row ul { margin: 0; color: var(--ink-2); max-width: 68ch; line-height: 1.5; }
 .look-row ul { padding-left: 0; list-style: none; }
 .look-row li + li { margin-top: 4px; }
+.footage-review .look-row p, .footage-review .look-row ul { color: #252a24; }
 
 /* the frame strip under the screen */
 .strip {
