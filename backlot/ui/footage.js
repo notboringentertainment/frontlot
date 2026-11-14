@@ -124,7 +124,7 @@ function shotPanel(s,shot){
 export function renderFootageControls(s){
   if(!data)return el("p",{},"Loading footage controls…");
   return el("section",{class:"footage-controls","aria-label":"Footage workspace"},el("h2",{},"Footage"),
-    el("p",{},"Supply and sign the story in Story workspace, then check the saved paper cut. Look approval, footage price figures and changing the production ceiling still happen outside these panels; those controls are not built here. Every clip and every keep or decline decision needs your signature. Keeping a take completes no stage."),
+    el("p",{},"Supply and sign the story in Story workspace, then check the saved paper cut. Look approval, footage price figures and changing the production ceiling still happen outside these panels; those approval controls are not built here. Every clip and every keep or decline decision needs your signature. Keeping a take completes no stage."),
     data.error||globalError?el("p",{role:"alert"},data.error||globalError):null,...(data.shots||[]).map(shot=>shotPanel(s,shot)));
 }
 

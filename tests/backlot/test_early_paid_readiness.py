@@ -241,7 +241,7 @@ def test_empty_production_signs_story_checks_paper_and_keeps_three_audio_purchas
             buy_three_audio(page,panel,isolated_standins,'empty')
             page.get_by_role('button',name='Open footage requests',exact=True).click()
             footage=page.get_by_label('Footage workspace',exact=True)
-            expect(footage).to_contain_text('those controls are not built here')
+            expect(footage).to_contain_text('those approval controls are not built here')
             for control in footage.get_by_role('button',name='Create footage request',exact=True).all():
                 expect(control).to_be_disabled()
             shot_picture(page,'empty-footage-blocked',footage)

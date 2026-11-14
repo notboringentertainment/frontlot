@@ -159,8 +159,8 @@ def _export_duration(path):
 def approval_record(root, pin, stage, artifacts):
     """The existing artifact-review signer must approve this exact record.
 
-    No production operation constructs or signs this record yet. Tests stand in
-    for the future human signing surface using the existing gate machinery.
+    The story source has a board signing surface using this record and the
+    existing gate machinery. Other stage controls remain separate work.
     """
     contract = require_contract(root)
     if stage=='canon_ingest':
