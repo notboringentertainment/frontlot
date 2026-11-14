@@ -49,9 +49,11 @@ def snapshot(root):
                 clips[medium].append({**catalogue.get(row.get('take_id'),{'label':f'{"Picture" if medium=="picture" else "Sound"} {i} — original take is no longer available','kept_at':None,'take_number':None,'thumbnail':None}), 'take_id':row.get('take_id',''),'problem':problem})
     versions=[{'revision':v['edit_revision_sha256'],'number':v['revision_number'],'saved_at':v.get('saved_at')} for v in (saved or {}).get('revision_history',[])+([saved] if saved else []) if v.get('cutting_view')]
     from lib.trailer_contract import require_contract
+    from lib import trailer_titles as titles
     return {'revision':(saved or {}).get('edit_revision_sha256'),'number':(saved or {}).get('revision_number'),
             'timeline':cut.editable(timeline,display=True) if ready else {'fps':24,'picture':[],'audio':[]},'pictures':pictures,'sounds':sounds,
-            'clips':clips,'versions':versions,'target_frames':round(require_contract(root)['target_duration_seconds']*24)}
+            'clips':clips,'versions':versions,'target_frames':round(require_contract(root)['target_duration_seconds']*24),
+            'fonts':titles.fonts(),'card_states':{c['id']:titles.status(root,c) for c in timeline.get('cards',[])}}
 
 def mount(app,require_writer,safe_root,invalidate):
     import asyncio,re
@@ -75,6 +77,36 @@ def mount(app,require_writer,safe_root,invalidate):
         if not isinstance(data,dict) or set(data)!={'revision'}:raise HTTPException(400,'Save the cut before preparing playback.')
         path=await run(cut.render_preview,safe_root(project_id),data['revision'])
         return {'url':f'/api/project/{project_id}/cut/play/{path.name}'}
+    @app.post('/api/project/{project_id}/cut/cards/{identity}/approval')
+    async def approve_card(project_id:str,identity:str,request:Request):
+        require_writer(request);data=await request.json();root=safe_root(project_id)
+        if not isinstance(data,dict) or set(data)!={'revision'}:raise HTTPException(400,'Save the cut before preparing this card’s review.')
+        saved=await run(trailer_edit.read_revision,root)
+        if not saved or saved['edit_revision_sha256']!=data['revision']:raise HTTPException(400,'The cut changed. Reopen the saved cut before reviewing this card.')
+        from lib.trailer_titles import request_approval
+        gate=await run(request_approval,root,identity);invalidate(project_id)
+        return {'gate_request_id':gate['request_id']}
+    @app.post('/api/project/{project_id}/cut/cards/preview')
+    async def draft_lettering(project_id:str,request:Request):
+        require_writer(request);data=await request.json();root=safe_root(project_id)
+        from fastapi.responses import Response
+        from lib.trailer_titles import CARD_FIELDS,card_png
+        if not isinstance(data,dict) or set(data)!={'revision','card'} or not isinstance(data['card'],dict) or set(data['card'])!=CARD_FIELDS:
+            raise HTTPException(400,'Choose the card’s exact words and a supplied face before previewing its lettering.')
+        await run(footage_requests.require_trailer,root)
+        saved=await run(trailer_edit.read_revision,root)
+        if not saved or saved['edit_revision_sha256']!=data['revision']:
+            raise HTTPException(400,'The cut changed. Reopen the saved cut before previewing this card.')
+        return Response(await run(card_png,data['card']),media_type='image/png',headers={'Cache-Control':'no-store'})
+    @app.get('/api/project/{project_id}/cut/cards/{identity}/lettering')
+    async def card_lettering(project_id:str,identity:str,fingerprint:str):
+        from fastapi.responses import Response
+        from lib.trailer_titles import approval_record,card_png
+        from lib.canonical_json import record_sha256
+        record=await run(approval_record,safe_root(project_id),identity)
+        if record_sha256(record)!=fingerprint:raise HTTPException(400,'The card changed. Save the cut and prepare a new review.')
+        png=await run(card_png,record['card'])
+        return Response(png,media_type='image/png',headers={'Cache-Control':'no-store'})
     @app.post('/api/project/{project_id}/cut/restore')
     async def restore(project_id:str,request:Request):
         require_writer(request);data=await request.json()

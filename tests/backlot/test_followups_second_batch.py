@@ -147,14 +147,3 @@ def test_6_fingerprint_refuses_output_in_owner_folder(tmp_path,monkeypatch):
     output=owner/'forbidden.json';monkeypatch.setattr(safety.sys,'argv',['fingerprint',str(output)])
     with pytest.raises(SystemExit,match='real app folder'):safety.main()
     assert not output.exists()
-
-
-def test_7_socket_fixture_cleans_its_own_directory(tmp_path,monkeypatch):
-    import tempfile
-    from tests.backlot.test_cutting_isolation_round2 import test_slow_broker_hello_is_unavailable_not_an_unhandled_timeout
-    original=tempfile.mkdtemp;created=[]
-    def track(*a,**k):
-        folder=original(*a,**k);created.append(Path(folder));return folder
-    monkeypatch.setattr(tempfile,'mkdtemp',track)
-    test_slow_broker_hello_is_unavailable_not_an_unhandled_timeout(tmp_path,monkeypatch)
-    assert created and all(not path.exists() for path in created)

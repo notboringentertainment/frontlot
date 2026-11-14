@@ -2,6 +2,8 @@
 
 ## Trailer scope
 
+Separately signed trailer intertitles and an end card are local lettering from the saved edit. They need no paid poster generation for a temporary rough preview. This overrides later poster-only title restrictions for these cards, while leaving approved poster assets and final pinned poster requirements intact. Never send their lettering to an image model or rewrite it.
+
 This section applies only to a production signed to the trailer definition, version 1.6. For that production, every rule in this section overrides conflicting later text, including any instruction to proceed without a gate or to treat an assistant-set approval flag as consent. All other later requirements still apply to trailers, including canon, look, portrait, reference and spending protections. Older productions keep their pinned stages, runtime, timing and approval rules. A marker alone cannot change the signed definition. Never migrate a production as a convenience.
 
 The saved trailer contract states its target running time, at least one second and at most two minutes, and its two finishing approval points. Carry that same contract into the script, shot plan, edit, render report and final review. New trailer timing uses integer frames at twenty-four frames per second. Saved script, edit and export duration may exceed the target by at most one frame, and may never exceed two minutes. Changing an approved target requires fresh review of the affected stages; keep their old approvals as history. The saved edit is the timing authority for both preview and export; the editing piece supplies that timeline, rather than creating another story store here.
