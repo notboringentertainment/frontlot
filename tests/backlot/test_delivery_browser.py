@@ -63,7 +63,8 @@ def delivery_journey(delivery_cut,monkeypatch,repeat=1):
         browser=pw.chromium.launch(headless=True)
         try:
             page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
-            delivery_reads=[]
+            delivery_reads=[];delivery_requests=[]
+            page.on('request',lambda r:delivery_requests.append(r.method) if r.url==url+f'/api/project/{root.name}/delivery' else None)
             def observed(response):
                 if response.url==url+f'/api/project/{root.name}/delivery' and response.status==200:
                     value=response.json();delivery_reads.append((value['rough_status'],[(r['id'],r['status']) for r in value['exports']]))
@@ -109,7 +110,7 @@ def delivery_journey(delivery_cut,monkeypatch,repeat=1):
             assert d.snapshot(root)['exports'][0]['status']=='Approved by you'
             page.get_by_role('button',name='Return to delivery',exact=True).click()
             try:expect(panel).to_contain_text('Approved by you',timeout=30000)
-            except AssertionError as e:raise AssertionError('Verified delivery responses: '+repr(delivery_reads[-12:])) from e
+            except AssertionError as e:raise AssertionError('Verified delivery responses: '+repr(delivery_reads[-12:])+'; requests: '+repr(delivery_requests)+'; page errors: '+repr(errors)) from e
             page.reload()
             panel=page.get_by_role('region',name='Trailer delivery')
             expect(panel).to_contain_text('Approved by you',timeout=30000)
@@ -148,6 +149,7 @@ def delivery_journey(delivery_cut,monkeypatch,repeat=1):
                 expect(panel.get_by_role('status').first).to_contain_text('shown in Finder',timeout=30000)
                 assert len(revealed)==journey+1
                 assert d.snapshot(root)['exports'][0]['status']=='Approved by you'
+                print(f'Completed local Delivery journey {journey+1} of {repeat}.',flush=True)
                 if journey==1 and os.environ.get('DELIVERY_REPEAT_CAPTURE'):
                     current.evaluate('(e)=>e.scrollIntoView({block:"start",behavior:"instant"})')
                     shot=Path(os.environ['DELIVERY_REPEAT_CAPTURE'])/'round2-current-and-earlier-exports.png'

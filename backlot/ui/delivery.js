@@ -44,19 +44,26 @@ export function renderDeliverySigning(detail,actions,onReturn){
 export function renderDelivery(s,onSign){
  if(active?.id===s.project_id){active.refresh();return active.node;}
  const base=`/api/project/${encodeURIComponent(s.project_id)}/delivery`,node=el('section',{class:'paper-editor',role:'region','aria-label':'Trailer delivery'}),message=el('p',{role:'status'},'Checking the saved cut and its signed takes…'),body=el('div',{});
- let data,busy=false,flight=null,pendingRefresh=false,key='',progress=false,returningSummary=false;
- async function api(path='',value){const r=await fetch(base+path,value===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify(value)});const v=await r.json();if(!r.ok)throw Error(v.detail||'Reopen the saved delivery controls and try again.');return v;}
+ let data,busy=false,flight=null,pendingRefresh=false,key='',progress=false,returningSummary=false,readGeneration=0,readController=null;
+ async function api(path='',value,signal){const r=await fetch(base+path,value===undefined?{cache:'no-store',signal}:{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify(value)});const v=await r.json();if(!r.ok)throw Error(v.detail||'Reopen the saved delivery controls and try again.');return v;}
  function button(label,fn,disabled=false){return el('button',{type:'button',disabled:disabled?'':null,onclick:async()=>{if(busy)return;busy=true;try{await fn();}catch(e){progress=false;message.textContent=e.message;}finally{busy=false;await refresh(true);}}},label);}
  function preparing(words){progress=true;message.textContent=words;}
  function refresh(force=false,returning=false){
-  if(returning)returningSummary=true;
+  if(returning){
+   returningSummary=true;
+   // Do not let a read begun before the signature hold its return hostage.
+   // The generation check also rejects transports that deliver after abort.
+   readGeneration++;readController?.abort();flight=null;
+  }
   if(flight){if(force)pendingRefresh=true;return flight;}
   if(busy&&!force)return Promise.resolve();
+  const generation=++readGeneration,controller=new AbortController();readController=controller;
   flight=(async()=>{
    do{
     pendingRefresh=false;
     try{
-     const next=await api();
+     const next=await api('',undefined,controller.signal);
+     if(generation!==readGeneration)return;
      // A signing return may arrive while an older read is waiting. Discard
      // that answer and fulfil every waiter only after the queued read lands.
      if(pendingRefresh)continue;
@@ -67,13 +74,14 @@ export function renderDelivery(s,onSign){
       message.textContent=`Saved cut loaded. Rough cut: ${next.rough_status}. ${next.exports.some(e=>e.status==='Approved by you')?'The current final file is approved by you.':'Review the current file and its approvals below.'}`;
      }
     }catch(e){
+     if(generation!==readGeneration)return;
      if(pendingRefresh)continue;
      progress=false;message.textContent=e.message;
      for(const v of node.querySelectorAll('video')){v.pause();v.removeAttribute('src');v.load();}
      for(const b of body.querySelectorAll('button'))b.disabled=true;
     }
    }while(pendingRefresh);
-  })().finally(()=>{flight=null;});
+  })().finally(()=>{if(generation===readGeneration){flight=null;readController=null;}});
   return flight;
  }
  function draw(){body.replaceChildren();

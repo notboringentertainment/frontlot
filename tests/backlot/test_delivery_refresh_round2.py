@@ -29,6 +29,7 @@ def test_overlapping_returns_wait_for_verified_server_state_twenty_times(signed_
                         window.reads.push(count);
                         if(count===1)return new Response(JSON.stringify(stale));
                         if(count===2)return await new Promise(resolve=>{window.releaseOld=()=>resolve(new Response(JSON.stringify(stale)));});
+                        if(count===3)return await new Promise(resolve=>{window.releaseLatest=()=>resolve(new Response(JSON.stringify(latest)));});
                         return new Response(JSON.stringify(latest));
                     };
                     document.body.append(m.renderDelivery({project_id:'invented-return-'+iteration},()=>{}));
@@ -45,7 +46,13 @@ def test_overlapping_returns_wait_for_verified_server_state_twenty_times(signed_
                 # This is the exact contract used by Return to delivery. It
                 # must not resolve while the pre-signing answer is in flight.
                 assert page.evaluate('()=>window.returned') is False
-                page.evaluate('async()=>{window.releaseOld();await window.returnPromise;}')
+                # An old request may never finish. Returning must issue its
+                # own read now, and wait for that verified response instead.
+                page.wait_for_function('()=>!!window.releaseLatest',timeout=5000)
+                assert page.evaluate('()=>window.returned') is False
+                page.evaluate('async()=>{window.releaseLatest();await window.returnPromise;}')
+                # Simulate a late answer even if a transport ignores abort.
+                page.evaluate('()=>window.releaseOld()')
                 expect(page.get_by_role('region',name='Trailer delivery')).to_contain_text('Signed by you')
                 expect(page.get_by_role('button',name='Make the final file',exact=True)).to_be_enabled()
                 try:expect(page.get_by_role('status')).to_contain_text('Rough cut: Signed by you.')
