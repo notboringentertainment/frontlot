@@ -517,7 +517,13 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
     @app.get("/api/project/{project_id}/paper-cut")
     async def paper_status(project_id: str):
         from lib.trailer_edit import paper_state
-        return await asyncio.to_thread(paper_state, _safe_project_dir(project_id))
+        def read():
+            root=_safe_project_dir(project_id)
+            result=paper_state(root)
+            from lib.footage_requests import preview_availability
+            result['footage_availability']=preview_availability(root,result.get('current'))
+            return result
+        return await asyncio.to_thread(read)
 
     @app.get("/api/project/{project_id}/paper-cut/{revision}")
     async def paper_version(project_id: str, revision: str):

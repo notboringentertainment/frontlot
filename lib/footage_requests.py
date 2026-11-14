@@ -139,12 +139,13 @@ def _sources(root, record):
             raise ValueError('A reference picture changed. Nothing can be sent.')
     if not record['references'] or any(not any(r.get('visual_bible_entity_id')==look['entity_id'] for r in record['references']) for look in record['look_refs']):
         raise ValueError('Choose a verified reference picture for every selected character or location before approval.')
-    from lib.look_ingest import active_looks, verify_look_refs
-    try:verify_look_refs(root, record['look_refs'])
-    except ValueError:raise ValueError('The current looks are not approved for generation. Approve them outside these controls first.') from None
-    active = active_looks(root)
-    material = [{'receipt_id':active[(r['entity_kind'],r['entity_id'])].receipt_id,
-                 'payload':active[(r['entity_kind'],r['entity_id'])].payload} for r in record['look_refs']]
+    from lib.look_ingest import active_looks, verify_look_refs, LookIngestError
+    try:
+        verify_look_refs(root, record['look_refs'])
+        active = active_looks(root)
+        material = [{'receipt_id':active[(r['entity_kind'],r['entity_id'])].receipt_id,
+                     'payload':active[(r['entity_kind'],r['entity_id'])].payload} for r in record['look_refs']]
+    except (ValueError,LookIngestError,KeyError):raise ValueError('The current looks changed or are no longer approved. This take needs a fresh look; review the current looks before a new request.') from None
     if material != record['look_material']:raise ValueError('The approved look changed. Prepare a new footage request.')
     return brief
 
@@ -298,6 +299,38 @@ def frozen_reference(root, inputs, path):
 def before_submit(root, inputs):
     auth = authorization(root,inputs)
     check_current(root,auth['record'],check_allowance=False)
+
+
+def mark_upload_contact(root,inputs):
+    """Private live-call evidence, never an input flag or a browser assertion."""
+    authorization(root,inputs)['external_contact_started']=True
+
+
+def cancel_before_contact(root,inputs,tracker):
+    """Receipt a proven local failure. Any attempted upload forbids this path."""
+    from lib import gates
+    from lib.state_io import append_jsonl
+    from tools.cost_tracker import reservation_lock,load_reservations,reconcile_paid_call
+    auth=_AUTH.get()
+    if not auth or auth['root']!=root or auth.get('external_contact_started'):return False
+    identity=auth.get('reservation_id')
+    with reservation_lock(root):
+        row=load_reservations(root).get(identity)
+        if not row or row['state']!='submitting' or row.get('provider_request_id'):return False
+        if row.get('output_hint',{}).get('footage_request_id')!=auth['record']['request_id']:return False
+        receipt={'receipt_id':str(uuid.uuid4()),'project_id':root.name,
+                 'kind':'footage_not_submitted','request_id':auth['record']['request_id'],
+                 'reservation_id':identity,'actual_usd':0,'recorded_at':time.time(),
+                 'approval_receipt_id':auth['approval']['receipt_id'],
+                 'input_sha256':auth['record']['input_sha256'],
+                 'reason':'Local failure before any external contact.'}
+        receipt['signature']=gates.sign_receipt(receipt)
+        # Evidence must be durable before money is released. A receipt-writing
+        # failure leaves the hold and the one-use reservation in place.
+        append_jsonl(root/'cost-reservations.jsonl',{'reservation_id':identity,'not_submitted_receipt':receipt})
+        reconcile_paid_call(root,identity,0,'failed',tracker)
+        auth['not_submitted_receipt']=receipt
+    return True
 
 
 def actual_charge(inputs, data):
@@ -507,7 +540,14 @@ def execute(root, identity):
         try:
             from tools.video.kling_reference_video import KlingReferenceVideo
             result = KlingReferenceVideo()._execute(tool_inputs(root,record))
-            if not result.success:raise ValueError('The footage request did not finish. Its charge may still be reserved; inspect the request before trying another.')
+            if not result.success:
+                if auth.get('not_submitted_receipt'):
+                    raise ValueError('This request was not submitted or charged. Its hold was released and a receipt was saved. Prepare and sign a new request for another attempt.')
+                if auth.get('external_contact_started'):
+                    raise ValueError('An upload or footage request did not finish. Its outcome is uncertain, so the money is held. Check the service account and sign its outcome before another request.')
+                if auth.get('reservation_id'):
+                    raise ValueError('This request did not finish and its cancellation could not be recorded. The money stays held. Check the service account and sign its outcome before another request.')
+                raise ValueError('The footage request did not finish. Check its recorded reservation and signed settings before preparing another request.')
             return generated_take(root,record,load_reservations(root)[result.data['reservation_id']])
         finally:_AUTH.reset(token)
 

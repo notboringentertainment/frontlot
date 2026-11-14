@@ -17,9 +17,7 @@ def _execute_locked(inputs,kind):
             raise ValueError('Audio inputs changed. Prepare a new request instead of overriding approved material.')
         if inputs.get('preferred_provider','elevenlabs') not in ('auto','elevenlabs'):
             raise ValueError('The approved request uses ElevenLabs. A different provider needs a new approved request.')
-        from lib.audio_workspace import check_price,generated_take
-        from lib.receipts import verified_generation_receipts, find_approval
-        from lib.canonical_json import record_sha256
+        from lib.audio_workspace import check_price,generated_take,recover_recorded_take
         from tools.cost_tracker import resume_check
         root=_governed._root(Path(inputs['project_dir']).expanduser())
         record=_governed.read_request(root,inputs['audio_request_id'])
@@ -31,10 +29,8 @@ def _execute_locked(inputs,kind):
                 raise ValueError('The output path differs from the approved take location.')
         # Recovery may finish a crashed download, but never submits again.
         resume_check(root)
-        approval=find_approval(root,'audio_spend',record_sha256=record_sha256(record),entity_id=record['request_id'])
-        for row in verified_generation_receipts(root):
-            if approval and row.get('audio_approval_receipt_id')==approval['receipt_id']:
-                return ToolResult(success=True,data={'take':generated_take(root,record,row)})
+        recovered=recover_recorded_take(root,record)
+        if recovered is not None:return ToolResult(success=True,data={'take':recovered})
         check_price(root,record)
         import re
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',record['model']) or (kind=='speech' and not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',record['voice'])):

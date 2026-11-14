@@ -318,6 +318,8 @@ class KlingReferenceVideo(BaseTool):
             return ToolResult(success=False, error="Kling o3 requires an explicit output_path under the project")
 
         governance: dict[str, Any] = {}
+        signed_bound = None
+        reservation_id = None
         try:
             # Look governance (look_refs verified before any upload) and the
             # per-shot allowance (C2) both run inside paid_call_context, which
@@ -340,8 +342,12 @@ class KlingReferenceVideo(BaseTool):
             if signed_bound is not None:
                 reservation_id = footage.reserve_before_upload(project_root,tracker,inputs)
             image_urls = list(inputs.get("reference_image_urls") or [])
-            uploaded = [_shared.upload_image_fal(str(footage.frozen_reference(project_root,inputs,resolved)
-                        if signed_bound is not None else resolved)) for resolved in local_refs]
+            frozen = [footage.frozen_reference(project_root,inputs,resolved)
+                      if signed_bound is not None else resolved for resolved in local_refs]
+            uploaded = []
+            for resolved in frozen:
+                if signed_bound is not None:footage.mark_upload_contact(project_root,inputs)
+                uploaded.append(_shared.upload_image_fal(str(resolved)))
             elements: list[dict[str, Any]] = []
             if inputs.get("reference_form") == "elements":
                 elements = self._build_elements(references_applied, uploaded, inputs.get("reference_video_url"))
@@ -349,6 +355,7 @@ class KlingReferenceVideo(BaseTool):
                 image_urls.extend(uploaded)
             if frame is not None:
                 # Packing policy (asset-director.md §2): the storyboard frame is the LAST @ImageN.
+                if signed_bound is not None:footage.mark_upload_contact(project_root,inputs)
                 image_urls.append(_shared.upload_image_fal(str(frame)))
                 references_applied.append({
                     "asset_id": str(inputs["storyboard_frame_sha256"]),
@@ -371,6 +378,12 @@ class KlingReferenceVideo(BaseTool):
                 kind="video",
             )
         except Exception as exc:
+            if signed_bound is not None and reservation_id is not None:
+                try:footage.cancel_before_contact(project_root,inputs,tracker)
+                except Exception:
+                    # Failing to save the local cancellation is never evidence
+                    # that a hold may be released or a request retried.
+                    pass
             return ToolResult(success=False, error=f"Kling o3 preflight failed: {exc}")
 
         request_id: str | None = None
