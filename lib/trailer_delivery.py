@@ -64,8 +64,30 @@ def rough_state(root):
 def _approval_state(root,stage,artifacts,pending,approved):
     rows=[r for r in receipts.verified_approvals(root,'artifact_review') if r.get('stage')==stage and r.get('scope')=='trailer-stage']
     if not rows:return pending
+    if stage=='compose':
+        # The sealed artifact pair contains this export's unique delivery id
+        # and output path, even when two movies have identical bytes. An
+        # approval of another pair is not an earlier approval of this file.
+        digest=record_sha256(artifacts)
+        own=[r for r in rows if r.get('record',{}).get('artifacts_sha256')==digest]
+        if not own:
+            if _superseded_export(root,artifacts,rows[-1]):return 'Needs a fresh look'
+            return pending
+        if rows[-1] not in own:return 'Needs a fresh look'
     try:contract.require_stage_approval(root,_pin(root),stage,artifacts);return approved
     except (ValueError,OSError,KeyError):return 'Needs a fresh look'
+
+def _superseded_export(root,artifacts,latest):
+    identity=artifacts['render_report']['metadata']['delivery_id']
+    item=read_export(root,identity)
+    positions={r['receipt_id']:i for i,r in enumerate(receipts.chained_rows(root,'generation'))}
+    for marker in _directory(root).glob('*/complete.json'):
+        try:other=read_export(root,marker.parent.name)
+        except (ValueError,OSError,KeyError):continue
+        pair={k:other[k] for k in ('render_report','final_review')}
+        if record_sha256(pair)==latest.get('record',{}).get('artifacts_sha256'):
+            return positions[other['generation_receipt_id']]>positions[item['generation_receipt_id']]
+    return False
 
 def _directory(root):
     root=Path(root);path=validate_output_parent(root/'artifacts'/'deliveries',root)
@@ -125,7 +147,8 @@ def _samples(root,path,timeline,directory):
 def _sound_ok(measured):
     failures=measured.get('source_failures');voices=measured.get('voice_checks')
     def present(row):
-        return (row.get('status') in ('clear','quiet','partial','hard_to_hear','uncertain','unheard')
+        return (row.get('status') in ('audible','quiet','partial','hard_to_hear','uncertain','unheard')
+                and row.get('balance_blocked') is False
                 and all(isinstance(row.get(k),dict) and row[k].get('sustained') is True
                         for k in ('presence','reference_presence')))
     return (measured['on_target'] and isinstance(failures,list) and not failures
@@ -150,20 +173,29 @@ def export(root,revision):
     generic=VideoCompose()._run_final_review(target,edit_decisions=saved)
     probe,measured=_measure(root,target,saved,timeline,refs)
     frames=job/'frames';frames.mkdir();samples=_samples(root,target,timeline,frames)
+    from lib.trailer_delivery_visual import review_picture
+    visual=review_picture(root,target,timeline,_boundaries(timeline))
     require_rough(root,revision)
     if saved!=trailer_edit.read_revision(root):raise ValueError('The cut changed during export. Nothing was published. Reopen and sign the saved version before trying again.')
     output=job/'trailer.mp4';relative=str(output.relative_to(root));digest=sha256_file(target)
     test_only=any(r.get('test_only') for r in timeline['audio'])
     warnings=list(measured['messages'])
+    warnings+=visual['issues']
     sound_ok=_sound_ok(measured)
-    speech_notes=sound_ok and (bool(measured['source_warnings']) or any(r['status']!='clear' for r in measured['voice_checks']+measured['speech_checks']))
+    speech_notes=sound_ok and visual['status']=='pass' and (bool(measured['source_warnings']) or any(r.get('steady_level') for r in measured['voice_checks']) or any(r['status']!='audible' for r in measured['voice_checks']+measured['speech_checks']))
     if speech_notes:warnings.append(SPEECH_NOTES)
     if test_only:warnings.append('Generated ElevenLabs music is for the test trailer only until ElevenLabs confirms otherwise in writing. This file is not cleared for release.')
+    visual_check={'frames_sampled':len(samples),'frame_paths':[r['path'] for r in samples],
+        'black_frames_detected':visual['black_frames_measured']>0,'issues':visual['issues']}
+    generic.setdefault('checks',{})['visual_spotcheck']=visual_check
+    generic['checks']['audio_spotcheck']={'issues':warnings}
+    ready=sound_ok and visual['status']=='pass'
+    generic.update(status='pass' if ready else 'revise',recommended_action='present_to_user' if ready else 'revise_edit')
     review={'version':'1.0','trailer':contract.require_contract(root),'edit_revision_sha256':revision,'export_sha256':digest,
-        'output_path':relative,'status':'pass' if sound_ok else 'revise','recommended_action':'present_to_user' if sound_ok else 'revise_edit',
-        'checks':{'technical_probe':probe,'visual_spotcheck':{'frames_sampled':len(samples),'frame_paths':[r['path'] for r in samples],'issues':[]},
+        'output_path':relative,'status':'pass' if ready else 'revise','recommended_action':'present_to_user' if ready else 'revise_edit',
+        'checks':{'technical_probe':probe,'visual_spotcheck':visual_check,
             'audio_spotcheck':{'issues':warnings},'promise_preservation':{'render_runtime_used':'remotion','runtime_swap_detected':False,'issues':[]},'subtitle_check':{'subtitles_expected':False,'issues':[]}},
-        'issues_found':warnings,'metadata':{'measurements':measured,'boundary_samples':samples,'test_only':test_only,'speech_warnings_advisory':speech_notes,
+        'issues_found':warnings,'metadata':{'measurements':measured,'visual_measurements':visual,'boundary_samples':samples,'test_only':test_only,'speech_warnings_advisory':speech_notes,
             'review_scope':'Local technical checks only. Watch and listen; acting, story meaning, rights and every word’s intelligibility are not automatically certified.',
             'compose_review':generic}}
     report={'version':'1.0','trailer':contract.require_contract(root),'edit_revision_sha256':revision,'export_sha256':digest,
@@ -183,6 +215,8 @@ def export(root,revision):
     value['generation_receipt_id']=made['receipt_id']
     os.link(target,output)
     _publish(job/'complete.json',value)
+    from lib.cut_preview_files import clear_measurement_parts
+    clear_measurement_parts(root,Path(refs['work_directory']).with_name(Path(refs['work_directory']).name.removesuffix('-parts')+'.wav'),refs)
     return read_export(root,identity)
 
 def read_export(root,identity):
@@ -222,9 +256,17 @@ def _file_artifacts(root,identity,saved,timeline,*,remeasure=False):
         result=AudioMixer()._full_mix({'timeline_tracks':tracks,'target_frames':max(r['start_frame']+r['duration_frames'] for r in timeline['picture']),
             'speech_margin_db':timeline['mix']['speech_margin_db'],'automatic':True,'output_path':str(directory/'mix.wav')})
         if not result.success:raise ValueError('The final sound could not be checked. Make a fresh export.')
-        probe,fresh=_measure(root,path,saved,timeline,result.data)
-        if fresh!=measured or probe!=review['checks']['technical_probe']:raise ValueError('The final measurements no longer match this file. Make and review a fresh export.')
-        if not _sound_ok(fresh) or review.get('status')!='pass':raise ValueError('The final sound check needs changes. Read its findings, adjust the saved cut and make a new file before approval.')
+        try:
+            probe,fresh=_measure(root,path,saved,timeline,result.data)
+            from lib.trailer_delivery_visual import review_picture
+            visual=review_picture(root,path,timeline,_boundaries(timeline))
+            _publish(directory/'measurement.json',{'probe':probe,'sound':fresh,'picture':visual})
+            if fresh!=measured or probe!=review['checks']['technical_probe']:raise ValueError('The final measurements no longer match this file. Make and review a fresh export.')
+            if visual!=review['metadata'].get('visual_measurements'):raise ValueError('The final picture measurements no longer match. Make and review a fresh export.')
+            if not _sound_ok(fresh) or visual['status']!='pass' or review.get('status')!='pass':raise ValueError('The final picture or sound check needs changes. Read its findings, adjust the saved cut and make a new file before approval.')
+        finally:
+            from lib.cut_preview_files import clear_measurement_parts
+            clear_measurement_parts(root,directory/'mix.wav',result.data)
     return {'render_report':report,'final_review':review}
 
 def final_record(root,identity):
@@ -240,7 +282,7 @@ def request_final(root,identity):
 def final_state(root,identity):
     try:
         artifacts=_artifacts(root,identity)
-        pending='Needs your signature' if artifacts['final_review']['status']=='pass' else 'Sound check needs changes'
+        pending='Needs your signature' if artifacts['final_review']['status']=='pass' else 'Final file needs changes'
         return _approval_state(root,'compose',artifacts,pending,'Approved by you')
     except (ValueError,OSError,KeyError):return 'Needs a fresh look'
 
@@ -259,6 +301,21 @@ def playback(root,identity):
     artifacts=_artifacts(root,identity)
     return resolve_input(artifacts['render_report']['outputs'][0]['path'],Path(root))
 
+def frame_samples(root,item):
+    return [{'frame':r['frame'],'seconds':r['seconds'],
+             'url':f'/api/project/{Path(root).name}/delivery/{item["id"]}/frame/{r["frame"]}'}
+            for r in item['final_review']['metadata']['boundary_samples']]
+
+def frame_picture(root,identity,frame):
+    root=Path(root);item=read_export(root,identity)
+    report=item['render_report'];movie=resolve_input(report['outputs'][0]['path'],root)
+    if sha256_file(movie)!=report['export_sha256']:raise ValueError('This final file changed. Make and review a fresh export before viewing its samples.')
+    row=next((r for r in item['final_review']['metadata']['boundary_samples'] if r['frame']==frame),None)
+    if row is None:raise ValueError('Choose a sampled picture from this final file.')
+    path=resolve_input(row['path'],root)
+    if sha256_file(path)!=row['sha256']:raise ValueError('This sampled picture changed. Make a fresh final file.')
+    return path
+
 def reveal(root,identity):
     if final_state(root,identity)!='Approved by you':raise ValueError('Watch and sign final approval of this exact file before revealing the approved delivery.')
     path=playback(root,identity)
@@ -275,9 +332,9 @@ def snapshot(root):
             if rough=='Signed by you':
                 try:
                     artifacts=_file_artifacts(root,item['id'],saved,timeline)
-                    pending='Needs your signature' if artifacts['final_review']['status']=='pass' else 'Sound check needs changes'
+                    pending='Needs your signature' if artifacts['final_review']['status']=='pass' else 'Final file needs changes'
                     status=_approval_state(root,'compose',artifacts,pending,'Approved by you')
                 except (ValueError,OSError,KeyError):pass
-            items.append({'id':item['id'],'status':status,'review':item['final_review'],'path':item['render_report']['outputs'][0]['path']})
+            items.append({'id':item['id'],'status':status,'review':item['final_review'],'samples':frame_samples(root,item),'path':item['render_report']['outputs'][0]['path']})
         except (ValueError,OSError,KeyError):continue
     return {'revision':saved['edit_revision_sha256'],'number':saved['revision_number'],'rough_status':rough,'exports':items}

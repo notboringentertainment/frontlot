@@ -46,6 +46,10 @@ def mount(app,require_writer,safe_root,invalidate):
     async def play(project_id:str,identity:str):
         path=await run(delivery.playback,safe_root(project_id),identity)
         return FileResponse(path,media_type='video/mp4',headers={'Cache-Control':'no-store'})
+    @app.get(base+'/{identity}/frame/{frame}')
+    async def frame(project_id:str,identity:str,frame:int):
+        path=await run(delivery.frame_picture,safe_root(project_id),identity,frame)
+        return FileResponse(path,media_type='image/png',headers={'Cache-Control':'no-store'})
 
 def signing_packet(root,request):
     from lib import trailer_edit
@@ -73,6 +77,6 @@ def signing_packet(root,request):
             raise ValueError(reason)
         item=delivery.read_export(root,request['entity_id'])
         delivery._artifacts(root,request['entity_id'])
-        return {'delivery_stage':'compose','play_url':f'/api/project/{root.name}/delivery/{item["id"]}/play','review':item['final_review'],
+        return {'delivery_stage':'compose','samples':delivery.frame_samples(root,item),'play_url':f'/api/project/{root.name}/delivery/{item["id"]}/play','review':item['final_review'],
                 'messages':item['final_review']['issues_found']}
     except (ValueError,OSError,KeyError) as e:return {'packet_error':True,'error':str(e)}

@@ -36,7 +36,7 @@ def test_each_unheard_voice_is_named_and_never_gets_reassurance(tmp_path,monkeyp
     report,refs,_=encode(tmp_path,[*voices,track(bed,'music')])
     assert not any('Speech sits clearly above' in s or 'lowest measured margin' in s for s in report['messages']),report['messages']
     assert any(f'Voice in sound {number}' in s and start in s and end in s for s in report['messages']),report['messages']
-    assert report['voice_checks'][number-1]['status']!='clear'
+    assert report['voice_checks'][number-1]['status']!='audible'
     assert calls==[]
 
 def test_quiet_but_present_voice_is_not_called_clearly_audible(tmp_path):

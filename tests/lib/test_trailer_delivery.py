@@ -59,12 +59,12 @@ def test_safe_output_level_cannot_hide_a_silent_voice_source():
               'source_warnings':['Sound 1 has no audible speech in its chosen trim.']}
     assert d._sound_ok(measured) is False
 
-@pytest.mark.parametrize('status,allowed',[('clear',True),('quiet',True),('partial',True),('unmeasured',False),('unheard',False),('uncertain',True),('hard_to_hear',True),('gap-warning',True)])
+@pytest.mark.parametrize('status,allowed',[('audible',True),('quiet',True),('partial',True),('unmeasured',False),('unheard',False),('uncertain',True),('hard_to_hear',False),('gap-warning',True)])
 def test_delivery_checks_every_voice_and_keeps_quiet_as_a_listening_warning(status,allowed):
     from lib import trailer_delivery as d
     presence={'sustained':status not in ('unheard','unmeasured')}
     measured={'on_target':True,'source_warnings':[],'source_failures':[],'effect_checks':[],
-              'voice_checks':[{'number':1,'status':'unheard' if status=='gap-warning' else status,'presence':presence,'reference_presence':presence}],
+              'voice_checks':[{'number':1,'status':'unheard' if status=='gap-warning' else status,'presence':presence,'reference_presence':presence,'balance_blocked':status=='hard_to_hear'}],
               'speech_checks':[] if status=='unmeasured' else [{'status':'unheard' if status=='gap-warning' else status}]}
     assert d._sound_ok(measured) is allowed
 

@@ -32,6 +32,9 @@ def delivery_cut(signed_cut):
     return root,provider,posts
 
 def test_delivery_controls_sign_export_watch_approve_and_reveal(delivery_cut,monkeypatch):
+    delivery_journey(delivery_cut,monkeypatch)
+
+def delivery_journey(delivery_cut,monkeypatch,repeat=1):
     from lib import trailer_delivery as d
     from backlot import delivery as adapter
     root,provider,posts=delivery_cut;revealed=[];original=subprocess.run
@@ -60,6 +63,11 @@ def test_delivery_controls_sign_export_watch_approve_and_reveal(delivery_cut,mon
         browser=pw.chromium.launch(headless=True)
         try:
             page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+            delivery_reads=[]
+            def observed(response):
+                if response.url==url+f'/api/project/{root.name}/delivery' and response.status==200:
+                    value=response.json();delivery_reads.append((value['rough_status'],[(r['id'],r['status']) for r in value['exports']]))
+            page.on('response',observed)
             page.route('**/*',lambda r:r.continue_() if r.request.url.startswith(url+'/') else r.abort())
             page.goto(f'{url}/p/{root.name}#k=invented-browser-proof')
             panel=page.get_by_role('region',name='Trailer delivery');expect(panel).to_be_visible(timeout=30000)
@@ -98,8 +106,10 @@ def test_delivery_controls_sign_export_watch_approve_and_reveal(delivery_cut,mon
             page.get_by_role('button',name='Start signing',exact=True).click()
             page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=60000)
             expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=120000)
+            assert d.snapshot(root)['exports'][0]['status']=='Approved by you'
             page.get_by_role('button',name='Return to delivery',exact=True).click()
-            expect(panel).to_contain_text('Approved by you',timeout=30000)
+            try:expect(panel).to_contain_text('Approved by you',timeout=30000)
+            except AssertionError as e:raise AssertionError('Verified delivery responses: '+repr(delivery_reads[-12:])) from e
             page.reload()
             panel=page.get_by_role('region',name='Trailer delivery')
             expect(panel).to_contain_text('Approved by you',timeout=30000)
@@ -108,6 +118,40 @@ def test_delivery_controls_sign_export_watch_approve_and_reveal(delivery_cut,mon
             panel.get_by_role('button',name='Show approved file in Finder',exact=True).click()
             expect(panel.get_by_role('status').first).to_contain_text('shown in Finder',timeout=30000)
             assert len(revealed)==1;capture(page,'approved-file-location',panel)
+            for journey in range(1,repeat):
+                # Every repeat starts with the same saved cut and uses the
+                # visible rough-review, export, final-review and reveal
+                # controls. There is no reload to rescue a signing return.
+                panel.get_by_role('button',name='Review and sign the saved rough cut',exact=True).click()
+                def review_and_return(heading):
+                    review=page.get_by_role('region',name='Delivery review',exact=True)
+                    expect(review.get_by_role('heading',name=heading,exact=True)).to_be_visible(timeout=240000)
+                    movie=review.locator('video');expect(movie).to_have_js_property('readyState',4,timeout=30000)
+                    movie.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=movie.element_handle(),timeout=20000)
+                    page.get_by_role('button',name='Start signing',exact=True).click()
+                    page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=60000)
+                    expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=120000)
+                    page.get_by_role('button',name='Return to delivery',exact=True).click()
+                review_and_return('Review the saved rough cut')
+                expect(panel.get_by_role('button',name='Make the final file',exact=True)).to_be_enabled(timeout=30000)
+                previous=panel.locator('[data-delivery]').first.get_attribute('data-delivery')
+                panel.get_by_role('button',name='Make the final file',exact=True).click()
+                page.wait_for_function('(old)=>document.querySelector("[data-delivery]")?.dataset.delivery!==old',arg=previous,timeout=300000)
+                current=panel.locator('[data-delivery]').first
+                expect(current).to_contain_text('Needs your signature',timeout=30000)
+                expect(current.locator('video')).to_have_attribute('src',__import__('re').compile('/delivery/'))
+                current.get_by_role('button',name='Review and sign final approval',exact=True).click()
+                review_and_return('Review this exact final file')
+                expect(current).to_contain_text('Approved by you',timeout=30000)
+                expect(panel.get_by_role('status').first).not_to_contain_text('Rechecking')
+                current.get_by_role('button',name='Show approved file in Finder',exact=True).click()
+                expect(panel.get_by_role('status').first).to_contain_text('shown in Finder',timeout=30000)
+                assert len(revealed)==journey+1
+                assert d.snapshot(root)['exports'][0]['status']=='Approved by you'
+                if journey==1 and os.environ.get('DELIVERY_REPEAT_CAPTURE'):
+                    current.evaluate('(e)=>e.scrollIntoView({block:"start",behavior:"instant"})')
+                    shot=Path(os.environ['DELIVERY_REPEAT_CAPTURE'])/'round2-current-and-earlier-exports.png'
+                    assert not shot.exists();page.screenshot(path=str(shot))
             snapshot=d.snapshot(root);item=snapshot['exports'][0]
             if destination:
                 with (Path(destination)/(prefix+'delivery-final-proof.mp4')).open('xb') as f:f.write((root/item['path']).read_bytes())

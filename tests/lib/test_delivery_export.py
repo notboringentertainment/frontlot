@@ -20,7 +20,7 @@ def test_real_export_measurements_exact_final_signature_and_reveal_refusal(deliv
     item=d.export(root,saved['edit_revision_sha256']);identity=item['id'];report=item['render_report'];review=item['final_review']
     assert review['status']=='pass',review['issues_found']
     assert review['metadata']['measurements']['on_target']
-    assert review['metadata']['measurements']['speech_checks'] and all(r['status']=='clear' for r in review['metadata']['measurements']['speech_checks'])
+    assert review['metadata']['measurements']['speech_checks'] and all(r['status']=='audible' for r in review['metadata']['measurements']['speech_checks'])
     assert review['metadata']['measurements']['effect_checks'][0]['observed_frame']==36
     assert set(d._boundaries(saved['timeline']))=={r['frame'] for r in review['metadata']['boundary_samples']}
     assert report['outputs'][0]['resolution']=='1920x1080'

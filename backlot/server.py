@@ -12,6 +12,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import secrets
 import stat
 import threading
@@ -250,6 +251,14 @@ def _project_of_change(path_str: str) -> Optional[str]:
         return None
     parts = rel.replace("\\", "/").split("/")
     if _IGNORE_PARTS.intersection(parts):
+        return None
+    # An exclusive Delivery check can write many sound stems while a signer
+    # is working. Those private writes are not a new saved result: refreshing
+    # the entire board for each one can starve the signing-return read.
+    # Published movies, samples, records and receipts remain observable.
+    if (len(parts)>=5 and parts[1:3]==['artifacts','deliveries']
+        and re.fullmatch('[a-f0-9]{32}',parts[3])
+        and (parts[4]=='work' or re.fullmatch('check-[a-f0-9]{32}',parts[4]))):
         return None
     return parts[0]
 
