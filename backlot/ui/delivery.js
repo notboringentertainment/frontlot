@@ -13,12 +13,19 @@ export function renderDeliverySigning(detail,actions,onReturn){
    el('p',{},'Watch and listen to the whole file before starting your signature. A technical check never replaces your approval.'),video,words,controls,
    el('button',{type:'button',onclick:onReturn},'Return to delivery'));
   held={node,video,controls,words,watched:false};reviews.set(id,held);
-  video.onended=()=>{held.watched=true;for(const b of controls.querySelectorAll('button.gate-primary'))b.disabled=false;};
+  video.onended=()=>{held.watched=true;for(const b of controls.querySelectorAll('button.gate-primary'))b.disabled=!held.ready;};
  }
- if(packet.messages)held.words.replaceChildren(...packet.messages.map(s=>el('p',{},s)));
+ held.ready=!!packet.play_url&&!packet.packet_error;
+ const source=packet.packet_error?'':(packet.play_url??held.video.getAttribute('src')??'');
+ if((held.video.getAttribute('src')||'')!==source){
+  held.video.pause();held.watched=false;
+  if(source)held.video.setAttribute('src',source);else held.video.removeAttribute('src');
+  held.video.load();
+ }
+ held.words.replaceChildren(...(packet.messages||[]).map(s=>el('p',{},s)));
  if(packet.error)held.words.append(el('p',{role:'alert'},packet.error));
  held.controls.replaceChildren(actions);
- if(!held.watched||packet.packet_error)for(const b of held.controls.querySelectorAll('button.gate-primary'))b.disabled=true;
+ if(!held.watched||!held.ready)for(const b of held.controls.querySelectorAll('button.gate-primary'))b.disabled=true;
  return held.node;
 }
 
