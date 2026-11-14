@@ -362,6 +362,9 @@ def _verify_image_ref(root: Path, ref: Any, label: str) -> str:
 
 
 def _construct_look_lock(root: Path, req: dict) -> Constructed:
+    if req.get('writer_source_ref') is not None:
+        from lib.frontlot_location_source import construct
+        return construct(root,req)
     from lib.look_ingest import (
         LookIngestError,
         active_look_for,

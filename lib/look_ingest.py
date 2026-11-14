@@ -79,9 +79,10 @@ class IngestedLook:
     # writer, never a block: Ben, 2026-10-11 — he judges whether a change
     # matters when he signs. Not part of the look or its hash.
     changed_since: tuple[str, ...] = field(default=(), compare=False)
+    writer_source_ref: Optional[dict[str, Any]] = None
 
     def __post_init__(self) -> None:
-        if (self.source_ticket_ref is None) == (self.source_ref is None):
+        if sum(v is not None for v in (self.source_ticket_ref,self.source_ref,self.writer_source_ref))!=1:
             raise LookIngestError(
                 f"look {self.key} must carry exactly one source (a wayfinder ticket or a WriterOS promotion)"
             )
@@ -102,6 +103,7 @@ class ActiveLook:
     look_hash: str
     receipt_id: str
     payload: dict[str, Any]
+    writer_source_ref: Optional[dict[str, Any]] = None
 
     @property
     def key(self) -> tuple[str, str]:
@@ -536,7 +538,7 @@ def active_looks(project_dir: Path | str, *, project_id: Optional[str] = None) -
                     f"without superseding the active hash {current.look_hash} (got {supersedes!r}) "
                     f"— the chain is monotonic; retire or supersede first"
                 )
-            active[key] = ActiveLook(key[0], key[1], str(look_hash), str(row.get("receipt_id")), dict(record))
+            active[key] = ActiveLook(key[0], key[1], str(look_hash), str(row.get("receipt_id")), dict(record),row.get('writer_source_ref'))
         elif action == "retire":
             if current is None or current.look_hash != look_hash:
                 raise LookIngestError(
@@ -579,6 +581,10 @@ def verify_look_refs(
                 f"look_ref for {key} names look_hash {ref['look_hash']} but the active look is "
                 f"{current.look_hash} — the look was superseded; rebuild from the current recipe"
             )
+        if current.writer_source_ref:
+            from lib.frontlot_location_source import require_current
+            try:require_current(project_dir,current.writer_source_ref,current.payload)
+            except (ValueError,OSError) as exc:raise LookIngestError(str(exc)) from None
         ok, why = generation_sufficient(current.payload)
         if not ok:
             raise LookIngestError(f"look for {key} cannot drive generation: {why}")
@@ -921,10 +927,14 @@ def look_lock_request(
 
     project_dir = Path(project_dir)
     current = active_look_for(project_dir, look.entity_kind, look.entity_id)
-    if current is not None and current.look_hash == look.look_hash:
+    if current is not None and current.look_hash == look.look_hash and (not look.writer_source_ref or current.writer_source_ref==look.writer_source_ref):
         raise LookIngestError(f"look {look.key} with hash {look.look_hash} is already active")
     request_id = request_id or f"look-lock-{look.entity_kind}-{look.entity_id}"[:64]
-    if look.is_writeros:
+    if look.writer_source_ref:
+        envelope_source={'writer_source_ref':look.writer_source_ref}
+        request_source={'writer_source_ref':look.writer_source_ref}
+        attestation='Written in Front Lot for this production. '
+    elif look.is_writeros:
         if promotion_refs:
             raise LookIngestError("a WriterOS look carries its own promotion_refs; none may be passed")
         envelope_source: dict[str, Any] = {"promotion_refs": writeros_envelope_refs(look)}
@@ -1005,7 +1015,7 @@ def build_look_packet(
             "look_spec": look.payload,
             "look_hash": look.look_hash,
             "receipt_id": current.receipt_id,
-            **({"source_ref": look.source_ref} if look.is_writeros else {"source_ticket_ref": look.source_ticket_ref}),
+            **({'writer_source_ref':look.writer_source_ref} if look.writer_source_ref else {"source_ref": look.source_ref} if look.is_writeros else {"source_ticket_ref": look.source_ticket_ref}),
         })
     packet: dict[str, Any] = {"version": "1.0", "looks": entries}
     if proposal is not None:
