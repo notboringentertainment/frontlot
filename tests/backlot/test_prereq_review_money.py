@@ -51,3 +51,31 @@ def test_two_answers_in_one_frame_do_not_abandon_a_receipt_commit(request,monkey
             apply_signed_resolution(root,reservation['reservation_id'])
             assert figures(root,ceiling,fresh=True)==[0,0,ceiling] and count()==before
         finally:browser.close()
+
+
+def test_receipt_verification_during_board_refresh_is_a_plain_refusal(request,monkeypatch):
+    """A signer updating its receipt tip must not break the observer's HTTP response."""
+    from lib import receipts,trailer_edit
+    root,reservation,count,ceiling=held(request,'footage',monkeypatch);before=count()
+    original=trailer_edit._story_check
+    blocked=[False]
+    def story_check(*args,**kwargs):
+        if blocked[0]:raise receipts.ReceiptChainError('Invented receipt tip changed during a read.')
+        return original(*args,**kwargs)
+    monkeypatch.setattr(trailer_edit,'_story_check',story_check)
+    with board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=open_page(browser,url,root)
+            blocked[0]=True
+            response=page.request.get(url+'/api/project/'+root.name+'/state')
+            assert response.status==200
+            value=response.json()['paper_cut']
+            assert not value['usable_downstream'] and value['needs_review']
+            assert 'signed approval records could not be verified' in value['error']
+            assert figures(root,ceiling)[1]>0 and count()==before
+            blocked[0]=False
+            refreshed=page.request.get(url+'/api/project/'+root.name+'/state')
+            assert refreshed.status==200 and not refreshed.json()['paper_cut'].get('error')
+            assert not page.errors
+        finally:browser.close()
