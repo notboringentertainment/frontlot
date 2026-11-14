@@ -1,14 +1,18 @@
 """Board-only adapters to the deterministic source and existing story signer."""
-import base64,binascii
+import base64,binascii,json
 from fastapi import HTTPException,Request
 from lib import story_ingest as story
+from lib.pathsafe import PathSafetyError
+from lib.checkpoint import CheckpointValidationError
 
 def mount(app,require_writer,safe_root,invalidate):
     import asyncio
     prefix='/api/project/{project_id}/story'
     async def run(project_id,fn,*args,**kwargs):
         try:return await asyncio.to_thread(fn,safe_root(project_id),*args,**kwargs)
-        except (ValueError,OSError,RuntimeError,KeyError,TypeError) as exc:
+        except (PathSafetyError,UnicodeError,json.JSONDecodeError,CheckpointValidationError):
+            raise HTTPException(400,story.UNREADABLE) from None
+        except (ValueError,OSError,RuntimeError,KeyError,TypeError,AttributeError) as exc:
             message=str(exc) if isinstance(exc,ValueError) else 'The story could not be read safely. Your earlier source and signatures are kept. Supply it again for review.'
             raise HTTPException(400,message) from None
     @app.get(prefix)
@@ -21,7 +25,6 @@ def mount(app,require_writer,safe_root,invalidate):
             body.extend(chunk)
             if len(body)>story.MAX_STORY_BYTES*8:
                 raise HTTPException(413,'Choose a plain UTF-8 text story no larger than 128 kilobytes. Nothing was saved.')
-        import json
         try:
             data=json.loads(body)
             if not isinstance(data,dict) or set(data)-{'text','file','protected','spoilers'} or ('text' in data)==('file' in data):
@@ -35,9 +38,14 @@ def mount(app,require_writer,safe_root,invalidate):
                 if not isinstance(file,dict) or set(file)!={'name','base64'}:raise ValueError('Choose a plain text or Markdown file using the story file chooser.')
                 name=file['name']
                 if not isinstance(name,str) or not name.lower().endswith(('.txt','.md')):raise ValueError('Choose a plain text or Markdown file, rather than a document, picture or credential file.')
-                raw=base64.b64decode(file['base64'],validate=True)
+                try:raw=base64.b64decode(file['base64'],validate=True)
+                except (ValueError,TypeError):raise ValueError('This text file could not be read. Choose it again.') from None
             result=await run(project_id,story.supply,raw,protected=data.get('protected',[]),spoilers=data.get('spoilers',[]),name=name)
-        except (ValueError,TypeError,UnicodeError,binascii.Error) as exc:
+        except (binascii.Error,TypeError):
+            raise HTTPException(400,'This text file could not be read. Choose it again.') from None
+        except (UnicodeError,json.JSONDecodeError):
+            raise HTTPException(400,'The story could not be read. Choose readable UTF-8 text and try again.') from None
+        except ValueError as exc:
             raise HTTPException(400,str(exc) if isinstance(exc,ValueError) else 'This text file could not be read. Choose it again.') from None
         invalidate(project_id);return result
     @app.post(prefix+'/apply')

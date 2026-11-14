@@ -170,7 +170,14 @@ def pending_requests(root: Path) -> list[Path]:
 
 
 def load_request(path: Path) -> dict:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    from lib.pathsafe import resolve_input,PathSafetyError
+    try:
+        base=next(p for p in path.parents if p.name==REQUEST_DIRNAME)
+        resolve_input(path,base.parent)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data,dict):raise ValueError()
+    except (PathSafetyError,OSError,ValueError,StopIteration):
+        raise GateHandlerError('The saved signing request could not be read safely. Return to its panel and prepare it again.') from None
     missing = [k for k in REQUIRED if k not in data]
     if missing:
         raise GateHandlerError(f"{path.name}: request missing fields {missing}")
@@ -1213,19 +1220,27 @@ def _construct_artifact_review(root: Path, req: dict) -> Constructed:
     from lib.canon_enforcement import _version, artifact_review_digest
 
     if req.get('scope')=='trailer-stage' and req.get('stage')=='canon_ingest':
-        from lib.story_ingest import material
+        from lib.story_ingest import material,UNREADABLE
+        from lib.pathsafe import PathSafetyError
         from lib.trailer_contract import approval_record,signed_trailer_pin
-        _,checkpoint=_load_pending_checkpoint(root,req,'canon_ingest')
         try:
+            _pending_request_path(req,root)
+            _,checkpoint=_load_pending_checkpoint(root,req,'canon_ingest')
             material(root,checkpoint['artifacts']['canon_packet'])
             record=approval_record(root,signed_trailer_pin(root),'canon_ingest',checkpoint['artifacts'])
             if req.get('approval_record')!=record:
                 raise ValueError('The story changed. Review its exact text and sign the new version.')
-        except (ValueError,KeyError) as exc:raise GateHandlerError(str(exc)) from None
+        except (PathSafetyError,OSError,KeyError,TypeError,GateHandlerError):raise GateHandlerError(UNREADABLE) from None
+        except ValueError as exc:raise GateHandlerError(str(exc)) from None
         artifact={'artifact_type':'trailer_stage','artifact_version':'1.0','artifact_digest':record_sha256(record),'migration_status':'reviewed'}
         def current():
-            _,latest=_load_pending_checkpoint(root,req,'canon_ingest')
-            if approval_record(root,signed_trailer_pin(root),'canon_ingest',latest['artifacts'])!=record:
+            try:
+                _pending_request_path(req,root)
+                _,latest=_load_pending_checkpoint(root,req,'canon_ingest')
+                material(root,latest['artifacts']['canon_packet'])
+                unchanged=approval_record(root,signed_trailer_pin(root),'canon_ingest',latest['artifacts'])==record
+            except (PathSafetyError,OSError,ValueError,KeyError,TypeError,GateHandlerError):raise GateHandlerError(UNREADABLE) from None
+            if not unchanged:
                 raise GateHandlerError('The story changed while signing. Review its exact text and sign the new version.')
         return Constructed(record,None,None,artifact=artifact,pre_commit_check=current,
             evidence=('Approve this exact story source and its explicit protected passages only. No purchase or later stage is approved.',))
@@ -1880,6 +1895,11 @@ def show_constructed(built: Constructed, out=None) -> None:
 def _pending_request_path(req: dict, root: Path) -> Path:
     """The on-disk pending request ``req`` names, or GateHandlerError."""
     request_id = validate_request_id(req.get("request_id"))
+    if req.get('scope')=='trailer-stage' and req.get('stage')=='canon_ingest':
+        from lib.pathsafe import resolve_input,PathSafetyError
+        from lib.story_ingest import REQUEST_UNREADABLE
+        try:resolve_input(root/REQUEST_DIRNAME/f'{request_id}.json',root)
+        except (PathSafetyError,OSError):raise GateHandlerError(REQUEST_UNREADABLE) from None
     req_path = _confined(root / REQUEST_DIRNAME / f"{request_id}.json", root)
     if req_path.stem != request_id or not req_path.is_file():
         raise GateHandlerError(f"no pending request {request_id!r}")
@@ -2104,6 +2124,8 @@ def main(argv: list[str] | None = None) -> int:
         if not match:
             raise GateHandlerError(f"no pending request {args.request!r}")
         req = load_request(match[0])
+        if req.get('scope')=='trailer-stage' and req.get('stage')=='canon_ingest':
+            construct(root,req)  # Refuse damaged story storage before printing request paths.
         show_request(req, root)
         if args.dry_run:
             if req["kind"] in SELECTION_KINDS and not is_retire_request(req):

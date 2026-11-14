@@ -71,6 +71,7 @@ export function renderVoice(s,onSign){
       const notes=el('textarea',{'aria-label':`Pronunciation and delivery notes for line ${index+1}`,maxlength:2000});notes.value=d.notes;notes.oninput=()=>d.notes=notes.value;
       const rights=el('input',{type:'checkbox'});rights.checked=d.rights;rights.onchange=()=>d.rights=rights.checked;
       const prepare=button('Prepare a spending card',()=>act(async()=>{await api(url+'/prepare',{line_index:index,voice:d.voice,notes:d.notes,rights_confirmed:d.rights});}));prepare.disabled=!data.usable||!data.account.configured||!data.price_settings_signed;
+      if(data.line_source_warnings?.[index])box.append(el('p',{role:'alert'},data.line_source_warnings[index]));
       box.append(el('label',{},'Account voice',select),el('label',{},'Pronunciation and delivery notes',notes),
         el('p',{class:'source'},'These notes stay with the signed take for your review. This speech model does not receive direction notes. The story material sent is the saved line’s exact wording; model and voice choices are sent too.'),
         el('label',{},rights,'I have permission to use this voice.'),el('p',{},'ElevenLabs · Multilingual v2 · the saved line’s exact words'),prepare);
@@ -85,6 +86,7 @@ export function renderVoice(s,onSign){
         el('p',{},`Highest new cash: ${money(r.max_cash_usd)} · highest credit replacement value: ${money(r.max_credits_usd)}`),
         el('p',{},`Price expires ${new Date(r.price_expires_at*1000).toLocaleString()}`),
         el('p',{},effect?'The paper-cut moment stays here. Only the description, model, length and loop choice are sent.':music?TEST_ONLY:`Notes kept here, not sent: ${r.binding.performance_notes||'None'}`));
+      if(item.source_warning)card.append(el('p',{role:'alert'},item.source_warning));
       const made=data.takes.some(t=>t.approved_request_id===r.request_id);
       if(item.recoverable)card.append(el('p',{},'A completed take is recorded in its receipt but is missing here. Recover it without another call or charge.'),
         button('Recover recorded take',()=>act(async()=>{return (await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/recover`,{})).message;})));
@@ -161,6 +163,7 @@ export function renderAudioSigning(detail,actions,onReturn,stale){
     el('p',{},`${r.kind==='effect'?'Effect':r.kind==='music'?'Instrumental cue':'Line slot'}: ${r.duration_seconds} seconds · highest cash ${money(r.max_cash_usd)} · highest credit replacement value ${money(r.max_credits_usd)}`),
     el('p',{},`Bound expires ${new Date(r.price_expires_at*1000).toLocaleString()}`),el('p',{},'One signature buys one call. No retries or another provider.'),
     el('p',{},r.kind==='effect'?`${moment(r.binding)}. Placement stays here; only description, model, length and loop choice are sent.`:r.kind==='music'?TEST_ONLY:`Notes stay here and are not sent: ${r.binding.performance_notes||'None'}`));}
+  if(detail.packet.source_warning)box.append(el('p',{role:'alert'},detail.packet.source_warning));
   if(detail.packet.remaining_usd!==undefined)box.append(el('p',{},`Left under the production ceiling: ${money(detail.packet.remaining_usd)}.`));
   if(detail.packet.budget_warning)box.append(el('p',{role:'alert'},detail.packet.budget_warning));
   box.append(actions);return box;

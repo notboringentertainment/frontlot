@@ -77,8 +77,8 @@ export function renderPaperCut(s) {
         const item=el("fieldset",{},el("legend",{},`${shot?"Shot":key==="lines"?"Line":"Card"} ${index+1}`));
         if(!shot){const note=el("div",{class:"short-phrase-warning"});item.append(note);
           const show=()=>{note.replaceChildren();if(state.current?.paper_cut?.[key]?.[index]?.text!==row.text)return;
-            const prefix=`${key==="lines"?"Line":"Card"} ${index+1} resembles part of a protected line:`;
-            for(const text of state.story_check?.warnings||[])if(text.startsWith(prefix))note.append(el("p",{role:"status"},text));};
+            const label=`${key==="lines"?"Line":"Card"} ${index+1}`;
+            for(const text of state.story_check?.warnings||[])if(text.startsWith(label+' resembles part of a protected line:')||text.startsWith(label+' is not an exact passage'))note.append(el("p",{role:"status"},text));};
           rowWarnings.push(show);show();}
         const fields=shot?[["Purpose (private plan)","purpose","textarea"],["Screen time in frames","duration_frames","number"],["References, separated by commas","references"],["Difficulty","difficulty"]]:[["Exact wording","text","textarea"],["Starts at frame","start_frame","number"],["Screen time in frames","duration_frames","number"],["Story material","source_ref"]];
         fields.forEach(([label,k,type])=>{

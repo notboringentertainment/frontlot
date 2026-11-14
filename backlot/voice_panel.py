@@ -123,6 +123,7 @@ def playback(root,identity):
 
 def snapshot(root):
     root=root_checked(root)
+    from lib.story_ingest import source_warning
     from lib.trailer_edit import paper_state
     paper=paper_state(root)
     settings_error=None;basis=None;config_sha=None
@@ -176,7 +177,8 @@ def snapshot(root):
             if not account['configured'] and error is None:error=account['message']
         if recoverable:error=None
         elif recovery_error:error=recovery_error
-        requests.append({'record':record,'approved':approved,'recoverable':recoverable,'error':error,'gate_request_id':_gate_id(root,record['request_id'],'audio_spend')})
+        requests.append({'record':record,'approved':approved,'recoverable':recoverable,'error':error,'gate_request_id':_gate_id(root,record['request_id'],'audio_spend'),
+            'source_warning':source_warning(root,record['prompt']) if record['kind']=='speech' else None})
     charges={}
     for r in receipts.verified_generation_receipts(root):
         if r.get('audio_approval_receipt_id'):charges[r['audio_approval_receipt_id']]=r
@@ -191,6 +193,7 @@ def snapshot(root):
     try:effect_brief=current_brief(root,kind='effect')
     except ValueError:effect_brief=None
     return {'lines':(paper.get('current') or {}).get('paper_cut',{}).get('lines',[]),
+            'line_source_warnings':[source_warning(root,line['text']) for line in (paper.get('current') or {}).get('paper_cut',{}).get('lines',[])],
             'paper_review_message':('The saved paper cut is marked for review. Open Cutting workspace, review and save the cut, then return here to check this take again.' if (paper.get('current') or {}).get('paper_cut_pending') else None),
             'music_brief':music_brief,
             'effect_brief':effect_brief,'shots':(paper.get('current') or {}).get('paper_cut',{}).get('shots',[]),
