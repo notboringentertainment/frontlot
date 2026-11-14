@@ -1210,6 +1210,20 @@ def _construct_poster(root: Path, req: dict) -> Constructed:
 
 
 def _construct_artifact_review(root: Path, req: dict) -> Constructed:
+    if req.get('scope')=='trailer-stage':
+        from lib import trailer_delivery as delivery
+        stage=req.get('stage');identity=_require_entity(req)
+        if stage not in ('edit','compose') or stage=='edit' and identity!='edit':
+            raise GateHandlerError('Choose the saved rough cut or one final file for this review.')
+        record=delivery.rough_record(root) if stage=='edit' else delivery.final_record(root,identity)
+        def recheck():
+            current=delivery.rough_record(root) if stage=='edit' else delivery.final_record(root,identity)
+            if current!=record:raise GateHandlerError('The cut or final file changed. Nothing was signed; prepare a fresh review.')
+        artifact={'artifact_type':'trailer_stage','artifact_version':'1.0','artifact_digest':record_sha256(record),'migration_status':'reviewed'}
+        return Constructed(record,None,identity,artifact=artifact,evidence=(
+            'This signature approves the saved rough cut only. Any change needs a new signature.' if stage=='edit' else
+            'Watch and listen to the complete exported file. This signature binds the exact file, edit version and measured checks. It does not certify rights or replace a separate story review.',
+            'Nothing is sent, spent or uploaded.'),pre_commit_check=recheck)
     from lib.canon_enforcement import _version, artifact_review_digest
 
     hint = req.get("artifact") or {}

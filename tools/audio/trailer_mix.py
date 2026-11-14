@@ -41,13 +41,14 @@ def mix_timeline(tool,inputs):
             raise ValueError('Set a sound level between minus sixty and plus six decibels.')
     # Validate every control before any decoder or output starts. Check the
     # selected source only: an unused damaged ending is not part of this cut.
-    warnings=[];effects=[]
+    warnings=[];effects=[];source_failures=[]
     for i,t in enumerate(tracks,1):
         samples=decode_audio(t.get('path',''))
         if t['source_out_frame']*2000>len(samples):raise ValueError('The sound trim is outside the local recording. Choose a shorter source range.')
         selected=samples[t['source_in_frame']*2000:t['source_out_frame']*2000]
         if _flat_clip(selected):
             warnings.append(f'Sound {i} already clips or has flat full-scale peaks. Listen to the original and choose another take if it is distorted; turning it down cannot repair the recording.')
+            source_failures.append({'kind':'clipped_source','number':i})
     target=Path(inputs['output_path']);directory=target.parent/(target.stem+'-parts')
     directory.mkdir();work_files=[]
     def stem(rows,name):
@@ -68,6 +69,7 @@ def mix_timeline(tool,inputs):
         end=t['start_frame']+t['source_out_frame']-t['source_in_frame']
         presence=voice_presence(samples[t['start_frame']*2000:end*2000])
         if presence['sustained']:voice_active|=mask
+        else:source_failures.append({'kind':'inaudible_voice','number':i,'start_frame':t['start_frame'],'end_frame':end})
         voices.append({'path':str(directory/f'voice-{i}-source.wav'),'number':i,'start_frame':t['start_frame'],'end_frame':end})
         if not presence['audible_seconds']:warnings.append(voice_warning(i,t['start_frame'],end))
         elif not presence['sufficient']:warnings.append(presence_warning(i,t['start_frame'],end,presence,'at its saved level'))
@@ -109,4 +111,4 @@ def mix_timeline(tool,inputs):
         _run(['ffmpeg','-v','error','-n','-i',str(summed),'-filter_complex',graph,'-map','[out]','-ar','48000','-ac','2','-c:a','pcm_f32le',str(target)])
     else:write_audio(target,speech+background)
     work_files.append(target)
-    return ToolResult(success=True,data={'speech_path':str(speech_path),'background_path':str(other_path),'music_path':str(music_path),'voices':voices,'effects':effects,'target_frames':frames,'speech_margin_db':margin,'source_warnings':warnings,'automatic':automatic,'temporary_files':[str(p) for p in work_files],'work_directory':str(directory)},artifacts=[str(target)])
+    return ToolResult(success=True,data={'speech_path':str(speech_path),'background_path':str(other_path),'music_path':str(music_path),'voices':voices,'effects':effects,'target_frames':frames,'speech_margin_db':margin,'source_warnings':warnings,'source_failures':source_failures,'automatic':automatic,'temporary_files':[str(p) for p in work_files],'work_directory':str(directory)},artifacts=[str(target)])

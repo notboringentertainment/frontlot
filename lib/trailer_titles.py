@@ -53,7 +53,7 @@ def drawing_text(text):
         result.append(drawn.replace('\u00a0',' '));i=end
     return ''.join(result)
 
-def card_png(card):
+def card_png(card,*,resolution=(640,360)):
     """Reuse the title tool's literal PIL renderer, with no model or fallback font."""
     from PIL import Image,ImageFont
     from tools.graphics.title_card import TitleCard
@@ -65,21 +65,26 @@ def card_png(card):
     text=drawing_text(text)
     size=card.get('font_size')
     if type(size) is not int or not 12<=size<=72:raise ValueError('Choose a whole-number letter size from twelve to seventy-two pixels.')
+    if resolution not in ((640,360),(1920,1080)):raise ValueError('Choose the trailer preview or full-size delivery profile.')
+    width,height=resolution;scale=width//640
     path=_font(card);font=ImageFont.truetype(str(path),size)
     missing=bytes(font.getmask('\U0010ffff'))
     unsupported=next((c for c in text if c not in ' \n' and bytes(font.getmask(c))==missing),None)
     if unsupported:
         name=unicodedata.name(unsupported,'unrecognised character').lower()
         raise ValueError(f'This font cannot show the letter or symbol “{unsupported}” ({name}). Choose another licensed face or change that character yourself; nothing was substituted.')
-    params={'text':text,'font_size':size,'color':'#FFFFFF','width':640,'height':360,'alignment':'center','line_spacing':8}
+    params={'text':text,'font_size':size*scale,'color':'#FFFFFF','width':width,'height':height,'alignment':'center','line_spacing':8*scale}
     png=TitleCard()._render(params,path)
     # Check both layout bounds and pixels: a clipped glyph cannot hide beyond
     # the canvas and fool the alpha bounding box.
     from PIL import ImageDraw
-    draw=ImageDraw.Draw(Image.new('RGBA',(640,360)))
-    bounds=draw.multiline_textbbox((320,180),text,font=font,anchor='mm',align='center',spacing=8)
-    if bounds[0]<64 or bounds[1]<36 or bounds[2]>576 or bounds[3]>324:
-        raise ValueError('This text leaves the safe margins. Add your own line breaks or choose a smaller letter size; nothing was shortened.')
+    # Both surfaces use the same literal layout. Reject at preview time too
+    # when final-size font hinting would cross the shared safe margins.
+    for factor in (1,3):
+        draw=ImageDraw.Draw(Image.new('RGBA',(640*factor,360*factor)))
+        bounds=draw.multiline_textbbox((320*factor,180*factor),text,font=ImageFont.truetype(str(path),size*factor),anchor='mm',align='center',spacing=8*factor)
+        if bounds[0]<64*factor or bounds[1]<36*factor or bounds[2]>576*factor or bounds[3]>324*factor:
+            raise ValueError('This text leaves the safe margins. Add your own line breaks or choose a smaller letter size; nothing was shortened.')
     return png
 
 def _record(root,card):
@@ -161,12 +166,12 @@ def renderer_configuration():
         raise ValueError('Local title playback needs the installed Remotion tools and browser. Nothing was sent or spent; restore the local renderer before preparing playback.')
     return modules,browser
 
-def render_layer(root,cards,end,directory):
+def render_layer(root,cards,end,directory,*,resolution=(640,360)):
     """Remotion places literal title-tool PNGs; never downloads a runtime."""
     import base64,json,subprocess,uuid
     modules,browser=renderer_configuration()
     job=directory/('titles-'+uuid.uuid4().hex);job.mkdir()
-    props={'end':end,'cards':[{**row,'image':'data:image/png;base64,'+base64.b64encode(card_png(row)).decode()} for row in cards]}
+    props={'end':end,'width':resolution[0],'height':resolution[1],'cards':[{**row,'image':'data:image/png;base64,'+base64.b64encode(card_png(row,resolution=resolution)).decode()} for row in cards]}
     request=job/'props.json'
     with request.open('x') as f:json.dump(props,f,ensure_ascii=False)
     output=job/'cards.mov'

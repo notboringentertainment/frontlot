@@ -1803,6 +1803,12 @@ def _render_trailer_card(root,req):
         return {'title_card':card,'font_name':font_name(card),'visible_characters':visible_characters(card['text']),'card_image':f'/api/project/{quote(root.name,safe="")}/cut/cards/{quote(card["id"],safe="")}/lettering?fingerprint={record_sha256(record)}'}
     except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This card changed. Save the cut and prepare a new review.'}
 
+def _render_artifact_review(root,req):
+    if req.get('scope')=='trailer-stage' and req.get('stage') in ('edit','compose'):
+        from backlot.delivery import signing_packet
+        return signing_packet(root,req)
+    return _render_text_only(root,req)
+
 GATE_RENDERERS = _GateRendererMap({
     "trailer_card": _render_trailer_card,
     "headshot": _render_headshot,
@@ -1817,7 +1823,7 @@ GATE_RENDERERS = _GateRendererMap({
     "poster": _render_poster,
     "storyboard_batch": _render_storyboard,
     "headshot_grandfather": _render_text_only,
-    "artifact_review": _render_text_only,
+    "artifact_review": _render_artifact_review,
     "cast_change": _render_cast_change,
     "audio_spend": _render_audio_spend,
     "audio_take": _render_audio_take,
