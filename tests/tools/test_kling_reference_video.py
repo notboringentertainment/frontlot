@@ -217,7 +217,7 @@ def test_unregistered_project_dir_rejected_before_any_network(env, tmp_path):
     (stray / "project.yaml").write_bytes((env / "project.yaml").read_bytes())
     with patch.object(_shared, "fal_queue_submit") as submit, patch.object(_shared, "upload_image_fal") as up:
         r = KlingReferenceVideo().execute(_inputs(env, project_dir=str(stray), output_path=str(stray / "s.mp4")))
-        assert not r.success and "preflight" in r.error and "registered project" in r.error
+        assert not r.success and "registered production" in r.error
     submit.assert_not_called()
     up.assert_not_called()
 
@@ -227,7 +227,7 @@ def test_unapproved_project_config_rejected(env):
     cfg.write_bytes(cfg.read_bytes().replace(b"budget_usd_cap: 50.0", b"budget_usd_cap: 5000.0"))
     with patch.object(_shared, "fal_queue_submit") as submit:
         r = KlingReferenceVideo().execute(_inputs(env))
-    assert not r.success and "approval receipt" in r.error
+    assert not r.success and "verifiable signed settings" in r.error
     submit.assert_not_called()
 
 
@@ -456,7 +456,10 @@ def test_failure_after_acceptance_is_pending_billing(env, stage):
     res = list(load_reservations(env).values())[0]
     assert res["state"] == "pending_billing" and res["provider_request_id"] == "req-x"
     assert res["actual_usd"] == pytest.approx(res["reserved_usd"])
-    assert project_tracker(env).budget_spent_usd == pytest.approx(res["reserved_usd"], abs=1e-4)
+    tracker = project_tracker(env)
+    assert tracker.budget_spent_usd == 0
+    assert tracker.budget_reserved_usd == pytest.approx(res["reserved_usd"], abs=1e-4)
+    assert tracker.budget_remaining_usd == pytest.approx(tracker.budget_total_usd-res["reserved_usd"], abs=1e-4)
     assert not (env / "assets" / "video" / "shot.mp4").exists()
     assert not (env / ".staging").exists() or not any((env / ".staging").iterdir())
     with pytest.raises(IndeterminatePaidCallError, match="pending_billing"):

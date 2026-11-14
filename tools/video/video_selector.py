@@ -297,8 +297,18 @@ class VideoSelector(BaseTool):
         # run the same boundary and return governance-bound receipts.
         from tools.video import _shared
 
+        task_context = self._prepare_task_context(inputs)
+        selection = None
+        def governed_estimate(bound_inputs):
+            nonlocal selection
+            bound = [t for t in candidates if getattr(t, "governance_bound", False) is True]
+            selection = self._select_best_tool(bound_inputs, bound, task_context)
+            if selection[0] is None:
+                raise ValueError("No governance-bound video provider available for a governed call.")
+            return selection[0].estimate_cost(bound_inputs)
+
         try:
-            governance = _shared.selector_governance(inputs, media="video")
+            governance = _shared.selector_governance(inputs, media="video", estimate_cost=governed_estimate)
         except Exception as exc:  # noqa: BLE001 — every refusal stops delegation
             return ToolResult(success=False, error=f"video_selector refused before delegation: {exc}")
         if governance is not None:
@@ -307,8 +317,7 @@ class VideoSelector(BaseTool):
                 return ToolResult(success=False, error="No governance-bound video provider available for a governed call.")
 
         # Normal generation — use scored selection
-        task_context = self._prepare_task_context(inputs)
-        tool, score = self._select_best_tool(inputs, candidates, task_context)
+        tool, score = selection or self._select_best_tool(inputs, candidates, task_context)
         if tool is None:
             return ToolResult(success=False, error="No video generation provider available.")
 

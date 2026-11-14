@@ -77,7 +77,7 @@ class TestRequests:
         invocation = run_common.gate_invocation(root, request_id)
         assert invocation == {
             "cwd": run_common.REPO,
-            "argv": [str(run_common.REPO / ".venv/bin/python"), "scripts/gate_sign.py", "--project", PROJECT,
+            "argv": [__import__('sys').executable, "scripts/gate_sign.py", "--project", PROJECT,
                      "--request", request_id],
         }
         assert run_common.gate_command(root, request_id) == (

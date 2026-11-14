@@ -542,6 +542,127 @@ def _scan_media(project_dir: Path) -> dict[str, list[dict]]:
     return {"renders": renders, "snapshots": snapshots, "music": music}
 
 
+# ---------------------------------------------------------------------------
+# Supervised-production shots (production/shots/<id>/history.jsonl)
+# ---------------------------------------------------------------------------
+
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+_SHOT_LABEL_MAX = 120
+
+
+def _shot_label(direction: Any) -> str:
+    """The brief's first sentence, in Ben's words, short enough for a clip."""
+    text = " ".join(str(direction or "").split())
+    first = _SENTENCE_END.split(text, maxsplit=1)[0] if text else ""
+    if len(first) > _SHOT_LABEL_MAX:
+        first = first[:_SHOT_LABEL_MAX].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return first
+
+
+def _shot_take_path(project_dir: Path, raw: Any) -> Optional[str]:
+    """Project-relative path of a take file, only if it stays inside the film."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        root = project_dir.resolve()
+        target = (root / raw).resolve()
+        target.relative_to(root)
+        if not target.is_file():
+            return None
+        return target.relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def _shot_entry(project_dir: Path, shot_id: str) -> Optional[dict]:
+    from lib import supervised_production as sp
+
+    rows = sp.history(project_dir, shot_id)
+    brief = sp.read_brief(project_dir, shot_id)
+    if brief is None:
+        return None
+    revision = brief.get("revision_id")
+    standing = sp.shot_take_decisions(project_dir,rows,shot_id=shot_id)
+    briefs = {r.get("event_id"): r.get("brief") or {} for r in rows if r.get("kind") == "brief"}
+    changes: dict = {}   # brief revision -> what it was made from that has changed since
+    takes: list[dict] = []
+    for row in rows:
+        kind = row.get("kind")
+        if kind == "take":
+            path = _shot_take_path(project_dir, row.get("path"))
+            cost = row.get("cost_usd")
+            made_from = row.get("brief_revision_id")
+            if made_from not in changes:
+                try:
+                    found = sp.source_changes(project_dir, briefs.get(made_from) or {})
+                except Exception:
+                    found = []
+                # Names only: the board never shows paths or the checker's machine reasons.
+                changes[made_from] = [{"kind": c["kind"], "name": c.get("name"), "entity_id": c.get("entity_id"),
+                                       "missing": bool(c.get("missing"))} for c in found]
+            take_standing = standing.get(row.get("take_id"), "waiting")
+            takes.append({
+                "take_id": row.get("take_id"),
+                "path": path,
+                "playable": path is not None,
+                "made_at": row.get("at"),
+                "cost_usd": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+                **({'cost_basis':row.get('cost_basis'),'signed_footage_request':bool(row.get('footage_request_id')),
+                    'needs_review':take_standing=='needs_review'} if sp.is_trailer(project_dir) else {}),
+                "duration_seconds": row.get("duration_seconds"),
+                "from_earlier_brief": bool(revision and made_from != revision),
+                "selected": take_standing == "chosen",
+                "declined": take_standing == "declined",
+                "waiting": take_standing == "waiting",
+                "source_changes": changes[made_from],
+            })
+    waiting_count = sum(1 for t in takes if t["waiting"])
+    first_brief = next((r for r in rows if r.get("kind") == "brief"), {})
+    if waiting_count:
+        shot_state = "waiting"   # a stopped shot's unjudged take still needs Ben
+    elif brief.get("stopped"):
+        shot_state = "stopped"
+    elif any(t["selected"] for t in takes):
+        shot_state = "selected"
+    elif takes:
+        shot_state = "has_takes"
+    else:
+        shot_state = "prepared"
+    return {
+        "id": shot_id,
+        "label": _shot_label(brief.get("direction")),
+        "direction": brief.get("direction"),
+        "state": shot_state,
+        "prepared_at": first_brief.get("at"),
+        "spend_allowance_usd": brief.get("spend_allowance_usd"),
+        "max_video_takes": brief.get("max_video_takes"),
+        "stopped": bool(brief.get("stopped")),
+        "waiting_count": waiting_count,
+        "spent_usd": round(sum(t["cost_usd"] for t in takes if t["cost_usd"] is not None), 2),
+        "takes": takes,
+    }
+
+
+def _collect_shots(project_dir: Path) -> list[dict]:
+    """Every prepared supervised shot in the film. A shot whose record can't be
+    read (half-written, malformed) is left out rather than breaking the board."""
+    shots_dir = project_dir / "production" / "shots"
+    try:
+        candidates = sorted(p.name for p in shots_dir.iterdir() if p.is_dir() and not p.is_symlink())
+    except OSError:
+        return []
+    shots = []
+    for shot_id in candidates:
+        try:
+            entry = _shot_entry(project_dir, shot_id)
+        except Exception:
+            continue
+        if entry is not None:
+            shots.append(entry)
+    shots.sort(key=lambda s: (str(s.get("prepared_at") or ""), s["id"]))
+    return shots
+
+
 def _find_poster(project_dir: Path, state: dict) -> Optional[str]:
     """Best poster for the library card (image path, or a video path —
     the /thumb endpoint extracts a frame from videos)."""
@@ -550,6 +671,11 @@ def _find_poster(project_dir: Path, state: dict) -> Optional[str]:
         visual = card.get("visual")
         if visual and visual.get("exists") and visual.get("type") == "image":
             return visual["path"]
+    # Authored films: the first published canon headshot.
+    gates = state.get("gates") or {}
+    for entry in gates.get("canon") or []:
+        if entry.get("role") == "hero" and entry.get("object_rel"):
+            return entry["object_rel"]
     for snap in (state.get("media") or {}).get("snapshots", []):
         return snap["path"]
     # Common image homes, in order of how representative they usually are.
@@ -724,6 +850,25 @@ def _gate_public_field_error(request: dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _cast_keys(root: Path) -> Optional[list[str]]:
+    """``kind:id`` for everyone and everything in the approved trailer cast;
+    None when it can't be read (the board then lists the whole canon snapshot)."""
+    try:
+        from lib.cast_change import effective_cast
+        cast = effective_cast(root, project_id=root.name)
+    except Exception:  # noqa: BLE001
+        return None
+    return sorted([f"character:{c}" for c in cast["character_ids"]] + [f"location:{l}" for l in cast["location_ids"]])
+
+
+def _cast_location_ids(root: Path) -> set[str]:
+    try:
+        from lib.cast_change import effective_cast
+        return set(effective_cast(root, project_id=root.name)["location_ids"])
+    except Exception:  # noqa: BLE001  (an unreadable cast just means imports show under characters, as before)
+        return set()
+
+
 def _gate_rows(root: Path, slug: str, *, limit: Optional[int] = _MAX_GATE_ROWS) -> dict[str, Any]:
     """Read bounded request summaries; malformed files are simply not rows."""
     tree_error = _gate_tree_error(root)
@@ -751,6 +896,7 @@ def _gate_rows(root: Path, slug: str, *, limit: Optional[int] = _MAX_GATE_ROWS) 
             found.setdefault(request_id, []).append((state_name, path, request))
 
     rows: list[dict[str, Any]] = []
+    loc_ids: Optional[set[str]] = None
     for request_id, copies in sorted(found.items()):
         state_name, path, request = copies[0]
         row: dict[str, Any] = {
@@ -763,6 +909,13 @@ def _gate_rows(root: Path, slug: str, *, limit: Optional[int] = _MAX_GATE_ROWS) 
             "state": "conflict" if len(copies) > 1 else state_name,
             "mtime": _lstat(path).st_mtime if _lstat(path) else None,
         }
+        if request.get("kind") == "reference_import":
+            bound = (request.get("approval_record") or {}).get("entity_id") if isinstance(request.get("approval_record"), dict) else None
+            if isinstance(bound, str) and re.fullmatch(r"[a-z0-9-]{1,128}", bound):
+                row["bound_entity"] = bound
+                if loc_ids is None:
+                    loc_ids = _cast_location_ids(root)
+                row["bound_kind"] = "location" if bound in loc_ids else "character"
         if request.get("approval_receipt_id") is not None:
             row["approval_receipt_id"] = request.get("approval_receipt_id")
         if request.get("declined_note") is not None:
@@ -789,6 +942,7 @@ def _canon_summary(root: Path) -> list[dict[str, str]]:
     except Exception:
         return []
     allowed = {"hero", *CHARACTER_ROLES}
+    labels = _location_labels(root)
     rows: list[dict[str, str]] = []
     for link_rel, object_rel in plan:
         parts = Path(link_rel).parts
@@ -797,7 +951,25 @@ def _canon_summary(root: Path) -> list[dict[str, str]]:
         entity, role = parts[-2], Path(parts[-1]).stem
         if role in allowed:
             rows.append({"entity": entity, "role": role, "object_rel": object_rel})
+        elif role == "establishing" or re.fullmatch(r"angle_\d+", role):
+            # G10: an approved place's pictures, labelled the way Ben labelled them
+            row = {"entity": entity, "kind": "location", "role": role, "object_rel": object_rel}
+            if labels.get((entity, role)):
+                row["label"] = labels[(entity, role)]
+            rows.append(row)
     return rows
+
+
+def _location_labels(root: Path) -> dict[tuple[str, str], str]:
+    """``(location id, angle_N) -> Ben's label`` for approved location entries."""
+    out: dict[tuple[str, str], str] = {}
+    for loc in _bible(root).get("locations") or []:
+        if not isinstance(loc, dict) or loc.get("status") != "approved":
+            continue
+        for i, ref in enumerate(loc.get("angles") or [], start=1):
+            if isinstance(ref, dict) and isinstance(ref.get("role"), str):
+                out[(str(loc.get("id")), f"angle_{i}")] = ref["role"]
+    return out
 
 
 def _looks_summary(root: Path) -> list[dict[str, Any]]:
@@ -815,6 +987,7 @@ def _looks_summary(root: Path) -> list[dict[str, Any]]:
                 "entity_kind": entry.get("entity_kind"),
                 "look_hash": entry.get("look_hash"),
                 "source_ticket_ref": entry.get("source_ticket_ref"),
+                **({"source_ref": entry["source_ref"]} if entry.get("source_ref") else {}),
             })
     return out
 
@@ -838,7 +1011,10 @@ def _cost_summary(root: Path, checkpoint_cost: Any) -> Any:
     if not authored:
         for checkpoint in root.glob("checkpoint_*.json"):
             data = _read_json(checkpoint) or {}
-            authored = data.get("pipeline_type") == "authored-film" or (data.get("pipeline") or {}).get("name") == "authored-film"
+            pipeline = data.get("pipeline")
+            authored = (data.get("pipeline_type") == "authored-film"
+                        or isinstance(pipeline, dict) and pipeline.get("name") == "authored-film"
+                        or isinstance(pipeline, str) and pipeline.split("@", 1)[0] == "authored-film")
             if authored:
                 break
     if not authored:
@@ -881,6 +1057,24 @@ def _lease_summary(root: Path) -> dict[str, Any]:
     return {"held": held, "pid": record.get("pid"), "started": record.get("acquired_at")}
 
 
+def _canon_changes(root: Path) -> Any:
+    """Today's Story-drive canon against the approved snapshot (read-only).
+    None for a film with no Story-drive folder."""
+    from lib.canon_fresh import CanonReadError, read_canon_changes
+
+    try:
+        changes = read_canon_changes(root)
+    except CanonReadError as exc:
+        return {"error": str(exc)}
+    except Exception:
+        return {"error": "Front Lot couldn't read today's canon."}
+    if changes is None:
+        return None
+    out = changes.to_dict()
+    out["scoped_out"] = sorted(out["scoped_out"])
+    return out
+
+
 def _gates_state(project_dir: Path, checkpoint_cost: Any) -> Any:
     """The optional governed-project extension to BoardState."""
     if not (project_dir / "project.yaml").is_file():
@@ -897,6 +1091,8 @@ def _gates_state(project_dir: Path, checkpoint_cost: Any) -> Any:
         return gates
     gates.update({
         "canon": _canon_summary(root),
+        "cast": _cast_keys(root),
+        "canon_changes": _canon_changes(root),
         "looks": _looks_summary(root),
         "cost": _cost_summary(root, checkpoint_cost),
         "run_lease": _lease_summary(root),
@@ -1246,6 +1442,8 @@ def _render_look_lock(root: Path, req: dict[str, Any]) -> dict[str, Any]:
             return {"packet_error": True, "error": "active look unavailable"}
         return {"action": "retire", "source_ticket_ref": current.get("source_ticket_ref"),
                 "look_hash": current.get("look_hash"), "supersedes": current.get("look_hash")}
+    if req.get("source_promotion_id") is not None:
+        return _render_writeros_look_lock(root, req, entity_kind, entity_id, current)
     ticket = req.get("source_ticket_path")
     if not isinstance(ticket, str) or not ticket:
         return {"packet_error": True, "error": "look ticket unavailable"}
@@ -1274,7 +1472,40 @@ def _render_look_lock(root: Path, req: dict[str, Any]) -> dict[str, Any]:
         return {"packet_error": True, "error": "look ticket names another entity"}
     old = current
     return {"source_ticket_ref": look.source_ticket_ref, "look_hash": look.look_hash,
-            "supersedes": (old or {}).get("look_hash")}
+            "supersedes": (old or {}).get("look_hash"), "look_spec": look.payload}
+
+
+def _render_writeros_look_lock(root: Path, req: dict[str, Any], entity_kind: str, entity_id: str,
+                               current: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Authoritative source: the WriterOS package's current look export,
+    verified per record against its memory (text only)."""
+    try:
+        from lib.look_ingest import LookIngestError, writeros_look_for
+
+        look = writeros_look_for(root, str(req.get("source_promotion_id")))
+    except LookIngestError:
+        return {"packet_error": True, "error": "WriterOS look unavailable; re-export from WriterOS"}
+    except Exception:
+        return {"packet_error": True, "error": "WriterOS look unavailable"}
+    if (look.entity_kind, look.entity_id) != (entity_kind, entity_id):
+        return {"packet_error": True, "error": "WriterOS look names another entity"}
+    return {"source_ref": look.source_ref, "look_hash": look.look_hash,
+            "supersedes": (current or {}).get("look_hash"), "look_spec": look.payload}
+
+
+def _audio_price_summary(root,settings):
+    from decimal import Decimal,ROUND_CEILING
+    from lib.trailer_edit import paper_state
+    basis=settings['audio_price_basis']
+    lines=((paper_state(root).get('current') or {}).get('paper_cut') or {}).get('lines',[])
+    longest=max((line['text'] for line in lines),key=lambda text:len(text.encode('utf-8')),default=None)
+    def value(key):return Decimal(str(basis[key]['value']))
+    def dollars(credits):
+        return float((credits.to_integral_value(rounding=ROUND_CEILING)*value('dollars_per_credit')).quantize(Decimal('.0001'),rounding=ROUND_CEILING))
+    return {'longest_line':longest,'longest_line_dollars':None if longest is None else dollars(Decimal(len(longest.encode('utf-8')))*value('speech_credits_per_character')*value('voice_multiplier_ceiling')),
+            'music_minute_dollars':dollars(value('music_credits_per_minute')),
+            'effect_second_dollars':dollars(value('effect_credits_per_second')) if 'effect_credits_per_second' in basis else None,
+            'expires_at':min(rate['expires_at'] for rate in basis.values())}
 
 
 def _render_config(root: Path, req: dict[str, Any]) -> dict[str, Any]:
@@ -1293,6 +1524,16 @@ def _render_config(root: Path, req: dict[str, Any]) -> dict[str, Any]:
         text = raw.decode("utf-8", errors="replace")
     except OSError:
         return {"packet_error": True, "error": "project.yaml unreadable", "summary": req.get("summary")}
+    if req.get('scope')=='audio:project_config':
+        import hashlib,yaml
+        if (req.get('approval_record') or {}).get('config_sha256')!=hashlib.sha256(raw).hexdigest():
+            return {'packet_error':True,'error':'The audio prices changed. Prepare a new price-settings request.'}
+        settings=yaml.safe_load(text)
+        return {'audio_prices':settings['audio_price_basis'],'record':req['approval_record'],
+                'audio_price_summary':_audio_price_summary(root,settings),
+                'production_ceiling':settings['budget_usd_cap'],'outbound_permissions':settings['provider_egress'],
+                'cast_ceiling':settings['cast_cap'],'run_minutes':settings['wall_time_minutes'],
+                'footage_model':settings['default_video_endpoint'],'picture_judge':settings.get('qc')}
     return {"project_yaml": text, "summary": req.get("summary")}
 
 
@@ -1311,6 +1552,67 @@ def _render_pipeline_migration(root: Path, req: dict[str, Any]) -> dict[str, Any
     return result
 
 
+def _render_cast_change(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Authoritative sources, read raw (no ledger replay): the proposal
+    checkpoint bytes and cast, the superseded cast_change row in
+    ``approvals.jsonl``, and the request's take-out/put-in lists. Shown in
+    the names Ben knows; the signer rebuilds and verifies everything."""
+    from lib.cast_change import (
+        CAST_KEYS,
+        apply_change,
+        base_cast,
+        canon_entities,
+        cast_from_record,
+        describe_cast,
+        name_of,
+    )
+
+    summary = req.get("summary")
+    change = req.get("cast_change") if isinstance(req.get("cast_change"), dict) else {}
+    remove = [i for i in change.get("remove") or [] if isinstance(i, str)]
+    add = [i for i in change.get("add") or [] if isinstance(i, str)]
+    proposal_path = root / "checkpoint_proposal.json"
+    info = _lstat(proposal_path)
+    if info is None or not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_GATE_DETAIL_JSON_BYTES:
+        return {"packet_error": True, "error": "approved proposal unavailable", "summary": summary}
+    try:
+        raw = proposal_path.read_bytes()
+        packet = ((json.loads(raw.decode("utf-8")) or {}).get("artifacts") or {}).get("proposal_packet") or {}
+    except (OSError, ValueError, AttributeError):
+        return {"packet_error": True, "error": "approved proposal unreadable", "summary": summary}
+    sha = hashlib.sha256(raw).hexdigest()
+    before = base_cast(packet)
+    prior_id = (req.get("envelope") or {}).get("supersedes_receipt_id")
+    lookup_error = None
+    if isinstance(prior_id, str):
+        rows, lookup_error = _raw_jsonl_targets(root / "approvals.jsonl", {prior_id})
+        prior = rows.get(prior_id) or {}
+        before = cast_from_record(prior.get("record") if isinstance(prior, dict) else None, sha) or before
+    names = canon_entities(root)
+    in_cast = {i: kind for kind, key in CAST_KEYS for i in before[key]}
+    kinds = {i: names[i][0] for i in add if i in names}
+    hint = req.get("approval_record") if isinstance(req.get("approval_record"), dict) else {}
+    kinds.update({e.get("id"): e.get("kind") for e in hint.get("added") or [] if isinstance(e, dict) and e.get("id") not in kinds})
+    removed = [{"kind": in_cast[i], "id": i} for i in remove if i in in_cast]
+    added = [{"kind": kinds[i], "id": i} for i in add if kinds.get(i) in ("character", "location")]
+    after = apply_change(before, removed, added)
+    result: dict[str, Any] = {
+        "summary": summary,
+        "cast_now": describe_cast(before, names),
+        "cast_after_signing": describe_cast(after, names),
+        "taking_out": ", ".join(name_of(i, names) for i in remove) or "nothing",
+        "putting_in": ", ".join(name_of(i, names) for i in add) or "nothing",
+    }
+    if lookup_error:
+        result.update({"packet_error": True, "error": lookup_error})
+    elif len(removed) != len(remove) or len(added) != len(add):
+        result.update({"packet_error": True, "error": "the approved trailer cast changed since this request was made"})
+    elif hint and (hint.get("base_proposal_sha256") != sha
+                   or any(hint.get(k) != after[k] for _, k in CAST_KEYS)):
+        result.update({"packet_error": True, "error": "the approved proposal or cast changed since this request was made"})
+    return result
+
+
 def _render_character(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     """Authoritative source: visual_bible character entry hero + sheet refs, as gate constructor uses."""
     entry = next((x for x in _bible(root).get("characters") or [] if isinstance(x, dict) and x.get("id") == req.get("entity_id")), None)
@@ -1321,9 +1623,21 @@ def _render_character(root: Path, req: dict[str, Any]) -> dict[str, Any]:
 
 
 def _render_location(root: Path, req: dict[str, Any]) -> dict[str, Any]:
-    """Authoritative source: visual_bible locations[].establishing and angles refs."""
+    """Authoritative source: visual_bible locations[].establishing and angles refs;
+    for a one-signature place set (G10), the staged pictures the signer checks."""
+    staged = (req.get("envelope") or {}).get("staged_pictures") if isinstance(req.get("envelope"), dict) else None
+    if isinstance(staged, list):
+        visuals = []
+        for p in staged:
+            h = p.get("pixel_hash") if isinstance(p, dict) else None
+            path = root / ".staging" / f"reference-{h}.png"
+            if not path.exists():  # signed and finished: the picture now lives in canon
+                path = root / "canon" / "visual" / "objects" / f"{h}.png"
+            visuals.append(_file_packet(root, h, path=path, label=str((p or {}).get("label") or "picture")))
+        return {"visuals": visuals, "packet_error": any(v.get("error") for v in visuals) or not visuals}
     entry = next((x for x in _bible(root).get("locations") or [] if isinstance(x, dict) and x.get("id") == req.get("entity_id")), None)
-    refs = [] if not isinstance(entry, dict) else [("establishing", entry.get("establishing"))] + [(f"angle_{i}", x) for i, x in enumerate(entry.get("angles") or [])]
+    refs = [] if not isinstance(entry, dict) else [("establishing", entry.get("establishing"))] + [
+        ((x.get("role") if isinstance(x, dict) and x.get("role") not in (None, "", "angle") else f"angle_{i}"), x) for i, x in enumerate(entry.get("angles") or [])]
     result = _visuals_from_refs(root, refs)
     result["packet_error"] |= not isinstance(entry, dict)
     return result
@@ -1358,13 +1672,115 @@ def _render_storyboard(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _render_audio_spend(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    """Raw saved .audio-requests/<entity_id>.json, never the request's hints."""
+    from tools.audio._governed import read_request, validate_request
+    try:
+        record = read_request(root, req.get("entity_id"))
+        validate_request(record, check_expiry=False)
+    except (OSError, ValueError, TypeError):
+        return {"packet_error": True, "error": "The saved audio request cannot be read."}
+    from lib.media_spending import _tracker
+    from lib.project_config import load_current_verified_project_config
+    try:remaining=_tracker(root,load_current_verified_project_config(root)).budget_remaining_usd
+    except (ValueError,RuntimeError,OSError):
+        return {'packet_error':True,'error':'The signed spending settings cannot be verified. Review them before making this take.'}
+    warning=('The remaining production ceiling no longer covers this request. Review held charges or prepare a new request before making a take.'
+             if record['max_cash_usd']+record['max_credits_usd']>remaining else None)
+    from lib.story_ingest import source_warning
+    return {"summary": req.get("summary"), "record": record,'remaining_usd':remaining,'budget_warning':warning,
+            'source_warning':source_warning(root,record['prompt']) if record['kind']=='speech' else None}
+
+
 def _render_text_only(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     """Text-only kinds: no constructor source cites a required visual asset id."""
+    if req.get('kind')=='artifact_review' and req.get('scope')=='trailer-stage' and req.get('stage')=='canon_ingest':
+        from lib.story_ingest import material,story_json,UNREADABLE
+        from lib.pathsafe import PathSafetyError
+        try:
+            from lib.trailer_contract import approval_record,signed_trailer_pin
+            cp=story_json(root,'checkpoint_canon_ingest.json')
+            material(root,cp['artifacts']['canon_packet'])
+            record=approval_record(root,signed_trailer_pin(root),'canon_ingest',cp['artifacts'])
+            if req.get('approval_record')!=record:raise ValueError('The story changed. Save and review its new signing request.')
+            return {'story':material(root)}
+        except (PathSafetyError,OSError,KeyError,TypeError,AttributeError,UnicodeError,json.JSONDecodeError):return {'packet_error':True,'error':UNREADABLE}
+        except ValueError as exc:return {'packet_error':True,'error':str(exc)}
     excluded = {"approval_record", "envelope"}
     request = {k: v for k, v in req.items() if k not in excluded and k != "preview_paths"}
     return {"summary": req.get("summary"), "request": request,
             "preview_filenames": [Path(str(p)).name for p in req.get("preview_paths") or []]}
 
+
+def _render_audio_take(root,req):
+    from lib.audio_workspace import decision_record,approved_source_request
+    try:
+        record=decision_record(root,req['entity_id'],req['approval_record']['decision'])
+        take=record['take']
+        wording=approved_source_request(root,take)['prompt'] if take['origin']=='generated' else take['licence_note']
+        return {'record':record,'spoken_words':wording}
+    except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This take needs fresh review. Reopen its audio panel before signing.'}
+
+def _render_audio_resolution(root,req):
+    from lib.media_spending import _resolution_material
+    r=req.get('approval_record') or {}
+    try:return {'record':_resolution_material(root,req['entity_id'],r['charged'],r['cash_usd'],r['credits_usd'],r['note'])}
+    except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This account review changed. Prepare a new account review before signing.'}
+def _render_footage(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    from lib import footage_requests as footage, receipts
+    from datetime import datetime, timezone
+    try:
+        if req['kind']=='footage_take':
+            supplied=req.get('approval_record') or {}
+            record=footage.decision_record(root,supplied.get('shot_id'),req.get('entity_id'),supplied.get('decision'))
+            take=record['take']
+            return {'footage_card':{'decision':record['decision'],
+                'description':take['prompt'],'length':take['duration_seconds'],
+                'accounting':'Budget booked at the signed maximum.' if take.get('cost_basis')=='signed_maximum' else 'Charge reported by the service.'},
+                'footage_take':{'path':take['path'],'sha256':take['sha256']}}
+        record=footage._read(root,req.get('entity_id'))
+        footage.check_current(root,record,check_allowance=False)
+        pictures=[_file_packet(root,r['asset_id'],path=root/r['path'],label=f'Reference picture {n}')
+                  for n,r in enumerate(record['references'],1)]
+        if any(p.get('error') for p in pictures):raise ValueError('A reference picture is missing or changed. Nothing can be sent.')
+        return {'footage_card':{'description':record['prompt'],'service':'Fal',
+            'model':'Kling o3 reference video','length':record['duration_seconds'],
+            'highest_cash':record['max_cash_usd'],'highest_credits':record['max_credits_usd'],
+            'highest_charge':round(record['max_cash_usd']+record['max_credits_usd'],4),
+            'remaining':record['remaining_usd'],
+            'expiry':datetime.fromtimestamp(record['price_expires_at'],timezone.utc).strftime('%d %B %Y, %H:%M UTC'),
+            'looks':[{k:_footage_look_words(v) if isinstance(v,dict) or (isinstance(v,list) and any(isinstance(x,dict) for x in v)) else v
+                      for k,v in m['payload'].items()} for m in record['look_material']]},'visuals':pictures}
+    except (ValueError,OSError,TypeError,KeyError,receipts.ReceiptChainError) as exc:
+        return {'packet_error':True,'error':str(exc) if isinstance(exc,ValueError) else 'The footage request cannot be verified. Nothing can be signed.'}
+
+
+def _footage_look_words(value):
+    """Readable copies of approved look facts; never alter the signed payload."""
+    if isinstance(value,dict):return '. '.join(str(k).replace('_',' ').capitalize()+': '+_footage_look_words(v) for k,v in value.items())
+    if isinstance(value,list):return ', '.join(_footage_look_words(v) for v in value)
+    if isinstance(value,bool):return 'yes' if value else 'no'
+    return str(value)
+
+
+def _render_account_review(root: Path, req: dict[str, Any]) -> dict[str, Any]:
+    supplied=req.get('approval_record') or {}
+    if (supplied.get('request') or {}).get('provider')!='fal':return _render_text_only(root,req)
+    from lib import receipts
+    from lib.media_spending import _resolution_material
+    try:
+        record=_resolution_material(root,req.get('entity_id'),supplied.get('charged'),
+            supplied.get('cash_usd'),supplied.get('credits_usd'),supplied.get('note'))
+        if record['request'].get('provider')!='fal':raise ValueError('This account review is for a different service.')
+        return {'footage_resolution':{'description':record['request']['prompt'],'charged':record['charged'],
+            'cash':record['cash_usd'],'credits':record['credits_usd'],'note':record['note']}}
+    except (ValueError,OSError,TypeError,KeyError,receipts.ReceiptChainError):
+        return {'packet_error':True,'error':'The original signed footage request or proposed account outcome cannot be verified. Nothing was resolved.'}
+
+
+def _render_combined_resolution(root,req):
+    record=req.get('approval_record') or {}
+    return _render_account_review(root,req) if (record.get('request') or {}).get('provider')=='fal' else _render_audio_resolution(root,req)
 
 from lib.receipts import APPROVAL_KINDS
 
@@ -1384,13 +1800,25 @@ class _GateRendererMap(dict[str, Any]):
     ``reference_import``: ``reference_import.STAGING_DIR/reference-<pixel-hash>.png``.
     ``look_lock``: confined ``wayfinder/resolved`` ticket named by request.
     ``config``: ``project.yaml``; ``pipeline_migration``: request plus raw
-    ``approvals.jsonl`` superseded row; grandfather/artifact review: text-only.
+    ``approvals.jsonl`` superseded row; ``cast_change``: ``checkpoint_proposal.json``
+    bytes + cast, the raw superseded cast_change row, the request's lists;
+    audio_spend: .audio-requests/<entity_id>.json; grandfather/artifact review: text-only.
     """
 
 
 # Keep this map exhaustive: adding a gate kind without a board packet is an
 # intentional test failure.
+def _render_trailer_card(root,req):
+    from urllib.parse import quote
+    from lib.trailer_titles import approval_record,font_name,visible_characters
+    from lib.canonical_json import record_sha256
+    try:
+        record=approval_record(root,req['entity_id']);card=record['card']
+        return {'title_card':card,'font_name':font_name(card),'visible_characters':visible_characters(card['text']),'card_image':f'/api/project/{quote(root.name,safe="")}/cut/cards/{quote(card["id"],safe="")}/lettering?fingerprint={record_sha256(record)}'}
+    except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This card changed. Save the cut and prepare a new review.'}
+
 GATE_RENDERERS = _GateRendererMap({
+    "trailer_card": _render_trailer_card,
     "headshot": _render_headshot,
     "sheet": _render_sheet,
     "qc_override": _render_qc_override,
@@ -1404,6 +1832,12 @@ GATE_RENDERERS = _GateRendererMap({
     "storyboard_batch": _render_storyboard,
     "headshot_grandfather": _render_text_only,
     "artifact_review": _render_text_only,
+    "cast_change": _render_cast_change,
+    "audio_spend": _render_audio_spend,
+    "audio_take": _render_audio_take,
+    "audio_resolution": _render_combined_resolution,
+    "footage_spend": _render_footage,
+    "footage_take": _render_footage,
 })
 assert set(GATE_RENDERERS) == set(APPROVAL_KINDS)
 
@@ -1456,6 +1890,59 @@ def load_gate_detail(project_dir: Path, request_id: str) -> dict[str, Any]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _trailer_display_evidence(root: Path, marker: dict) -> bool:
+    """Identity evidence only, never authority to complete a stage.
+
+    An independently signed, ledgered creation row can identify a trailer
+    even when its history projection is broken. Ordinary or unknown films
+    retain the base presentation; their writer still refuses broken history.
+    """
+    if marker.get("production_kind") == "trailer" or marker.get("pipeline_type") == "authored-film@1.6":
+        return True
+    # A stage's explicit manifest tuple is identity evidence, never approval.
+    # Older stage schema versions and prose mentioning trailers do not qualify.
+    from lib.trailer_contract import checkpoint_trailer_evidence
+    if checkpoint_trailer_evidence(root):
+        return True
+    from lib import gates
+    path = root / "approvals.jsonl"
+    info = _lstat(path)
+    if info is None or not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_LEDGER_LOOKUP_BYTES:
+        return False
+    try:
+        if not (gates.gates_dir() / "key").is_file():
+            return False
+        with path.open("rb") as stream:
+            total = 0
+            for _ in range(_MAX_LEDGER_LOOKUP_ROWS):
+                line = stream.readline(_MAX_LEDGER_LINE_BYTES + 1)
+                if not line:
+                    break
+                total += len(line)
+                if total > _MAX_LEDGER_LOOKUP_BYTES:
+                    break
+                if len(line) > _MAX_LEDGER_LINE_BYTES:
+                    continue
+                try:
+                    row = json.loads(line)
+                except (ValueError, RecursionError):
+                    continue
+                if not isinstance(row, dict) or row.get("project_id") != root.name:
+                    continue
+                record = row.get("record")
+                if (row.get("kind") == "pipeline_migration" and row.get("entity_id") == "authored-film"
+                        and isinstance(record, dict) and record.get("pipeline_name") == "authored-film"
+                        and record.get("version") == "1.6"):
+                    try:
+                        if gates.verify_receipt(row):
+                            return True
+                    except (ValueError, TypeError, RecursionError):
+                        continue
+    except (OSError, ValueError, TypeError):
+        pass
+    return False
+
+
 def load_board_state(project_dir: Path) -> dict[str, Any]:
     """Full BoardState for one project. Never raises."""
     project_dir = Path(project_dir)
@@ -1476,12 +1963,69 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
                 break
     pipeline_meta = _load_pipeline_meta(pipeline_type)
 
+    # A signed trailer stays a trailer even when its marker is damaged.
+    trailer = None
+    trailer_damaged = None
+    trailer_pin = None
+    trailer_setup_pending = False
+    from lib.trailer_contract import signed_trailer_pin, require_contract, project_checkpoint, DAMAGED, HISTORY_DAMAGED
+    try:
+        trailer_pin = signed_trailer_pin(project_dir)
+        if trailer_pin is not None:
+            pipeline_meta = _load_pipeline_meta(trailer_pin.ref)
+            try:
+                trailer = require_contract(project_dir)
+            except ValueError:
+                trailer_damaged = DAMAGED
+            checkpoints = {name: project_checkpoint(project_dir, trailer_pin, dict(cp, stage=name) if cp.get("stage") == name else dict(cp, pipeline=None)) for name, cp in checkpoints.items()}
+    except Exception:
+        # Display identity needs evidence; broken history alone is not trailer identity.
+        if _trailer_display_evidence(project_dir, marker):
+            trailer_damaged = HISTORY_DAMAGED
+            pipeline_meta = _load_pipeline_meta("authored-film@1.6")
+
+    if trailer_pin is None and not trailer_damaged and marker.get("production_kind") == "trailer" and marker.get("pipeline_type") == "authored-film@1.6":
+        from lib.pipeline_pin import pinned_pipeline
+        try:
+            # Display a draft, not a production pin. An older signed production cannot enter this state.
+            existing = pinned_pipeline(project_dir, "authored-film")
+            if existing.receipt_id is None:
+                trailer = require_contract(project_dir)
+                trailer_setup_pending = True
+                pipeline_meta = _load_pipeline_meta("authored-film@1.6")
+                if checkpoints:
+                    trailer_damaged = DAMAGED
+        except Exception:
+            trailer_damaged = DAMAGED
+
+    # Explicit checkpoint evidence matters even with absent or valid non-trailer
+    # history. It cannot create a signed pin or authorize any saved completion.
+    if trailer_pin is None and not trailer_damaged and not trailer_setup_pending and _trailer_display_evidence(project_dir, marker):
+        trailer_damaged = DAMAGED
+        pipeline_meta = _load_pipeline_meta("authored-film@1.6")
+    trailer_creation = None
+    if trailer_setup_pending:
+        from lib.trailer_edit import creation_state
+        trailer_creation = creation_state(project_dir)
+
     artifacts = _collect_artifacts(project_dir, checkpoints)
     events = read_events(project_dir, limit=250)
     storyboard = _build_storyboard(project_dir, artifacts, events)
     media = _scan_media(project_dir)
 
     stages = _build_stage_rail(pipeline_meta, checkpoints, history)
+    if trailer_pin is not None or trailer_damaged or trailer_setup_pending:
+        from lib.trailer_contract import STAGE_LABELS, STAGE_LIMITS
+        for entry in stages:
+            entry["label"] = STAGE_LABELS.get(entry["name"], entry["name"])
+            entry["availability_message"] = "" if entry["status"] == "completed" else STAGE_LIMITS.get(entry["name"], "Signed stage approval controls are not available yet.")
+            if trailer_setup_pending:
+                entry["availability_message"] = trailer_creation['message']
+            if trailer_damaged:
+                entry["status"] = "failed"
+                entry["human_approved"] = False
+                entry["availability_message"] = trailer_damaged
+            entry["approval_error"] = (checkpoints.get(entry["name"]) or {}).get("approval_error")
 
     # Cost: latest checkpoint snapshot wins; fall back to manifest total.
     cost = None
@@ -1512,6 +2056,9 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         "project_id": project_id,
         "title": marker.get("title") or meta_json.get("name") or project_id.replace("-", " ").title(),
         "pipeline": pipeline_meta,
+        **({"trailer": trailer} if trailer else {}),
+        **({"is_trailer": True, "trailer_damaged": trailer_damaged} if trailer_pin is not None or trailer_damaged or trailer_setup_pending else {}),
+        **({"trailer_setup_pending": True, "trailer_creation": trailer_creation} if trailer_setup_pending else {}),
         "style_playbook": marker.get("style_playbook"),
         "created_at": marker.get("created_at"),
         "has_marker": bool(marker),
@@ -1523,10 +2070,16 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         "events": events,
         "cost": cost,
         "last_activity": last_activity,
-        "live": bool(last_activity and (now - last_activity) < LIVE_WINDOW_SECONDS),
+        "live": bool(not trailer_damaged and last_activity and (now - last_activity) < LIVE_WINDOW_SECONDS),
     }
     state["gates"] = _gates_state(project_dir, cost)
+    state["shots"] = _collect_shots(project_dir)
     state["poster"] = _find_poster(project_dir, state)
+    if trailer_pin is not None and not trailer_damaged:
+        from lib.trailer_edit import paper_state
+        state["paper_cut"] = paper_state(project_dir)
+        from lib.footage_requests import preview_availability
+        state['paper_cut']['footage_availability']=preview_availability(project_dir,state['paper_cut'].get('current'))
     return state
 
 
@@ -1538,6 +2091,9 @@ def summarize_project(project_dir: Path) -> dict[str, Any]:
     return {
         "project_id": state["project_id"],
         "title": state["title"],
+        **({"trailer_setup_pending": True} if state.get("trailer_setup_pending") else {}),
+        **({"is_trailer": True} if state.get("is_trailer") else {}),
+        **({"active_stage_label": active.get("label")} if active and state.get("is_trailer") else {}),
         "pipeline_type": state["pipeline"]["pipeline_type"],
         "has_pipeline_state": state["has_pipeline_state"],
         "poster": state["poster"],
@@ -1546,7 +2102,7 @@ def summarize_project(project_dir: Path) -> dict[str, Any]:
         "active_stage": active["name"] if active else None,
         "awaiting_human": bool(active and active["status"] == "awaiting_human"),
         "stage_states": [
-            {"name": s["name"], "status": s["status"]}
+            {"name": s["name"], "status": s["status"], **({"label": s.get("label")} if state.get("is_trailer") else {})}
             for s in state["stages"] if not s.get("undeclared")
         ],
         "completed_count": len(done),

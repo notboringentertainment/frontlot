@@ -172,9 +172,18 @@ def _pin_mismatch(
 def _ref_from_checkpoint(checkpoint: dict[str, Any]) -> Optional[str]:
     """Standalone validation reads the tuple from the checkpoint itself."""
     pipeline_type = checkpoint.get("pipeline_type")
+    tuple_ = checkpoint.get("pipeline")
+    if isinstance(tuple_, str):
+        from lib.pipeline_loader import parse_pipeline_ref
+        try:
+            parse_pipeline_ref(tuple_)
+        except ValueError:
+            return None
+        return tuple_
+    if not pipeline_type and isinstance(tuple_, dict):
+        pipeline_type = tuple_.get("name")
     if not pipeline_type or pipeline_type == "unknown":
         return None
-    tuple_ = checkpoint.get("pipeline")
     if isinstance(tuple_, dict) and tuple_.get("version"):
         from lib.pipeline_loader import manifest_versions, parse_pipeline_ref
 
@@ -330,6 +339,8 @@ def init_project(
     pipeline_type: str,
     pipeline_dir: Optional[Path] = None,
     style_playbook: Optional[str] = None,
+    target_duration_seconds: Optional[float] = None,
+    review_target_change: bool = False,
 ) -> Path:
     """Initialize a project workspace with the canonical layout + marker file.
 
@@ -340,9 +351,32 @@ def init_project(
     Idempotent: re-running preserves the original created_at and merges fields.
     Returns the project directory.
     """
+    from lib.trailer_contract import make_contract
+    trailer = None
+    if pipeline_type == "authored-film@1.6":
+        trailer = make_contract(target_duration_seconds)
+    elif target_duration_seconds is not None:
+        raise ValueError("A trailer target requires the trailer pipeline definition.")
     _validate_style_playbook(style_playbook)
     base = pipeline_dir or PROJECTS_DIR
     project_dir = base / project_id
+    from lib.trailer_contract import signed_trailer_pin
+    if signed_trailer_pin(project_dir) is not None and trailer is None:
+        raise ValueError("A signed trailer cannot be changed into an ordinary production.")
+    existing_marker = project_dir / PROJECT_MARKER_FILENAME
+    if existing_marker.exists():
+        previous = json.loads(existing_marker.read_text())
+        if previous.get("production_kind") == "trailer" and trailer is None:
+            raise ValueError("A trailer draft cannot be changed into an ordinary production.")
+    if existing_marker.exists() and trailer is not None:
+        previous = json.loads(existing_marker.read_text())
+        if previous.get("production_kind") != "trailer":
+            raise ValueError("Only a production created as a trailer can use the trailer definition.")
+        if previous.get("trailer") != trailer:
+            from lib.receipts import verified_approvals
+            approvals = verified_approvals(project_dir, "artifact_review")
+            if any(r.get("artifact_type") == "trailer_stage" for r in approvals) and not review_target_change:
+                raise ValueError("Changing the trailer length requires fresh review. Confirm that change explicitly.")
     for sub in (
         "artifacts",
         "assets/images",
@@ -367,6 +401,9 @@ def init_project(
     marker["project_id"] = project_id
     marker["title"] = title
     marker["pipeline_type"] = pipeline_type
+    if trailer is not None:
+        marker["trailer"] = trailer
+        marker.setdefault("production_kind", "trailer")
     if style_playbook is not None:
         marker["style_playbook"] = style_playbook
 
@@ -570,6 +607,7 @@ def _enforce_stage_prerequisites(
             with open(path, encoding="utf-8") as handle:
                 checkpoint = json.load(handle)
             validate_checkpoint(checkpoint)
+            checkpoint = _trailer_projection(pipeline_dir, project_id, checkpoint)
         except (OSError, json.JSONDecodeError, CheckpointValidationError):
             incomplete.append(predecessor)
             continue
@@ -733,7 +771,7 @@ def write_checkpoint(
     # cannot bypass either gate enforcement or style validation.
     marker = None
     marker_path = pipeline_dir / project_id / PROJECT_MARKER_FILENAME
-    if marker_path.exists() and (not pipeline_type or not style_playbook):
+    if marker_path.exists():
         try:
             with open(marker_path, encoding="utf-8") as f:
                 marker = json.load(f)
@@ -744,17 +782,38 @@ def write_checkpoint(
             pipeline_type = marker["pipeline_type"]
         if not style_playbook and marker.get("style_playbook"):
             style_playbook = marker["style_playbook"]
+    if isinstance(marker, dict) and marker.get("production_kind") == "trailer":
+        from lib.trailer_contract import signed_trailer_pin
+        if signed_trailer_pin(pipeline_dir / project_id) is None:
+            raise CheckpointValidationError("This trailer setup has not been signed. No stage can begin.")
     _validate_style_playbook(style_playbook)
 
     # The manifest a project runs under is its signed pin (lib.pipeline_pin);
     # ``pipeline_type`` stays the bare name in the checkpoint and the tuple
     # {name, version, manifest_digest} rides alongside it.
+    from lib.trailer_contract import signed_trailer_pin
+    trailer_pin = signed_trailer_pin(pipeline_dir / project_id)
+    if trailer_pin is None:
+        from lib.trailer_contract import checkpoint_trailer_evidence
+        if checkpoint_trailer_evidence(pipeline_dir / project_id):
+            raise CheckpointValidationError("This trailer setup has not been signed. No stage can begin.")
+    if trailer_pin is not None:
+        pipeline_type = trailer_pin.ref
     pin = _pin_for(pipeline_dir, project_id, pipeline_type)
     if pin is not None:
         pipeline_type = pin.name
         pipeline_ref = _effective_ref(pipeline_dir, project_id, pin.name)
     else:
         pipeline_ref = pipeline_type
+
+    if pin is not None and pin.name == "authored-film" and pin.version == "1.6":
+        from lib.trailer_contract import require_contract, require_stage_approval
+        try:
+            require_contract(pipeline_dir / project_id)
+            if status == "completed" and human_approved:
+                require_stage_approval(pipeline_dir / project_id, pin, stage, artifacts)
+        except ValueError as exc:
+            raise CheckpointValidationError(str(exc)) from exc
 
     valid_stages = (
         set(get_pipeline_stages(pipeline_ref)) if pipeline_ref
@@ -765,6 +824,15 @@ def write_checkpoint(
             f"Invalid stage: {stage!r} for pipeline {pipeline_type!r}. "
             f"Valid stages: {sorted(valid_stages)}"
         )
+
+    if pin is not None and pin.name == "authored-film" and pin.version == "1.6" and status in {"in_progress", "failed"}:
+        from lib.trailer_contract import require_contract, validate_stage_contract
+        carried = {"script": ["script"], "scene_plan": ["scene_plan"], "edit": ["edit_decisions"], "compose": ["render_report", "final_review"]}.get(stage, [])
+        if any(name in artifacts for name in carried):
+            try:
+                validate_stage_contract(require_contract(pipeline_dir / project_id), stage, artifacts, partial=True)
+            except ValueError as exc:
+                raise CheckpointValidationError(str(exc)) from exc
 
     # --- Gate enforcement (GI-4) ---
     # The pipeline manifest is the binding source of truth for whether a stage
@@ -781,6 +849,8 @@ def write_checkpoint(
     if gated:
         human_approval_required = True
         if status == "completed" and not human_approved:
+            if pin is not None and pin.name == "authored-film" and pin.version == "1.6":
+                raise CheckpointValidationError("GATE VIOLATION: this trailer stage needs your signed approval. A bare flag cannot complete it; approval controls are not available yet.")
             gate_source = (
                 f"human_approval_default: true in the {pipeline_type!r} manifest"
                 if manifest_gate
@@ -843,7 +913,8 @@ def write_checkpoint(
     carries_decisions = "decision_log" in artifacts and isinstance(
         artifacts["decision_log"], dict
     )
-    if carries_decisions:
+    if carries_decisions and trailer_pin is None:
+        # Signed trailer material is immutable; older productions retain normalization.
         # Write decision_log_ref into proposal_packet and render_report
         # artifacts if they are present in this checkpoint. The ref path is
         # deterministic, so it can be injected BEFORE any validation runs.
@@ -864,6 +935,19 @@ def write_checkpoint(
     # previously the cumulative decision log was merged before validation,
     # so rejected checkpoints could still corrupt the audit trail.
     validate_checkpoint(checkpoint)
+    if pin is not None and pin.name == "authored-film" and pin.version == "1.6" and status in {"awaiting_human", "completed"}:
+        from lib.trailer_contract import validate_stage_contract
+        marker_data = json.loads(marker_path.read_text()) if marker_path.exists() else {}
+        try:
+            validate_stage_contract(marker_data.get("trailer"), stage, artifacts)
+            if status == "completed":
+                from lib.trailer_contract import require_stage_approval
+                require_stage_approval(pipeline_dir / project_id, pin, stage, artifacts)
+            if stage in {"edit", "compose"}:
+                from lib.trailer_contract import approval_record
+                approval_record(pipeline_dir / project_id, pin, stage, artifacts)
+        except ValueError as exc:
+            raise CheckpointValidationError(str(exc)) from exc
 
     if manifest is not None and manifest.get("validation_profile") == "authored-canon":
         from lib.canon_enforcement import enforce_authored_canon
@@ -965,6 +1049,20 @@ def acquire_run_lease(pipeline_dir: Path, project_id: str, wall_time_minutes: fl
     return acquire(Path(pipeline_dir) / project_id, wall_time_minutes)
 
 
+def _trailer_projection(pipeline_dir: Path, project_id: str, checkpoint: dict) -> dict:
+    from lib.pipeline_pin import pinned_pipeline
+    from lib.trailer_contract import project_checkpoint
+    from lib.trailer_contract import signed_trailer_pin
+    signed = signed_trailer_pin(pipeline_dir / project_id)
+    if signed is not None:
+        return project_checkpoint(pipeline_dir / project_id, signed, checkpoint)
+    ref = checkpoint.get("pipeline_type")
+    if not ref or not ref.startswith("authored-film"):
+        return checkpoint
+    pin = pinned_pipeline(pipeline_dir / project_id, ref)
+    return project_checkpoint(pipeline_dir / project_id, pin, checkpoint)
+
+
 def read_checkpoint(
     pipeline_dir: Path, project_id: str, stage: str
 ) -> Optional[dict[str, Any]]:
@@ -975,8 +1073,11 @@ def read_checkpoint(
     with open(path, encoding="utf-8") as f:
         checkpoint = json.load(f)
     validate_checkpoint(checkpoint)
+    from lib.trailer_contract import signed_trailer_pin
+    if signed_trailer_pin(pipeline_dir / project_id) is not None and checkpoint.get("stage") != stage:
+        raise CheckpointValidationError("The saved stage does not match its production step.")
     _require_pin_bound(pipeline_dir, project_id, stage, path, checkpoint)
-    return checkpoint
+    return _trailer_projection(pipeline_dir, project_id, checkpoint)
 
 
 def _require_pin_bound(
@@ -1012,7 +1113,7 @@ def get_latest_checkpoint(
     validate_checkpoint(checkpoint)
     stage = checkpoint.get("stage") or checkpoints[0].stem[len("checkpoint_"):]
     _require_pin_bound(pipeline_dir, project_id, str(stage), checkpoints[0], checkpoint)
-    return _project_invalidation(pipeline_dir, project_id, checkpoint)
+    return _trailer_projection(pipeline_dir, project_id, _project_invalidation(pipeline_dir, project_id, checkpoint))
 
 
 def _project_invalidation(pipeline_dir: Path, project_id: str, checkpoint: dict[str, Any]) -> dict[str, Any]:

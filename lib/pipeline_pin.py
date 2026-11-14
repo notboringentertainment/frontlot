@@ -266,6 +266,7 @@ def prepare_migration_request(
     *,
     request_id: Optional[str] = None,
     summary: Optional[str] = None,
+    trailer_creation: bool = False,
 ) -> Path:
     """Write a gate request pinning ``pipeline_name@version`` (mints nothing).
 
@@ -276,12 +277,15 @@ def prepare_migration_request(
     project_dir = Path(project_dir)
     if version not in manifest_versions(pipeline_name):
         raise PipelinePinError(f"no manifest pipeline_defs/{pipeline_name}@{version}.yaml")
-    require_migration_coverage(project_dir, pipeline_name, version)
+    require_migration_coverage(project_dir, pipeline_name, version, trailer_creation=trailer_creation)
     digest = manifest_digest(f"{pipeline_name}@{version}")
     from lib.receipts import verified_approvals
 
     tip = _chain_tip(verified_approvals(project_dir, MIGRATION_KIND, entity_id=pipeline_name), pipeline_name)
     record = migration_record(pipeline_name, version, digest, checkpoint_digests_on_disk(project_dir))
+    if trailer_creation:
+        from lib.trailer_edit import creation_facts
+        record["trailer_creation"] = creation_facts(project_dir)
     request_id = request_id or f"pipeline-migration-{version.replace('.', '-')}"
     request = {
         "request_id": request_id,
@@ -309,11 +313,32 @@ def prepare_migration_request(
     return path
 
 
-def require_migration_coverage(project_dir: Path | str, pipeline_name: str, version: str) -> None:
+def require_migration_coverage(project_dir: Path | str, pipeline_name: str, version: str, *, trailer_creation: bool = False) -> None:
     """D20.7 (R3#4): a project may be pinned to authored-film 1.4 only when
     every active hero of a cast character is a 1.1 record or carries a valid
     headshot_grandfather attestation. Run at request time, at gate
     construction and again inside the gate's pre-commit check."""
+    from lib.receipts import verified_approvals
+    history = verified_approvals(project_dir, MIGRATION_KIND)
+    was_trailer = any(r.get("record", {}).get("pipeline_name") == "authored-film"
+                      and r.get("record", {}).get("version") == "1.6" for r in history)
+    if was_trailer and (pipeline_name != "authored-film" or version != "1.6"):
+        raise PipelinePinError("A signed trailer cannot leave the trailer definition.")
+    if pipeline_name == "authored-film" and version == "1.6":
+        from lib.trailer_contract import require_contract
+        from lib.receipts import verified_approvals
+        marker = _read_marker(Path(project_dir))
+        if not was_trailer and marker.get("production_kind") == "trailer" and not trailer_creation:
+            raise PipelinePinError("Starting a trailer requires signed trailer creation. That control is not available yet.")
+        if marker.get("production_kind") != "trailer":
+            raise PipelinePinError("Only a production created as a trailer can use the trailer definition.")
+        try:
+            require_contract(Path(project_dir))
+        except ValueError as exc:
+            raise PipelinePinError(str(exc)) from exc
+        old = verified_approvals(project_dir, MIGRATION_KIND, entity_id=pipeline_name)
+        if any(r["record"].get("version") != "1.6" for r in old):
+            raise PipelinePinError("Only a production created as a trailer can use the trailer definition.")
     if pipeline_name != "authored-film" or version != "1.4":
         return
     from lib.headshot_verify import hero_migration_blockers

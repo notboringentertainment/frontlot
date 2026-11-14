@@ -58,6 +58,25 @@ TARGET LUFS:    -14 LUFS (YouTube/TikTok/IG) | -16 LUFS (podcasts)
 
 ## Sound Effects (SFX) Placement
 
+### Trailer requests and takes
+
+Use the board's sound-effects workspace for a signed trailer. Describe one sound
+for a moment in the checked paper cut, choose a length and a loop intention, save
+the brief and review its individual spending card. Sound Effects v3 receives the
+exact description, model, length and loop choice; shot placement stays local.
+Prices come only from the signed, unexpired account figures. An unsigned,
+changed, unaffordable or unresolved request must not contact the service.
+One signature buys one call, without retries or another provider. Mixing never
+generates an effect implicitly.
+
+Listen to the returned take, then sign keeping or declining it. Decline is final.
+A changed brief, moment or file needs a fresh look and a new take. For an imported
+effect, use the Mac chooser and write its source and licence note, then sign the
+take decision. Imports have no generation charge. The licence note is the writer's
+statement; re-encoded or altered generated audio, and audio made outside Front Lot,
+may have no matching generation receipt here. These controls prepare takes and
+record intended timing; the later cutting view supplies actual placement and mixing.
+
 ### SFX Categories for Explainer Videos
 
 | SFX Type | Use Case | Duration | Level |

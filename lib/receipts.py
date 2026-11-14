@@ -33,6 +33,8 @@ run by ``tools.cost_tracker.resume_check`` before any new paid call.
 
 from __future__ import annotations
 
+import re
+
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,7 +55,7 @@ QC_RECEIPTS_FILENAME = "qc-receipts.jsonl"
 
 APPROVAL_KINDS = frozenset(
     {
-        "hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review",
+        "hero", "sheet", "location", "poster", "storyboard_batch", "config", "artifact_review", "audio_spend", "audio_take", "audio_resolution", "footage_spend", "footage_take",
         # Plan D10 (look locks) and Slice A' (headshots, reference import, manifest pins).
         "look_lock", "headshot", "reference_import", "pipeline_migration",
         # D19.4: a human accepting specific failed QC items of ONE verdict.
@@ -61,6 +63,9 @@ APPROVAL_KINDS = frozenset(
         # D20.7: a human attesting that a LEGACY (pre-QC) hero passed the hero
         # judge; adjunct to the headshot chain, never part of it.
         "headshot_grandfather",
+        # A human changing the approved trailer cast without editing the
+        # fingerprinted proposal checkpoint (lib/cast_change.py).
+        "cast_change", "trailer_card",
     }
 )
 HEADSHOT_GRANDFATHER_FIELDS = ("entity_kind", "entity_id", "legacy_headshot_receipt_id", "asset_id", "look_hash", "qc_receipt_id")
@@ -82,11 +87,17 @@ ENVELOPE_FIELDS: dict[str, dict[str, bool]] = {
     },
     "reference_import": {"origin_class": True, "normalized_pixel_hash": True},
     "pipeline_migration": {"supersedes_receipt_id": False},
+    "cast_change": {"supersedes_receipt_id": False},
     # qc_override has two envelope shapes, enforced exactly-one in
     # validate_envelope: record 1.0 (verdict-bound) carries qc_receipt_id;
     # record 1.1 (field-bound batch) carries field_manifest_sha256.
     "qc_override": {"qc_receipt_id": False, "field_manifest_sha256": False},
     "headshot_grandfather": {"attests_receipt_id": True, "entity_kind": True, "look_hash": True},
+    # G10 one-signature place sets: the writer's own pictures of a place are
+    # signed once, as a set. The same fixed likeness promise a reference_import
+    # carries is signed here for every picture in the set (attestation_text +
+    # staged_pictures), so each picture keeps a signed promise behind it.
+    "location": {"attestation_text": False, "staged_pictures": False},
 }
 
 # Record 1.1 (batch) allowlist: a field-bound waiver over the exact candidates
@@ -347,6 +358,67 @@ def record_human_approval(
     return receipt
 
 
+_WF_TICKET_ID_RE = re.compile(r"^wf-[0-9a-f]{8}$")
+_SHA256_HEX_RE = re.compile(r"^[a-f0-9]{64}$")
+_WRITEROS_RECORD_ID_RE = re.compile(r"^mem_[0-9a-f]{32}$")
+
+
+def _validate_look_lock_source(env: dict) -> None:
+    """An activate envelope names exactly one source (look sessions,
+    2026-09-30). Wayfinder: ``source_ticket_ref`` ({id: wf-8hex} or
+    {path, content_sha256}) with ``promotion_refs`` absent or [] (the shape of
+    every receipt minted before WriterOS looks). WriterOS: a non-empty
+    ``promotion_refs`` of {system: writeros, record_id: mem_32hex} and NO
+    ``source_ticket_ref`` key. Retire envelopes carry neither and are not
+    checked here."""
+    has_ticket_key = "source_ticket_ref" in env
+    ticket = env.get("source_ticket_ref")
+    refs = env.get("promotion_refs")
+    if has_ticket_key:
+        if not isinstance(ticket, dict):
+            raise ValueError("look_lock activate: source_ticket_ref must be a ticket reference, never null")
+        id_form = set(ticket) == {"id"} and isinstance(ticket.get("id"), str) and _WF_TICKET_ID_RE.match(ticket["id"])
+        path_form = (
+            set(ticket) == {"path", "content_sha256"}
+            and isinstance(ticket.get("path"), str) and ticket["path"]
+            and isinstance(ticket.get("content_sha256"), str) and _SHA256_HEX_RE.match(ticket["content_sha256"])
+        )
+        if not (id_form or path_form):
+            raise ValueError("look_lock activate: source_ticket_ref must be {id: wf-<8hex>} or {path, content_sha256}")
+        if refs not in (None, []):
+            raise ValueError("look_lock activate: a wayfinder look carries no promotion_refs")
+        return
+    if not isinstance(refs, list) or not refs:
+        raise ValueError("look_lock activate: the envelope names no source (source_ticket_ref or WriterOS promotion_refs)")
+    for ref in refs:
+        if (
+            not isinstance(ref, dict)
+            or set(ref) != {"system", "record_id"}
+            or ref.get("system") != "writeros"
+            or not isinstance(ref.get("record_id"), str)
+            or not _WRITEROS_RECORD_ID_RE.match(ref["record_id"])
+        ):
+            raise ValueError("look_lock activate: promotion_refs items must be {system: writeros, record_id: mem_<32hex>}")
+
+
+def _validate_location_set(record: dict, env: dict) -> None:
+    """A place set signs the fixed likeness promise for exactly the pictures
+    its record approves; both fields travel together."""
+    from lib.reference_import import SYNTHETIC_ATTESTATION
+
+    if env.get("attestation_text") != SYNTHETIC_ATTESTATION:
+        raise ValueError(f"location set: attestation_text must be the fixed promise {SYNTHETIC_ATTESTATION!r}")
+    pics = env.get("staged_pictures")
+    if not isinstance(pics, list) or not pics or not all(isinstance(p, dict) for p in pics):
+        raise ValueError("location set: staged_pictures must be a non-empty list of pictures")
+    hashes = [p.get("pixel_hash") for p in pics]
+    if sorted(hashes) != sorted((record.get("assets") or {}).values()) or len(set(hashes)) != len(hashes):
+        raise ValueError("location set: staged_pictures must be exactly the pictures the record approves")
+    for p in pics:
+        if set(p) != {"pixel_hash", "label", "origin_tool"} or not all(isinstance(v, str) and v for v in p.values()):
+            raise ValueError("location set: each picture carries exactly pixel_hash, label, origin_tool")
+
+
 def validate_envelope(
     kind: str,
     record: dict,
@@ -357,6 +429,15 @@ def validate_envelope(
     """Check the signed envelope of an approval kind against its record and
     return the fields to embed. Kinds without an envelope contract accept
     none (an unexpected envelope is an error, not ignored)."""
+    if kind == "audio_spend":
+        from tools.audio._governed import validate_request
+        validate_request(record)
+        if entity_id != record["request_id"]:
+            raise ValueError("audio approval request identity changed")
+    if kind == 'footage_spend':
+        from lib.footage_requests import validate_request
+        validate_request(record)
+        if entity_id != record['request_id']:raise ValueError('Footage approval request identity changed.')
     spec = ENVELOPE_FIELDS.get(kind)
     env = dict(envelope or {})
     if spec is None:
@@ -389,6 +470,10 @@ def validate_envelope(
             raise ValueError("look_lock retire: record.look_hash must equal envelope look_hash")
         if env.get("promotion_refs") is not None and not isinstance(env["promotion_refs"], list):
             raise ValueError("look_lock promotion_refs must be a list")
+        if env["action"] == "activate":
+            _validate_look_lock_source(env)
+    if kind == "location" and env:
+        _validate_location_set(record, env)
     if kind == "headshot" and record.get("look_hash") != env["look_hash"]:
         raise ValueError("headshot: record.look_hash must equal envelope look_hash")
     if kind == "qc_override":
@@ -433,11 +518,34 @@ def validate_envelope(
                 raise ValueError(f"reference_import: record.{field} must equal envelope {field}")
         if not isinstance(env["normalized_pixel_hash"], str) or len(env["normalized_pixel_hash"]) != 64:
             raise ValueError("reference_import: normalized_pixel_hash must be a sha256 hex digest")
+    if kind == "cast_change":
+        if entity_id != "trailer_cast":
+            raise ValueError("cast_change: entity_id must be 'trailer_cast'")
+        if set(record) != {"base_proposal_sha256", "character_ids", "location_ids", "removed", "added"}:
+            raise ValueError("cast_change: record must be exactly base_proposal_sha256, character_ids, location_ids, removed, added")
+        if not _is_sha256_hex(record.get("base_proposal_sha256")):
+            raise ValueError("cast_change: base_proposal_sha256 must be a sha256 hex digest")
+        for field in ("character_ids", "location_ids"):
+            if not isinstance(record[field], list) or not all(isinstance(i, str) and i for i in record[field]):
+                raise ValueError(f"cast_change: {field} must be a list of ids")
+        for field in ("removed", "added"):
+            entries = record[field]
+            if not isinstance(entries, list) or not all(
+                isinstance(e, dict) and set(e) == {"kind", "id"} and e["kind"] in ENTITY_KINDS for e in entries
+            ):
+                raise ValueError(f"cast_change: {field} must be a list of {{kind, id}} entries")
+        if not record["removed"] and not record["added"]:
+            raise ValueError("cast_change: a change must take out or put in at least one entity")
     out = {k: env.get(k) for k in spec}
     if kind == "qc_override":
         # exactly-one shape: never embed the absent alternative as a null —
         # a 1.0 envelope keeps its historical bytes ({qc_receipt_id} only).
         out = {k: v for k, v in out.items() if v is not None}
+    if kind == "look_lock" and env["action"] == "activate" and "source_ticket_ref" not in env:
+        # A WriterOS activation names its source in promotion_refs and has NO
+        # source_ticket_ref key, not a null one; wayfinder and retire receipts
+        # keep their historical bytes.
+        out.pop("source_ticket_ref")
     return out
 
 
@@ -689,6 +797,8 @@ def _build_generation_receipt(
     headshot_ref: Optional[dict] = None,
     import_receipt_id: Optional[str] = None,
     normalized_pixel_hash: Optional[str] = None,
+    audio_charge: Optional[dict] = None,
+    footage_charge: Optional[dict] = None,
     prompt_recipe: Optional[dict] = None,
 ) -> dict:
     """Validate the fields and return a signed (not yet persisted) receipt.
@@ -767,8 +877,31 @@ def _build_generation_receipt(
         "started_at": started_at,
         "finished_at": finished_at,
     }
+    if audio_charge is not None and footage_charge is not None:
+        raise ValueError('One generation receipt cannot charge both audio and footage.')
+    for family,charge in [('audio',audio_charge),('footage',footage_charge)]:
+        if charge is not None:_bind_paid_charge(receipt,charge,family,cost_usd)
     receipt["signature"] = gates.sign_receipt(receipt)
     return receipt
+
+
+def _bind_paid_charge(receipt,charge,family,cost_usd):
+    """Economic consent is signed without relabelling physical asset lineage."""
+    import math
+    fields={'cash_usd','credits_usd',family+'_approval_receipt_id'}
+    if family=='footage':fields.update({'footage_request_id','footage_charge_basis'})
+    if set(charge)!=fields:
+        raise ValueError(f'{family} charge requires cash, replacement-value credits and its approval')
+    amounts=[charge[k] for k in ('cash_usd','credits_usd')]
+    if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v<0 for v in amounts):
+        raise ValueError(f'invalid {family} charge')
+    if round(sum(amounts),6)!=round(float(cost_usd),6):
+        raise ValueError(f'{family} total must count cash and replacement-value credits exactly once')
+    if family=='footage' and any(not isinstance(charge[k],str) or not charge[k] for k in fields-{'cash_usd','credits_usd'}):
+        raise ValueError('The footage charge needs its signed request and approval identities.')
+    if family=='footage' and charge['footage_charge_basis'] not in {'signed_maximum','service_report'}:
+        raise ValueError('The footage charge must say whether the maximum was booked or a charge was reported.')
+    receipt.update(charge)
 
 
 REFERENCE_FIELDS = ("asset_id", "path", "role", "visual_bible_entity_id", "shot_id")
@@ -1083,46 +1216,50 @@ def replay_generation_entry(project_root: Path | str, entry: dict, *, tracker: A
     """Complete one WAL entry idempotently: output present → receipt (skip if a
     signed row exists) → ledger (skip if present) → terminal reservation
     (skip if already terminal) → delete WAL. Returns the receipts."""
-    from tools.cost_tracker import TERMINAL_STATES, CostTracker, load_reservations, reconcile_paid_call
+    from tools.cost_tracker import reservation_lock
+    with reservation_lock(Path(project_root)):
+        from tools.cost_tracker import TERMINAL_STATES, CostTracker, load_reservations, reconcile_paid_call
 
-    root = Path(project_root).resolve()
-    execution_id = entry["execution_id"]
-    fields = dict(entry.get("receipt") or {})
-    receipts: list[dict] = []
-    seen: set[str] = set()
-    for out in entry.get("outputs") or []:
-        _ensure_wal_output(root, out)
-        sha = out["output_sha256"]
-        if sha in seen:
-            continue
-        seen.add(sha)
-        receipt = _signed_generation_row(root, execution_id, sha)
-        if receipt is None:
-            receipt = _build_generation_receipt(
-                root, execution_id=execution_id, output_sha256=sha,
-                finished_at=fields.pop("finished_at", None) or _now_iso(), **fields,
-            )
-        _commit_generation(root, receipt)
-        receipts.append(receipt)
-    reservation_id = entry.get("reservation_id")
-    if reservation_id:
-        reservation = load_reservations(root).get(reservation_id)
-        if reservation is None:
-            raise GenerationWalError(f"WAL entry {execution_id} names unknown reservation {reservation_id}")
-        if reservation.get("state") not in TERMINAL_STATES:
-            if tracker is None:
-                tracker = CostTracker(cost_log_path=root / "cost_log.json")
-            reconcile_paid_call(root, reservation_id, float(entry.get("actual_usd") or 0.0), "completed", tracker)
-    gates.generation_wal_delete(execution_id)
-    return receipts
+        root = Path(project_root).resolve()
+        execution_id = entry["execution_id"]
+        fields = dict(entry.get("receipt") or {})
+        receipts: list[dict] = []
+        seen: set[str] = set()
+        for out in entry.get("outputs") or []:
+            _ensure_wal_output(root, out)
+            sha = out["output_sha256"]
+            if sha in seen:
+                continue
+            seen.add(sha)
+            receipt = _signed_generation_row(root, execution_id, sha)
+            if receipt is None:
+                receipt = _build_generation_receipt(
+                    root, execution_id=execution_id, output_sha256=sha,
+                    finished_at=fields.pop("finished_at", None) or _now_iso(), **fields,
+                )
+            _commit_generation(root, receipt)
+            receipts.append(receipt)
+        reservation_id = entry.get("reservation_id")
+        if reservation_id:
+            reservation = load_reservations(root).get(reservation_id)
+            if reservation is None:
+                raise GenerationWalError(f"WAL entry {execution_id} names unknown reservation {reservation_id}")
+            if reservation.get("state") not in TERMINAL_STATES:
+                if tracker is None:
+                    tracker = CostTracker(cost_log_path=root / "cost_log.json")
+                reconcile_paid_call(root, reservation_id, float(entry.get("actual_usd") or 0.0), "completed", tracker)
+        gates.generation_wal_delete(execution_id)
+        return receipts
 
 
 def complete_generation(project_root: Path | str, execution_id: str, *, tracker: Any = None) -> list[dict]:
     """Finish the paid call staged under ``execution_id`` (see ``stage_generation_wal``)."""
-    entry = gates.generation_wal_read(execution_id)
-    if entry is None:
-        raise GenerationWalError(f"no generation WAL entry for execution {execution_id}")
-    return replay_generation_entry(project_root, entry, tracker=tracker)
+    from tools.cost_tracker import reservation_lock
+    with reservation_lock(Path(project_root)):
+        entry = gates.generation_wal_read(execution_id)
+        if entry is None:
+            raise GenerationWalError(f"no generation WAL entry for execution {execution_id}")
+        return replay_generation_entry(project_root, entry, tracker=tracker)
 
 
 def recover_generation_wal(project_root: Path | str) -> list[dict]:
@@ -1130,16 +1267,26 @@ def recover_generation_wal(project_root: Path | str) -> list[dict]:
     output is present are completed and removed; an entry whose output is
     missing or altered raises GenerationWalError (after the others are
     replayed) so callers block new paid calls until it is recovered."""
-    root = Path(project_root).resolve()
-    recovered: list[dict] = []
-    problems: list[str] = []
-    for entry in gates.generation_wal_entries():
-        if entry.get("project_root") != str(root) or not entry.get("execution_id"):
-            continue
-        try:
-            recovered.extend(replay_generation_entry(root, entry))
-        except GenerationWalError as exc:
-            problems.append(str(exc))
-    if problems:
-        raise GenerationWalError("; ".join(problems), recovered=recovered)
-    return recovered
+    from tools.cost_tracker import reservation_lock
+    with reservation_lock(Path(project_root)):
+        root = Path(project_root).resolve()
+        recovered: list[dict] = []
+        problems: list[str] = []
+        for entry in gates.generation_wal_entries():
+            saved_root = entry.get("project_root")
+            if not isinstance(saved_root, str) or not entry.get("execution_id"):
+                continue
+            try:
+                if not root.samefile(saved_root):
+                    continue
+            except (OSError, ValueError):
+                continue
+            try:
+                # Retain the spelling (and signed project id) from the saved
+                # record when the caller used another case on the same disk.
+                recovered.extend(replay_generation_entry(Path(saved_root), entry))
+            except GenerationWalError as exc:
+                problems.append(str(exc))
+        if problems:
+            raise GenerationWalError("; ".join(problems), recovered=recovered)
+        return recovered

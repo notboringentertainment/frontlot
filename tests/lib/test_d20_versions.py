@@ -104,7 +104,7 @@ class TestHeroLocalRules:
 
 class TestManifest14:
     def test_versions_and_1_3_frozen(self):
-        assert manifest_versions("authored-film") == ["1.1", "1.2", "1.3", "1.4", "1.5"]
+        assert manifest_versions("authored-film") == ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6"]
         assert manifest_digest("authored-film@1.3") == MANIFEST_1_3_SHA256
         assert hashlib.sha256((ROOT / "skills/pipelines/authored-film/headshots-director.md").read_bytes()).hexdigest() == LEGACY_DIRECTOR_SHA256
         assert (ROOT / "skills/pipelines/authored-film/headshots-director-1.4.md").is_file()

@@ -46,13 +46,14 @@ Request file contract::
       "request_id": "...", "project_id": "...", "stage": "visual_bible",
       "scope": "character:<id>",
       "kind": "hero|sheet|location|poster|storyboard_batch|config|artifact_review|
-               look_lock|reference_import|pipeline_migration|headshot",
+               look_lock|reference_import|pipeline_migration|headshot|cast_change",
       "entity_id": "<id>" | null, "artifact": {...} | null,
       "approval_record": {...} | null,     # HINT — must equal the constructed record
       "envelope": {...} | null,            # HINT — must equal the constructed envelope
       "source_checkpoint_digest": "..." | null,
       "source_ticket_path": "...",         # look_lock: ticket path relative to the wayfinder root
       "pipeline_version": "1.2",           # pipeline_migration: the version the human is pinning
+      "cast_change": {"remove": [...], "add": [...]},  # cast_change: ids to take out of / put in the trailer cast
       "summary": "one paragraph for the human",
       "preview_paths": ["canon/visual/objects/<sha>.png", ...]
     }
@@ -65,6 +66,8 @@ the active-look, prompt_recipe, generation-receipt + lineage and origin
 enforcement before constructing the signed record (``lib.headshots.headshot_record``).
 """
 from __future__ import annotations
+
+from datetime import datetime, timezone
 
 import argparse
 import hashlib
@@ -95,6 +98,34 @@ _HEX = frozenset("0123456789abcdef")
 
 class GateHandlerError(RuntimeError):
     pass
+
+
+APP_PROMPTS_ENV = "FRONTLOT_SIGN_PROMPTS"   # names a pipe descriptor Front Lot's signing broker reads
+
+
+def _tell_app(**event: Any) -> None:
+    """Tell Front Lot's signing screen which question comes next (or how it
+    ended), one JSON line on a private pipe the broker passes in. The screen
+    draws buttons that type the same answers a person would; the answer is
+    still read from the interactive prompt. Never on the terminal itself, so
+    text a request carries can't pose as a question."""
+    fd = os.environ.get(APP_PROMPTS_ENV, "")
+    if not fd.isdigit():
+        return
+    try:
+        os.write(int(fd), (json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8"))
+    except OSError:
+        pass
+
+
+def _ask(kind: str, text: str, **extra: Any) -> str:
+    _tell_app(ask=kind, **extra)
+    return input(text)
+
+
+def _done(outcome: str, line: str) -> None:
+    print(line)
+    _tell_app(outcome=outcome, message=line)
 
 
 def require_tty(stdin=None) -> None:
@@ -139,7 +170,14 @@ def pending_requests(root: Path) -> list[Path]:
 
 
 def load_request(path: Path) -> dict:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    from lib.pathsafe import resolve_input,PathSafetyError
+    try:
+        base=next(p for p in path.parents if p.name==REQUEST_DIRNAME)
+        resolve_input(path,base.parent)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data,dict):raise ValueError()
+    except (PathSafetyError,OSError,ValueError,StopIteration):
+        raise GateHandlerError('The saved signing request could not be read safely. Return to its panel and prepare it again.') from None
     missing = [k for k in REQUIRED if k not in data]
     if missing:
         raise GateHandlerError(f"{path.name}: request missing fields {missing}")
@@ -359,6 +397,8 @@ def _construct_look_lock(root: Path, req: dict) -> Constructed:
         ))
     if action != "activate":
         raise GateHandlerError(f"look_lock action must be activate|retire, got {action!r}")
+    if req.get("source_promotion_id") is not None:
+        return _construct_writeros_look_lock(root, req, entity_kind, entity_id, current)
     ticket_rel = req.get("source_ticket_path")
     if not isinstance(ticket_rel, str) or not ticket_rel:
         raise GateHandlerError("look_lock request needs source_ticket_path (relative to the wayfinder root)")
@@ -386,6 +426,53 @@ def _construct_look_lock(root: Path, req: dict) -> Constructed:
     evidence = (
         f"ticket {ticket} (wayfinder root {wf_root})",
         f"source_ticket_ref {json.dumps(look.source_ticket_ref, sort_keys=True)}",
+        f"look_hash {look.look_hash}" + (f" supersedes {current.look_hash}" if current else " (first activation)"),
+    ) + tuple(f"heads up: {line}; signing locks the look as written" for line in look.changed_since)
+    return Constructed(look.payload, envelope, entity_id, evidence=evidence)
+
+
+def _construct_writeros_look_lock(root: Path, req: dict, entity_kind: str, entity_id: str, current) -> Constructed:
+    """A WriterOS-promoted look (look sessions, 2026-09-30): re-read the
+    package's CURRENT export, verify it per record against WriterOS memory,
+    and select the look by its promotion (record) id. The signed envelope
+    carries promotion_refs and no source_ticket_ref; the reference-image mode
+    is shown as evidence and never signed."""
+    from lib.look_ingest import (
+        LookIngestError,
+        latest_writeros_export,
+        writeros_envelope_refs,
+        writeros_evidence_line,
+        writeros_look_for,
+        writeros_package_for,
+    )
+
+    promotion_id = req.get("source_promotion_id")
+    if not isinstance(promotion_id, str) or not promotion_id:
+        raise GateHandlerError("look_lock request source_promotion_id must name a WriterOS record id")
+    if req.get("source_ticket_path") is not None:
+        raise GateHandlerError("look_lock request names both a wayfinder ticket and a WriterOS promotion — refused")
+    try:
+        package = writeros_package_for(root)
+        if package is None:
+            raise LookIngestError("project.yaml has no writeros_package")
+        export = latest_writeros_export(package)
+        look = writeros_look_for(root, promotion_id)
+    except LookIngestError as exc:
+        raise GateHandlerError(f"WriterOS look refused: {exc}") from exc
+    if look.key != (entity_kind, entity_id):
+        raise GateHandlerError(f"WriterOS promotion {promotion_id} describes {look.key}, not ({entity_kind}, {entity_id})")
+    if current is not None and current.look_hash == look.look_hash:
+        raise GateHandlerError(f"look {look.look_hash} is already the active look for ({entity_kind}, {entity_id})")
+    envelope = {
+        "action": "activate",
+        "entity_kind": entity_kind,
+        "look_hash": look.look_hash,
+        "supersedes_look_hash": current.look_hash if current else None,
+        "promotion_refs": writeros_envelope_refs(look),
+    }
+    evidence = (
+        writeros_evidence_line(look),
+        f"export {export} (WriterOS package {package})",
         f"look_hash {look.look_hash}" + (f" supersedes {current.look_hash}" if current else " (first activation)"),
     )
     return Constructed(look.payload, envelope, entity_id, evidence=evidence)
@@ -438,14 +525,17 @@ def _construct_reference_import(root: Path, req: dict) -> Constructed:
     if bound_entity is not None:
         if not isinstance(bound_entity, str) or not re.match(r"^[a-z0-9-]+$", bound_entity):
             raise GateHandlerError(f"reference_import entity_id {bound_entity!r} is not a cast entity slug")
-        proposal = _read_json_file(root / "checkpoint_proposal.json")
-        packet = ((proposal or {}).get("artifacts") or {}).get("proposal_packet") or {}
-        cast = packet.get("cast") or {}
-        known = set(cast.get("character_ids") or []) | set(cast.get("location_ids") or [])
+        from lib.cast_change import CastChangeError, effective_cast
+
+        try:
+            cast = effective_cast(root, project_id=req["project_id"])  # the proposal cast plus signed cast changes
+        except (CastChangeError, ReceiptError) as exc:
+            raise GateHandlerError(f"the approved trailer cast can't be read: {exc}") from exc
+        known = set(cast["character_ids"]) | set(cast["location_ids"])
         if bound_entity not in known:
             raise GateHandlerError(
-                f"reference_import binds entity {bound_entity!r}, which is not in the proposal cast "
-                f"(checkpoint_proposal.json); an import is for a cast entity or for nobody"
+                f"reference_import binds entity {bound_entity!r}, which is not in the approved trailer cast "
+                f"(checkpoint_proposal.json plus signed cast changes); an import is for a cast entity or for nobody"
             )
     try:
         record = validate_import_record(import_record(origin_class, pixel_hash, origin_tool=origin_tool, entity_id=bound_entity))
@@ -491,10 +581,20 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
             f"pipeline_migration needs a version in {manifest_versions(pipeline_name)}, got {version!r}"
         )
     digest = manifest_digest(f"{pipeline_name}@{version}")
+    creation = "trailer_creation" in hint
+    from lib.trailer_edit import creation_facts
+    try:
+        facts = creation_facts(root) if creation else None
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        raise GateHandlerError("The trailer name, length or spending ceiling is missing or invalid. Repair those settings before signing.") from exc
+    if creation and (version != "1.6" or pipeline_name != "authored-film" or facts != hint["trailer_creation"]):
+        raise GateHandlerError("The trailer settings changed. Start signing again after reviewing them.")
     bound = checkpoint_digests_on_disk(root)
     try:
-        require_migration_coverage(root, pipeline_name, version)  # D20.7: legacy heroes must be grandfathered
+        require_migration_coverage(root, pipeline_name, version, trailer_creation=creation)  # D20.7: legacy heroes must be grandfathered
         record = migration_record(pipeline_name, version, digest, bound)
+        if creation:
+            record["trailer_creation"] = facts
         tip = _chain_tip(
             verified_approvals(root, MIGRATION_KIND, entity_id=pipeline_name, project_id=req["project_id"]),
             pipeline_name,
@@ -502,7 +602,7 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
     except PipelinePinError as exc:
         raise GateHandlerError(str(exc)) from exc
     envelope = {"supersedes_receipt_id": tip["receipt_id"] if tip else None}
-    evidence = (
+    evidence = ((f"Start {facts['title']}: {facts['trailer']['target_duration_seconds']} seconds; total ceiling ${facts['spending_ceiling_usd']:.2f}. No stage approval or spending permission.",) if creation else ()) + (
         f"manifest pipeline_defs/{pipeline_name}@{version}.yaml digest {digest}",
         f"binds {len(bound)} checkpoint file(s) on disk: " + ", ".join(f"{b['stage']}={b['checkpoint_digest'][:12]}…" for b in bound),
         f"supersedes migration receipt {tip['receipt_id']}" if tip else "first pin for this project",
@@ -510,14 +610,71 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
 
     def pre_commit() -> None:  # re-derived under the consumed token (R3#4)
         try:
-            require_migration_coverage(root, pipeline_name, version)
+            require_migration_coverage(root, pipeline_name, version, trailer_creation=creation)
         except PipelinePinError as exc:
             raise GateHandlerError(str(exc)) from exc
+        try:
+            if creation and creation_facts(root) != facts:
+                raise GateHandlerError("The trailer settings changed while signing.")
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            raise GateHandlerError("The trailer settings changed or became invalid while signing.") from exc
         if checkpoint_digests_on_disk(root) != bound:
             raise GateHandlerError("checkpoint files changed between request and signing; re-run the migration request")
 
     return Constructed(record, envelope, pipeline_name, evidence=evidence, extra={"pipeline_name": pipeline_name},
                        pre_commit_check=pre_commit)
+
+
+def _construct_cast_change(root: Path, req: dict) -> Constructed:
+    """Rebuild the cast change from disk: the current proposal bytes, the
+    current effective cast and chain tip, and the request's take-out/put-in
+    lists — never the agent's record. The pre-commit check refuses if the
+    proposal bytes or the chain tip moved after display."""
+    from lib.cast_change import (
+        ENTITY_ID,
+        CastChangeError,
+        build_cast_change,
+        chain_tip,
+        describe_cast,
+        name_of,
+        proposal_sha256,
+    )
+
+    if _require_entity(req) != ENTITY_ID:
+        raise GateHandlerError(f"cast_change request entity_id must be {ENTITY_ID!r}")
+    change = req.get("cast_change")
+    if not isinstance(change, dict) or set(change) - {"remove", "add"}:
+        raise GateHandlerError("cast_change request needs cast_change: {remove: [...], add: [...]}")
+    project_id = str(req["project_id"])
+    try:
+        built = build_cast_change(root, project_id, remove=change.get("remove") or [], add=change.get("add") or [])
+    except (CastChangeError, ReceiptError) as exc:
+        raise GateHandlerError(str(exc)) from exc
+    names = built.names
+    after = {k: built.record[k] for k in ("character_ids", "location_ids")}
+    evidence = (
+        built.summary,
+        f"Approved trailer cast now. {describe_cast(built.before, names)}",
+        f"After you sign. {describe_cast(after, names)}",
+        "Taking out: " + (", ".join(name_of(e["id"], names) for e in built.record["removed"]) or "nothing"),
+        "Putting in: " + (", ".join(name_of(e["id"], names) for e in built.record["added"]) or "nothing"),
+        "The proposal file itself is not edited; this signed change sits on top of it "
+        f"(proposal sha256 {built.record['base_proposal_sha256']}).",
+        f"Replaces the earlier signed cast change {built.tip_receipt_id}." if built.tip_receipt_id
+        else "First change to this film's approved trailer cast.",
+    )
+
+    def pre_commit() -> None:  # under the consumed token: nothing moved since display
+        if proposal_sha256(root) != built.record["base_proposal_sha256"]:
+            raise GateHandlerError("the approved proposal changed since this cast change was shown; re-run the request")
+        try:
+            tip = chain_tip(root, project_id=project_id)
+        except (CastChangeError, ReceiptError) as exc:
+            raise GateHandlerError(str(exc)) from exc
+        if (tip["receipt_id"] if tip else None) != built.tip_receipt_id:
+            raise GateHandlerError("the approved trailer cast changed since this request was shown; re-run the request")
+
+    return Constructed(built.record, built.envelope, ENTITY_ID, evidence=evidence, pre_commit_check=pre_commit)
 
 
 def _construct_config(root: Path, req: dict) -> Constructed:
@@ -529,12 +686,17 @@ def _construct_config(root: Path, req: dict) -> Constructed:
     except ProjectConfigError as exc:
         raise GateHandlerError(str(exc)) from exc
     record = config_approval_record(digest)
+    if req.get('scope')=='audio:project_config' and req.get('approval_record')!=record:
+        raise GateHandlerError('The audio price settings changed. Prepare a new price-settings request before signing.')
     entity_id = req.get("entity_id") or "project_config"
     evidence = (
         f"project.yaml sha256 {digest}",
         f"budget_usd_cap {data.get('budget_usd_cap')}  default_video_endpoint {data.get('default_video_endpoint')}",
         f"provider_egress {json.dumps(data.get('provider_egress'), sort_keys=True)}",
     )
+    if "audio_price_basis" in data:
+        evidence += ("Audio prices you are signing (values, date set and expiry): " + json.dumps(data["audio_price_basis"], sort_keys=True),
+                     "These are your approved maximum rates, not a provider quote. Expired rates refuse audio approval.")
     return Constructed(record, None, str(entity_id), evidence=evidence)
 
 
@@ -930,8 +1092,13 @@ def _construct_qc_override(root: Path, req: dict) -> Constructed:
 def _construct_location(root: Path, req: dict) -> Constructed:
     from lib.canon_enforcement import location_approval_record
 
+    if (req.get("envelope") or {}).get("staged_pictures") is not None:
+        return _construct_location_set(root, req)
     entity_id = _require_entity(req)
-    bible, palette = _bible_and_palette(root, req)
+    bible, palette, path = _bible_palette_path(root, req)
+    # G10: a location request is bound to the checkpoint it was published
+    # against, like a sheet; the set Ben sees is the set he signs.
+    _bind_request_digest(req, path, required=True)
     entry = next((e for e in bible.get("locations") or [] if isinstance(e, dict) and e.get("id") == entity_id), None)
     if entry is None:
         raise GateHandlerError(f"location {entity_id!r} is not in the pending visual_bible")
@@ -942,6 +1109,95 @@ def _construct_location(root: Path, req: dict) -> Constructed:
             _verify_image_ref(root, ref, f"location {entity_id!r} {role}")
             evidence.append(f"{role}: {root / ref['path']} (sha256 {ref['asset_id']})")
     return Constructed(location_approval_record(entry, palette), None, entity_id, evidence=tuple(evidence))
+
+
+def _construct_location_set(root: Path, req: dict) -> Constructed:
+    """G10 one-signature place set: the writer's own pictures of a place,
+    staged by ``location_run --add-image``, signed ONCE. The record is the
+    exact ``location_approval_record`` the finished bible entry will carry;
+    the envelope signs the fixed likeness promise for every picture (the
+    same promise a per-picture reference_import signs)."""
+    from lib.canon_enforcement import location_approval_record
+    from lib.cast_change import CastChangeError, effective_cast
+    from lib.look_ingest import LookIngestError, active_look_for
+    from lib.pathsafe import PathSafetyError, resolve_input
+    from lib.reference_import import (
+        ORIGIN_IMPORTED_SYNTHETIC, STAGING_DIR, SYNTHETIC_ATTESTATION, ReferenceImportError, assert_untainted,
+        normalize_image_bytes, refuse_conflicting_origin,
+    )
+    from scripts.location_run import set_entry
+
+    entity_id = _require_entity(req)
+    hint = req.get("envelope") or {}
+    pics = hint.get("staged_pictures")
+    if not isinstance(pics, list) or not pics:
+        raise GateHandlerError("a location set needs at least one staged picture")
+    try:
+        cast = effective_cast(root, project_id=req["project_id"])
+    except (CastChangeError, ReceiptError) as exc:
+        raise GateHandlerError(f"the approved trailer cast can't be read: {exc}") from exc
+    if entity_id not in set(cast["location_ids"]):
+        raise GateHandlerError(f"{entity_id!r} is not a place in the approved trailer cast")
+    try:
+        look = active_look_for(root, "location", entity_id)
+    except LookIngestError as exc:
+        raise GateHandlerError(str(exc)) from exc
+    if look is None:
+        raise GateHandlerError(f"{entity_id!r} has no locked look")
+    evidence = [f"promise for every picture below: {SYNTHETIC_ATTESTATION!r}"]
+    clean: list[dict] = []
+    for p in pics:
+        if not isinstance(p, dict) or set(p) != {"pixel_hash", "label", "origin_tool"}:
+            raise GateHandlerError("each staged picture carries exactly pixel_hash, label, origin_tool")
+        h = p["pixel_hash"]
+        if not _sha256_hex(h):
+            raise GateHandlerError(f"staged picture hash {h!r} is not a 64-hex sha256")
+        try:
+            staged = resolve_input(STAGING_DIR / f"reference-{h}.png", root)
+        except PathSafetyError as exc:
+            raise GateHandlerError(f"staged picture {p['label']!r} is missing or not project-local: {exc}") from exc
+        data = staged.read_bytes()
+        if hashlib.sha256(data).hexdigest() != h:
+            raise GateHandlerError(f"staged picture {p['label']!r} does not hash to {h}")
+        try:
+            if normalize_image_bytes(data).sha256 != h:
+                raise GateHandlerError(f"staged picture {p['label']!r} is not in normalized form")
+            refuse_conflicting_origin(root, h, ORIGIN_IMPORTED_SYNTHETIC, project_id=req["project_id"])
+            assert_untainted(root, [h], project_id=req["project_id"], label=f"location picture {p['label']!r}")
+        except ReferenceImportError as exc:
+            raise GateHandlerError(str(exc)) from exc
+        clean.append({"pixel_hash": h, "label": str(p["label"]), "origin_tool": str(p["origin_tool"])})
+        evidence.append(f"{p['label']}: {staged} (sha256 {h}, made with {p['origin_tool']})")
+    revision = req.get("revision")
+    if not isinstance(revision, int) or revision < 1:
+        raise GateHandlerError("a location set request needs its revision")
+    bible = _pending_or_current_bible(root)
+    entry = set_entry(entity_id, clean, look, revision)
+    record = location_approval_record(entry, bible.get("palette") or {})
+
+    def recheck() -> None:
+        try:
+            for p in clean:
+                refuse_conflicting_origin(root, p["pixel_hash"], ORIGIN_IMPORTED_SYNTHETIC, project_id=req["project_id"])
+                assert_untainted(root, [p["pixel_hash"]], project_id=req["project_id"])
+        except ReferenceImportError as exc:
+            raise GateHandlerError(f"origin conflict detected at signing: {exc}") from exc
+
+    envelope = {"attestation_text": SYNTHETIC_ATTESTATION, "staged_pictures": clean}
+    return Constructed(record, envelope, entity_id, evidence=tuple(evidence), pre_commit_check=recheck)
+
+
+def _pending_or_current_bible(root: Path) -> dict:
+    """The visual bible on disk, whatever its status (a place set writes no draft)."""
+    path = root / "checkpoint_visual_bible.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() and not path.is_symlink() else {}
+    except (OSError, ValueError) as exc:
+        raise GateHandlerError(f"checkpoint_visual_bible.json is unreadable: {exc}") from exc
+    bible = (data.get("artifacts") or {}).get("visual_bible") if isinstance(data, dict) else None
+    if not isinstance(bible, dict):
+        raise GateHandlerError("there is no visual bible yet")
+    return bible
 
 
 def _construct_poster(root: Path, req: dict) -> Constructed:
@@ -962,6 +1218,32 @@ def _construct_poster(root: Path, req: dict) -> Constructed:
 
 def _construct_artifact_review(root: Path, req: dict) -> Constructed:
     from lib.canon_enforcement import _version, artifact_review_digest
+
+    if req.get('scope')=='trailer-stage' and req.get('stage')=='canon_ingest':
+        from lib.story_ingest import material,UNREADABLE
+        from lib.pathsafe import PathSafetyError
+        from lib.trailer_contract import approval_record,signed_trailer_pin
+        try:
+            _pending_request_path(req,root)
+            _,checkpoint=_load_pending_checkpoint(root,req,'canon_ingest')
+            material(root,checkpoint['artifacts']['canon_packet'])
+            record=approval_record(root,signed_trailer_pin(root),'canon_ingest',checkpoint['artifacts'])
+            if req.get('approval_record')!=record:
+                raise ValueError('The story changed. Review its exact text and sign the new version.')
+        except (PathSafetyError,OSError,KeyError,TypeError,GateHandlerError):raise GateHandlerError(UNREADABLE) from None
+        except ValueError as exc:raise GateHandlerError(str(exc)) from None
+        artifact={'artifact_type':'trailer_stage','artifact_version':'1.0','artifact_digest':record_sha256(record),'migration_status':'reviewed'}
+        def current():
+            try:
+                _pending_request_path(req,root)
+                _,latest=_load_pending_checkpoint(root,req,'canon_ingest')
+                material(root,latest['artifacts']['canon_packet'])
+                unchanged=approval_record(root,signed_trailer_pin(root),'canon_ingest',latest['artifacts'])==record
+            except (PathSafetyError,OSError,ValueError,KeyError,TypeError,GateHandlerError):raise GateHandlerError(UNREADABLE) from None
+            if not unchanged:
+                raise GateHandlerError('The story changed while signing. Review its exact text and sign the new version.')
+        return Constructed(record,None,None,artifact=artifact,pre_commit_check=current,
+            evidence=('Approve this exact story source and its explicit protected passages only. No purchase or later stage is approved.',))
 
     hint = req.get("artifact") or {}
     name = hint.get("artifact_type")
@@ -1410,11 +1692,113 @@ def _construct_headshot_grandfather(root: Path, req: dict) -> Constructed:
     return Constructed(record, envelope, entity_id, evidence=evidence, pre_commit_check=_verify)
 
 
+def _construct_audio_spend(root: Path, req: dict) -> Constructed:
+    from tools.audio._governed import read_request, check_current, _tracker
+    record = read_request(root, _require_entity(req))
+    config = check_current(root, record)
+    from lib.audio_workspace import check_price
+    check_price(root, record)
+    bound = record["max_cash_usd"] + record["max_credits_usd"]
+    if _tracker(root, config).budget_remaining_usd < round(bound, 4):
+        raise GateHandlerError("The remaining production budget no longer covers this audio request.")
+    def recheck():
+        check_current(root, record)
+        if _tracker(root, config).budget_remaining_usd < round(bound, 4):
+            raise GateHandlerError("The remaining production budget no longer covers this audio request.")
+    evidence = (
+        "Audio service: ElevenLabs.",
+        f"Audio kind: {record['kind']}. Model: {record['model']}. Voice: {record['voice'] or 'No voice requested'}.",
+        f"Exact words or description: {record['prompt']}",
+        f"Requested length: {record['duration_seconds']} seconds.",
+        f"Highest new cash charge: $ {record['max_cash_usd']:.4f}.",
+        f"Highest replacement value of account credits: $ {record['max_credits_usd']:.4f}.",
+        "One approval buys one call. There are no automatic retries or service changes.",
+        f"Price bound expires: {datetime.fromtimestamp(record['price_expires_at'], timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}.",
+        f"For the tools: input fingerprint {record['input_sha256']}.",
+    )
+    if record['kind']=='music':
+        from lib.audio_workspace import TEST_ONLY
+        evidence += ("Instrumental only.",TEST_ONLY)
+    return Constructed(record, None, record["request_id"], evidence=evidence, pre_commit_check=recheck)
+
+
+def _construct_audio_workspace(root: Path, req: dict) -> Constructed:
+    from lib.audio_workspace import decision_record, resolution_record
+    supplied = req.get("approval_record") or {}
+    identity = _require_entity(req)
+    def build():
+        if req["kind"] == "audio_take":
+            return decision_record(root, identity, supplied.get("decision"))
+        from lib.media_spending import PaidCallBusy
+        try:return resolution_record(root, identity, supplied.get("charged"), supplied.get("cash_usd"), supplied.get("credits_usd"), supplied.get("note"))
+        except PaidCallBusy:raise GateHandlerError('An audio or footage operation is still running. Wait for it to finish, then start signing again.') from None
+    record = build()
+    def recheck():
+        if build() != record:
+            raise GateHandlerError("The material for this decision changed. Nothing was approved.")
+    evidence = (json.dumps(record, ensure_ascii=False, indent=2),)
+    if req['kind']=='audio_resolution' and record['request'].get('provider')=='fal':
+        evidence=('Service: Fal. Exact shot: '+record['request']['prompt'],
+            'Service account outcome: '+('charged' if record['charged'] else 'not charged')+'.',
+            f"Cash: ${record['cash_usd']:.4f}. Replacement value of credits: ${record['credits_usd']:.4f}.",
+            'What you checked: '+record['note'],
+            'This records the account outcome only. It cannot submit another clip or complete a stage.')
+    return Constructed(record, None, identity, evidence=evidence, pre_commit_check=recheck)
+
+
+def _construct_footage(root: Path, req: dict) -> Constructed:
+    from lib import footage_requests as footage
+    identity = _require_entity(req)
+    supplied = req.get('approval_record') or {}
+    def build():
+        if req['kind']=='footage_spend':
+            return footage.approval_material(root,footage._read(root,identity))
+        return footage.decision_record(root,supplied.get('shot_id'),identity,supplied.get('decision'))
+    record = build()
+    def recheck():
+        if build()!=record:raise GateHandlerError('The footage material changed. Nothing was approved.')
+    if req['kind']=='footage_spend':
+        evidence = (
+            'Service: Fal. Model: Kling o3 reference video.',
+            'Exact outgoing shot description: '+record['prompt'],
+            f"Clip length: {record['duration_seconds']} seconds. Silent widescreen footage.",
+            f"Highest cash charge: ${record['max_cash_usd']:.4f}. Replacement value of credits: ${record['max_credits_usd']:.4f}.",
+            f"Money left in the production ceiling: ${record['remaining_usd']:.4f}.",
+            'Reference pictures sent: '+', '.join(Path(r['path']).name for r in record['references']),
+            'Approved looks used to verify those pictures: '+', '.join(r['entity_id'].replace('-',' ') for r in record['look_refs']),
+            'One signature buys one clip. A retake needs a new request and signature.',
+        )
+    else:
+        evidence = ('Decision: '+record['decision']+'.', 'Watch the whole clip before signing. Declining is final.',
+                    'This decision completes no stage.')
+    return Constructed(record,None,identity,evidence=evidence,pre_commit_check=recheck)
+
+
+def _construct_trailer_card(root: Path, req: dict) -> Constructed:
+    from lib.trailer_titles import approval_record,font_name,visible_characters
+    identity=_require_entity(req)
+    record=approval_record(root,identity)
+    def recheck():
+        if approval_record(root,identity)!=record:
+            raise GateHandlerError('The card changed. Save it and prepare a new review; nothing was signed.')
+    card=record['card']
+    return Constructed(record,None,identity,evidence=(
+        'Exact card words follow without rewriting:',card['text'],
+        'Space guide: · means a space, ⍽ means a non-breaking space and ↵ means a line break. These markers are not drawn on the card.',visible_characters(card['text']),
+        f"{font_name(card)}, {card['font_size']} pixels. Starts at frame {card['start_frame']} ({card['start_frame']/24:.3f} seconds); lasts {card['duration_frames']} frames ({card['duration_frames']/24:.3f} seconds).",
+        'This signature approves this card only. It permits no spending and completes no stage.'),pre_commit_check=recheck)
+
 CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
+    "trailer_card": _construct_trailer_card,
     "look_lock": _construct_look_lock,
     "reference_import": _construct_reference_import,
     "pipeline_migration": _construct_pipeline_migration,
     "config": _construct_config,
+    "audio_spend": _construct_audio_spend,
+    "audio_take": _construct_audio_workspace,
+    "audio_resolution": _construct_audio_workspace,
+    "footage_spend": _construct_footage,
+    "footage_take": _construct_footage,
     "storyboard_batch": _construct_storyboard_batch,
     "artifact_review": _construct_artifact_review,
     "hero": _construct_character,
@@ -1424,6 +1808,7 @@ CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
     "headshot": _construct_headshot,
     "qc_override": _construct_qc_override,
     "headshot_grandfather": _construct_headshot_grandfather,
+    "cast_change": _construct_cast_change,
 }
 assert set(CONSTRUCTORS) == set(APPROVAL_KINDS), "every approval kind needs a gate-side constructor"
 
@@ -1458,6 +1843,18 @@ def canonical_text(obj: Any) -> str:
 
 def show_request(req: dict, root: Path, out=None, built: Optional[Constructed] = None) -> None:
     out = out or sys.stdout
+    footage_resolution=req['kind']=='audio_resolution' and ((built.record if built else req.get('approval_record') or {}).get('request') or {}).get('provider')=='fal'
+    if req['kind'] in {'footage_spend','footage_take'} or footage_resolution:
+        print('\nReview this account outcome' if footage_resolution else '\nReview this footage request' if req['kind']=='footage_spend' else '\nReview this take decision',file=out)
+        if built is not None:
+            for line in built.evidence:print(line,file=out)
+        return
+    if 'trailer_creation' in (req.get('approval_record') or {}):
+        print("\nReview trailer creation", file=out)
+        print(req['summary'], file=out)
+        if built is not None:
+            show_constructed(built, out)
+        return
     print(f"\n=== Gate request {req['request_id']} ===", file=out)
     print(f"stage: {req['stage']}   scope: {req['scope']}   kind: {req['kind']}", file=out)
     print(f"\n{req['summary']}\n", file=out)
@@ -1472,6 +1869,13 @@ def show_constructed(built: Constructed, out=None) -> None:
     """Print exactly what will be signed: the canonical record JSON, its
     sha256, the envelope, the key and the evidence it was built from."""
     out = out or sys.stdout
+    if 'trailer_creation' in built.record:
+        facts = built.record['trailer_creation']
+        print(f"\nTrailer title: {facts['title']}", file=out)
+        print(f"Target length: {facts['trailer']['target_duration_seconds']:g} seconds", file=out)
+        print(f"Total spending ceiling: ${facts['spending_ceiling_usd']:.2f}", file=out)
+        print("Signing starts this trailer. It approves no stage and permits no spending. Separate signed spending settings are still required before paid work.", file=out)
+        return
     print("\n--- record to be signed (constructed by the gate from authoritative inputs) ---", file=out)
     print(canonical_text(built.record), file=out)
     print(f"record sha256: {built.digest}", file=out)
@@ -1491,6 +1895,11 @@ def show_constructed(built: Constructed, out=None) -> None:
 def _pending_request_path(req: dict, root: Path) -> Path:
     """The on-disk pending request ``req`` names, or GateHandlerError."""
     request_id = validate_request_id(req.get("request_id"))
+    if req.get('scope')=='trailer-stage' and req.get('stage')=='canon_ingest':
+        from lib.pathsafe import resolve_input,PathSafetyError
+        from lib.story_ingest import REQUEST_UNREADABLE
+        try:resolve_input(root/REQUEST_DIRNAME/f'{request_id}.json',root)
+        except (PathSafetyError,OSError):raise GateHandlerError(REQUEST_UNREADABLE) from None
     req_path = _confined(root / REQUEST_DIRNAME / f"{request_id}.json", root)
     if req_path.stem != request_id or not req_path.is_file():
         raise GateHandlerError(f"no pending request {request_id!r}")
@@ -1611,6 +2020,9 @@ def _decide(
                     f"pending request {current['request_id']!r} names approval_receipt_id {marker!r}, which is not "
                     f"the verified receipt for this record — refused: {exc}"
                 ) from exc
+            if kind=='artifact_review' and current.get('scope')=='trailer-stage' and current.get('stage')=='canon_ingest':
+                from lib.story_ingest import complete
+                complete(root)
             _complete_done(req_path, root, current, receipt["receipt_id"])
             return receipt
 
@@ -1679,6 +2091,9 @@ def _decide(
                 from lib.pipeline_pin import refresh_cache
 
                 refresh_cache(root, built.extra["pipeline_name"])
+        if kind=='artifact_review' and current.get('scope')=='trailer-stage' and current.get('stage')=='canon_ingest':
+            from lib.story_ingest import complete
+            complete(root)
         _complete_done(req_path, root, current, receipt["receipt_id"])
         return receipt
 
@@ -1709,6 +2124,8 @@ def main(argv: list[str] | None = None) -> int:
         if not match:
             raise GateHandlerError(f"no pending request {args.request!r}")
         req = load_request(match[0])
+        if req.get('scope')=='trailer-stage' and req.get('stage')=='canon_ingest':
+            construct(root,req)  # Refuse damaged story storage before printing request paths.
         show_request(req, root)
         if args.dry_run:
             if req["kind"] in SELECTION_KINDS and not is_retire_request(req):
@@ -1728,12 +2145,12 @@ def main(argv: list[str] | None = None) -> int:
             n = len(candidates)
             reject_all = False
             while True:
-                raw = input(f"Type a number 1-{n} to choose, r to reject all, or q to quit without deciding: ").strip().lower()
+                raw = _ask("choose", f"Type a number 1-{n} to choose, r to reject all, or q to quit without deciding: ", n=n).strip().lower()
                 if raw == "q":
-                    print("quit — nothing decided, request left pending")
+                    _done("left", "quit — nothing decided, request left pending")
                     return 0
                 if raw == "r":
-                    if input("Reject ALL candidates and regenerate? type 'reject' to confirm: ").strip().lower() == "reject":
+                    if _ask("reject_confirm", "Reject ALL candidates and regenerate? type 'reject' to confirm: ").strip().lower() == "reject":
                         reject_all = True
                         break
                     continue
@@ -1745,22 +2162,22 @@ def main(argv: list[str] | None = None) -> int:
                 shown = construct(root, req, selection=selection)
                 show_constructed(shown)
                 while True:
-                    a = input("Sign this record? y to sign, n to go back, q to quit: ").strip().lower()
+                    a = _ask("sign_choice", "Sign this record? y to sign, n to go back, q to quit: ").strip().lower()
                     if a in ("y", "n", "q"):
                         break
                     print("  enter y, n, or q")
                 if a == "q":
-                    print("quit — nothing decided, request left pending")
+                    _done("left", "quit — nothing decided, request left pending")
                     return 0
                 approved = a == "y"
                 if not approved:
-                    print("not signed — request left pending; run again to choose")
+                    _done("left", "not signed — request left pending; run again to choose")
                     return 0
-                note = input("Note (optional): ").strip() or None
+                note = _ask("note", "Note (optional): ", required=False).strip() or None
             else:
-                note = input("Note (required for reject-all): ").strip() or None
+                note = _ask("note", "Note (required for reject-all): ", required=True).strip() or None
                 if not note:
-                    print("a note is required to reject all — nothing decided, request left pending")
+                    _done("left", "a note is required to reject all — nothing decided, request left pending")
                     return 0
         else:
             if req["kind"] == "qc_override":
@@ -1772,9 +2189,9 @@ def main(argv: list[str] | None = None) -> int:
                     # anything is signed.
                     items = _show_batch_field(req)
                     while True:
-                        raw = input(f"Accept which failed items? (comma list from {items}, 'all', or q to quit): ").strip().lower()
+                        raw = _ask("accept_items", f"Accept which failed items? (comma list from {items}, 'all', or q to quit): ", items=list(items)).strip().lower()
                         if raw == "q":
-                            print("quit — nothing decided, request left pending")
+                            _done("left", "quit — nothing decided, request left pending")
                             return 0
                         chosen = sorted(items) if raw == "all" else sorted({p.strip() for p in raw.split(",") if p.strip()})
                         if chosen and set(chosen) <= set(items):
@@ -1783,9 +2200,9 @@ def main(argv: list[str] | None = None) -> int:
                     req["_chosen_items"] = chosen
                 # The reason is the human's, typed here — never the request's text.
                 while True:
-                    typed = input("Why is the judge wrong on these items? (10+ characters, or q to quit): ").strip()
+                    typed = _ask("why", "Why is the judge wrong on these items? (10+ characters, or q to quit): ", min=10).strip()
                     if typed.lower() == "q":
-                        print("quit — nothing decided, request left pending")
+                        _done("left", "quit — nothing decided, request left pending")
                         return 0
                     if len(typed) >= 10 and "REPLACE" not in typed:
                         break
@@ -1794,34 +2211,35 @@ def main(argv: list[str] | None = None) -> int:
             shown = construct(root, req)
             show_constructed(shown)
             while True:
-                a = input("Approve? y to sign, n to decline, q to quit without deciding: ").strip().lower()
+                a = _ask("approve", "Approve? y to sign, n to decline, q to quit without deciding: ").strip().lower()
                 if a in ("y", "n", "q"):
                     break
                 print("  enter y, n, or q")
             if a == "q":
-                print("quit — nothing decided, request left pending")
+                _done("left", "quit — nothing decided, request left pending")
                 return 0
             approved = a == "y"
             if not approved and req["kind"] == "qc_override" and req.get("batch"):
                 # Declining a batch waiver is a recorded decision (round-3 #8).
                 while True:
-                    note = input("Decline note (required, 10+ characters): ").strip()
+                    note = _ask("note", "Decline note (required, 10+ characters): ", required=True, min=10).strip()
                     if len(note) >= 10:
                         break
                     print("  declining the field needs a real note — it is the record that the writer chose the judge-approved faces only")
             else:
-                note = input("Note (optional): ").strip() or None
+                note = _ask("note", "Note (optional): ", required=False).strip() or None
         if approved and shown is not None:
             # The handler marker exists only for this call; minting is refused elsewhere.
             with gates.handler_context():
                 receipt = _decide(req, root, shown=shown, note=note, selection=selection)
-            print(f"approved — receipt {receipt['receipt_id']}")
+            _done("approved", f"approved — receipt {receipt['receipt_id']}")
         else:
             _decline_request(req, root, note)
-            print("declined — no receipt written")
+            _done("declined", "declined — no receipt written")
         return 0
     except GateHandlerError as e:
         print(f"error: {e}", file=sys.stderr)
+        _tell_app(outcome="error", message=str(e))
         return 2
 
 

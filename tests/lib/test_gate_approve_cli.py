@@ -152,3 +152,44 @@ def test_typo_never_counts_as_a_decision(tmp_path, monkeypatch, capsys):
     assert (root / ".gate-requests" / "req-1.json").exists()
     assert not (root / ".gate-requests" / "declined").exists()
     assert not (root / "approvals.jsonl").exists()
+
+
+@pytest.fixture
+def tag_pipe(monkeypatch):
+    import os
+    r, w = os.pipe()
+    monkeypatch.setenv(gate_approve.APP_PROMPTS_ENV, str(w))
+    yield lambda: (os.close(w), [json.loads(l) for l in os.fdopen(r).read().splitlines()])[1]
+
+
+def _run(tmp_path, monkeypatch, answers):
+    it = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(it))
+    monkeypatch.setattr(gate_approve, "require_tty", lambda stdin=None: None)
+    return gate_approve.main(["--project", "demo", "--projects-dir", str(tmp_path / "projects"), "--request", "req-1"])
+
+
+@pytest.mark.parametrize("answers,outcome", [(["y", "looks right"], "approved"), (["n", ""], "declined"), (["q"], "left")])
+def test_front_lot_hears_each_question_and_the_outcome(tmp_path, monkeypatch, capsys, tag_pipe, answers, outcome):
+    """Front Lot's signing screen draws buttons from these lines; the answer still comes from the prompt."""
+    _project(tmp_path)
+    assert _run(tmp_path, monkeypatch, answers) == 0
+    tags = tag_pipe()
+    assert tags[0] == {"ask": "approve"}
+    if outcome != "left":
+        assert tags[1] == {"ask": "note", "required": False}
+    assert tags[-1]["outcome"] == outcome and tags[-1]["message"]
+
+
+def test_questions_never_go_to_the_terminal(tmp_path, monkeypatch, capsys, tag_pipe):
+    _project(tmp_path)
+    _run(tmp_path, monkeypatch, ["q"])
+    tag_pipe()
+    out = capsys.readouterr().out
+    assert '"ask"' not in out and "\x1b]" not in out
+
+
+def test_no_pipe_outside_front_lot(tmp_path, monkeypatch, capsys):
+    _project(tmp_path)
+    monkeypatch.delenv(gate_approve.APP_PROMPTS_ENV, raising=False)
+    assert _run(tmp_path, monkeypatch, ["q"]) == 0

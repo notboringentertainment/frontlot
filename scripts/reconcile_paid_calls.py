@@ -262,6 +262,17 @@ def reconcile_project(project_root: Path, *, api_key: str | None, out=None) -> d
         return summary
     for r in pending:
         rid = r["reservation_id"]
+        if (r.get('output_hint') or {}).get('footage_request_id'):
+            summary['manual'].append(rid)
+            print('This footage charge needs Ben’s signed account review. Its reservation remains in place. '
+                  'Nothing was sent or submitted again.',file=out)
+            continue
+        if r.get("tool") == "elevenlabs_audio":
+            summary["manual"].append(rid)
+            print("ElevenLabs audio still needs billing or download review. "
+                  "Its reservation remains in place. Nothing was sent to another service. "
+                  "Do not submit it again.", file=out)
+            continue
         if not r.get("provider_request_id"):
             summary["manual"].append(rid)
             print(

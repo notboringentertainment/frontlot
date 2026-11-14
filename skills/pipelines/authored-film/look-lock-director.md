@@ -11,6 +11,23 @@ ticket into a `look_packet`, and write one `look_lock` gate request per entity.
 You never write a look. You never fill a gap in one. You carry the writer's
 ratified answer into the pipeline and stop.
 
+> **Two sources (look sessions, 2026-09-30).** A look now reaches this stage
+> from either of two places, and both are the writer's own decision:
+> **WriterOS** (new looks: the writer answers Zoe's one-question-at-a-time
+> interview in the Look panel, types every field, and clicks Promote, which
+> writes a canon record and `memory/exports/look-locks-<revision>.json`) or a
+> **resolved story-wayfinder look ticket** (looks decided before WriterOS took
+> this over; those tickets stay valid and are never edited). Ratification is
+> unchanged for both: a signed `look_lock` receipt, approved by the writer in a
+> terminal. A WriterOS promotion is not ratification.
+>
+> **Reading the frozen 1.5 manifest.** `pipeline_defs/authored-film@1.5.yaml`
+> is pinned by a signed migration receipt and must never be edited (any byte
+> change breaks every pinned project). Its `look_lock` review focus says "a
+> resolved wayfinder look ticket"; read that as "a resolved wayfinder look
+> ticket or a WriterOS promotion". The wording lands in the next manifest
+> version, which the writer approves as a migration.
+
 Read `pipelines/authored-film/canon-guard` first. It binds this stage harder
 than any other: a look is canon the moment its receipt exists, and "never
 invent canon" here means never invent a face.
@@ -21,8 +38,9 @@ invent canon" here means never invent a face.
 |-------|----------|---------|
 | Schema | `schemas/look_spec.schema.json`, `schemas/artifacts/look_packet.schema.json` | Look block validation; stage artifact validation |
 | Prior artifacts | `canon_packet` (v1.1, unchanged — this stage never bumps it), `proposal_packet` (v1.1, `cast {character_ids, location_ids}`) | Which entities need looks |
-| Writer's system | The project's `wayfinder/` directory (MAP.md, `tickets/`, `resolved/`) | Where looks are written and resolved |
-| Skill | `story-wayfinder` (user skill), procedure **"cast for production"** | Creating look tickets, the reference-image question, close rules |
+| Writer's system (new looks) | WriterOS: the project's `.writeros` package, named in `project.yaml: writeros_package` | Where looks are interviewed, typed and promoted; the export OpenMontage reads |
+| Writer's system (earlier looks) | The project's `wayfinder/` directory (MAP.md, `tickets/`, `resolved/`), `project.yaml: wayfinder_root` | Looks resolved as wayfinder tickets before 2026-09-30 |
+| Skill | `story-wayfinder` (user skill) | No longer creates look tickets; reads existing ones and points the writer to WriterOS |
 | Library | `lib/look_ingest` | The one ingestion routine: ticket authority, block validity, `look_hash`, receipt verification, uniqueness/supersession |
 | Gate | `scripts/gate_approve.py` kinds `look_lock`, `reference_import` | Ratification; reference import |
 | Project config | `projects/<slug>/project.yaml` | `cast_cap`, run lease (already approved before this stage) |
@@ -65,9 +83,17 @@ Work the list one entity at a time and record progress in
 `metadata.partial_progress` so a resumed run knows which tickets exist,
 which are resolved, and which receipts are minted.
 
-### 2. Create or locate the wayfinder look ticket
+### 2. Locate the writer's look
 
-For each entity, follow the **"cast for production"** procedure in the
+**New looks are decided in WriterOS.** If the entity has no ratified look and
+no resolved wayfinder ticket, tell the writer to open the entity in WriterOS
+(Story Bible character card → Look, or a beat's Lookbook → Start a look),
+answer Zoe, and Promote. You never draft a look, a field, or a "starting
+point", in WriterOS or anywhere else. When the export names the entity, go to
+step 6.
+
+The rest of this step applies only to an existing wayfinder look ticket. For
+each such entity, follow the **"cast for production"** procedure in the
 `story-wayfinder` skill. In short:
 
 - Look in `wayfinder/tickets/` and `wayfinder/resolved/` for
@@ -182,6 +208,15 @@ time" — one entity at a time, in cast order.
 
 ### 6. Ingest and request ratification
 
+> **Source (2026-09-30):** `look_run.py` takes `--source auto|writeros|wayfinder`.
+> `auto` (the default) uses the WriterOS export when `writeros_package` is set
+> and the export names the entity, else the wayfinder ticket. A WriterOS look
+> is checked per record against the package's memory (the promotion must still
+> be the active look, unchanged); a stale export is refused with "click
+> Re-export in the Look panel". The gate prints the WriterOS promotion and the
+> writer's reference-image answer before signing, and the packet entry carries
+> `source_ref` instead of `source_ticket_ref`.
+>
 > **D20 (2026-08-29): this step is a command.** Run `python
 > scripts/look_run.py --project <slug> --entity <id>`; it locates the
 > resolved ticket by its `## Look spec` entity (never by filename), validates
@@ -213,8 +248,11 @@ to `look_packet.looks[]`.
 
 ### 7. Supersession
 
-A ratified look changes only by: (1) the writer reopening the wayfinder ticket
-(their reopening procedure, a new `id` if the old ticket is legacy), (2) a
+A ratified look changes only by: (1) the writer promoting a new look for the
+entity in WriterOS (which retires the old promotion there), or reopening the
+wayfinder ticket for a look that came from one (their reopening procedure, a
+new `id` if the old ticket is legacy) — either way `look_run --supersede`
+then requests the new look, (2) a
 `look_lock` receipt with `action: retire` for the old `look_hash` — a
 tombstone the writer approves, which retires the active look until a new one
 is ratified — and (3) a new `look_lock` receipt for the new hash naming

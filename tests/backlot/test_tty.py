@@ -95,7 +95,7 @@ def web_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
     project, request = write_project(projects)
     # Darwin caps AF_UNIX paths at roughly 104 bytes; pytest's descriptive
     # tmp_path is intentionally much longer, so keep this private root short.
-    gates = Path(tempfile.mkdtemp(prefix="om-gates-", dir="/tmp"))
+    gates = Path(tempfile.mkdtemp(prefix="om-gates-", dir=os.environ.get('OPENMONTAGE_HOME') or '/tmp'))
     owner = DisposableResources()
     signer = fake_signer(tmp_path)
     monkeypatch.setenv("OPENMONTAGE_GATES_DIR", str(gates))
@@ -781,7 +781,7 @@ def test_two_real_apps_racing_websocket_routes_yield_one_usable_session_and_one_
 
 
 def test_attach_rejects_real_socket_hello_sidecar_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    gates = Path(tempfile.mkdtemp(prefix="om-gates-", dir="/tmp"))
+    gates = Path(tempfile.mkdtemp(prefix="om-gates-", dir=os.environ.get('OPENMONTAGE_HOME') or '/tmp'))
     monkeypatch.setenv("OPENMONTAGE_GATES_DIR", str(gates))
 
     async def scenario() -> None:
@@ -977,7 +977,9 @@ def test_packet_error_refresh_never_advertises_input_ready_or_forwards_input(web
     websocket, writer = asyncio.run(scenario())
 
     assert [event["type"] for event in websocket.sent_json] == ["packet_refreshed"]
-    assert writer.data == b""
+    frames=FrameParser().feed(bytes(writer.data))
+    assert [kind for kind,_ in frames]==[BYE]
+    assert decode_json_payload(BYE,frames[0][1])=={'reason':'abandoned'}
     assert websocket.closed == [(4422, "gate evidence is unavailable")]
 
 

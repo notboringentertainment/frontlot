@@ -54,10 +54,7 @@ CHARACTER_APPROVAL_KINDS = ("sheet", "hero")
 LOOK_LOCK_MANIFEST = ("authored-film", "1.2")
 # D19: 1.3 keeps the whole 1.2 look-lock contract and adds sheet QC.
 # D20: 1.4 keeps all of 1.3 and adds hero QC (judged headshot candidates).
-LOOK_LOCK_MANIFESTS = frozenset({("authored-film", "1.2"), ("authored-film", "1.3"), ("authored-film", "1.4"), ("authored-film", "1.5")})
 QC_MANIFEST = ("authored-film", "1.3")
-QC_MANIFESTS = frozenset({("authored-film", "1.3"), ("authored-film", "1.4"), ("authored-film", "1.5")})
-HERO_QC_MANIFESTS = frozenset({("authored-film", "1.4"), ("authored-film", "1.5")})
 HERO_QC_MANIFEST = ("authored-film", "1.4")  # kept for callers that name 1.4 exactly
 # Batch hero overrides (field-bound qc_override 1.1, headshot_packet 1.2,
 # up-to-cap presentation) exist only from 1.5; a 1.4 pin keeps 1.0-only
@@ -246,12 +243,141 @@ def _check_blocking_questions(
         )
 
 
+def _trailer_words(text):
+    import re
+    aliases = {'died': 'dead', 'dies': 'dead', 'death': 'dead', 'closed': 'close', 'closing': 'close'}
+    return [aliases.get(w, w) for w in re.findall(r"[\w]+", text.casefold())]
+
+
+def _protected_words(text):
+    import re
+    return re.findall(r"[\w]+", text.casefold())
+
+
+def _resembles_protected(text, protected):
+    from collections import Counter
+    a, b = _protected_words(text), _protected_words(protected)
+    if min(len(a), len(b)) < 2:
+        return False  # A single ordinary word is never enough evidence.
+    def contains(longer, shorter):
+        return any(longer[i:i+len(shorter)] == shorter for i in range(len(longer)-len(shorter)+1))
+    shared = sum((Counter(a) & Counter(b)).values())
+    return (Counter(a) == Counter(b) or contains(a,b) or contains(b,a)
+            or (shared >= 3 and shared/max(len(a),len(b)) >= .75))
+
+
+def _short_protected_run(text, protected):
+    """Only the short-substring rule relaxes; near-exact matches stay refused."""
+    a, b = _protected_words(text), _protected_words(protected)
+    return (2 <= len(a) <= 3 and len(a) < len(b)
+            and any(b[i:i+len(a)] == a for i in range(len(b)-len(a)+1))
+            and not (len(a) >= 3 and len(a)/len(b) >= .75))
+
+
+def _trailer_spoiler(text, refs, lock):
+    if lock.get('id') in _split_refs(refs or ''):
+        return True
+    fact = lock.get('decision', '')
+    if not fact:
+        return False
+    words, protected = _protected_words(text), _protected_words(fact)
+    if len(protected)>1 and any(words[i:i+len(protected)]==protected for i in range(len(words)-len(protected)+1)):
+        return True
+    # Deterministic conservative near-paraphrase warning, never a service call.
+    stop = {'a','an','the','is','are','was','were','has','have','had','been','be','it','she','he','they','that','this','since','of','on','in','to','and'}
+    a = set(_trailer_words(text)) - stop
+    b = set(_trailer_words(fact)) - stop
+    # Shared setting words alone are not the reveal. For a near-paraphrase,
+    # require the meaningful description after the fact's linking verb too.
+    # Without a clear description, retain exact wording/reference checks only.
+    words = _trailer_words(fact)
+    linking = next((i for i,w in enumerate(words) if w in {'is','are','was','were','be','been'}), None)
+    reveal = next((w for w in words[linking+1:] if w not in stop), None) if linking is not None else None
+    if reveal is None or reveal not in a:
+        return False
+    shared = a & b
+    return len(shared) >= 2 and len(shared) / max(1, len(a)) >= 2/3 and len(shared) / max(1, len(b)) >= .5
+
+
+def exact_passage_warning(canon,text,label):
+    if canon.get('metadata',{}).get('verbatim_story'):
+        source=''.join(b.get('summary','') for b in canon.get('structure',{}).get('beats',[]))
+        if text and text not in source:
+            return f'{label} is not an exact passage from the approved story. Compare it with the source; the wording has not been cleared as a quotation.'
+    return None
+
+def check_trailer_text(paper, canon):
+    """Selective trailer excerpts use the same story enforcement as scripts.
+
+    Viewers' words are refused; private planning material is visibly warned.
+    A trailer may omit any protected line. Recognition is per row so an exact
+    quote elsewhere cannot conceal an altered quote.
+    """
+    errors, warnings = [], []
+    for key, label in (('lines', 'Line'), ('cards', 'Card')):
+        for n, row in enumerate(paper.get(key, []), 1):
+            text = row.get('text', '')
+            warning=exact_passage_warning(canon,text,f'{label} {n}')
+            if warning:warnings.append(warning)
+            for protected in canon.get('protected_lines', []):
+                wording = protected.get('line', '')
+                if wording and text != wording and _resembles_protected(text, wording):
+                    if _short_protected_run(text, wording):
+                        warnings.append(f'{label} {n} resembles part of a protected line: “{wording}” This short phrase is a warning, not clearance.')
+                    else:
+                        errors.append(f'{label} {n} changes a protected line. Use the protected wording exactly: “{wording}”')
+            for lock in canon.get('locks', []):
+                if lock.get('spoiler') and _trailer_spoiler(text, row.get('source_ref'), lock):
+                    errors.append(f'{label} {n} reveals protected story material. Keep that reveal out of the trailer.')
+                    break
+            refs = _split_refs(row.get('source_ref') or '')
+            known = _canon_ids(canon, [])
+            if any(ref not in known for ref in refs):
+                errors.append(f'{label} {n} uses a story reference that is no longer available. Choose another reference or leave it unassigned.')
+    # Neighbouring viewer rows may form one quote or reveal. Compare them
+    # in screen-time order across both kinds, without treating private notes
+    # as viewer text. Exact single-row quotes remain permitted.
+    rows = [(r.get('start_frame', 0), order, f'{label} {n}', r)
+            for order,(key,label) in enumerate((('lines','Line'),('cards','Card')))
+            for n,r in enumerate(paper.get(key,[]),1)]
+    rows.sort(key=lambda x:(x[0],x[1]))
+    protected_span = max([3]+[len(_protected_words(x.get('line',''))) for x in canon.get('protected_lines',[])])
+    for start in range(len(rows)):
+        for size in range(2, min(protected_span,len(rows)-start)+1):
+            group = rows[start:start+size]
+            text = ' '.join(x[3].get('text','') for x in group)
+            label = ' and '.join(x[2] for x in group)
+            for protected in canon.get('protected_lines',[]):
+                wording = protected.get('line','')
+                if (not any(x[3].get('text') == wording for x in group)
+                        and _resembles_protected(text,wording)):
+                    errors.append(f'{label} together change a protected line. Use the protected wording exactly: “{wording}”')
+            for lock in canon.get('locks',[]):
+                fact = _protected_words(lock.get('decision',''))
+                words = _protected_words(text)
+                if size <= 3 and lock.get('spoiler') and len(fact)>1 and any(words[i:i+len(fact)]==fact for i in range(len(words)-len(fact)+1)):
+                    errors.append(f'{label} together reveal protected story material. Keep that reveal out of the trailer.')
+    errors = list(dict.fromkeys(errors))
+    for key, label, field in (('beats', 'Beat', 'text'), ('shots', 'Shot', 'purpose')):
+        for n, row in enumerate(paper.get(key, []), 1):
+            for lock in canon.get('locks', []):
+                if lock.get('spoiler') and _trailer_spoiler(row.get(field, ''), ' '.join(row.get('references', [])), lock):
+                    warnings.append(f'{label} {n} mentions a protected reveal in your private plan. Keep it out of anything the viewer will see or hear.')
+                    break
+    return errors, warnings
+
+
 def _check_script(
     script: dict[str, Any],
     canon: dict[str, Any],
     ids: set[str],
     status: str,
 ) -> None:
+    if script.get('trailer_paper_cut'):
+        errors, _warnings = check_trailer_text({'lines': script.get('sections', [])}, canon)
+        if errors:
+            _fail(' '.join(errors))
+        return
     for section in script.get("sections", []):
         raw_ref = section.get("source_ref")
         if not raw_ref:
@@ -717,6 +843,22 @@ def _load_stage_artifact(
             return value
     value = artifacts.get(name)
     return value if isinstance(value, dict) else None
+
+
+def _load_proposal(pipeline_dir: Path, project_id: str, artifacts: dict[str, Any]) -> dict[str, Any]:
+    """The proposal_packet with its ``cast`` replaced by the EFFECTIVE trailer
+    cast: the proposal's own cast amended by the tip of the human-signed
+    cast_change chain (lib/cast_change.py). The proposal checkpoint is
+    fingerprinted and never edited, so every cast rule reads this."""
+    from lib.cast_change import CastChangeError, with_effective_cast
+    from lib.receipts import ReceiptError
+
+    proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}
+    try:
+        return with_effective_cast(pipeline_dir / project_id, proposal, project_id=project_id) or {}
+    except (CastChangeError, ReceiptError) as exc:
+        _fail(f"the approved trailer cast can't be read (signed cast changes): {exc}")
+        return proposal
 
 
 def _version(artifact: dict[str, Any]) -> str:
@@ -1484,25 +1626,36 @@ def _check_assets_v11(
 # authored-film 1.2: look_lock, headshots, look_ref / headshot_ref / lineage
 # ---------------------------------------------------------------------------
 
+def _inherits_protection(pin: Any, introduced: str) -> bool:
+    """Later authored-film versions inherit protections, including tool admission."""
+    if getattr(pin, "name", None) != "authored-film":
+        return False
+    version = str(getattr(pin, "version", ""))
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)+", version):
+        # Only explicitly older versions may relax an authored-film protection.
+        return True
+    return tuple(map(int, version.split("."))) >= tuple(map(int, introduced.split(".")))
+
+
 def _is_look_lock_manifest(pin: Any) -> bool:
-    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) in LOOK_LOCK_MANIFESTS
+    return _inherits_protection(pin, "1.2")
 
 
 def _is_qc_manifest(pin: Any) -> bool:
-    """Sheet QC applies (1.3 and 1.4)."""
-    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) in QC_MANIFESTS
+    """Sheet QC applies from 1.3 onward."""
+    return _inherits_protection(pin, "1.3")
 
 
 def _is_hero_qc_manifest(pin: Any) -> bool:
     """Hero QC applies: every headshot candidate carries a hero verdict (1.4+)."""
-    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) in HERO_QC_MANIFESTS
+    return _inherits_protection(pin, "1.4")
 
 
 def _is_hero_batch_manifest(pin: Any) -> bool:
-    """Field-bound batch overrides and the up-to-cap packet apply (1.5 only).
+    """Field-bound batch overrides and the up-to-cap packet apply (1.5 and later).
     Every batch/packet-1.2 branch keys off THIS predicate; under 1.4 the
     behavior stays 1.0-override, four-candidate — tested behaviorally."""
-    return pin is not None and (getattr(pin, "name", None), getattr(pin, "version", None)) == HERO_BATCH_MANIFEST
+    return _inherits_protection(pin, "1.5")
 
 
 def _cast_keys(proposal: dict[str, Any]) -> list[tuple[str, str]]:
@@ -1972,7 +2125,7 @@ def enforce_authored_canon(
         # look and an approved, current headshot for every entity the bible
         # carries.
         project_dir = pipeline_dir / project_id
-        proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}
+        proposal = _load_proposal(pipeline_dir, project_id, artifacts)
         if stage == "look_lock" and isinstance(artifacts.get("look_packet"), dict):
             _check_look_lock(project_dir, artifacts["look_packet"], proposal, status)
         elif stage == "headshots" and isinstance(artifacts.get("headshot_packet"), dict):
@@ -2023,9 +2176,7 @@ def enforce_authored_canon(
         return bible
 
     if stage == "visual_bible":
-        proposal = _load_stage_artifact(
-            pipeline_dir, project_id, "proposal", "proposal_packet", artifacts
-        ) or {}
+        proposal = _load_proposal(pipeline_dir, project_id, artifacts)
         _check_visual_bible(
             project_dir, artifacts.get("visual_bible", {}), proposal, canon,
             config.data if config else {}, decisions, status,
@@ -2037,10 +2188,10 @@ def enforce_authored_canon(
                 qc_required=_is_qc_manifest(pin), status=status, pin=pin,
             )
     elif stage == "look_lock":
-        proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}
+        proposal = _load_proposal(pipeline_dir, project_id, artifacts)
         _check_look_lock(project_dir, artifacts.get("look_packet", {}), proposal, status)
     elif stage == "headshots":
-        proposal = _load_stage_artifact(pipeline_dir, project_id, "proposal", "proposal_packet", artifacts) or {}
+        proposal = _load_proposal(pipeline_dir, project_id, artifacts)
         _check_headshots(project_dir, artifacts.get("headshot_packet", {}), proposal, status, pin=pin)
     elif stage == "script":
         _check_script(artifacts.get("script", {}), canon, ids, status)

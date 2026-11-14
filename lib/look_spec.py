@@ -27,7 +27,9 @@ import jsonschema
 from lib.canonical_json import record_sha256
 
 LOOK_SPEC_SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "look_spec.schema.json"
-LOOK_SPEC_VERSION = "1.0"
+# 1.1 adds the WriterOS dependency reference (look sessions, 2026-09-30).
+LOOK_SPEC_VERSIONS = ("1.0", "1.1")
+LOOK_SPEC_VERSION = LOOK_SPEC_VERSIONS[-1]
 ENTITY_KINDS = ("character", "location")
 DESCRIPTION_MIN_WORDS = 20
 DESCRIPTION_MAX_WORDS = 80

@@ -1,5 +1,28 @@
 # Edit Director — Authored-Film Pipeline
 
+## Trailer scope
+
+For a signed trailer, the cutting view supports separately signed intertitles and an end card. This overrides the later poster-only title restriction for those cards. Their exact words, licensed font file, size, presentation and whole-frame timing come from the saved edit. Do not rewrite, trim, re-case, re-punctuate, wrap or shrink the wording automatically. Save a draft, then have Ben review and sign that exact card through the existing gate. Changed words, font, size or timing need another signature before preview. The local title tool sets the lettering and Remotion places it at the saved frames. Missing fonts, unsupported lettering or text outside the safe margins are refusals, never substitutions. Approved poster files remain immutable and all final pinned poster requirements remain in force. Signing a card approves no stage.
+
+This section applies only to a production signed to the trailer definition, version 1.6. For that production, every rule in this section overrides conflicting later text, including any instruction to proceed without a gate or to treat an assistant-set approval flag as consent. All other later requirements still apply to trailers, including canon, look, portrait, reference and spending protections. Older productions keep their pinned stages, runtime, timing and approval rules. A marker alone cannot change the signed definition. Never migrate a production as a convenience.
+
+The saved trailer contract states its target running time, at least one second and at most two minutes, and its two finishing approval points. Carry that same contract into the script, shot plan, edit, render report and final review. New trailer timing uses integer frames at twenty-four frames per second. Saved script, edit and export duration may exceed the target by at most one frame, and may never exceed two minutes. Changing an approved target requires fresh review of the affected stages; keep their old approvals as history. The saved edit is the timing authority for both preview and export; the editing piece supplies that timeline, rather than creating another story store here.
+
+Use Remotion for local timed graphics and footage composition, and FFmpeg for trimming, colour, mixing, probing and final encoding. This fixed trailer workflow takes precedence over instructions below to offer composition runtimes. It does not establish that a runtime is installed, change an older renderer lock, or approve any creative choice for Ben.
+
+Sound-effect takes are prepared and signed in the board's audio workspace. Use only
+kept, unchanged takes with their recorded moment and provenance. A loop intention
+does not mix or repeat a take automatically. The cutting view will place and mix
+these effects; preparing a take does not make a rough cut or finish a stage. Never
+call generation from a mixer or substitute another service.
+
+Ben works through visible controls and ordinary conversation. Use only available Front Lot operations. Never give him a command to type, run an unavailable operation by another route, or mark a placeholder as produced footage. Say plainly when a control is not available yet and stop that step. The trailer is unfinished until those later pieces exist.
+
+Every stage requires Ben's signed approval through the existing gate and receipt machinery. A bare approval flag, the assistant's words and a hand-written stage file never complete a trailer stage. Whole-stage signing screens are not available yet, including for looks, portraits and visual references; keep those stages unfinished until their signing controls exist. Technical checks and the assistant's review never approve a stage. The rough cut requires approval of its exact saved edit revision. Final approval follows watching and listening to the exact exported file and binds both that edit revision and the file's content digest. Changed inputs require fresh downstream review while preserving history. The delivery piece will supply the visible exact-file signing controls; never invent a receipt or claim those controls exist now.
+
+The rough cut must use accepted media, readable cards, source trims and intentional sound placement. Save the edit revision digest with the edit decisions. Do not automatically complete this stage after a technical pass. The later cutting view implements playback and approval.
+
+
 ## When To Use
 
 Ninth stage (`edit`, manifest 1.2). You produce `edit_decisions` that assemble the approved
@@ -51,7 +74,9 @@ Never re-render, re-type, or model-generate the title — typography is local an
 already approved. Cut only `selected` takes; a `candidate` or `rejected` take
 in the timeline is a defect.
 
-## No Gate By Default
+## Approval defaults for older productions only
+
+Trailers do not use this default. A trailer requires Ben's signed stage approval, and its signing controls are not available yet.
 
 `human_approval_default: false` — proceed on completion, but a Collision
 (story-affecting trim, beat reorder) forces an `awaiting_human` checkpoint

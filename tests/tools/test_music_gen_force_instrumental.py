@@ -19,7 +19,10 @@ from tools.audio.music_gen import MusicGen
 
 class _FakeResponse:
     def __init__(self, content: bytes = b"audio") -> None:
-        self.content = content
+        from tests.tools.test_audio_half_transport import wav_bytes
+        self.content = wav_bytes()
+        self.status_code = 200
+        self.headers = {"character-cost":"1", "request-id":"invented-music"}
 
     def raise_for_status(self) -> None:  # noqa: D401 - stub
         return None
@@ -32,7 +35,8 @@ def _install_fake_requests(
     """Install a stub ``requests`` module that records the JSON payload."""
     fake = types.ModuleType("requests")
 
-    def fake_post(url, headers=None, json=None, timeout=None):  # noqa: ANN001
+    def fake_post(url, headers=None, json=None, timeout=None, **kwargs):  # noqa: ANN001
+        captured["posts"] = captured.get("posts", 0) + 1
         captured["url"] = url
         captured["headers"] = headers
         captured["payload"] = json
@@ -43,43 +47,45 @@ def _install_fake_requests(
     return fake
 
 
-def test_force_instrumental_is_sent_true_by_default(monkeypatch, tmp_path):
+from tests.tools.test_audio_governance import project
+
+@pytest.fixture
+def legacy_music_root(project):
+    from tests.tools.test_audio_half_transport import priced
+    return priced.__wrapped__(project)
+
+def approved_request(root,prompt):
+    from lib.audio_workspace import save_music_brief,prepare_request
+    from tests.tools.test_audio_governance import sign
+    identity=save_music_brief(root,prompt,10)
+    record=prepare_request(root,'music','music_v1',brief_id=identity)
+    sign(root,'audio_spend',record,record['request_id'])
+    return {'project_dir':str(root),'audio_request_id':record['request_id']}
+
+
+def test_force_instrumental_is_sent_true_by_default(monkeypatch, tmp_path, legacy_music_root):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
     captured: dict = {}
     _install_fake_requests(monkeypatch, captured)
     # Route the output to tmp_path so the test never writes music_output.mp3
     # into the repo root (the default output_path).
-    out = tmp_path / "bg.mp3"
-    MusicGen()._generate(
-        {
-            "prompt": "gentle ambient",
-            "duration_seconds": 10,
-            "output_path": str(out),
-        },
-        "test-key",
-    )
+    MusicGen()._generate(approved_request(legacy_music_root,"gentle ambient"),"test-key")
 
+    assert captured["posts"] == 1
     assert "force_instrumental" in captured["payload"], "force_instrumental kwarg was never sent"
     assert captured["payload"]["force_instrumental"] is True
     assert captured["payload"]["music_length_ms"] == 10_000
 
 
-def test_explicit_vocal_opt_out_is_respected(monkeypatch, tmp_path):
+def test_explicit_vocal_opt_out_is_respected(monkeypatch, tmp_path, legacy_music_root):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
     captured: dict = {}
     _install_fake_requests(monkeypatch, captured)
-    out = tmp_path / "vocals.mp3"
-    MusicGen()._generate(
-        {
-            "prompt": "lead vocal pop",
-            "duration_seconds": 10,
-            "force_instrumental": False,
-            "output_path": str(out),
-        },
-        "test-key",
-    )
-
-    assert captured["payload"]["force_instrumental"] is False
+    args=approved_request(legacy_music_root,"lead vocal pop")
+    args['force_instrumental']=False
+    result=MusicGen()._generate(args,"test-key")
+    assert not result.success and 'always instrumental' in result.error
+    assert captured.get("posts",0)==0
 
 
 def test_schema_defaults_force_instrumental_to_true():

@@ -1,8 +1,9 @@
 """Backlot server — FastAPI app: board state API, SSE change feed, media.
 
-The watcher observes ``projects/`` with watchfiles; on any change it bumps a
-per-project version and wakes SSE subscribers, who tell the browser to
-refetch state. The server never writes to project directories.
+The watcher observes ``projects/`` with watchfiles and wakes browser readers.
+Writes use narrow project operations checked against the app's origin and
+capability. Voice submits through the existing signed spending boundary;
+the board does not mint approvals or expose a general operation runner.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import json
 import os
 import secrets
 import stat
+import threading
 import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -286,6 +288,11 @@ async def _lifespan(app: FastAPI):
         from backlot.tty import shutdown_tty
 
         await shutdown_tty(app)
+        from backlot.claude_live import shutdown_claude
+
+        await shutdown_claude(app)
+        if getattr(app.state,'footage_tasks',None):
+            await asyncio.gather(*list(app.state.footage_tasks),return_exceptions=True)
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
@@ -306,6 +313,10 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
     from backlot.tty import install_tty
 
     install_tty(app)
+
+    from backlot.claude_live import install_claude
+
+    install_claude(app)
 
     # ---- API ----------------------------------------------------------
 
@@ -406,6 +417,124 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
             "X-Accel-Buffering": "no",
         })
 
+    # ---- Ben's decision on a video take -------------------------------
+
+    @app.post("/api/project/{project_id}/shot/{shot_id}/take/{take_id}/decision")
+    async def take_decision(project_id: str, shot_id: str, take_id: str, request: Request) -> dict:
+        port = app.state.server_port
+        if request.headers.get("origin") not in {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}:
+            raise HTTPException(status_code=403, detail="origin not allowed")
+        expected = app.state.capability_token
+        given = request.headers.get("x-frontlot-capability")
+        if not isinstance(expected, str) or not isinstance(given, str) or not secrets.compare_digest(given, expected):
+            raise HTTPException(status_code=401, detail="Front Lot couldn't confirm this came from you. Reload Front Lot and try again.")
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="bad request") from None
+        if not isinstance(body, dict) or body.get("decision") not in ("approve", "decline"):
+            raise HTTPException(status_code=400, detail="decision must be approve or decline")
+        note = body.get("note")
+        if note is None:
+            note = ""
+        if not isinstance(note, str) or len(note) > TAKE_NOTE_MAX:
+            raise HTTPException(status_code=400, detail=f"Keep the note under {TAKE_NOTE_MAX:,} characters.")
+        project_dir = _safe_project_dir(project_id)
+        result = await asyncio.to_thread(_decide_take, project_dir, shot_id, take_id, body["decision"], note.strip())
+        _invalidate_summary(project_id)
+        server_log(f"take decision project={project_id} shot={shot_id} decision={body['decision']}")
+        return result
+
+    def require_writer(request):
+        port = app.state.server_port
+        expected = app.state.capability_token
+        given = request.headers.get("x-frontlot-capability")
+        if request.headers.get("origin") not in {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}:
+            raise HTTPException(403, "This action must come from Front Lot.")
+        if not expected or not given or not secrets.compare_digest(expected, given):
+            raise HTTPException(401, "Reload Front Lot from its app icon before saving.")
+
+    from backlot.story_panel import mount as mount_story
+    mount_story(app,require_writer,_safe_project_dir,_invalidate_summary)
+    from backlot.voice_panel import mount as mount_voice
+    mount_voice(app,require_writer,_safe_project_dir,_invalidate_summary)
+    from backlot.music_panel import mount as mount_music
+    mount_music(app,require_writer,_safe_project_dir,_invalidate_summary)
+    mount_music(app,require_writer,_safe_project_dir,_invalidate_summary,kind='effect')
+    from backlot.cutting import mount as mount_cutting
+    mount_cutting(app,require_writer,_safe_project_dir,_invalidate_summary)
+    from backlot.footage_controls import install as install_footage_controls
+    install_footage_controls(app,require_writer,_safe_project_dir,_invalidate_summary)
+
+    @app.post("/api/trailers")
+    async def start_trailer(request: Request):
+        require_writer(request)
+        from lib.trailer_edit import create_trailer
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("Fill in the trailer name, target length and spending ceiling.")
+            root = await asyncio.to_thread(create_trailer, PROJECTS_DIR, body.get("title"), body.get("seconds"), body.get("ceiling"), body.get("request_key"))
+            return {"project_id": root.name}
+        except (ValueError, TypeError, AttributeError) as exc:
+            message = "The start request could not be read. Please fill in the panel and try again." if isinstance(exc, json.JSONDecodeError) else str(exc)
+            raise HTTPException(400, message) from None
+
+    @app.post("/api/project/{project_id}/trailer-creation-request")
+    async def repair_trailer_request(project_id: str, request: Request):
+        require_writer(request)
+        from lib.trailer_edit import repair_creation
+        try:
+            result = await asyncio.to_thread(repair_creation, _safe_project_dir(project_id))
+            _invalidate_summary(project_id)
+            return result
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc) if isinstance(exc, ValueError) else "The signing request could not be made. Please try again.") from None
+
+    @app.post("/api/project/{project_id}/paper-cut/restore")
+    async def restore_paper(project_id: str, request: Request):
+        require_writer(request)
+        from lib.trailer_edit import restore_revision
+        try:
+            body = await request.json()
+            result = await asyncio.to_thread(restore_revision, _safe_project_dir(project_id), body.get("revision"), body.get("expected_revision"))
+            _invalidate_summary(project_id)
+            return result
+        except (ValueError, TypeError, KeyError, AttributeError, OSError) as exc:
+            raise HTTPException(400, str(exc) if isinstance(exc, ValueError) else "The restore did not finish. Your saved versions are safe.") from None
+
+    @app.post("/api/project/{project_id}/paper-cut")
+    async def save_paper(project_id: str, request: Request):
+        require_writer(request)
+        from lib.trailer_edit import save_revision
+        try:
+            body = await request.json()
+            result = await asyncio.to_thread(save_revision, _safe_project_dir(project_id), body.get("paper"), body.get("expected_revision"))
+            _invalidate_summary(project_id)
+            return result
+        except (ValueError, TypeError, KeyError, AttributeError, OSError) as exc:
+            message = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else "The save did not finish. Your previous version is safe. Check the panel and try again."
+            raise HTTPException(400, message) from None
+
+    @app.get("/api/project/{project_id}/paper-cut")
+    async def paper_status(project_id: str):
+        from lib.trailer_edit import paper_state
+        def read():
+            root=_safe_project_dir(project_id)
+            result=paper_state(root)
+            from lib.footage_requests import preview_availability
+            result['footage_availability']=preview_availability(root,result.get('current'))
+            return result
+        return await asyncio.to_thread(read)
+
+    @app.get("/api/project/{project_id}/paper-cut/{revision}")
+    async def paper_version(project_id: str, revision: str):
+        from lib.trailer_edit import read_revision
+        try:
+            return read_revision(_safe_project_dir(project_id), revision)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
     # ---- Thumbnails (downscaled, cached on disk) ------------------------
 
     @app.get("/thumb/{project_id}/{file_path:path}")
@@ -505,6 +634,52 @@ def _safe_project_dir(project_id: str) -> Path:
         # A syntactically valid but missing, unregistered, or symlinked
         # project is intentionally indistinguishable from an unknown project.
         raise HTTPException(status_code=404, detail=f"unknown project: {project_id}") from exc
+
+
+TAKE_NOTE_MAX = 2000
+_TAKE_NOTES = {"approve": "Approved on the take card.", "decline": "Declined on the take card."}
+_TAKE_DECISION_LOCK = threading.Lock()   # the waiting check and the write happen as one step
+
+
+def _decide_take(project_dir: Path, shot_id: str, take_id: str, decision: str, note: str) -> dict:
+    """Record Ben's press. Only a take still waiting on him can be decided."""
+    with _TAKE_DECISION_LOCK:
+        return _decide_take_locked(project_dir, shot_id, take_id, decision, note)
+
+
+def _decide_take_locked(project_dir: Path, shot_id: str, take_id: str, decision: str, note: str) -> dict:
+    from lib import supervised_production as sp
+
+    try:
+        sp.shot_dir(project_dir, shot_id)
+        if sp.read_brief(project_dir, shot_id) is None:
+            raise HTTPException(status_code=404, detail="That shot isn't in this film.")
+        waiting = {row["take_id"] for row in sp.waiting_takes(project_dir, shot_id)}
+        known = {row.get("take_id") for row in sp.history(project_dir, shot_id) if row.get("kind") == "take"}
+    except ValueError:
+        raise HTTPException(status_code=404, detail="That shot isn't in this film.") from None
+    if take_id not in known:
+        raise HTTPException(status_code=404, detail="That take isn't on this shot.")
+    if take_id not in waiting:
+        raise HTTPException(status_code=409, detail="This take is already decided. The card has been refreshed.")
+    if sp.is_trailer(project_dir):
+        raise HTTPException(status_code=409, detail=sp.TRAILER_DECISIONS_UNAVAILABLE)
+    note = note or _TAKE_NOTES[decision]
+    try:
+        if decision == "approve":
+            sp.select(project_dir, shot_id, take_id, user_note=note)
+        else:
+            sp.decline(project_dir, shot_id, take_id, user_note=note)
+    except Exception as exc:
+        # The shot record is written first; if a later step failed, Ben's press still counts.
+        if take_id not in {row["take_id"] for row in sp.waiting_takes(project_dir, shot_id)}:
+            server_log(f"take decision recorded with a follow-up error: {type(exc).__name__}")
+            return {"ok": True, "decision": decision}
+        if decision == "approve":
+            raise HTTPException(status_code=409, detail="This take's file is missing or has changed since it was made, "
+                                "so it can't be approved. You can still decline it.") from exc
+        raise HTTPException(status_code=409, detail="Front Lot couldn't record that. Nothing was changed.") from exc
+    return {"ok": True, "decision": decision}
 
 
 def _regular_gate_request_exists(project_dir: Path, request_id: str) -> bool:

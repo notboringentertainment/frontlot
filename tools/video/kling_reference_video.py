@@ -290,6 +290,15 @@ class KlingReferenceVideo(BaseTool):
     # ---- execute ----
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
+        if isinstance(inputs,dict) and inputs.get('footage_request_id'):
+            try:
+                from lib.footage_requests import provider_entry
+                return ToolResult(success=True,data={'take':provider_entry(inputs)})
+            except Exception as exc:
+                return ToolResult(success=False,error=str(exc))
+        return self._execute(inputs)
+
+    def _execute(self, inputs: dict[str, Any]) -> ToolResult:
         api_key = self._get_api_key()
         if not api_key:
             return ToolResult(success=False, error="FAL_KEY not set. " + self.install_instructions)
@@ -309,9 +318,18 @@ class KlingReferenceVideo(BaseTool):
             return ToolResult(success=False, error="Kling o3 requires an explicit output_path under the project")
 
         governance: dict[str, Any] = {}
+        signed_bound = None
+        reservation_id = None
         try:
-            # Look governance (look_refs verified before any upload) runs inside paid_call_context.
-            project_root, tracker, config = _shared.paid_call_context(inputs, governance=governance, media="video")
+            # Look governance (look_refs verified before any upload) and the
+            # per-shot allowance (C2) both run inside paid_call_context, which
+            # needs this call's own estimate to measure the shot's dollars.
+            from lib import footage_requests as footage
+            signed_bound = footage.bound_for(inputs)
+            estimate = signed_bound if signed_bound is not None else self.estimate_cost(inputs)
+            project_root, tracker, config = _shared.paid_call_context(
+                inputs, governance=governance, media="video", estimated_usd=estimate,
+            )
             # Prompts always leave the machine; reference images only when consented.
             config.require_egress("fal", "prompts")
             local_refs = [pathsafe.resolve_input(p, project_root) for p in inputs.get("reference_image_paths") or []]
@@ -321,8 +339,15 @@ class KlingReferenceVideo(BaseTool):
                 config.require_egress("fal", "prompts", "reference_images")
             references_applied = _shared.bind_reference_manifest(inputs, project_root, local_refs)
             output_path = pathsafe.validate_output_parent(inputs["output_path"], project_root)
+            if signed_bound is not None:
+                reservation_id = footage.reserve_before_upload(project_root,tracker,inputs)
             image_urls = list(inputs.get("reference_image_urls") or [])
-            uploaded = [_shared.upload_image_fal(str(resolved)) for resolved in local_refs]
+            frozen = [footage.frozen_reference(project_root,inputs,resolved)
+                      if signed_bound is not None else resolved for resolved in local_refs]
+            uploaded = []
+            for resolved in frozen:
+                if signed_bound is not None:footage.mark_upload_contact(project_root,inputs)
+                uploaded.append(_shared.upload_image_fal(str(resolved)))
             elements: list[dict[str, Any]] = []
             if inputs.get("reference_form") == "elements":
                 elements = self._build_elements(references_applied, uploaded, inputs.get("reference_video_url"))
@@ -330,6 +355,7 @@ class KlingReferenceVideo(BaseTool):
                 image_urls.extend(uploaded)
             if frame is not None:
                 # Packing policy (asset-director.md §2): the storyboard frame is the LAST @ImageN.
+                if signed_bound is not None:footage.mark_upload_contact(project_root,inputs)
                 image_urls.append(_shared.upload_image_fal(str(frame)))
                 references_applied.append({
                     "asset_id": str(inputs["storyboard_frame_sha256"]),
@@ -338,8 +364,8 @@ class KlingReferenceVideo(BaseTool):
                     "shot_id": str(inputs["shot_id"]),
                 })
             payload = self._build_payload(inputs, image_urls, elements)
-            estimate = self.estimate_cost(inputs)
-            reservation_id = reserve_paid_call(
+            if signed_bound is None:
+                reservation_id = reserve_paid_call(
                 tracker,
                 project_root,
                 tool=self.name,
@@ -348,8 +374,16 @@ class KlingReferenceVideo(BaseTool):
                 reserved_usd=estimate,
                 output_hint={"kind": "video", "output_path": str(output_path),
                              "generate_audio": bool(payload["generate_audio"])},
+                inputs=inputs,
+                kind="video",
             )
         except Exception as exc:
+            if signed_bound is not None and reservation_id is not None:
+                try:footage.cancel_before_contact(project_root,inputs,tracker)
+                except Exception:
+                    # Failing to save the local cancellation is never evidence
+                    # that a hold may be released or a request retried.
+                    pass
             return ToolResult(success=False, error=f"Kling o3 preflight failed: {exc}")
 
         request_id: str | None = None
@@ -361,6 +395,7 @@ class KlingReferenceVideo(BaseTool):
         execution_id = current_execution_id() or f"kling-{reservation_id}"
         prompt_text = inputs.get("prompt") or " | ".join(s["prompt"] for s in inputs.get("multi_prompt") or [])
         try:
+            if signed_bound is not None:footage.before_submit(project_root,inputs)
             submitted = _shared.fal_queue_submit(self.MODEL_ID, payload, api_key=api_key)
             request_id = str(submitted["request_id"])
             attach_request_id(project_root, reservation_id, request_id)
@@ -374,6 +409,7 @@ class KlingReferenceVideo(BaseTool):
                 deadline_s=float(inputs.get("deadline_s", self.DEFAULT_DEADLINE_S)),
                 poll_s=float(inputs.get("poll_s", 5.0)),
             )
+            if signed_bound is not None:actual_usd = footage.actual_charge(inputs,data)
             video_url = data["video"]["url"]
             staging = pathsafe.staging_file(project_root, ".mp4")
             _shared.fal_download(
@@ -383,6 +419,8 @@ class KlingReferenceVideo(BaseTool):
                 allowed_mime_prefixes=("video/", "application/octet-stream"),
             )
             probed = _shared.verify_video_file(staging, require_audio=bool(payload["generate_audio"]))
+            if signed_bound is not None and (not 0<probed['duration_seconds']<=float(inputs['duration'])+1/24):
+                raise ValueError('The returned clip length exceeds its signed request. Billing needs signed review.')
             receipts.stage_generation_wal(
                 project_root,
                 execution_id=execution_id,
@@ -401,6 +439,7 @@ class KlingReferenceVideo(BaseTool):
                     "prompt": prompt_text,
                     "seed": data.get("seed"),
                     "references_applied": references_applied,
+                    **({'footage_charge':footage.receipt_charge(project_root,inputs)} if signed_bound is not None else {}),
                     **_shared.receipt_governance_fields(governance),
                 },
             )
