@@ -46,8 +46,25 @@ def test_signing_rechecks_changed_rough_cut(signed_cut):
     from scripts import gate_approve as ga
     root,p,posts,*_=signed_cut
     gate=d.request_rough(root,trailer_edit.read_revision(root)['edit_revision_sha256'])
-    req=ga.load_request(gate['request_id'],root);shown=ga.construct(root,req)
+    req=ga.load_request(root/'.gate-requests'/f"{gate['request_id']}.json");shown=ga.construct(root,req)
     saved=trailer_edit.read_revision(root);v=cut.editable(saved['timeline']);v['mix']['speech_margin_db']=18
     cut.save_cut(root,v,saved['edit_revision_sha256'])
     with pytest.raises((ValueError,ga.GateHandlerError),match='changed|fresh|rough'):shown.pre_commit_check()
     assert len(p['posts'])==3 and len(posts)==1
+
+def test_safe_output_level_cannot_hide_a_silent_voice_source():
+    from lib import trailer_delivery as d
+    measured={'on_target':True,'speech_checks':[],'effect_checks':[],
+              'source_warnings':['Sound 1 has no audible speech in its chosen trim.']}
+    assert d._sound_ok(measured) is False
+
+def test_delivery_stage_controls_no_longer_claim_they_are_unavailable():
+    from lib.trailer_contract import STAGE_LIMITS
+    assert STAGE_LIMITS['edit']=='' and STAGE_LIMITS['compose']==''
+
+@pytest.mark.parametrize('identity',['../other','/another/production','x'*32,'0'*64])
+def test_delivery_paths_cannot_choose_another_file(signed_cut,identity):
+    from lib import trailer_delivery as d
+    root,provider,posts,*_=signed_cut
+    with pytest.raises(ValueError,match='Choose a final file'):d.read_export(root,identity)
+    assert len(provider['posts'])==3 and len(posts)==1
