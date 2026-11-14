@@ -46,6 +46,7 @@ STAGE_LABELS = {
 }
 STAGE_LIMITS = {name: 'Signed stage approval controls are not available yet.' for name in STAGE_LABELS if name!='canon_ingest'}
 STAGE_LIMITS.update({
+    'canon_ingest': '',
     'assets': 'The complete trailer footage, sound and signed stage approval controls are not available yet.',
     'edit': 'Playable rough-cut editing and signed approval controls are not available yet.',
     'compose': 'Trailer finishing, export and signed exact-file approval controls are not available yet.',

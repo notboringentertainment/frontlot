@@ -223,6 +223,8 @@ def test_empty_production_signs_story_checks_paper_and_keeps_three_audio_purchas
             story.get_by_role('button',name='Review and sign this story',exact=True).click()
             review=page.get_by_role('region',name='Story approval',exact=True)
             expect(review).to_contain_text(text)
+            assert '\nnull\n' not in review.inner_text()
+            expect(page.get_by_role('button',name='Review: Review this story',exact=True)).to_be_visible()
             shot_picture(page,'exact-story-signing',review.get_by_role('heading').first)
             page.get_by_role('button',name='Start signing',exact=True).click()
             page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=20000)
@@ -239,7 +241,7 @@ def test_empty_production_signs_story_checks_paper_and_keeps_three_audio_purchas
             buy_three_audio(page,panel,isolated_standins,'empty')
             page.get_by_role('button',name='Open footage requests',exact=True).click()
             footage=page.get_by_label('Footage workspace',exact=True)
-            expect(footage).to_contain_text('those approval controls are not built here')
+            expect(footage).to_contain_text('those controls are not built here')
             for control in footage.get_by_role('button',name='Create footage request',exact=True).all():
                 expect(control).to_be_disabled()
             shot_picture(page,'empty-footage-blocked',footage)

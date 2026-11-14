@@ -64,7 +64,7 @@ export function renderStorySigning(detail,actions,onReturn,stale){
   node.append(el('p',{},`${source.byte_length} bytes · ${source.characters} characters. The signature binds these exact bytes and the protected passages below.`),
     el('p',{},'Approving makes this the story source for this trailer only. It permits local paper-cut comparisons. It buys nothing, sends nothing to a service, and approves no look, sound, footage or later stage.'),
     el('pre',{class:'story-exact',style:'white-space:pre-wrap;overflow-wrap:anywhere;max-height:45vh;overflow:auto'},source.text));
-  for(const [values,label] of [[source.protected,'Protected wording'],[source.spoilers,'Spoiler passages']])node.append(el('h3',{},label),...values.map(v=>el('blockquote',{},v)),values.length?null:el('p',{},'None designated.'));
+  for(const [values,label] of [[source.protected,'Protected wording'],[source.spoilers,'Spoiler passages']])node.append(el('h3',{},label),...(values.length?values.map(v=>el('blockquote',{},v)):[el('p',{},'None designated.')]));
   node.append(el('details',{},el('summary',{},'Source fingerprint'),el('code',{},source.sha256)),stale?el('p',{},'This request has been decided. Return to the story to continue.'):actions);
   return node;
 }
