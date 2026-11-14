@@ -63,6 +63,16 @@ def delivery_journey(delivery_cut,monkeypatch,repeat=1):
         browser=pw.chromium.launch(headless=True)
         try:
             page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+            page.add_init_script('''{
+                const original=window.fetch;window.deliveryFetches=[];
+                window.fetch=async(...args)=>{
+                    const url=String(args[0]);
+                    if(!/\\/delivery(?:$|\\/)/.test(url))return original(...args);
+                    const row={url,started:Date.now()};window.deliveryFetches.push(row);
+                    try{const response=await original(...args);row.status=response.status;row.finished=Date.now();return response;}
+                    catch(error){row.error=String(error);row.finished=Date.now();throw error;}
+                };
+            }''')
             delivery_reads=[];delivery_requests=[]
             page.on('request',lambda r:delivery_requests.append(r.method) if r.url==url+f'/api/project/{root.name}/delivery' else None)
             def observed(response):
@@ -143,7 +153,12 @@ def delivery_journey(delivery_cut,monkeypatch,repeat=1):
                 expect(current.locator('video')).to_have_attribute('src',__import__('re').compile('/delivery/'))
                 current.get_by_role('button',name='Review and sign final approval',exact=True).click()
                 review_and_return('Review this exact final file')
-                expect(current).to_contain_text('Approved by you',timeout=30000)
+                try:expect(current).to_contain_text('Approved by you',timeout=30000)
+                except AssertionError as e:
+                    with (root/'delivery-return-failure.json').open('x') as f:json.dump({
+                        'journey':journey+1,'reads':delivery_reads[-12:],'fetches':page.evaluate('()=>window.deliveryFetches'),
+                        'words':panel.inner_text(),'page_errors':errors},f,indent=2)
+                    raise AssertionError('Signing return diagnostic: '+str(root/'delivery-return-failure.json')) from e
                 expect(panel.get_by_role('status').first).not_to_contain_text('Rechecking')
                 current.get_by_role('button',name='Show approved file in Finder',exact=True).click()
                 expect(panel.get_by_role('status').first).to_contain_text('shown in Finder',timeout=30000)

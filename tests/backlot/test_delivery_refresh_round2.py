@@ -5,6 +5,32 @@ from tests.lib.test_cutting_signed import signed_cut
 from tests.tools.test_signed_footage import film,provider,looks,workspace,sign
 
 
+def test_return_to_delivery_starts_one_read_not_two(signed_cut,monkeypatch):
+    from lib import cutting_view
+    root,provider,posts,*_=signed_cut
+    # The return control is also available when playback still needs local
+    # preparation. No signature is fabricated to exercise that control.
+    monkeypatch.setattr(cutting_view,'render_preview',lambda *a,**kw:root/'assets/not-prepared.mp4')
+    with board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=browser.new_page();reads=[];errors=[]
+            page.on('pageerror',lambda e:errors.append(str(e)))
+            page.on('request',lambda r:reads.append(r.url) if r.method=='GET' and r.url==url+f'/api/project/{root.name}/delivery' else None)
+            page.route('**/*',lambda r:r.continue_() if r.request.url.startswith(url+'/') else r.abort())
+            page.goto(f'{url}/p/{root.name}#k=invented-browser-proof')
+            panel=page.get_by_role('region',name='Trailer delivery',exact=True)
+            panel.get_by_role('button',name='Review and sign the saved rough cut',exact=True).click(timeout=30000)
+            review=page.get_by_role('region',name='Delivery review',exact=True)
+            expect(review).to_be_visible(timeout=30000)
+            before=len(reads)
+            review.get_by_role('button',name='Return to delivery',exact=True).click()
+            expect(panel.get_by_role('status')).to_contain_text('Saved cut loaded.',timeout=30000)
+            assert len(reads)-before==1, 'Returning must not start a read and immediately abort it for a duplicate.'
+            assert len(provider['posts'])==3 and len(posts)==1 and not errors
+        finally:browser.close()
+
+
 def test_overlapping_returns_wait_for_verified_server_state_twenty_times(signed_cut,monkeypatch):
     root,provider,posts,*_=signed_cut
     with board(root,monkeypatch) as url,sync_playwright() as pw:

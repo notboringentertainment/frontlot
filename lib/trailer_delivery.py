@@ -61,19 +61,26 @@ def rough_state(root):
         return _approval_state(root,'edit',{'edit_decisions':saved},'Needs your signature','Signed by you')
     except (ValueError,OSError,KeyError):return 'Needs a fresh look'
 
+def _stage_approvals(root,stage):
+    return [r for r in receipts.verified_approvals(root,'artifact_review') if r.get('stage')==stage and r.get('scope')=='trailer-stage']
+
+def _export_binding(root,artifacts,rows):
+    digest=record_sha256(artifacts)
+    own=[r for r in rows if r.get('record',{}).get('artifacts_sha256')==digest]
+    if not own:
+        return 'retired' if rows and _superseded_export(root,artifacts,rows[-1]) else 'unsigned'
+    return 'current' if rows[-1] in own else 'retired'
+
 def _approval_state(root,stage,artifacts,pending,approved):
-    rows=[r for r in receipts.verified_approvals(root,'artifact_review') if r.get('stage')==stage and r.get('scope')=='trailer-stage']
+    rows=_stage_approvals(root,stage)
     if not rows:return pending
     if stage=='compose':
         # The sealed artifact pair contains this export's unique delivery id
         # and output path, even when two movies have identical bytes. An
         # approval of another pair is not an earlier approval of this file.
-        digest=record_sha256(artifacts)
-        own=[r for r in rows if r.get('record',{}).get('artifacts_sha256')==digest]
-        if not own:
-            if _superseded_export(root,artifacts,rows[-1]):return 'Needs a fresh look'
-            return pending
-        if rows[-1] not in own:return 'Needs a fresh look'
+        binding=_export_binding(root,artifacts,rows)
+        if binding=='retired':return 'Needs a fresh look'
+        if binding=='unsigned':return pending
     try:contract.require_stage_approval(root,_pin(root),stage,artifacts);return approved
     except (ValueError,OSError,KeyError):return 'Needs a fresh look'
 
@@ -325,11 +332,16 @@ def reveal(root,identity):
 def snapshot(root):
     root=Path(root);saved,timeline=_saved(root);items=[]
     rough=_approval_state(root,'edit',{'edit_decisions':saved},'Needs your signature','Signed by you')
+    final_rows=_stage_approvals(root,'compose')
     for marker in sorted(_directory(root).glob('*/complete.json'),key=lambda p:p.stat().st_mtime,reverse=True):
         try:
             item=read_export(root,marker.parent.name)
             status='Needs a fresh look'
-            if rough=='Signed by you':
+            pair={k:item[k] for k in ('render_report','final_review')}
+            # A verified newer signature already retires this sealed record.
+            # Re-probing every retired movie delays the current file's return
+            # without ever making an earlier file eligible for approval.
+            if rough=='Signed by you' and _export_binding(root,pair,final_rows)!='retired':
                 try:
                     artifacts=_file_artifacts(root,item['id'],saved,timeline)
                     pending='Needs your signature' if artifacts['final_review']['status']=='pass' else 'Final file needs changes'

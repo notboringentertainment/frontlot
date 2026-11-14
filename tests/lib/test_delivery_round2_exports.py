@@ -35,6 +35,15 @@ def test_an_approved_export_does_not_lock_out_the_next_file(delivery_cut,monkeyp
     assert d.final_state(root,second['id'])=='Approved by you'
     assert d.final_state(root,first['id'])=='Needs a fresh look'
     with pytest.raises(ValueError,match='Watch and sign final approval'):d.reveal(root,first['id'])
+    checked=[];original=d._file_artifacts
+    def checked_file(root,identity,*args,**kw):
+        checked.append(identity)
+        return original(root,identity,*args,**kw)
+    monkeypatch.setattr(d,'_file_artifacts',checked_file)
+    snapshot=d.snapshot(root)
+    assert {r['id']:r['status'] for r in snapshot['exports']}=={
+        first['id']:'Needs a fresh look',second['id']:'Approved by you'}
+    assert checked==[second['id']], 'A superseded export cannot become current and must not delay the current file’s verified state.'
     assert len(p['posts'])==3 and len(audio)==1
 
 
