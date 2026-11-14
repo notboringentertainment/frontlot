@@ -117,7 +117,7 @@ def test_fresh_trailer_audio_panel_can_offer_its_existing_settings_operation(tmp
     assert snapshot(root)['budget']['ceiling']==10
 
 
-def save_paper_with_controls(page,reference=''):
+def save_paper_with_controls(page,reference='',purpose='The gallery keeper looks towards a doorway.'):
     page.get_by_role('button',name='Paper cut workspace',exact=True).click()
     paper=page.get_by_role('region',name='Trailer paper cut',exact=True)
     for label,value in [('Hook','A light burns in the empty gallery.'),('Escalation','Someone is coming.'),
@@ -129,7 +129,7 @@ def save_paper_with_controls(page,reference=''):
     line.get_by_label('Screen time in frames',exact=True).fill('72')
     paper.get_by_role('button',name='Add shot',exact=True).click()
     shot=paper.get_by_role('group',name='Shot 1',exact=True)
-    shot.get_by_label('Purpose (private plan)',exact=True).fill('The gallery keeper looks towards a doorway.')
+    shot.get_by_label('Purpose (private plan)',exact=True).fill(purpose)
     shot.get_by_label('Screen time in frames',exact=True).fill('120')
     shot.get_by_label('References, separated by commas',exact=True).fill(reference)
     shot.get_by_label('Difficulty',exact=True).fill('One simple action.')
@@ -203,7 +203,7 @@ def test_empty_production_signs_story_checks_paper_and_keeps_three_audio_purchas
             panel=page.get_by_role('region',name='Trailer audio')
             expect(panel.locator('.voice-budget')).to_contain_text('$10.0000 remaining of $10.0000')
             set_prices(page,panel,'empty')
-            paper=save_paper_with_controls(page)
+            paper=save_paper_with_controls(page,purpose='A wide, steady view of an empty invented gallery and its doorway. No people.')
             expect(paper).to_contain_text('This draft is not yet checked against the approved story.')
             shot_picture(page,'empty-unchecked-story',paper.get_by_role('button',name='Save a new version'))
             page.get_by_role('button',name='Voice workspace',exact=True).click()
@@ -242,12 +242,13 @@ def test_empty_production_signs_story_checks_paper_and_keeps_three_audio_purchas
             buy_three_audio(page,panel,isolated_standins,'empty')
             page.get_by_role('button',name='Open footage requests',exact=True).click()
             footage=page.get_by_label('Footage workspace',exact=True)
-            expect(footage).to_contain_text('those approval controls are not built here')
             for control in footage.get_by_role('button',name='Create footage request',exact=True).all():
                 expect(control).to_be_disabled()
             shot_picture(page,'empty-footage-blocked',footage)
             assert len(isolated_standins['audio_posts'])==3 and len(isolated_standins['catalogues'])==1
             assert all(not isolated_standins[k] for k in ('uploads','video_posts','waits','downloads'))
+            from tests.backlot.footage_prereq_helpers import complete_footage_prerequisites
+            complete_footage_prerequisites(page,root,isolated_standins,tmp_path)
             assert not page.errors
             evidence={'root':str(root),'calls':isolated_standins,'body':page.locator('body').inner_text(),
                       'state':__import__('backlot.state',fromlist=['load_board_state']).load_board_state(root)}

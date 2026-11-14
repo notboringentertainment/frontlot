@@ -1421,11 +1421,18 @@ def _render_reference_import(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     staged = root / STAGING_DIR / f"reference-{asset_id}.png"
     visual = _file_packet(root, asset_id, path=staged, label="normalized import")
     return {"origin_class": hint.get("origin_class", record.get("origin_class")),
+            "origin_tool":record.get('origin_tool'),"attestation":record.get('attestation_text'),
             "visual": visual, "packet_error": bool(visual.get("error"))}
 
 
 def _render_look_lock(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     """Authoritative source: confined, parsed wayfinder ticket (text only)."""
+    if req.get('writer_source_ref'):
+        from lib.frontlot_location_source import require_current
+        try:
+            doc=require_current(root,req['writer_source_ref'])
+            return {'frontlot_location':doc,'look_spec':doc['look_spec'],'source_label':'Written in Front Lot'}
+        except (ValueError,OSError):return {'packet_error':True,'error':'The location written in Front Lot changed or cannot be verified. Prepare and sign its current description again.'}
     action = (req.get("envelope") or {}).get("action", "activate")
     scope_kind, _, scope_entity = str(req.get("scope") or "").partition(":")
     entity_kind = scope_kind or str(req.get("entity_kind") or "")
@@ -1524,13 +1531,13 @@ def _render_config(root: Path, req: dict[str, Any]) -> dict[str, Any]:
         text = raw.decode("utf-8", errors="replace")
     except OSError:
         return {"packet_error": True, "error": "project.yaml unreadable", "summary": req.get("summary")}
-    if req.get('scope')=='audio:project_config':
+    if req.get('scope') in {'audio:project_config','footage:project_config'}:
         import hashlib,yaml
         if (req.get('approval_record') or {}).get('config_sha256')!=hashlib.sha256(raw).hexdigest():
-            return {'packet_error':True,'error':'The audio prices changed. Prepare a new price-settings request.'}
+            return {'packet_error':True,'error':'The prices changed. Prepare a new price-settings request.'}
         settings=yaml.safe_load(text)
-        return {'audio_prices':settings['audio_price_basis'],'record':req['approval_record'],
-                'audio_price_summary':_audio_price_summary(root,settings),
+        return {'media_prices':True,'audio_prices':settings.get('audio_price_basis'),'footage_prices':settings.get('footage_price_basis'),'record':req['approval_record'],
+                'audio_price_summary':_audio_price_summary(root,settings) if settings.get('audio_price_basis') else None,
                 'production_ceiling':settings['budget_usd_cap'],'outbound_permissions':settings['provider_egress'],
                 'cast_ceiling':settings['cast_cap'],'run_minutes':settings['wall_time_minutes'],
                 'footage_model':settings['default_video_endpoint'],'picture_judge':settings.get('qc')}

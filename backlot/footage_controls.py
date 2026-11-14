@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import HTTPException, Request
 from lib import footage_requests as footage, receipts, supervised_production as shots
 from lib.canonical_json import record_sha256
-from lib.look_ingest import active_looks
+from lib.look_ingest import active_looks,verify_look_refs,LookIngestError
 from lib.media_spending import _tracker, request_resolution, resolve_charge, call_lock, signed_resolution, apply_signed_resolution
 from lib.pathsafe import resolve_input, sha256_file
 from lib.project_config import load_current_verified_project_config, ProjectConfigError
@@ -19,8 +19,8 @@ def plain_refusal(exc):
     from lib.media_spending import PaidCallBusy
     if isinstance(exc,PaidCallBusy):return 'A sound or footage operation is still running. Wait for it to finish before changing or reviewing this request.'
     if isinstance(exc,IndeterminatePaidCallError):return 'A charge is unresolved. Check the service account, then use the account-review controls to sign its outcome before another request.'
-    if isinstance(exc,BudgetExceededError):return 'This clip does not fit the remaining ceiling. Choose a shorter clip or sign a higher production ceiling before creating a new request.'
-    if 'allowance is exhausted' in str(exc):return 'This shot has used its allowance. Add a new paper-cut shot with its own request, or have its brief allowance revised before another take.'
+    if isinstance(exc,BudgetExceededError):return 'This clip does not fit the remaining production ceiling. Choose an affordable length, resolve any held charges, or stop. This form cannot raise the ceiling.'
+    if 'allowance is exhausted' in str(exc):return 'This clip does not fit the shot’s remaining allowance. Choose a shorter clip or stop; any change to its allowance needs review.'
     if isinstance(exc,ValueError) and not isinstance(exc,json.JSONDecodeError):
         message=str(exc)
         # Machine paths and internal validation fields are never instructions.
@@ -47,7 +47,12 @@ def _paper(root):
 
 
 def _looks(root):
-    return {kind+':'+identity:value for (kind,identity),value in active_looks(root).items()}
+    current={}
+    for (kind,identity),value in active_looks(root).items():
+        try:verify_look_refs(root,[{'entity_kind':kind,'entity_id':identity,'look_hash':value.look_hash}])
+        except (LookIngestError,ValueError,OSError):continue
+        current[kind+':'+identity]=value
+    return current
 
 
 def _prepare_brief(root,shot_id,choices):
@@ -57,7 +62,7 @@ def _prepare_brief(root,shot_id,choices):
     shot=next((s for s in paper if s['id']==shot_id),None)
     if shot is None:raise ValueError('Save this shot in the paper cut before requesting footage.')
     active=_looks(root);old=shots.read_brief(root,shot_id)
-    if not active:raise ValueError('This shot has no approved active look. Approve its looks outside these controls first.')
+    if not active:raise ValueError('This shot has no current signed look. Review and sign its location look in Footage setup before creating the request.')
     refs=[];look_refs=[]
     for path in shot['references']:
         key=choices.get(path)
@@ -88,9 +93,18 @@ def create(root,body):
     with call_lock(root):return _create(root,body)
 
 
+def bounded_quote(root,model,length):
+    price=footage.quote(root,model,length)
+    remaining=_tracker(root,load_current_verified_project_config(root)).budget_remaining_usd
+    highest=round(price['max_cash_usd']+price['max_credits_usd'],4)
+    return {**price,'highest_usd':highest,'remaining_usd':remaining}
+
+
 def _create(root,body):
     model=body.get('model');length=body.get('duration_seconds')
-    footage.quote(root,model,length)  # refuse invalid choices before writing a brief
+    price=bounded_quote(root,model,length)
+    if price['highest_usd']>price['remaining_usd']:
+        raise BudgetExceededError('The maximum clip charge exceeds the remaining production ceiling.')
     choices=body.get('looks',{})
     if not isinstance(choices,dict):raise ValueError('Choose an approved look for each picture.')
     _prepare_brief(root,body.get('shot_id'),choices)
@@ -217,9 +231,7 @@ def install(app,require_writer,safe_project,invalidate):
                 _,paper=_paper(root)
                 if not any(s['id']==body.get('shot_id') for s in paper):
                     raise ValueError('Save this shot in the paper cut before requesting footage.')
-                price=footage.quote(root,body.get('model'),body.get('duration_seconds'))
-                return {**price,'highest_usd':round(price['max_cash_usd']+price['max_credits_usd'],4),
-                        'remaining_usd':_tracker(root,load_current_verified_project_config(root)).budget_remaining_usd}
+                return bounded_quote(root,body.get('model'),body.get('duration_seconds'))
             if action=='create':result=await asyncio.to_thread(create,root,body)
             elif action=='dispatch':result=await dispatch(root,body.get('request_id'))
             elif action=='decision':

@@ -456,6 +456,8 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
 
     from backlot.story_panel import mount as mount_story
     mount_story(app,require_writer,_safe_project_dir,_invalidate_summary)
+    from backlot.footage_prereqs import mount as mount_footage_setup
+    mount_footage_setup(app,require_writer,_safe_project_dir,_invalidate_summary)
     from backlot.voice_panel import mount as mount_voice
     mount_voice(app,require_writer,_safe_project_dir,_invalidate_summary)
     from backlot.music_panel import mount as mount_music

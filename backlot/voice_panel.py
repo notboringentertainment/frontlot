@@ -207,45 +207,8 @@ def snapshot(root):
                       'audio_credits':sum(r.get('credits_usd',0) for r in charges)}}
 
 def prepare_prices(root,data):
-    import math,yaml
-    from lib.project_config import read_project_config
-    from lib.state_io import atomic_write_bytes
-    from schemas.artifacts import validate_project_config
-    from tools.cost_tracker import nonterminal_reservations,reservation_lock
-    root=root_checked(root)
-    keys={'dollars_per_credit','speech_credits_per_character','music_credits_per_minute','voice_multiplier_ceiling','expires_at'}
-    if isinstance(data,dict) and 'effect_credits_per_second' in data:keys.add('effect_credits_per_second')
-    if not isinstance(data,dict) or set(data)!=keys or any(type(data[k]) not in (int,float) or not math.isfinite(data[k]) or data[k]<=0 for k in keys):
-        raise ValueError('Fill in positive account price ceilings and a future expiry. No default prices are supplied.')
-    if data['voice_multiplier_ceiling']<1 or data['expires_at']<=time.time():
-        raise ValueError('The voice multiplier ceiling must be at least one and the price expiry must be in the future.')
-    from datetime import datetime,timezone
-    try:datetime.fromtimestamp(data['expires_at'],timezone.utc)
-    except (ValueError,OSError,OverflowError):raise ValueError('Choose a valid future calendar date for the price expiry.') from None
-    with audio.call_lock(root),reservation_lock(root):
-        if nonterminal_reservations(root):raise ValueError('Finish or resolve paid work before changing audio price settings.')
-        if receipts.verified_approvals(root,'config'):load_current_verified_project_config(root)
-        settings,_=read_project_config(root)
-        settings['version']='1.4'
-        settings['audio_price_basis']={k:{'value':data[k],'set_at':time.time(),'expires_at':data['expires_at']} for k in keys-{'expires_at'}}
-        providers=settings['provider_egress']
-        if not isinstance(providers,list):raise ValueError('Use the current trailer settings before preparing audio prices.')
-        entry=next((p for p in providers if p['provider']=='elevenlabs'),None)
-        classes=['speech_text','music_prompt']+(['effect_prompt'] if 'effect_credits_per_second' in keys else [])
-        if entry is None:providers.append({'provider':'elevenlabs','content_classes':classes})
-        else:
-            for kind in classes:
-                if kind not in entry['content_classes']:entry['content_classes'].append(kind)
-        validate_project_config(settings)
-        path=audio._checked_path(root/'project.yaml');old=path.read_bytes()
-        directory=audio._checked_path(root/'.audio-price-history');directory.mkdir(exist_ok=True)
-        archive=directory/(hashlib.sha256(old).hexdigest()+'.yaml')
-        if not archive.exists():
-            with archive.open('xb') as f:f.write(old)
-        raw=yaml.safe_dump(settings,sort_keys=True).encode()
-        atomic_write_bytes(path,raw)
-        return audio.gate_request(root,'config','project_config',{'config_sha256':hashlib.sha256(raw).hexdigest()},
-            'Review the account price ceilings and permission to send separately approved voice words, instrumental music briefs and any priced sound-effect descriptions. This signature buys no audio.',scope='audio:project_config')
+    from lib.media_settings import prepare_audio
+    return prepare_audio(root,data)
 
 def prepare_resolution(root,data):
     if not isinstance(data,dict) or set(data)!={'reservation_id','charged','cash','credits','note'}:raise ValueError('Fill in the charge outcome and what you checked in the account.')

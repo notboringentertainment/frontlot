@@ -140,7 +140,7 @@ def test_price_review_leads_with_dollars_and_keeps_raw_settings_below(voice_worl
             expect(review).to_contain_text('For one minute of instrumental music: at most $0.2400')
             expect(review).to_contain_text('Whole trailer ceiling: $1.0000')
             expect(review.get_by_text('Highest voice rate multiplier: 2.',exact=False)).not_to_be_visible()
-            capture(page,'price-review-dollars',review.get_by_role('heading',name='Account consent and maximum audio prices',exact=True))
+            capture(page,'price-review-dollars',review.get_by_role('heading',name='One production ceiling, both sets of prices',exact=True))
             review.get_by_text('Details of these settings',exact=True).click()
             expect(review.get_by_text('Highest voice rate multiplier: 2.',exact=False)).to_be_visible()
             review.get_by_text('Details of these settings',exact=True).click()

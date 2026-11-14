@@ -3,12 +3,12 @@
 No text extraction, image generation or transport happens here. WriterOS and
 Wayfinder sources keep their existing parsers and request constructor.
 """
-import hashlib,json,uuid
+import hashlib,json,uuid,re
 from pathlib import Path
 from lib import gates,receipts
 from lib.canonical_json import canonical_bytes,record_sha256
 from lib.look_spec import validate_look_spec,generation_sufficient,LookSpecError
-from lib.pathsafe import resolve_input
+from lib.pathsafe import resolve_input,PathSafetyError
 from lib.state_io import atomic_write_bytes,atomic_write_json
 from lib.story_ingest import root_checked
 
@@ -17,6 +17,7 @@ ENTITY='trailer-location'
 FIELDS={'entity_kind','name','text','fictional_subject_attestation','minor','shape_only','spoiler','depends_on',
     'establishing_view','time_of_day_default','palette_anchors','architecture_or_terrain','dressing',
     'weather_or_light_rules','continuity_risks','negative_lines'}
+LABELS={'prompt_safe_description':'the exact location description','establishing_view':'the establishing view','time_of_day_default':'the default time of day','palette_anchors':'the palette anchors','architecture_or_terrain':'the architecture or terrain','dressing':'the dressing','weather_or_light_rules':'the weather and light rules','continuity_risks':'the continuity risks','negative_lines':'the things to avoid'}
 
 def external_sources(root):
     from lib.look_ingest import (writeros_package_for,parse_writeros_export,wayfinder_root_for,
@@ -49,7 +50,12 @@ def _spec(data):
     spec={k:v for k,v in data.items() if k not in {'name','text'}}
     spec.update(version='1.1',entity_id=ENTITY,prompt_safe_description=data['text'])
     try:validate_look_spec(spec)
-    except LookSpecError as exc:raise ValueError('Complete the required location fields: '+str(exc)) from None
+    except LookSpecError as exc:
+        if 'injection' in str(exc).lower():raise ValueError('Remove instructions directed at a model from the description and visual answers. Describe the invented location itself.') from None
+        path=list(getattr(exc.__cause__,'absolute_path',[]))
+        label=LABELS.get(path[0] if path else None)
+        if label:raise ValueError('Fill in '+label+' using the form’s stated format before preparing the location for signing.') from None
+        raise ValueError('Complete the visual answers and use twenty to eighty words, no more than six hundred characters, for the exact location description. The existing look checks have refused this draft; nothing was approved.') from None
     ok,_=generation_sufficient(spec)
     if not ok:raise ValueError('Confirm a complete invented location depicting no real person or minor before preparing its look for use.')
     return spec
@@ -75,6 +81,7 @@ def prepare(root,data):
         document={'version':1,'source':'written in Front Lot','project_id':root.name,'name':data['name'],
             'text_path':text_path,'text_sha256':text_sha,'look_spec':spec}
         source=canonical_bytes(document);digest=hashlib.sha256(source).hexdigest()
+        if len(source)>32768:raise ValueError('Keep the complete location description and its visual answers within 32 kilobytes. Nothing was saved.')
         relative=f'{DIRECTORY}/{digest}.json'
         ref={'project_id':root.name,'path':relative,'sha256':digest}
         _store(root,text_path,raw);_store(root,relative,source)
@@ -91,6 +98,7 @@ def read(root,ref=None):
     try:
         if ref is None:ref=json.loads(resolve_input(f'{DIRECTORY}/current.json',root).read_text())
         if not isinstance(ref,dict) or set(ref)!={'project_id','path','sha256'} or ref['project_id']!=root.name:raise ValueError()
+        if not isinstance(ref['sha256'],str) or not re.fullmatch('[0-9a-f]{64}',ref['sha256']):raise ValueError()
         if ref['path']!=f"{DIRECTORY}/{ref['sha256']}.json":raise ValueError()
         path=resolve_input(ref['path'],root)
         if path.stat().st_size>32768:raise ValueError()
@@ -99,6 +107,7 @@ def read(root,ref=None):
         doc=json.loads(raw)
         if set(doc)!={'version','source','project_id','name','text_path','text_sha256','look_spec'}:raise ValueError()
         if doc['project_id']!=root.name or doc['version']!=1 or doc['source']!='written in Front Lot':raise ValueError()
+        if not isinstance(doc['text_sha256'],str) or not re.fullmatch('[0-9a-f]{64}',doc['text_sha256']):raise ValueError()
         spec=doc['look_spec'];validate_look_spec(spec)
         if spec['entity_kind']!='location' or spec['entity_id']!=ENTITY:raise ValueError()
         if not generation_sufficient(spec)[0]:raise ValueError()
@@ -106,18 +115,18 @@ def read(root,ref=None):
         text=resolve_input(doc['text_path'],root).read_bytes()
         if hashlib.sha256(text).hexdigest()!=doc['text_sha256'] or text.decode('utf-8')!=spec['prompt_safe_description']:raise ValueError()
         return doc
-    except (OSError,ValueError,KeyError,TypeError):
+    except (OSError,ValueError,KeyError,TypeError,PathSafetyError,LookSpecError):
         raise ValueError('The location source changed or cannot be verified for this production. Review and sign its exact current wording again.') from None
 
 def require_current(root,ref,payload=None):
     doc=read(root,ref)
-    current=json.loads(resolve_input(f'{DIRECTORY}/current.json',root).read_text())
+    try:current=json.loads(resolve_input(f'{DIRECTORY}/current.json',root).read_text())
+    except (OSError,ValueError,PathSafetyError):raise ValueError('The current location source could not be read safely. Prepare and sign its exact description again.') from None
     if current!=ref or (payload is not None and doc['look_spec']!=payload):
         raise ValueError('The location written in Front Lot changed. It needs a fresh signature; takes based on the earlier look need a fresh look.')
     return doc
 
-def construct(root,req):
-    from scripts.gate_approve import Constructed,GateHandlerError
+def signing_material(root,req):
     from lib.look_ingest import active_look_for
     try:
         ref=req['writer_source_ref'];doc=require_current(root,ref)
@@ -127,9 +136,9 @@ def construct(root,req):
         envelope={'action':'activate','entity_kind':'location','look_hash':record_sha256(doc['look_spec']),
             'supersedes_look_hash':current.look_hash if current else None,'writer_source_ref':ref}
         def recheck():require_current(root,ref,doc['look_spec'])
-        return Constructed(doc['look_spec'],envelope,ENTITY,pre_commit_check=recheck,
-            evidence=('Written in Front Lot for this production. The exact text is kept without rewriting. No picture, upload, purchase or whole stage is approved.',))
-    except (ValueError,KeyError,OSError) as exc:raise GateHandlerError(str(exc)) from None
+        return {'record':doc['look_spec'],'envelope':envelope,'entity_id':ENTITY,'pre_commit_check':recheck,
+            'evidence':('Written in Front Lot for this production. The exact text is kept without rewriting. No picture, upload, purchase or whole stage is approved.',)}
+    except (KeyError,OSError,PathSafetyError):raise ValueError('The location source could not be verified. Review and sign its exact current wording again.') from None
 
 def prepare_existing(root,source,entity_id):
     from lib.look_ingest import look_lock_request
@@ -148,8 +157,8 @@ def apply(root,request_id):
     from lib.checkpoint import write_checkpoint
     root=root_checked(root)
     with gates.receipt_lock(root.name,'approval'):
-        req=read_request(root,request_id)
-        if not req or req.get('kind')!='look_lock':raise ValueError('Choose the signed location-look request.')
+        _,req=read_request(root,request_id)
+        if not req or req.get('project_id')!=root.name or req.get('kind')!='look_lock':raise ValueError('Choose the signed location-look request for this production.')
         row=receipts.find_approval(root,'look_lock',entity_id=req['entity_id'],record_sha256=record_sha256(req['approval_record']))
         if row is None:raise ValueError('Sign this location look before applying it. Nothing is approved by saving.')
         current=active_look_for(root,'location',req['entity_id'])

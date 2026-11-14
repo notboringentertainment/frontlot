@@ -1,6 +1,7 @@
 import {el,CAPABILITY_TOKEN_KEY} from '/ui/lib.js';
 import {musicForms,effectForms,TEST_ONLY} from '/ui/music.js';
 import {renderPriceSettings} from '/ui/audio_prices.js';
+import {priceReview} from '/ui/media_prices.js';
 let current=null;
 // Keep the exact media element while live board data rebuilds the drawer.
 // A different file or take gets a new player and never starts itself.
@@ -26,8 +27,8 @@ export function renderVoice(s,onSign){
   if(current?.project===s.project_id){current.refresh();return current.node;}
   const project=s.project_id,url=`/api/project/${encodeURIComponent(project)}/voice`;
   const node=el('section',{class:'voice-panel paper-editor','aria-label':'Trailer audio'}),message=el('p',{role:'status','aria-live':'polite'}),content=el('div',{});
-  const drafts=new Map(),players=new Map(),priceForm={},outcomes=new Map(),musicDraft={},effectDraft={};let voices=[],last='',busy=false,loading=false,pendingRefresh=false;
-  const act=async fn=>{if(busy)return;busy=true;message.textContent='Working…';let refused=false;try{const result=await fn();message.textContent=typeof result==='string'?result:'Saved. Review the request before signing.';}catch(e){message.textContent=e.message;refused=true;}finally{busy=false;last='';await refresh();if(refused)requestAnimationFrame(()=>message.scrollIntoView({block:'center'}));}};
+  const drafts=new Map(),players=new Map(),priceForm={},outcomes=new Map(),musicDraft={},effectDraft={};let voices=[],last='',busy=false,loading=false,pendingRefresh=false,refreshFailed=false;
+  const act=async fn=>{if(busy)return;busy=true;refreshFailed=false;message.textContent='Working…';let refused=false;try{const result=await fn();message.textContent=typeof result==='string'?result:'Saved. Review the request before signing.';}catch(e){message.textContent=e.message;refused=true;}finally{busy=false;last='';await refresh();if(refused)requestAnimationFrame(()=>message.scrollIntoView({block:'center'}));}};
   const loadVoices=button('Load account voices',()=>act(async()=>{voices=await api(url+'/catalogue',{});return 'Account voices loaded. Choose a voice for the saved line.';}));
   node.append(el('h2',{},'Voice, music and sound effects'),el('p',{},'Choose a voice for each saved spoken line, request instrumental music or describe an effect for a paper-cut moment. One signature buys one take. Keeping or declining a take needs its own signature; a decline is final.'),
     loadVoices,
@@ -119,8 +120,8 @@ export function renderVoice(s,onSign){
   }
   async function refresh(){
     if(loading||busy){pendingRefresh=true;return;}loading=true;pendingRefresh=false;
-    try{const data=await api(url),key=JSON.stringify(data)+JSON.stringify(voices);if(key!==last){last=key;draw(data);}}
-    catch(e){message.textContent=e.message+' Check the approved story and signed audio price settings, then reload.';}
+    try{const data=await api(url),key=JSON.stringify(data)+JSON.stringify(voices);if(refreshFailed){message.textContent='';refreshFailed=false;}if(key!==last){last=key;draw(data);}}
+    catch(e){refreshFailed=true;message.textContent=e.message+' Check the approved story and signed audio price settings, then reload.';}
     finally{loading=false;if(pendingRefresh&&!busy){pendingRefresh=false;refresh();}}
   }
   current={project,node,refresh};refresh();return node;
@@ -132,26 +133,8 @@ export function renderAudioSigning(detail,actions,onReturn,stale){
   box.append(button('Return to audio',onReturn));
   if(stale){box.append(el('p',{},'This request has been decided. Return to audio to continue.'));if(!r||r.take||r.reservation_id||detail.packet.audio_prices)return box;}
   if(!r){box.append(el('p',{role:'alert'},detail.packet?.error||'The current audio evidence is unavailable. Return to audio and prepare a new request before signing.'));return box;}
-  if(detail.packet.audio_prices){
-    box.append(el('h3',{},'Account consent and maximum audio prices'),el('p',{},'This lets Front Lot send your voice words and instrumental music briefs to ElevenLabs after you sign each paid request.'));
-    if(detail.packet.audio_prices.effect_credits_per_second)box.append(el('p',{},'It also permits separately signed sound-effect descriptions, lengths and loop choices. Your paper-cut placement stays on this computer.'));
-    const p=detail.packet,q=p.audio_price_summary;
-    box.append(el('p',{},q.longest_line_dollars===null?'No spoken line is saved yet. Save your lines to see their maximum price.':`For the longest saved spoken line: at most ${money(q.longest_line_dollars)}.`),
-      el('p',{},`For one minute of instrumental music: at most ${money(q.music_minute_dollars)}.`),
-      el('p',{},q.effect_second_dollars===null?'No sound-effect price ceiling is signed in these settings.':`For one second of sound effects: at most ${money(q.effect_second_dollars)}.`),
-      el('p',{},`Whole trailer ceiling: ${money(p.production_ceiling)}.`),
-      el('p',{},`These figures expire ${new Date(q.expires_at*1000).toLocaleString()}.`),
-      el('p',{},'Account credits count at their replacement value within these dollar amounts. Different words or lengths get their own spending card. This settings signature buys no audio.'));
-    const details=el('details',{class:'paper-panel'},el('summary',{},'Details of these settings'),
-      el('p',{},'All the saved production settings below are covered by this same signature.'),
-      el('p',{},`Run limit: ${p.run_minutes} minutes. Cast ceiling: ${p.cast_ceiling.characters} characters and ${p.cast_ceiling.locations} places.`),
-      el('p',{},`Saved footage model: ${p.footage_model==='not-selected'?'Not selected':p.footage_model}`),
-      el('p',{},p.picture_judge?`Saved picture judge: ${p.picture_judge.judge_provider} / ${p.picture_judge.judge_model}`:'No paid picture judge is selected.'));
-    const classes={prompts:'text prompts',reference_images:'reference pictures',generated_sheet_images:'generated character sheets',speech_text:'spoken words',music_prompt:'music descriptions',effect_prompt:'sound-effect descriptions'};
-    for(const permission of p.outbound_permissions)details.append(el('p',{},`${permission.provider}: may receive ${permission.content_classes.map(x=>classes[x]).join(', ')}. Paid requests still need their individual approval.`));
-    const labels={dollars_per_credit:'Dollar replacement value per credit',speech_credits_per_character:'Highest speech credits per character',music_credits_per_minute:'Highest music credits per minute',voice_multiplier_ceiling:'Highest voice rate multiplier',effect_credits_per_second:'Highest sound-effect credits per second'};
-    for(const [k,v] of Object.entries(detail.packet.audio_prices))details.append(el('p',{},`${labels[k]}: ${v.value}. Set ${new Date(v.set_at*1000).toLocaleString()}; expires ${new Date(v.expires_at*1000).toLocaleString()}.`));
-    box.append(details);
+  if(detail.packet.media_prices){
+    box.append(priceReview(detail.packet));
   }else if(r.reservation_id){box.append(el('h3',{},'Record the account outcome'),el('blockquote',{},r.request.prompt),el('p',{},r.charged?'Charged':'Not charged'),el('p',{},`Cash ${money(r.cash_usd)} · credit replacement value ${money(r.credits_usd)}`),el('p',{},r.note),el('p',{},'This does not submit the request again or invent a take.'));
   }else if(r.take){box.append(el('h3',{},r.decision==='accept'?'Keep this take':'Decline this take permanently'),el('p',{},'This signs your decision about the exact saved audio. A decline is final.'),
     el('blockquote',{},detail.packet.spoken_words),
