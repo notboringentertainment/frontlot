@@ -1217,7 +1217,7 @@ def _construct_poster(root: Path, req: dict) -> Constructed:
 
 
 def _construct_artifact_review(root: Path, req: dict) -> Constructed:
-    if req.get('scope')=='trailer-stage':
+    if req.get('scope')=='trailer-stage' and req.get('stage') in ('edit','compose'):
         from lib import trailer_delivery as delivery
         stage=req.get('stage');identity=_require_entity(req)
         if stage not in ('edit','compose') or stage=='edit' and identity!='edit':

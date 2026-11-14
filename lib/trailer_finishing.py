@@ -105,11 +105,24 @@ def _speech_checks(actual,speech,background,margin,start_sample,end_sample):
         voice=s*max(0,coefficients[0]);bed=b*max(0,coefficients[1]);residual=y-(s*coefficients[0]+b*coefficients[1])
         vr=np.sqrt(np.mean(voice*voice));br=np.sqrt(np.mean(bed*bed)+np.mean(residual*residual))
         measured=20*math.log10(max(vr,1e-12)/max(br,1e-12))
-        status='unheard' if vr<AUDIBLE_RMS else 'hard_to_hear' if measured<margin-1 else 'quiet' if vr<QUIET_RMS else 'clear'
+        status='unheard' if vr<AUDIBLE_RMS else 'hard_to_hear' if measured<margin-1 else 'quiet' if vr<QUIET_RMS else 'audible'
         result.update(margin_db=round(measured,2),voice_rms_dbfs=round(20*math.log10(max(vr,1e-12)),2),status=status);checks.append(result)
     # Skipped quiet reference passages remain zero here: they count against
     # the placement's presence rather than disappearing from its denominator.
     return checks,voice_presence(fitted)
+
+def _buried_balance(passages):
+    """Pauses are not measured voice passages. Ninety percent of the
+    measured voice time below its margin is a whole-placement problem.
+    """
+    total=sum(max(1,r['end_frame']-r['start_frame']) for r in passages)
+    bad=sum(max(1,r['end_frame']-r['start_frame']) for r in passages if r['status'] in ('hard_to_hear','unheard'))
+    return bool(total and bad/total>=.9)
+
+def _steady_level(samples):
+    if len(samples)<RATE//2:return False
+    values=np.array([np.sqrt(np.mean(samples[i:i+RATE//100].astype(float)**2)) for i in range(0,len(samples),RATE//100)])
+    return bool(values.mean()>=AUDIBLE_RMS and values.std()/values.mean()<.08)
 
 def _effect_check(actual,ref,number,start_frame=0,*,nuisance=()):
     # Downsampling is for measurement only. Rendering and placement stay at
@@ -169,12 +182,13 @@ def review_output(path,refs):
         for p in passages:p['sound_number']=row['number']
         checks.extend(passages)
         statuses={p['status'] for p in passages}
-        status=next((s for s in ('unheard','uncertain','hard_to_hear','quiet') if s in statuses),'clear') if passages else 'unmeasured'
+        status=next((s for s in ('unheard','uncertain','hard_to_hear','quiet') if s in statuses),'audible') if passages else 'unmeasured'
         if status!='uncertain':
             if not reference['sustained'] or not presence['sustained']:status='unheard'
             elif not reference['sufficient'] or not presence['sufficient']:status='partial'
         voices.append({'number':row['number'],'start_frame':row['start_frame'],'end_frame':row['end_frame'],'status':status,
                        'presence':presence,'reference_presence':reference,
+                       'balance_blocked':_buried_balance(passages),'steady_level':_steady_level(voice[start:end]),
                        'minimum_margin_db':min((p['margin_db'] for p in passages if p['margin_db'] is not None),default=None)})
     music=_fit(decode_audio(refs['music_path']),n)
     effects=[_effect_check(actual,_fit(decode_audio(e['path']),n),e['number'],e.get('start_frame',0),nuisance=(speech,music)) for e in refs.get('effects',[])]
@@ -188,6 +202,10 @@ def review_output(path,refs):
     if integrated is not None:messages.append('Playback peaks are safely below the ceiling.' if peak is not None and peak<=-1 else 'Playback peaks exceed the ceiling or could not be measured. Lower loud sounds and prepare playback again.')
     if channels!=2 or rate!=48000:messages.append('The output is not the required stereo sound. Prepare playback again before reviewing it.')
     for row in voices:
+        if row['balance_blocked']:
+            messages.append(f'Voice in sound {row["number"]} is hard to hear across all or nearly all of its measured placement from {time_words(row["start_frame"])} to {time_words(row["end_frame"])}. This is not just a pause. Lower the other sounds, raise this voice or choose another take, then save and make the file again.')
+        if row['steady_level']:
+            messages.append(f'Voice in sound {row["number"]} contains audible sound with almost no change in level from {time_words(row["start_frame"])} to {time_words(row["end_frame"])}. It may be a steady tone or noise rather than speech. Listen to this take; these measurements do not recognise words.')
         if row['status'] in ('unheard','partial') and not any(f'Voice in sound {row["number"]} ' in m for m in messages):
             messages.append(presence_warning(row['number'],row['start_frame'],row['end_frame'],row['presence'],'in the finished file'))
         elif row['status']=='quiet':
@@ -202,7 +220,7 @@ def review_output(path,refs):
         start=hard[0]['start_frame'];end=hard[-1]['end_frame']
         messages.append(f'Speech is hard to hear from {time_words(start)} to {time_words(end)}.' if any(x['status'] in ('hard_to_hear','unheard') for x in hard) else f'Speech balance cannot be confirmed from {time_words(start)} to {time_words(end)} because the sounds are too similar.')
         messages.append('Lower the other sounds or choose a clearer voice take, then listen again.')
-    elif checks and voices and all(row['status']=='clear' for row in voices):
+    elif checks and voices and all(row['status']=='audible' for row in voices):
         minimum=min(p['margin_db'] for p in checks if p['margin_db'] is not None)
         messages.append(f'The voice takes contain audible sound above the other sounds in the measured passages. The lowest measured margin is {minimum:.1f} decibels. Listen to confirm every word is clear.')
     for interval in silences:messages.append(f'Silence from {time_words(interval["start_frame"])} to {time_words(interval["end_frame"])}. Check that this pause is deliberate; add or move a kept sound if it is not.')

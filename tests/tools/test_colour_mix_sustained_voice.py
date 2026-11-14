@@ -29,7 +29,7 @@ def test_presence_covers_the_placement_without_refusing_natural_pauses(tmp_path,
     positive=any('lowest measured margin' in s for s in report['messages'])
     if case in ('speech-with-pauses','short-voice'):
         assert positive,report['messages']
-        assert report['voice_checks'][0]['status']=='clear'
+        assert report['voice_checks'][0]['status']=='audible'
         assert not any('Voice in sound 1' in s for s in report['source_warnings'])
     else:
         assert not positive,report['messages']

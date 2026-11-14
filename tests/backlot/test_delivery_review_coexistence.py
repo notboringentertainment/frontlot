@@ -1,8 +1,4 @@
-"""Story and Delivery own distinct reviews, even when opened in reverse order.
-
-Run on the combined Story/Delivery branch. The Story panels belong to its
-unmerged parent; the standalone Delivery branch explicitly skips that peer.
-"""
+"""Story, cards and Delivery own distinct reviews in either start order."""
 from types import SimpleNamespace
 import pytest
 from playwright.sync_api import sync_playwright,expect
@@ -33,13 +29,22 @@ def test_story_rough_and_final_reviews_sign_in_either_start_order(film,provider,
                 panel.get_by_role('button',name='Save story for review',exact=True).click()
                 expect(panel.get_by_role('status')).to_contain_text('Saved',timeout=30000)
                 panel.get_by_role('button',name='Review and sign this story',exact=True).click()
-                expect(page.get_by_role('region',name='Story approval',exact=True)).to_contain_text('The lamp is still lit.')
+                expect(page.get_by_role('region',name='Story approval',exact=True)).to_contain_text('The lamp is still lit.',timeout=30000)
                 page.get_by_role('button',name='Start signing',exact=True).click()
                 page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=30000)
                 expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=60000)
                 page.get_by_role('button',name='Return to story',exact=True).click()
                 expect(panel.get_by_role('status')).to_contain_text('signed',timeout=30000)
-            if order=='story-first':sign_story()
+            if order=='story-first':
+                sign_story()
+                # The fixture had an unpaid brief for its previous story.
+                # Keep that history; prepare a new shot for the new source,
+                # rather than bypassing its correctly stale source snapshot.
+                from lib import trailer_edit
+                saved=trailer_edit.read_revision(root);paper=saved['paper_cut']
+                paper['shots'][0]['id']='shot-after-signed-story'
+                trailer_edit.save_revision(root,paper,saved['edit_revision_sha256'])
+                film=(root,'shot-after-signed-story')
             root,video_calls,audio_calls=make_cut()
             page.reload()
             # Literal card review has its own kind and must still dispatch there.
@@ -55,6 +60,14 @@ def test_story_rough_and_final_reviews_sign_in_either_start_order(film,provider,
             def sign_delivery(heading):
                 review=page.get_by_role('region',name='Delivery review',exact=True)
                 expect(review.get_by_role('heading',name=heading,exact=True)).to_be_visible(timeout=240000)
+                if heading=='Review this exact final file':
+                    gallery=review.get_by_role('region',name='Pictures from the final file')
+                    expect(gallery.locator('img')).to_have_count(16)
+                    expect(gallery.locator('img').last).to_have_js_property('naturalWidth',1920,timeout=30000)
+                    if __import__('os').environ.get('DELIVERY_CAPTURE'):
+                        from pathlib import Path
+                        gallery.evaluate('(e)=>e.scrollIntoView({block:"start",behavior:"instant"})')
+                        page.screenshot(path=str(Path(__import__('os').environ['DELIVERY_CAPTURE'])/('round2-'+order+'-signing-pictures.png')))
                 player=review.locator('video');expect(player).to_have_js_property('readyState',4,timeout=30000)
                 player.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=15000)
                 page.get_by_role('button',name='Start signing',exact=True).click()
@@ -64,6 +77,15 @@ def test_story_rough_and_final_reviews_sign_in_either_start_order(film,provider,
             sign_delivery('Review the saved rough cut')
             panel.get_by_role('button',name='Make the final file',exact=True).click()
             expect(panel).to_contain_text('Loudness is on target',timeout=300000)
+            gallery=panel.get_by_role('region',name='Pictures from the final file')
+            expect(gallery.locator('img')).to_have_count(16)
+            expect(gallery.locator('img').first).to_have_js_property('naturalWidth',1920,timeout=30000)
+            page.wait_for_function('(e)=>Array.from(e.querySelectorAll("img")).every(i=>i.naturalWidth===1920)',arg=gallery.element_handle(),timeout=30000)
+            expect(gallery).to_contain_text('0.250 seconds (frame 6)')
+            if __import__('os').environ.get('DELIVERY_CAPTURE'):
+                from pathlib import Path
+                gallery.evaluate('(e)=>e.scrollIntoView({block:"start",behavior:"instant"})')
+                page.screenshot(path=str(Path(__import__('os').environ['DELIVERY_CAPTURE'])/('round2-'+order+'-delivery-pictures.png')))
             panel.get_by_role('button',name='Review and sign final approval',exact=True).click()
             sign_delivery('Review this exact final file')
             expect(panel).to_contain_text('Approved by you',timeout=60000)

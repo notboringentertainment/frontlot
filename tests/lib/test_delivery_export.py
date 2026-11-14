@@ -20,7 +20,7 @@ def test_real_export_measurements_exact_final_signature_and_reveal_refusal(deliv
     item=d.export(root,saved['edit_revision_sha256']);identity=item['id'];report=item['render_report'];review=item['final_review']
     assert review['status']=='pass',review['issues_found']
     assert review['metadata']['measurements']['on_target']
-    assert review['metadata']['measurements']['speech_checks'] and all(r['status']=='clear' for r in review['metadata']['measurements']['speech_checks'])
+    assert review['metadata']['measurements']['speech_checks'] and all(r['status']=='audible' for r in review['metadata']['measurements']['speech_checks'])
     assert review['metadata']['measurements']['effect_checks'][0]['observed_frame']==36
     assert set(d._boundaries(saved['timeline']))=={r['frame'] for r in review['metadata']['boundary_samples']}
     assert report['outputs'][0]['resolution']=='1920x1080'
@@ -94,10 +94,11 @@ def test_consistently_tampered_measurements_are_remeasured_at_signing(delivery_c
     from lib import trailer_delivery as d
     root,provider,posts=delivery_cut;saved=approve_rough(root);original=d._measure
     def wrong_measurement(*args):
-        probe,measured=original(*args);measured['integrated_lufs']=-16.5
+        probe,measured=original(*args);measured['integrated_lufs']+=0.5
         return probe,measured
     # Simulate an earlier faulty check with an otherwise genuine local
     # render receipt. Signing must measure independently, not trust it.
+    # A fixed replacement value can equal the actual noise fixture's result.
     with monkeypatch.context() as patch:
         patch.setattr(d,'_measure',wrong_measurement);item=d.export(root,saved['edit_revision_sha256'])
     with pytest.raises(ValueError,match='measurements no longer match'):d.request_final(root,item['id'])
