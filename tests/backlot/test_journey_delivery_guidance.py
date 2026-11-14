@@ -1,0 +1,41 @@
+from fastapi.testclient import TestClient
+from playwright.sync_api import sync_playwright,expect
+from tests.backlot.test_voice_panel_browser import board,short_signing_folder
+from tests.lib.test_cutting_signed import signed_cut
+from tests.tools.test_signed_footage import film,provider,looks,workspace,sign
+
+
+def test_delivery_names_the_actual_missing_reviews_in_the_real_board(signed_cut,monkeypatch):
+    root,calls,posts,*_=signed_cut
+    with board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=browser.new_page(viewport={'width':1440,'height':1000});errors=[]
+            page.on('pageerror',lambda e:errors.append(str(e)))
+            page.route('**/*',lambda r:r.continue_() if r.request.url.startswith(url+'/') else r.abort())
+            page.goto(f'{url}/p/{root.name}#k=invented-browser-proof')
+            page.get_by_role('button',name='Delivery workspace',exact=True).click()
+            panel=page.get_by_role('region',name='Trailer delivery',exact=True)
+            expect(panel).to_contain_text('Saved version',timeout=30000)
+            expect(panel).to_contain_text('What still prevents a finished stage')
+            for label in ('Treatment','Looks','Cast portraits','Visual references','Lines and title cards','Shot list','Footage and sound'):
+                expect(panel).to_contain_text(label+':')
+            expect(panel).to_contain_text('Paper cut workspace')
+            expect(panel).to_contain_text('The final story comparison has no control yet.')
+            expect(panel.get_by_role('button',name='Record the signed rough-cut approval',exact=True)).to_be_disabled()
+            assert len(calls['posts'])==3 and len(posts)==1 and not errors
+        finally:browser.close()
+
+
+def test_making_a_file_never_finishes_a_stage_as_a_side_effect(signed_cut,monkeypatch):
+    import backlot.server as server
+    from lib import trailer_delivery as delivery
+    root,calls,posts,*_=signed_cut;made=[];completed=[]
+    monkeypatch.setattr(server,'PROJECTS_DIR',root.parent)
+    def export(root,revision):made.append(revision);return {'id':'invented-local-export'}
+    def complete(*args,**kwargs):completed.append(1);raise AssertionError('Making a file is not a stage-approval action.')
+    monkeypatch.setattr(delivery,'export',export);monkeypatch.setattr(delivery,'complete_stage',complete)
+    with TestClient(server.create_app(port=4936,capability_token='invented-guidance')) as client:
+            response=client.post(f'/api/project/{root.name}/delivery/export',json={'revision':'invented-saved-revision'},headers={'x-frontlot-capability':'invented-guidance','origin':'http://127.0.0.1:4936'})
+    assert response.status_code==200 and made==['invented-saved-revision'] and completed==[]
+    assert len(calls['posts'])==3 and len(posts)==1

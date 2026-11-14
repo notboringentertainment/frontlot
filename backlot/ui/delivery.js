@@ -89,7 +89,11 @@ export function renderDelivery(s,onSign){
   body.append(el('p',{},`Saved version ${data.number}. Delivery uses this saved cut, including its colour, sound and signed cards. Save any editing changes before reviewing it.`),
    el('h3',{},'Rough-cut approval'),el('p',{},data.rough_status),
    button('Review and sign the saved rough cut',async()=>{preparing('Preparing the saved rough cut for review locally…');const r=await api('/rough',{revision:data.revision});await onSign(r.gate_request_id);}),
+   button('Record the signed rough-cut approval',async()=>{const r=await api('/rough/apply',{});message.textContent=r.message;},data.rough_status!=='Signed by you'),
    button('Make the final file',async()=>{preparing('Making and measuring the full-size file locally. Nothing is sent or spent…');const r=await api('/export',{revision:data.revision});progress=false;message.textContent='The final file is ready to watch. '+r.stage_message;},data.rough_status!=='Signed by you'));
+  if(data.outstanding_requirements?.length)body.append(el('section',{class:'paper-panel','aria-label':'Outstanding stage requirements'},
+   el('h3',{},'What still prevents a finished stage'),el('p',{},'An unfinished stage is different from a missing control. Your individual signatures remain recorded; they do not substitute for a required stage review.'),
+   ...data.outstanding_requirements.map(words=>el('p',{},words))));
   const earlier=el('details',{},el('summary',{},'Earlier exports'));
   for(const [index,item] of data.exports.entries()){
    const review=item.review,usable=['Needs your signature','Approved by you','Final file needs changes'].includes(item.status);

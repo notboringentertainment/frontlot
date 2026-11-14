@@ -301,7 +301,8 @@ def complete_stage(root,stage,identity=None):
     contract.require_stage_approval(root,_pin(root),stage,artifacts)
     try:write_checkpoint(root.parent,root.name,stage,'completed',artifacts,pipeline_type='authored-film@1.6',human_approved=True)
     except CheckpointValidationError:
-        return 'Your signature is recorded. Earlier stage reviews or the separate story review are still unfinished, so this stage has not been marked finished.'
+        outstanding=contract.outstanding_stage_reviews(root,stage,artifacts.get('final_review'))
+        return 'Your signature is recorded. This stage is unfinished. '+(' '.join(outstanding) if outstanding else 'Its saved stage record could not be verified. Keep the saved work and have that record checked before trying to finish the stage again.')
     return 'Your signed stage approval is recorded.'
 
 def playback(root,identity):
@@ -349,4 +350,5 @@ def snapshot(root):
                 except (ValueError,OSError,KeyError):pass
             items.append({'id':item['id'],'status':status,'review':item['final_review'],'samples':frame_samples(root,item),'path':item['render_report']['outputs'][0]['path']})
         except (ValueError,OSError,KeyError):continue
-    return {'revision':saved['edit_revision_sha256'],'number':saved['revision_number'],'rough_status':rough,'exports':items}
+    return {'revision':saved['edit_revision_sha256'],'number':saved['revision_number'],'rough_status':rough,'exports':items,
+            'outstanding_requirements':contract.outstanding_stage_reviews(root,'compose',items[0]['review'] if items else None)}

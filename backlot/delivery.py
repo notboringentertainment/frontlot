@@ -29,7 +29,12 @@ def mount(app,require_writer,safe_root,invalidate):
     async def export(project_id:str,request:Request):
         data=await body(request,['revision']);root=safe_root(project_id)
         item=await run(delivery.export,root,data['revision']);invalidate(project_id)
-        return {'id':item['id'],'stage_message':await run(delivery.complete_stage,root,'edit')}
+        return {'id':item['id'],'stage_message':'Making a file completes no stage. Its signature and any outstanding requirements are shown below.'}
+    @app.post(base+'/rough/apply')
+    async def apply_rough(project_id:str,request:Request):
+        await body(request,[]);root=safe_root(project_id)
+        message=await run(delivery.complete_stage,root,'edit');invalidate(project_id)
+        return {'message':message}
     @app.post(base+'/{identity}/approval')
     async def approval(project_id:str,identity:str,request:Request):
         await body(request,[]);gate=await run(delivery.request_final,safe_root(project_id),identity)

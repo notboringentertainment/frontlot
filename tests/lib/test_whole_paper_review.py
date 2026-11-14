@@ -65,3 +65,17 @@ def test_unchecked_paper_cannot_be_offered_for_signature(tmp_path):
     root=trailer(tmp_path);saved=trailer_edit.save_revision(root,paper(),None)
     with pytest.raises(ValueError,match='approved story'):
         review.request_review(root,saved['edit_revision_sha256'])
+
+
+@pytest.mark.parametrize('sign_changed',[False,True])
+def test_restoring_earlier_paper_needs_its_own_new_review(tmp_path,sign_changed):
+    from lib import trailer_paper_review as review
+    root=trailer(tmp_path);first=draft(root)
+    approve_request(review.request_review(root,first['edit_revision_sha256']),root)
+    changed=copy.deepcopy(first['paper_cut']);changed['beats'][0]['text']='Another opening question.'
+    second=trailer_edit.save_revision(root,changed,first['edit_revision_sha256'])
+    if sign_changed:approve_request(review.request_review(root,second['edit_revision_sha256']),root)
+    restored=trailer_edit.restore_revision(root,first['edit_revision_sha256'],second['edit_revision_sha256'])
+    assert review.state(root)=='Needs a fresh look'
+    approve_request(review.request_review(root,restored['edit_revision_sha256']),root)
+    assert review.state(root)=='Signed by you'

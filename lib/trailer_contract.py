@@ -47,10 +47,39 @@ STAGE_LABELS = {
 STAGE_LIMITS = {name: 'Signed stage approval controls are not available yet.' for name in STAGE_LABELS if name!='canon_ingest'}
 STAGE_LIMITS.update({
     'canon_ingest': '',
-    'assets': 'The complete trailer footage, sound and signed stage approval controls are not available yet.',
+    'script': 'Review the whole paper cut in Paper cut workspace. The separate stage-completion control is not available yet.',
+    'scene_plan': 'Review the shot list with the whole paper cut in Paper cut workspace. The separate stage-completion control is not available yet.',
+    'assets': 'Individual purchases and take decisions work in the footage and sound workspaces. The whole-stage review is not available yet.',
     'edit': '',
     'compose': '',
 })
+
+
+def outstanding_stage_reviews(root,stage,final_review=None):
+    """Explain the existing pinned contract without waiving its requirements."""
+    from lib.checkpoint import get_completed_stages,get_pipeline_stages
+    root=Path(root);pin=signed_trailer_pin(root)
+    if pin is None:return ['Trailer creation: review and sign creation under Needs you before continuing.']
+    completed=set(get_completed_stages(root.parent,root.name,pin.ref))
+    order=get_pipeline_stages(pin.ref)
+    instructions={
+        'canon_ingest':'sign the exact story in Story workspace.',
+        'proposal':'the three treatment options and selected treatment still need a whole-stage review. That control is not available yet.',
+        'look_lock':'the declared cast’s complete looks still need a whole-stage review. Individual look signatures do not finish this stage; its complete-stage control is not available yet.',
+        'headshots':'portraits for every declared character still need their required selections and whole-stage review. The complete-stage control is not available yet.',
+        'visual_bible':'the complete reference collection and approved poster still need a whole-stage review. That control is not available yet.',
+        'script':'review and sign the complete paper cut in Paper cut workspace. The film-style stage-completion control is not available yet.',
+        'scene_plan':'review the timed shot list with the whole paper cut in Paper cut workspace. The film-style stage-completion control is not available yet.',
+        'assets':'keep the pictures and sounds in their workspaces. The separate review of the complete media collection is not available yet.',
+        'edit':'sign the saved rough cut, then record its stage approval in Delivery workspace after the listed earlier requirements are met.',
+    }
+    result=[STAGE_LABELS[s]+': '+instructions[s] for s in order[:order.index(stage)] if s not in completed]
+    if stage=='compose':
+        from lib.canon_enforcement import _check_canon_pass,_load_canon
+        try:_check_canon_pass(final_review or {},_load_canon(root.parent,root.name,{}) or {},True)
+        except ValueError:
+            result.append('Final story comparison: the signed story’s facts, protected lines, tone and continuity still need their required findings. The final story comparison has no control yet.')
+    return result
 
 
 def _duration(value, target):

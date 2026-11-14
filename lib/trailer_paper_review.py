@@ -22,8 +22,12 @@ def material(root):
     # The paper content is the authority here, not a later edit revision.
     # Keep the literal strings as well as their byte fingerprints.
     paper=copy.deepcopy(saved['paper_cut'])
+    paper_revision=None;previous=None
+    for version in [*saved.get('revision_history',[]),saved]:
+        content=(version.get('paper_cut'),version.get('inputs'))
+        if content!=previous:paper_revision=version['edit_revision_sha256'];previous=content
     return {'project_id':root.name,'trailer':saved['trailer'],'paper_cut':paper,
-            'story_inputs':inputs,'story_check':check,
+            'paper_revision':paper_revision,'story_inputs':inputs,'story_check':check,
             'word_fingerprints':{key:[hashlib.sha256(row['text'].encode('utf-8')).hexdigest() for row in paper[key]]
                                  for key in ('beats','lines','cards')}}
 
