@@ -47,12 +47,13 @@ def test_retained_review_player_recovers_without_restarting_the_same_movie(signe
                 const {renderDeliverySigning}=await import('/ui/delivery.js');
                 window.updateReview=(packet)=>{
                     const action=document.createElement('button');action.className='gate-primary';action.textContent='Start signing';
-                    return renderDeliverySigning({request_id:'invented-recovery-review',packet},action,()=>{});
+                    return renderDeliverySigning({request_id:'invented-recovery-review',request:{stage:'edit'},packet},action,()=>{});
                 };
                 window.reviewNode=window.updateReview({packet_error:true,error:'Prepare saved playback again.'});
                 document.body.append(window.reviewNode);
             }''')
             player=page.locator('video');assert player.get_attribute('src') is None
+            expect(page.get_by_role('heading',name='Review the saved rough cut',exact=True)).to_be_visible()
             assert page.evaluate("()=>window.updateReview({delivery_stage:'edit',play_url:'/recovery-preview.mp4',messages:[]})===window.reviewNode")
             expect(player).to_have_attribute('src','/recovery-preview.mp4')
             expect(player).to_have_js_property('readyState',4,timeout=30000)
@@ -61,8 +62,9 @@ def test_retained_review_player_recovers_without_restarting_the_same_movie(signe
             expect(player).to_have_js_property('ended',True)
             expect(player).to_have_attribute('src','/recovery-preview.mp4')
             expect(page.get_by_role('button',name='Start signing',exact=True)).to_be_disabled()
-            page.evaluate("()=>window.updateReview({delivery_stage:'edit',play_url:'/recovery-preview.mp4',messages:[]})")
+            page.evaluate("()=>window.updateReview({delivery_stage:'compose',play_url:'/recovery-preview.mp4',messages:[]})")
             expect(player).to_have_js_property('ended',True)
+            expect(page.get_by_role('heading',name='Review the saved rough cut',exact=True)).to_be_visible()
             expect(page.get_by_role('button',name='Start signing',exact=True)).to_be_enabled()
             page.evaluate("()=>window.updateReview({packet_error:true,error:'The saved playback changed.'})")
             assert player.get_attribute('src') is None

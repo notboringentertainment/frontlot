@@ -8,13 +8,15 @@ export function renderDeliverySigning(detail,actions,onReturn){
  let held=reviews.get(id);
  if(!held){
   const video=el('video',{controls:'',preload:'auto',src:packet.play_url,'aria-label':'Watch this exact delivery review',style:'width:100%;max-height:480px'});
-  const controls=el('div',{}),words=el('div',{}),node=el('section',{class:'paper-editor',role:'region','aria-label':'Delivery review'},
-   el('h2',{},packet.delivery_stage==='edit'?'Review the saved rough cut':'Review this exact final file'),
+  const heading=el('h2',{}),controls=el('div',{}),words=el('div',{}),node=el('section',{class:'paper-editor',role:'region','aria-label':'Delivery review'},
+   heading,
    el('p',{},'Watch and listen to the whole file before starting your signature. A technical check never replaces your approval.'),video,words,controls,
    el('button',{type:'button',onclick:onReturn},'Return to delivery'));
-  held={node,video,controls,words,watched:false};reviews.set(id,held);
+  held={node,heading,video,controls,words,watched:false};reviews.set(id,held);
   video.onended=()=>{held.watched=true;for(const b of controls.querySelectorAll('button.gate-primary'))b.disabled=!held.ready;};
  }
+ const stage=detail.request?.stage;
+ held.heading.textContent=stage==='edit'?'Review the saved rough cut':stage==='compose'?'Review this exact final file':'Preparing this saved review';
  held.ready=!!packet.play_url&&!packet.packet_error;
  const source=packet.packet_error?'':(packet.play_url??held.video.getAttribute('src')??'');
  if((held.video.getAttribute('src')||'')!==source){
