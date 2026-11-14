@@ -9,6 +9,7 @@ first, before the caller acknowledges or spawns.
 """
 from __future__ import annotations
 
+from lib import programs
 import fcntl, hashlib, json, os, time, uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -212,7 +213,7 @@ class RequestStore:
             rec = self._claim(rid)                      # approved -> launching, O_EXCL, durable
             step("claimed")
             try:
-                proc = subprocess.Popen(
+                proc = programs.Popen(
                     [sys.executable, str(Path(repo) / "scripts" / "frontlot_run.py"),
                      "--store", str(self.base), "--request", rid, "--repo", str(repo)],
                     cwd=repo, env=env, start_new_session=True,

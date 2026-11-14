@@ -36,6 +36,9 @@ function draft(shot){
   return drafts.get(shot.id);
 }
 async function quote(shot,d){
+  if(!sessionStorage.getItem(CAPABILITY_TOKEN_KEY)){
+    d.quote=null;d.error="This window is read-only. Open the writer’s board to review prices and prepare a request.";d.updateQuote?.();return;
+  }
   const version=d.quoteVersion=(d.quoteVersion||0)+1;
   try{const value=await footageAction("quote",{shot_id:shot.id,model:d.model,duration_seconds:d.length});if(version!==d.quoteVersion)return;d.quote=value;d.error="";}
   catch(error){if(version!==d.quoteVersion)return;d.quote=null;d.error=error.message;}
@@ -131,6 +134,9 @@ export function renderFootageControls(s){
 // Polling only observes. It never starts or retries a request.
 setInterval(async()=>{
   if(!project||!hooks||document.hidden||hooks.isRefreshing()||observing)return;
+  // Disk events already refresh idle boards. Poll only a dispatched job;
+  // merely reading a second window must not create a refresh feedback loop.
+  if(!(data?.shots||[]).some(shot=>shot.requests.some(request=>request.running)))return;
   observing=true;
   try{
     const response=await fetch(`/api/project/${encodeURIComponent(project)}/footage`);

@@ -14,6 +14,7 @@ and what remains Remotion-only.
 
 from __future__ import annotations
 
+from lib import programs
 import json
 import logging
 import os
@@ -231,11 +232,11 @@ class HyperFramesCompose(BaseTool):
     @classmethod
     def _node_major_version(cls) -> Optional[int]:
         """Return Node.js major version, or None if node isn't installed."""
-        node = shutil.which("node")
+        node = programs.which("node")
         if not node:
             return None
         try:
-            out = subprocess.run(
+            out = programs.run(
                 [node, "--version"], capture_output=True, text=True, timeout=5
             )
             if out.returncode != 0:
@@ -264,13 +265,13 @@ class HyperFramesCompose(BaseTool):
         if cls._npm_resolve_cache is not None:
             return cls._npm_resolve_cache
 
-        npm = shutil.which("npm")
+        npm = programs.which("npm")
         if not npm:
             cls._npm_resolve_cache = {"error": "npm not on PATH"}
             return cls._npm_resolve_cache
 
         try:
-            proc = subprocess.run(
+            proc = programs.run(
                 [npm, "view", cls._NPM_PACKAGE, "version"],
                 capture_output=True,
                 text=True,
@@ -314,13 +315,13 @@ class HyperFramesCompose(BaseTool):
         if cls._cli_probe_cache is not None:
             return cls._cli_probe_cache
 
-        npx = shutil.which("npx")
+        npx = programs.which("npx")
         if not npx:
             cls._cli_probe_cache = {"error": "npx not on PATH"}
             return cls._cli_probe_cache
 
         try:
-            proc = subprocess.run(
+            proc = programs.run(
                 [npx, "--yes", cls._NPM_PACKAGE, "doctor", "--json"],
                 capture_output=True,
                 text=True,
@@ -350,8 +351,8 @@ class HyperFramesCompose(BaseTool):
         can genuinely run end-to-end, not just that the local tooling exists.
         """
         node_major = self._node_major_version()
-        ffmpeg_ok = shutil.which("ffmpeg") is not None
-        npx_ok = shutil.which("npx") is not None
+        ffmpeg_ok = programs.which("ffmpeg") is not None
+        npx_ok = programs.which("npx") is not None
 
         reasons: list[str] = []
         if node_major is None:
@@ -1182,11 +1183,11 @@ class HyperFramesCompose(BaseTool):
         # On Windows, resolve the .cmd wrapper so subprocess can find it
         # without shell=True.
         if os.name == "nt":
-            resolved = shutil.which(cmd[0])
+            resolved = programs.which(cmd[0])
             if resolved:
                 cmd[0] = resolved
         try:
-            return subprocess.run(
+            return programs.run(
                 cmd,
                 capture_output=True,
                 text=True,

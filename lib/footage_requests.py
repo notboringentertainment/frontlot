@@ -266,6 +266,8 @@ def bound_for(inputs):
 
 
 def reserve_before_upload(root, tracker, inputs):
+    from lib.programs import preflight
+    preflight('ffprobe')
     from tools.base_tool import normalized_inputs_hash
     from tools.cost_tracker import reserve_paid_call
     auth = authorization(root, inputs)
@@ -522,6 +524,8 @@ def _apply_decision(root, shot_id, take_id, decision):
 
 
 def execute(root, identity):
+    from lib.programs import preflight
+    preflight('ffprobe')
     root = _root(root)
     require_trailer(root)
     with call_lock(root):

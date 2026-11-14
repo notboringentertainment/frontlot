@@ -1,4 +1,5 @@
 """Music controls use the existing audio boundary and existing signature gates."""
+from lib import programs
 import subprocess
 import sys
 import threading
@@ -70,7 +71,7 @@ def choose_file(*,kind='music'):
     if sys.platform!='darwin':raise ValueError('Audio file selection needs the Mac app. Open this board on the Mac running Front Lot.')
     try:
         prompt='Choose a sound effect for this trailer' if kind=='effect' else 'Choose music for this trailer'
-        result=subprocess.run(['/usr/bin/osascript','-e',f'POSIX path of (choose file with prompt "{prompt}" of type {{"public.audio"}})'],capture_output=True,text=True,timeout=120)
+        result=programs.run(['/usr/bin/osascript','-e',f'POSIX path of (choose file with prompt "{prompt}" of type {{"public.audio"}})'],capture_output=True,text=True,timeout=120)
     except (OSError,subprocess.TimeoutExpired):
         raise ValueError('The audio chooser could not finish. Choose a file again on the Mac running Front Lot.') from None
     if result.returncode:

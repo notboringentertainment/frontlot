@@ -13,6 +13,7 @@ Key use cases:
 
 from __future__ import annotations
 
+from lib import programs
 import json
 import re
 import shutil
@@ -97,7 +98,7 @@ class AudioEnergy(BaseTool):
     side_effects = []
 
     def get_status(self) -> ToolStatus:
-        if shutil.which("ffmpeg"):
+        if programs.which("ffmpeg"):
             return ToolStatus.AVAILABLE
         return ToolStatus.UNAVAILABLE
 
@@ -109,7 +110,7 @@ class AudioEnergy(BaseTool):
         if not input_path.exists():
             return ToolResult(success=False, error=f"File not found: {input_path}")
 
-        ffmpeg = shutil.which("ffmpeg")
+        ffmpeg = programs.which("ffmpeg")
         if not ffmpeg:
             return ToolResult(success=False, error="ffmpeg not found on PATH")
 
@@ -121,12 +122,12 @@ class AudioEnergy(BaseTool):
         # ------------------------------------------------------------------
         # Step 1: Get audio duration
         # ------------------------------------------------------------------
-        ffprobe = shutil.which("ffprobe")
+        ffprobe = programs.which("ffprobe")
         if not ffprobe:
             return ToolResult(success=False, error="ffprobe not found on PATH")
 
         try:
-            probe_result = subprocess.run(
+            probe_result = programs.run(
                 [
                     ffprobe, "-v", "quiet", "-print_format", "json",
                     "-show_format", str(input_path),
@@ -143,7 +144,7 @@ class AudioEnergy(BaseTool):
         # ------------------------------------------------------------------
         # ebur128 outputs momentary loudness (M:) every 100ms — very precise.
         try:
-            result = subprocess.run(
+            result = programs.run(
                 [
                     ffmpeg, "-i", str(input_path),
                     "-af", "ebur128",

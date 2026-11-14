@@ -1,4 +1,5 @@
 """One bounded, local speech-first path through the existing mixer."""
+from lib import programs
 import math
 from pathlib import Path
 import numpy as np
@@ -9,7 +10,7 @@ BLOCK=4800  # shared hundred-millisecond passages; placement stays sample-exact.
 
 def _run(args,**kw):
     import subprocess
-    return subprocess.run(args,capture_output=True,check=True,timeout=180,**kw)
+    return programs.run(args,capture_output=True,check=True,timeout=180,**kw)
 
 def write_audio(path,samples):
     _run(['ffmpeg','-v','error','-n','-f','f32le','-ar','48000','-ac','2','-i','pipe:0','-c:a','pcm_f32le',str(path)],input=np.asarray(samples,dtype='<f4').tobytes())

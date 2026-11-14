@@ -9,6 +9,7 @@ initialization and must continue the production even if it fails.
 
 from __future__ import annotations
 
+from lib import programs
 import argparse
 import os
 import socket
@@ -78,7 +79,7 @@ def _spawn_server(port: int) -> None:
     with server_log_path().open("a", encoding="utf-8") as log_file:
         kwargs["stdout"] = log_file
         kwargs["stderr"] = log_file
-        subprocess.Popen(cmd, **kwargs)
+        programs.Popen(cmd, **kwargs)
 
 
 def cmd_open(project_id: str | None) -> int:

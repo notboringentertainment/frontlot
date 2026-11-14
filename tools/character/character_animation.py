@@ -8,6 +8,7 @@ preview/review outputs.
 
 from __future__ import annotations
 
+from lib import programs
 import json
 import shutil
 import subprocess
@@ -68,7 +69,7 @@ def _normalize_style(style: Any) -> dict[str, Any]:
 
 
 def _render_preview_mp4(preview_path: Path, video_path: Path, duration_seconds: float, fps: int) -> None:
-    if shutil.which("ffmpeg") is None:
+    if programs.which("ffmpeg") is None:
         raise RuntimeError("ffmpeg is required to render preview MP4")
     try:
         from playwright.sync_api import sync_playwright
@@ -101,7 +102,7 @@ def _render_preview_mp4(preview_path: Path, video_path: Path, duration_seconds: 
         "yuv420p",
         str(video_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = programs.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "ffmpeg failed to render preview MP4")
 

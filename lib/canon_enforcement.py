@@ -21,6 +21,7 @@ present, so they do not reject the write.
 
 from __future__ import annotations
 
+from lib import programs
 import hashlib
 import json
 import re
@@ -637,14 +638,14 @@ def _verify_motion(path: Path, raw: str) -> None:
     medium: sample frames, compare neighbors, fail when the film is
     effectively a slideshow. Found the hard way — a 60s render whose frames
     were ~92% identical self-certified as a motion-led film."""
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = programs.which("ffmpeg")
     if ffmpeg is None:
         _fail(f"ffmpeg missing; cannot verify the motion promise on {raw!r}.")
 
     # Dependency-free: sample 2fps as raw 160x90 grayscale and diff the bytes.
     W, H = 160, 90
     try:
-        result = subprocess.run(
+        result = programs.run(
             [ffmpeg, "-v", "error", "-i", str(path),
              "-vf", f"fps=2,scale={W}:{H}",
              "-f", "rawvideo", "-pix_fmt", "gray", "-"],
@@ -718,14 +719,14 @@ def _verify_audio_signal(path: Path, raw: str) -> None:
     """A canon with protected lines promises AUDIBLE dialogue. The deliverable
     must carry an audio stream with real signal — a silent track passed every
     structural check in the shakedown until a human ear caught it."""
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = programs.which("ffmpeg")
     if ffmpeg is None:
         _fail(
             f"ffmpeg is not installed, so audio signal in render output {raw!r} "
             f"cannot be verified. The authored-canon profile fails closed."
         )
     try:
-        result = subprocess.run(
+        result = programs.run(
             [ffmpeg, "-v", "info", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
             capture_output=True,
             text=True,
@@ -757,7 +758,7 @@ def _verify_audio_signal(path: Path, raw: str) -> None:
 
 
 def _ffprobe_verify(path: Path, raw: str, output: dict[str, Any]) -> None:
-    ffprobe = shutil.which("ffprobe")
+    ffprobe = programs.which("ffprobe")
     if ffprobe is None:
         _fail(
             f"ffprobe is not installed, so render output {raw!r} cannot be "
@@ -765,7 +766,7 @@ def _ffprobe_verify(path: Path, raw: str, output: dict[str, Any]) -> None:
             f"ffmpeg/ffprobe before completing compose."
         )
     try:
-        result = subprocess.run(
+        result = programs.run(
             [
                 ffprobe, "-v", "error", "-print_format", "json",
                 "-show_format", "-show_streams", str(path),
