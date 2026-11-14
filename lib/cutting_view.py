@@ -28,8 +28,8 @@ def _frame(value,label):
     if type(value) is not int or value<0:raise ValueError(label+' must use non-negative whole frames.')
     return value
 
-def validate_cut(root,timeline,*,verify_files=False,release=False):
-    if not isinstance(timeline,dict) or set(timeline)!={'fps','picture','audio'} or type(timeline['fps']) is not int or timeline['fps']!=24:
+def validate_cut(root,timeline,*,verify_files=False,release=False,require_card_approval=True):
+    if not isinstance(timeline,dict) or set(timeline) not in ({'fps','picture','audio'},{'fps','picture','audio','cards'}) or type(timeline['fps']) is not int or timeline['fps']!=24:
         raise ValueError('Save picture and sound together at twenty-four frames per second.')
     if not isinstance(timeline['picture'],list) or not 1<=len(timeline['picture'])<=60 or not isinstance(timeline['audio'],list) or len(timeline['audio'])>24:
         raise ValueError('Use one to sixty picture clips and up to twenty-four sound clips.')
@@ -63,7 +63,9 @@ def validate_cut(root,timeline,*,verify_files=False,release=False):
     from lib.trailer_contract import require_contract
     if end>round(require_contract(root)['target_duration_seconds']*24)+1:raise ValueError('The cut exceeds this trailer’s signed target. Shorten it or review the target length first.')
     if any(r['start_frame']+r['duration_frames']>end for r in audio):raise ValueError('Sound ends after the picture. Trim it or extend the picture first.')
-    return {'fps':24,'picture':picture,'audio':audio,'cards':[]}
+    from lib.trailer_titles import validate_cards
+    cards=validate_cards(root,timeline.get('cards',[]),end,require_approval=require_card_approval)
+    return {'fps':24,'picture':picture,'audio':audio,'cards':cards}
 
 def editable(timeline,*,display=False):
     result={'fps':24,'picture':[],'audio':[]}
@@ -74,6 +76,9 @@ def editable(timeline,*,display=False):
                 defaults={'take_id':'','shot_id':'','start_frame':0,'source_in_frame':0,'source_out_frame':row.get('duration_frames',0),'level_db':-6,'fade_in_frames':0,'fade_out_frames':0}
                 result[kind].append({k:row.get(k,defaults[k]) for k in keys})
             else:result[kind].append({k:row[k] for k in keys})
+    if timeline.get('cards'):
+        from lib.trailer_titles import CARD_FIELDS
+        result['cards']=[{k:r[k] for k in CARD_FIELDS} for r in timeline['cards']]
     return result
 
 def save_cut(root,timeline,expected_revision):
@@ -81,7 +86,7 @@ def save_cut(root,timeline,expected_revision):
     # Audio freshness reads the current paper cut under its own edit lock.
     # Verify before acquiring the writer lock, then compare the revision while
     # holding it. Playback verifies all takes again before using any bytes.
-    validated=validate_cut(root,timeline,verify_files=True)
+    validated=validate_cut(root,timeline,verify_files=True,require_card_approval=False)
     with trailer_edit._edit_lock(root):
         old=trailer_edit._read_current(root);trailer_edit._expect(old,expected_revision)
         if old is None:raise ValueError('Save a checked paper cut before cutting takes.')
@@ -116,6 +121,12 @@ def render_preview(root,revision):
     directory=root/'artifacts'/'cut-previews'
     if directory.is_symlink():raise ValueError('Preview files must stay inside this production.')
     directory.mkdir(exist_ok=True);target=directory/(revision+'-'+uuid.uuid4().hex+'.mp4')
+    if timeline['cards']:
+        from lib.trailer_titles import render_layer
+        layer=render_layer(root,timeline['cards'],end,directory)
+        args+=['-i',str(layer)]
+        filters.append(f'[{base}][{index}:v]overlay=eof_action=pass:format=auto[titled]')
+        base='titled'
     args+=['-filter_complex',';'.join(filters),'-map',f'[{base}]']
     if sounds:args+=['-map','[sound]','-c:a','aac']
     args+=['-c:v','libx264','-pix_fmt','yuv420p','-r','24','-t',str(end/24),'-movflags','+faststart',str(target)]
