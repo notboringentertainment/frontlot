@@ -14,6 +14,8 @@ def test_chosen_story_bytes_replacement_and_real_signing(root,tmp_path,monkeypat
             page.goto(url)
             panel=page.get_by_role('region',name='Trailer story',exact=True)
             panel.get_by_label('Choose a text file',exact=True).set_input_files(str(original))
+            assert panel.get_by_label('Exact story text',exact=True).bounding_box()['width']>500
+            shot_picture(page,'source-file-panel',panel.get_by_role('heading').first)
             panel.get_by_role('button',name='Save story for review',exact=True).click()
             expect(panel.get_by_role('status')).to_contain_text('Saved')
             path=root/'sources/story'/(hashlib.sha256(raw).hexdigest()+'.txt')
