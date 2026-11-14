@@ -417,11 +417,15 @@ def poll_heygen(execution_id: str, api_key: str, timeout: int = 600) -> str:
     raise TimeoutError(f"HeyGen execution {execution_id} timed out after {timeout}s")
 
 
+def fal_api_key() -> str | None:
+    return (os.environ.get('FAL_KEY') or '').strip() or (os.environ.get('FAL_AI_API_KEY') or '').strip() or None
+
+
 def upload_image_fal(image_path: str) -> str:
     """Upload a local image to fal.ai storage and return a public URL."""
     import requests
 
-    api_key = os.environ.get("FAL_KEY") or os.environ.get("FAL_AI_API_KEY")
+    api_key = fal_api_key()
     if not api_key:
         raise RuntimeError("FAL_KEY or FAL_AI_API_KEY required for image upload")
 

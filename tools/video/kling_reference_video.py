@@ -39,7 +39,6 @@ ledger → terminal reservation. No retries on any paid path.
 
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -161,7 +160,8 @@ class KlingReferenceVideo(BaseTool):
     ]
 
     def _get_api_key(self) -> str | None:
-        return (os.environ.get("FAL_KEY") or '').strip() or (os.environ.get("FAL_AI_API_KEY") or '').strip() or None
+        from tools.video._shared import fal_api_key
+        return fal_api_key()
 
     def get_status(self) -> ToolStatus:
         return ToolStatus.AVAILABLE if self._get_api_key() else ToolStatus.UNAVAILABLE
