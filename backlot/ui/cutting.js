@@ -19,9 +19,10 @@ export function renderCutting(s,onSign){
  const url=`/api/project/${encodeURIComponent(s.project_id)}/cut`,node=el('section',{class:'paper-editor','aria-label':'Cutting view'}),message=el('p',{role:'status'}),body=el('div',{}),player=el('video',{controls:'',preload:'metadata',style:'width:100%;max-height:400px','aria-label':'Play saved cut'});
  let data,dirty=false,busy=false;
  let loading=false,lastSnapshot='';
+ const reviewNode=el('section',{class:'paper-panel',role:'region','aria-label':'Picture and sound check'});reviewNode.hidden=true;
  const gapNote=el('p',{'data-gap-note':'',role:'note'});
  const closeGaps=button('Close picture gaps',()=>{if(data.timeline.picture.some(r=>![r.source_in_frame,r.source_out_frame].every(Number.isInteger)||r.source_out_frame<=r.source_in_frame))throw Error('Fix the picture trims before closing gaps. No clip was moved.');let frame=0;for(const row of data.timeline.picture){row.start_frame=frame;frame+=row.source_out_frame-row.source_in_frame;}changed();draw();message.textContent='Picture gaps closed. Sound stays where you placed it; check its ending before saving.';});
- function clearPlayback(){player.pause();player.removeAttribute('src');player.load();}
+ function clearPlayback(){player.pause();player.onloadedmetadata=null;player.removeAttribute('src');player.load();reviewNode.replaceChildren();reviewNode.hidden=true;}
  function changed(){dirty=true;clearPlayback();updateGaps();}
  function updateGaps(){if(!data)return;let end=0,gaps=0;for(const r of data.timeline.picture){gaps+=Math.max(0,r.start_frame-end);end=r.start_frame+r.source_out_frame-r.source_in_frame;}closeGaps.disabled=gaps===0;gapNote.textContent=gaps?`Shortening or moving a picture leaves a gap: ${gaps} frames (${(gaps/24).toFixed(3)} seconds) of black. Press Close picture gaps to pull the pictures together. Sound will stay where you placed it.`:'No picture gaps.';}
  function numberField(box,row,key,label,subject,onChange=changed){
@@ -40,7 +41,29 @@ export function renderCutting(s,onSign){
  async function reopen(){data=await api();lastSnapshot=JSON.stringify(data);dirty=false;clearPlayback();draw();message.textContent=`Saved version ${data.number||1} opened. Saving or playing does not approve it.`;}
  async function refresh(){if(loading||dirty||busy||!data)return;loading=true;try{const next=await api(),key=JSON.stringify(next);if(dirty||busy)return;if(key!==lastSnapshot){data=next;lastSnapshot=key;clearPlayback();draw();message.textContent='The saved cut or its take decisions changed. Review any marked clip before saving or playing.';}}catch(e){message.textContent=e.message;}finally{loading=false;}}
  function identification(item){return el('div',{class:'cut-source'},item?.thumbnail?el('img',{src:item.thumbnail,alt:'Picture or waveform from this take',loading:'lazy',style:'width:160px;max-height:90px;object-fit:contain;background:#171716'}):null,el('p',{},item?.label||'Original take is no longer available. Choose a replacement below.'));}
+ function slider(box,label,value,min,max,step,onChange,words){
+  const input=el('input',{type:'range',min,max,step,'aria-label':label});input.value=value;
+  const output=el('span',{},words(value));input.oninput=()=>{const v=Number(input.value);output.textContent=words(v);onChange(v);changed();message.textContent='Unsaved changes. Save the cut before comparing or preparing playback.';};box.append(el('label',{},label,input,output));
+ }
+ function showReview(review){
+  reviewNode.hidden=false;reviewNode.replaceChildren(el('h3',{},'Measured from this preview file'),el('p',{},review.comparison==='before'?'Before matching and automatic balancing.':'Saved colour and speech-first sound.'));
+  for(const words of review.messages||[])reviewNode.append(el('p',{},words));
+  const figures=el('details',{},el('summary',{},'Measured figures'));
+  figures.append(el('p',{},review.integrated_lufs===null?'No integrated loudness could be measured.':`Overall loudness is ${review.integrated_lufs.toFixed(2)} LUFS; the target is about minus sixteen. LUFS describes perceived loudness.`),el('p',{},review.true_peak_dbtp===null?'No playback peak could be measured.':`Highest playback peak is ${review.true_peak_dbtp.toFixed(2)} dBTP; it must stay at or below minus one. This checks peaks between samples too.`));reviewNode.append(figures);
+ }
+ async function prepare(comparison='after',frame=0){
+  if(dirty)throw Error('Save the cut before comparing or preparing playback.');
+  const revision=data.revision;message.textContent='Preparing and measuring the saved picture and sound locally…';
+  const v=await api('/preview',{revision,comparison});
+  if(dirty||data.revision!==revision)throw Error('The cut changed while preparing playback. Save or reopen it before comparing again.');
+  player.onloadedmetadata=()=>{player.currentTime=frame/24;};player.src=v.url;showReview(v.review);
+  message.textContent=comparison==='before'?'Before colour and automatic balancing is ready. Play below, then compare the saved adjustments.':'Saved preview ready. Play, pause or seek below. The checks describe this file; nothing was approved.';
+  player.scrollIntoView({block:'center',behavior:'instant'});
+ }
  function draw(){body.replaceChildren();
+  data.timeline.mix ||= {speech_margin_db:12};
+  const mix=el('section',{class:'paper-panel'},el('h3',{},'Speech first'),el('p',{},'Music and effects are lowered together while words are spoken. You can still change each sound’s own level and fades. The local mix aims for ordinary stereo trailer loudness; every prepared file is measured.'));
+  slider(mix,'Space below speech',data.timeline.mix.speech_margin_db,6,24,1,v=>data.timeline.mix.speech_margin_db=v,v=>`Other sounds sit about ${v} decibels below speech. Listen to confirm every word is clear.`);body.append(mix);
   for(const kind of ['picture','audio']){
    const catalog=kind==='picture'?data.pictures:data.sounds,section=el('section',{class:'paper-panel'},el('h3',{},kind==='picture'?'Picture order and trims':'Layered sound'));
    const select=el('select',{'aria-label':kind==='picture'?'Kept picture take':'Kept sound take'});
@@ -56,6 +79,13 @@ export function renderCutting(s,onSign){
     const item=data.clips?.[kind]?.find(c=>c.take_id===row.take_id)||catalog.find(c=>c.take_id===row.take_id);
     const box=el('div',{class:'paper-panel','data-cut-kind':kind},el('h4',{},`${kind==='picture'?'Picture':'Sound'} ${i+1}`),identification(item));
     if(item?.problem)box.append(el('p',{role:'alert'},item.problem));
+    if(kind==='picture'){
+     row.colour ||= {brightness:0,warmth:0,contrast:0,colour:0};
+     const colour=el('section',{'data-colour-picture':i+1},el('h4',{},'Match this picture'),el('p',{},'These adjustments change only this placement. Start with five to twenty points for a small change; around fifty is strong. Each control changes the picture differently, so compare before and after. They cannot repair a changing face.'));
+     for(const [key,label,positive,negative] of [['brightness','Brighter or darker','brighter','darker'],['warmth','Warmer or cooler','warmer','cooler'],['contrast','More or less contrast','more contrast','less contrast'],['colour','More or less colour','more colour','less colour']])slider(colour,`${label} for picture ${i+1}`,row.colour[key],-100,100,5,v=>row.colour[key]=v,v=>v===0?'Unchanged':`${Math.abs(v)} points ${v>0?positive:negative}`);
+     const reset=button('Reset this picture',()=>{row.colour={brightness:0,warmth:0,contrast:0,colour:0};changed();draw();message.textContent=`Picture ${i+1} reset to its original look. Save the cut before comparing again.`;});reset.setAttribute('aria-label',`Reset picture ${i+1}`);
+     colour.append(reset,button(`Compare picture ${i+1} before`,()=>prepare('before',row.start_frame)),button(`Compare picture ${i+1} after`,()=>prepare('after',row.start_frame)));box.append(colour);
+    }
     const fields=[['Starts at frame','start_frame'],['Source in frame','source_in_frame'],['Source out frame','source_out_frame'],...(kind==='audio'?[['Level in decibels','level_db'],['Fade in frames','fade_in_frames'],['Fade out frames','fade_out_frames']]:[])];
     for(const [label,key] of fields)numberField(box,row,key,label,`${kind} ${i+1}`);
     const replacement=el('select',{'aria-label':`Replacement for ${kind} ${i+1}`});catalog.forEach((c,index)=>replacement.append(el('option',{value:index},c.label)));
@@ -102,6 +132,6 @@ export function renderCutting(s,onSign){
  }
  node.append(el('h2',{},'Cutting view'),el('p',{},'Build from kept takes. Enter seconds or frames: seconds are rounded to the nearest whole frame and shown back to you. Twenty-four frames make one second. Picture clips cannot overlap; sounds can. Generated music remains for the test trailer only. This is a local rough preview, not an approved or release-ready file.'),message,player,
  button('Reopen saved cut',reopen),button('Save cut',async()=>{message.textContent='Checking the kept takes and saving this cut…';data=await api('',{timeline:data.timeline,revision:data.revision});lastSnapshot=JSON.stringify(data);dirty=false;clearPlayback();draw();message.textContent=`Version ${data.number} saved. Nothing was approved.`;}),
- button('Prepare saved playback',async()=>{if(dirty)throw Error('Save the cut before preparing playback.');message.textContent='Preparing picture and layered sound locally…';const v=await api('/preview',{revision:data.revision});player.src=v.url;message.textContent='Saved preview ready. Play, pause or seek below. This is not final approval.';}),gapNote,closeGaps,body);
+ button('Prepare saved playback',()=>prepare()),button('Compare before colour and mix',()=>prepare('before')),reviewNode,gapNote,closeGaps,body);
  active={id:s.project_id,node,refresh,reopen};reopen().catch(e=>message.textContent=e.message);return node;
 }
