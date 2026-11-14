@@ -43,12 +43,12 @@ def test_slow_helper_handles_very_long_temporary_location(tmp_path,monkeypatch):
     test_slow_broker_hello_is_unavailable_not_an_unhandled_timeout(nested,monkeypatch)
 
 def test_browser_signing_uses_short_system_temp_even_with_a_long_app_home(tmp_path,monkeypatch):
-    import os
+    import os,tempfile
     from tests.backlot.test_voice_panel_browser import short_signing_folder
     nested=tmp_path/('long-app-home-'*12);nested.mkdir()
     monkeypatch.setenv('OPENMONTAGE_HOME',str(nested))
     short_signing_folder.__wrapped__(monkeypatch,None)
-    assert Path(os.environ['OPENMONTAGE_GATES_DIR']).parent.resolve()==Path('/tmp').resolve()
+    assert Path(os.environ['OPENMONTAGE_GATES_DIR']).parent.resolve()==Path(tempfile.gettempdir()).resolve()
 
 @pytest.mark.parametrize('temporary',['/tmp','/private/tmp','/var/folders/t7/invented/T'])
 def test_resolved_locations_accept_default_named_and_mac_temporary_roots(tmp_path,monkeypatch,temporary):

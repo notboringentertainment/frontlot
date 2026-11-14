@@ -1,6 +1,7 @@
 // Front Lot film board (the cutting room) — renders BoardState and stays live via SSE.
 
 import { renderPaperCut } from "/ui/trailer.js";
+import {renderStory,renderStorySigning} from '/ui/story.js';
 import {renderVoice,renderAudioSigning,applySignedAccountOutcome} from '/ui/voice.js';
 import {renderCutting,refreshCutting,renderCardSigning} from '/ui/cutting.js';
 import {renderDelivery,renderDeliverySigning,refreshDelivery} from '/ui/delivery.js';
@@ -189,7 +190,7 @@ async function signingStopped(request,message){
     try{await finishSignedRequest(request);}
     catch(error){
       if(gateSession.signingRequest===request&&!terminalShell.hidden){
-        setTerminalStatus('Account review needs you',error.message+' Try signing again if nothing was signed.','warn');renderSignPanel();
+        setTerminalStatus('Account review needs you',error.message,'warn');renderSignPanel();
       }
     }
   }
@@ -207,7 +208,8 @@ function onSignerTag(tag) {
     gateSession.inputReady = false;
     const [label, message, tone] = OUTCOME_WORDS[tag.outcome] || OUTCOME_WORDS.error;
     setTerminalStatus(label, message || tag.message || "The signing program stopped.", tone);
-    if(state?.is_trailer&&tag.outcome==='approved')finishSignedRequest(gateSession.signingRequest).catch(error=>signingStopped(gateSession.signingRequest,error.message));
+    const request=gateSession.signingRequest;
+    if(state?.is_trailer&&tag.outcome==='approved')finishSignedRequest(request).catch(error=>signingStopped(request,error.message));
   } else if (tag.ask === "note" && gateSession.note !== null && noteFits(gateSession.note, tag)) {
     const note = gateSession.note;
     gateSession.note = null;
@@ -328,7 +330,8 @@ function renderSignPanel() {
       el("p", { class: "sign-done-word" }, word),
       el("p", { class: "sign-done-line" }, terminalMessage.textContent || line),
       el("button", { type: "button", class: "quiet-btn", onclick: closeSigning }, "Close"))];
-    if(gateSession.outcome==='error')kids.push(el('button',{type:'button',class:'quiet-btn',onclick:()=>startSigning(gateSession.requestId)},'Try signing again'));
+    const retry=gateSession.signingRequest;
+    if(gateSession.outcome==='error'&&retry)kids.push(el('button',{type:'button',class:'quiet-btn',onclick:()=>startSigning(retry.id,retry)},'Try signing again'));
   } else if (gateSession.appView && gateSession.ask) {
     kids = askView(gateSession.ask);
   } else if (!gateSession.textFallback || gateSession.appView) {
@@ -1439,6 +1442,7 @@ function focusGateDetail(preferHeading = false) {
 }
 
 async function selectGate(requestId, { background = false } = {}) {
+  if(!background&&gateSession.requestId!==requestId&&gateSession.outcome)closeSigning();
   if(!background)trailerWorkbenchChosen=false;
   const generation = ++gateSelectionGeneration;
   if (gateDetailController) gateDetailController.abort();
@@ -1606,8 +1610,15 @@ function websocketCloseMessage(code, reason) {
   return ["Disconnected", reason || `The signing connection closed (${code}).`, "warn"];
 }
 
-function startSigning(requestId) {
+async function startSigning(requestId, retry=null) {
   if (gateSession.socket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(gateSession.socket.readyState)) return;
+  if(retry&&retry.id!==requestId)return;
+  if(gateDetail?.request?.request_id!==requestId){
+    await selectGate(requestId);
+    if(gateDetail?.request?.request_id!==requestId)return;
+  }
+  const header=gateDetail.request;
+  const signingRequest=Object.freeze({id:requestId,kind:header.kind,scope:header.scope,stage:header.stage,entity:header.entity_id});
   let token = null;
   try {
     token = sessionStorage.getItem(CAPABILITY_TOKEN_KEY);
@@ -1631,9 +1642,7 @@ function startSigning(requestId) {
   socket.binaryType = "arraybuffer";
   gateSession.socket = socket;
   gateSession.requestId = requestId;
-  const header=gateDetail?.request;
-  gateSession.signingRequest=Object.freeze({id:requestId,kind:header?.kind,scope:header?.scope,entity:header?.entity_id});
-  const signingRequest=gateSession.signingRequest;
+  gateSession.signingRequest=signingRequest;
   gateSession.refreshedPacketError=true;
   gateSession.inputReady = false;
   gateSession.receivedRefresh = false;
@@ -1819,7 +1828,8 @@ const GATE_WORDS = {
   footage_take: "Review this take",
   trailer_card: "Review exact card words",
 };
-const gateWords = (kind,row={}) => kind==='artifact_review'&&row.scope==='trailer-stage' ? row.stage==='edit'?'Sign the rough cut':'Approve the final file' : kind==='config' && row.scope==='audio:project_config' ? 'Review audio prices and permissions' : state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
+const storyGate=row=>row.kind==='artifact_review'&&row.stage==='canon_ingest'&&row.scope==='trailer-stage';
+const gateWords = (kind,row={}) => storyGate({...row,kind}) ? 'Review this story' : kind==='artifact_review'&&row.scope==='trailer-stage' ? row.stage==='edit'?'Sign the rough cut':'Approve the final file' : kind==='config' && row.scope==='audio:project_config' ? 'Review audio prices and permissions' : state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
 
 const SLOT_OF_KIND = {
   look_lock: "look",
@@ -2516,6 +2526,7 @@ function renderGateViewer(s) {
   const header = summary || gateDetail.request || {};
   const stale = !summary || summary.state !== "pending" || gateDetail.state !== "pending";
   const packetError = Boolean(gateDetail.error || (gateDetail.packet && gateDetail.packet.packet_error));
+  if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&header.stage==='canon_ingest')return renderStorySigning(gateDetail,gateActions(s,summary,stale,packetError),()=>{selectedGateId=null;gateDetail=null;trailerWorkbenchChosen=true;closeSigning();render();},stale);
   if(header.kind==='trailer_card')return renderCardSigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;await refreshCutting();render();});
   if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&['edit','compose'].includes(header.stage))return renderDeliverySigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();await refreshDelivery();});
   const footageResolution=header.kind==='audio_resolution'&&gateDetail.request?.approval_record?.request?.provider==='fal';
@@ -2968,13 +2979,15 @@ function renderBoard() {
 
   const viewer = el("main", { class: "viewer", id: "viewer", tabindex: "-1", "aria-label": "Viewer" });
   if(s.is_trailer && !s.trailer_damaged && !selectedGateId)viewer.append(el('nav',{class:'voice-workspace-nav','aria-label':'Trailer workspaces'},
-    el('button',{type:'button',onclick:()=>viewer.querySelector('.paper-editor:not(.voice-panel)')?.scrollIntoView({block:'start'})},'Paper cut workspace'),
+    el('button',{type:'button',onclick:()=>viewer.querySelector('.story-panel')?.scrollIntoView({block:'start'})},'Story workspace'),
+    el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Trailer paper cut"]')?.scrollIntoView({block:'start'})},'Paper cut workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('.voice-lines')?.scrollIntoView({block:'start'})},'Voice workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('#music-compose')?.scrollIntoView({block:'start'})},'Music workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('#effect-compose')?.scrollIntoView({block:'start'})},'Sound effects workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Cutting view"]')?.scrollIntoView({block:'start'})},'Cutting workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Trailer delivery"]')?.scrollIntoView({block:'start'})},'Delivery workspace')));
   const drawer = renderDrawer(s);
+  if(s.is_trailer&&!s.trailer_damaged&&!selectedGateId){const story=renderStory(s,async(id)=>{await refresh();await selectGate(id);});if(story)viewer.append(story);}
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(
     el("button",{type:"button",class:"quiet-btn",onclick:()=>viewer.querySelector('[aria-label="Footage workspace"]')?.scrollIntoView({block:"start"})},"Open footage requests"),renderPaperCut(s));
 
