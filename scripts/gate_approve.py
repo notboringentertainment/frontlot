@@ -1970,6 +1970,9 @@ def _complete_done(req_path: Path, root: Path, current: dict, receipt_id: str) -
     done = root / REQUEST_DIRNAME / "done"
     done.mkdir(parents=True, exist_ok=True)
     atomic_move(req_path, _confined(done / req_path.name, root))
+    if current.get('kind') in ('audio_take','footage_take','config'):
+        from lib.trailer_records import after_signature
+        after_signature(root,current['kind'])
 
 
 def _decide(

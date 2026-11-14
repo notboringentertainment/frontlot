@@ -84,3 +84,55 @@ def sync_paper(root):
         _publish(root,'script','script',script)
         _publish(root,'scene_plan','scene_plan',plan)
         _settings_decision(root,settings)
+
+
+def sync_media(root):
+    """Only currently kept, verified takes enter the canonical media facts."""
+    from lib import audio_workspace as audio,footage_requests as footage
+    root=Path(root)
+    directory=validate_output_parent(root/'artifacts',root)
+    with validate_output_parent(directory/'.canonical-records.lock',root).open('a') as stream:
+        fcntl.flock(stream,fcntl.LOCK_EX)
+        rows=receipts.chained_rows(root,'approval')
+        sources={}
+        for row in rows:
+            kind=row.get('kind');record=row.get('record') or {};take=record.get('take') or {}
+            if kind not in ('audio_take','footage_take'):continue
+            identity=take.get('id') if kind=='audio_take' else take.get('take_id')
+            if identity:sources[(kind,identity)]=row
+        assets=[];kept=[];unusable=[]
+        for (kind,identity),row in sources.items():
+            record=row['record'];candidate=record['take']
+            if kind=='audio_take':
+                take=audio.read(root,identity);state=audio.take_state(root,take)
+            else:
+                state=footage.take_state(root,record['shot_id'],identity)
+                take=footage._take(root,record['shot_id'],identity)
+            if state!='Accepted':
+                unusable.append({'take_id':identity,'state':state});continue
+            take=audio.require_accepted(root,identity) if kind=='audio_take' else footage.require_accepted(root,record['shot_id'],identity)
+            if take!=candidate:raise ValueError('A kept take differs from its signed decision. Restore the exact take or review a new one.')
+            if kind=='audio_take':
+                asset={'id':identity,'type':{'speech':'narration','music':'music','effect':'sfx'}[take['kind']],
+                       'path':take['path'],'scene_id':'','source_tool':'elevenlabs_audio' if take['origin']=='generated' else 'file_import',
+                       'duration_seconds':take['duration_seconds']}
+                if take['origin']=='imported':asset['license']=take['licence_note']
+            else:
+                asset={'id':identity,'type':'video','path':take['path'],'scene_id':record['shot_id'],
+                       'source_tool':'kling_reference_video','duration_seconds':take['duration_seconds'],
+                       'cost_usd':take['cost_usd']}
+            assets.append(asset)
+            kept.append({'take':take,'approval_receipt_id':row['receipt_id']})
+        artifact={'version':'1.0','assets':assets,'metadata':{'take_records':kept,'unusable_takes':unusable,
+            'signed_settings':_settings(root),'approval':'These are verified take decisions. No media stage is approved.'}}
+        _publish(root,'assets','asset_manifest',artifact)
+
+
+def after_signature(root,kind):
+    """Projection only, after the existing receipt and request have committed."""
+    from lib.trailer_contract import signed_trailer_pin
+    if signed_trailer_pin(root) is None:return
+    if kind in ('audio_take','footage_take'):sync_media(root)
+    elif kind=='config':
+        sync_paper(root)
+        _settings_decision(Path(root),_settings(root))
