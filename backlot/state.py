@@ -1687,20 +1687,24 @@ def _render_audio_spend(root: Path, req: dict[str, Any]) -> dict[str, Any]:
         return {'packet_error':True,'error':'The signed spending settings cannot be verified. Review them before making this take.'}
     warning=('The remaining production ceiling no longer covers this request. Review held charges or prepare a new request before making a take.'
              if record['max_cash_usd']+record['max_credits_usd']>remaining else None)
-    return {"summary": req.get("summary"), "record": record,'remaining_usd':remaining,'budget_warning':warning}
+    from lib.story_ingest import source_warning
+    return {"summary": req.get("summary"), "record": record,'remaining_usd':remaining,'budget_warning':warning,
+            'source_warning':source_warning(root,record['prompt']) if record['kind']=='speech' else None}
 
 
 def _render_text_only(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     """Text-only kinds: no constructor source cites a required visual asset id."""
     if req.get('kind')=='artifact_review' and req.get('scope')=='trailer-stage' and req.get('stage')=='canon_ingest':
-        from lib.story_ingest import material
-        from lib.pathsafe import resolve_input
+        from lib.story_ingest import material,story_json,UNREADABLE
+        from lib.pathsafe import PathSafetyError
         try:
             from lib.trailer_contract import approval_record,signed_trailer_pin
-            cp=json.loads(resolve_input('checkpoint_canon_ingest.json',root).read_text())
+            cp=story_json(root,'checkpoint_canon_ingest.json')
+            material(root,cp['artifacts']['canon_packet'])
             record=approval_record(root,signed_trailer_pin(root),'canon_ingest',cp['artifacts'])
             if req.get('approval_record')!=record:raise ValueError('The story changed. Save and review its new signing request.')
             return {'story':material(root)}
+        except (PathSafetyError,OSError,KeyError,TypeError,AttributeError,UnicodeError,json.JSONDecodeError):return {'packet_error':True,'error':UNREADABLE}
         except ValueError as exc:return {'packet_error':True,'error':str(exc)}
     excluded = {"approval_record", "envelope"}
     request = {k: v for k, v in req.items() if k not in excluded and k != "preview_paths"}
