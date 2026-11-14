@@ -7,6 +7,7 @@ and reassembled into the output file.
 
 from __future__ import annotations
 
+from lib import programs
 import shutil
 import tempfile
 import time
@@ -340,7 +341,7 @@ class Upscale(BaseTool):
         """Extract frame rate from video using ffprobe."""
         import json
 
-        if not shutil.which("ffprobe"):
+        if not programs.which("ffprobe"):
             return 30.0  # safe default
 
         try:

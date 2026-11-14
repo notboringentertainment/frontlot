@@ -1,4 +1,5 @@
 """Exact, locally typeset cards using the existing signed gate and edit history."""
+from lib import programs
 import copy
 import io
 import hashlib
@@ -157,7 +158,7 @@ def renderer_configuration():
         cache=Path(os.environ.get('PLAYWRIGHT_BROWSERS_PATH',Path.home()/'Library/Caches/ms-playwright'))
         candidates+=sorted(cache.glob('chromium-*/chrome-mac-*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'))
         browser=next((str(p) for p in candidates if p.is_file()),None)
-    if not shutil.which('node') or not (modules/'@remotion'/'renderer').is_dir() or not browser or not Path(browser).is_file():
+    if not programs.which('node') or not (modules/'@remotion'/'renderer').is_dir() or not browser or not Path(browser).is_file():
         raise ValueError('Local title playback needs the installed Remotion tools and browser. Nothing was sent or spent; restore the local renderer before preparing playback.')
     return modules,browser
 
@@ -171,7 +172,7 @@ def render_layer(root,cards,end,directory):
     with request.open('x') as f:json.dump(props,f,ensure_ascii=False)
     output=job/'cards.mov'
     args=['node',str(REPO_ROOT/'remotion-composer'/'render-trailer-cards.mjs'),str(modules),str(browser),str(request),str(output),str(job/'bundle')]
-    try:subprocess.run(args,capture_output=True,check=True,timeout=240)
+    try:programs.run(args,capture_output=True,check=True,timeout=240)
     except (OSError,subprocess.SubprocessError) as error:
         with (job/'renderer-diagnostic.txt').open('x') as f:f.write(str(error)+'\n'+str(getattr(error,'stderr',b'').decode(errors='replace')))
         raise ValueError('The local title renderer could not prepare these cards. Nothing was sent or spent. Keep the saved cut and check the local renderer before trying again.') from None

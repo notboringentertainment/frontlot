@@ -61,7 +61,7 @@ def test_new_rejected_balanced_file_is_not_kept_as_a_movie(media,monkeypatch):
     root,shot,*_=real_media(media)
     saved=c.save_cut(root,cut(shot),e.read_revision(root)['edit_revision_sha256']);original=subprocess.run
     def amplify(args,*a,**kw):
-        if args[0]=='ffmpeg' and '-c:v' in args and 'libx264' in args:
+        if __import__('pathlib').Path(args[0]).name=='ffmpeg' and '-c:v' in args and 'libx264' in args:
             args=[*args[:-1],'-af','volume=24dB',args[-1]]
         return original(args,*a,**kw)
     monkeypatch.setattr(subprocess,'run',amplify)

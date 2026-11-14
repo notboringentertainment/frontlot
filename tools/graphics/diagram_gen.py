@@ -7,6 +7,7 @@ diagrams via Pillow as fallback.
 
 from __future__ import annotations
 
+from lib import programs
 import json
 import shutil
 import time
@@ -109,7 +110,7 @@ class DiagramGen(BaseTool):
         return ToolStatus.UNAVAILABLE
 
     def _has_mermaid(self) -> bool:
-        return shutil.which("mmdc") is not None
+        return programs.which("mmdc") is not None
 
     def _has_pillow(self) -> bool:
         try:

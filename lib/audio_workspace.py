@@ -1,4 +1,5 @@
 """Local voice/music takes. Paid submissions still belong to the audio boundary."""
+from lib import programs
 import hashlib
 import json
 import os
@@ -444,7 +445,7 @@ def approved_source_request(root,take):
 
 def probe_audio(path,maximum=120):
     import math,subprocess
-    r=subprocess.run(['ffprobe','-v','error','-select_streams','a:0','-show_entries','stream=codec_name:format=duration','-of','json',str(path)],capture_output=True,text=True,check=True,timeout=15)
+    r=programs.run(['ffprobe','-v','error','-select_streams','a:0','-show_entries','stream=codec_name:format=duration','-of','json',str(path)],capture_output=True,text=True,check=True,timeout=15)
     info=json.loads(r.stdout);seconds=float(info['format']['duration'])
     if not info.get('streams') or not math.isfinite(seconds) or seconds<=0 or (maximum is not None and seconds>maximum):
         raise ValueError('The take is not supported playable audio within its duration limit.')

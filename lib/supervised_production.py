@@ -5,6 +5,7 @@ verification, provider submissions, generation receipts and reconciliation.
 """
 from __future__ import annotations
 
+from lib import programs
 import json
 import math
 import re
@@ -207,7 +208,7 @@ def attach(root, shot_id, source, *, user_note, cost_usd=None, provider_job_id=N
     footage_receipt = None
     duration = None
     if source.suffix.lower() in {'.mp4', '.mov', '.webm', '.mkv'}:
-        probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+        probe = programs.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
                                 '-of', 'json', str(source)], capture_output=True, text=True, check=True)
         duration = float(json.loads(probe.stdout)['format']['duration'])
         _number(duration, 'duration')
