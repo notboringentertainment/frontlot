@@ -1,6 +1,7 @@
 import {el,CAPABILITY_TOKEN_KEY} from '/ui/lib.js';
 let active=null;
 const reviews=new Map();
+export function refreshDelivery(){return active?.refresh(true);}
 
 export function renderDeliverySigning(detail,actions,onReturn){
  const id=detail.request_id,packet=detail.packet||{};
@@ -24,10 +25,10 @@ export function renderDeliverySigning(detail,actions,onReturn){
 export function renderDelivery(s,onSign){
  if(active?.id===s.project_id){active.refresh();return active.node;}
  const base=`/api/project/${encodeURIComponent(s.project_id)}/delivery`,node=el('section',{class:'paper-editor',role:'region','aria-label':'Trailer delivery'}),message=el('p',{role:'status'},'Checking the saved cut and its signed takes…'),body=el('div',{});
- let data,busy=false,loading=false,key='';
- async function api(path='',value){const r=await fetch(base+path,value===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify(value)});const v=await r.json();if(!r.ok)throw Error(v.detail||'Reopen the saved delivery controls and try again.');return v;}
+ let data,busy=false,loading=false,pendingRefresh=false,key='';
+ async function api(path='',value){const r=await fetch(base+path,value===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify(value)});const v=await r.json();if(!r.ok)throw Error(v.detail||'Reopen the saved delivery controls and try again.');return v;}
  function button(label,fn,disabled=false){return el('button',{type:'button',disabled:disabled?'':null,onclick:async()=>{if(busy)return;busy=true;try{await fn();}catch(e){message.textContent=e.message;}finally{busy=false;await refresh(true);}}},label);}
- async function refresh(force=false){if(loading||busy&&!force)return;loading=true;try{const next=await api(),encoded=JSON.stringify(next);if(encoded!==key){data=next;key=encoded;draw();}}catch(e){message.textContent=e.message;for(const v of node.querySelectorAll('video')){v.pause();v.removeAttribute('src');v.load();}for(const b of body.querySelectorAll('button'))b.disabled=true;}finally{loading=false;}}
+ async function refresh(force=false){if(loading||busy&&!force){pendingRefresh=true;return;}loading=true;pendingRefresh=false;try{const next=await api(),encoded=JSON.stringify(next);if(encoded!==key){data=next;key=encoded;draw();}}catch(e){message.textContent=e.message;for(const v of node.querySelectorAll('video')){v.pause();v.removeAttribute('src');v.load();}for(const b of body.querySelectorAll('button'))b.disabled=true;}finally{loading=false;if(pendingRefresh&&!busy){pendingRefresh=false;void refresh();}}}
  function draw(){body.replaceChildren();
   body.append(el('p',{},`Saved version ${data.number}. Delivery uses this saved cut, including its colour, sound and signed cards. Save any editing changes before reviewing it.`),
    el('h3',{},'Rough-cut approval'),el('p',{},data.rough_status),

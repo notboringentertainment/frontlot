@@ -3,7 +3,7 @@
 import { renderPaperCut } from "/ui/trailer.js";
 import {renderVoice,renderAudioSigning} from '/ui/voice.js';
 import {renderCutting,refreshCutting,renderCardSigning} from '/ui/cutting.js';
-import {renderDelivery,renderDeliverySigning} from '/ui/delivery.js';
+import {renderDelivery,renderDeliverySigning,refreshDelivery} from '/ui/delivery.js';
 import { setFootageState, renderFootageControls, afterFootageSignature, footageDecision } from "/ui/footage.js";
 import { mountSession } from "/ui/session.js";
 import {
@@ -1772,7 +1772,7 @@ const GATE_WORDS = {
   footage_take: "Review this take",
   trailer_card: "Review exact card words",
 };
-const gateWords = (kind,row={}) => kind==='config' && row.scope==='audio:project_config' ? 'Review audio prices and permissions' : state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
+const gateWords = (kind,row={}) => kind==='artifact_review'&&row.scope==='trailer-stage' ? row.stage==='edit'?'Sign the rough cut':'Approve the final file' : kind==='config' && row.scope==='audio:project_config' ? 'Review audio prices and permissions' : state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
 
 const SLOT_OF_KIND = {
   look_lock: "look",
@@ -2464,7 +2464,7 @@ function renderGateViewer(s) {
   const stale = !summary || summary.state !== "pending" || gateDetail.state !== "pending";
   const packetError = Boolean(gateDetail.error || (gateDetail.packet && gateDetail.packet.packet_error));
   if(header.kind==='trailer_card')return renderCardSigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;await refreshCutting();render();});
-  if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&['edit','compose'].includes(header.stage))return renderDeliverySigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;await refreshCutting();render();});
+  if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&['edit','compose'].includes(header.stage))return renderDeliverySigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;await refreshCutting();await refreshDelivery();render();});
   if((['audio_spend','audio_take','audio_resolution'].includes(header.kind)&&!gateDetail.packet?.footage_resolution)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError,gateDetail.packet?.budget_warning),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();},stale);
   let frames = gateFrames(gateDetail.packet);
   const key = entityKeyOf(header);
@@ -2640,7 +2640,7 @@ function renderLog(s, roster) {
         class: "need",
         type: "button",
         "aria-current": selectedGateId === row.request_id ? "true" : null,
-        "aria-label": ["footage_spend","footage_take","trailer_card"].includes(row.kind) || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind)}` : `Inspect ${row.kind} gate ${row.request_id}`,
+        "aria-label": ["footage_spend","footage_take","trailer_card"].includes(row.kind) || row.kind==='artifact_review'&&row.scope==='trailer-stage' || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind,row)}` : `Inspect ${row.kind} gate ${row.request_id}`,
         onclick: () => { selectedEntity = key; selectGate(row.request_id); },
       },
         el("span", { class: "what" }, gateWords(row.kind,row)),
@@ -2662,7 +2662,7 @@ function renderLog(s, roster) {
           el("button", {
             class: "text",
             type: "button",
-            "aria-label": ["footage_spend","footage_take","trailer_card"].includes(row.kind) || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind)}` : `Inspect ${row.kind} gate ${row.request_id}`,
+            "aria-label": ["footage_spend","footage_take","trailer_card"].includes(row.kind) || row.kind==='artifact_review'&&row.scope==='trailer-stage' || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind,row)}` : `Inspect ${row.kind} gate ${row.request_id}`,
             onclick: () => { selectedEntity = entityKeyOf(row); selectGate(row.request_id); },
           }, logLine(row, roster)),
           el("small", {}, `${row.state === "done" ? "Signed" : row.state === "declined" ? "Declined" : "Dropped"} · ${fmtGateTime(row.mtime)}`)))));
@@ -2918,7 +2918,8 @@ function renderBoard() {
     el('button',{type:'button',onclick:()=>viewer.querySelector('.voice-lines')?.scrollIntoView({block:'start'})},'Voice workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('#music-compose')?.scrollIntoView({block:'start'})},'Music workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('#effect-compose')?.scrollIntoView({block:'start'})},'Sound effects workspace'),
-    el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Cutting view"]')?.scrollIntoView({block:'start'})},'Cutting workspace')));
+    el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Cutting view"]')?.scrollIntoView({block:'start'})},'Cutting workspace'),
+    el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Trailer delivery"]')?.scrollIntoView({block:'start'})},'Delivery workspace')));
   const drawer = renderDrawer(s);
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(
     el("button",{type:"button",class:"quiet-btn",onclick:()=>viewer.querySelector('[aria-label="Footage workspace"]')?.scrollIntoView({block:"start"})},"Open footage requests"),renderPaperCut(s));

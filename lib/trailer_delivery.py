@@ -154,14 +154,31 @@ def export(root,revision):
         'verification_notes':warnings,'metadata':{'delivery_id':identity,'measurements_sha256':record_sha256(measured),'test_only':test_only}}
     from schemas.artifacts import validate_artifact
     validate_artifact('render_report',report);validate_artifact('final_review',review)
+    value={'id':identity,'render_report':report,'final_review':review}
+    from datetime import datetime,timezone
+    now=datetime.now(timezone.utc).isoformat()
+    # Receipt the local render RECORD, not the movie's content provenance.
+    # Identical movie bytes can belong to distinct numbered export records.
+    made=receipts.record_generation(root,execution_id=identity,tool='trailer_delivery_record',
+        normalized_inputs_hash=revision,output_sha256=record_sha256(value),cost_usd=0,
+        started_at=now,finished_at=now,generator_kind='local',local_tool='ffmpeg-remotion',
+        local_tool_version='trailer-delivery-1',parameters_hash=record_sha256(saved['timeline']))
+    value['generation_receipt_id']=made['receipt_id']
     os.link(target,output)
-    _publish(job/'complete.json',{'id':identity,'render_report':report,'final_review':review})
+    _publish(job/'complete.json',value)
     return read_export(root,identity)
 
 def read_export(root,identity):
     root=Path(root);job=_job(root,identity)
     record=json.loads(resolve_input(str((job/'complete.json').relative_to(root)),root).read_text())
     if record.get('id')!=identity:raise ValueError(CHANGED)
+    try:
+        value={k:record[k] for k in ('id','render_report','final_review')}
+        made=receipts.find_generation_by_id(root,record.get('generation_receipt_id'),output_sha256=record_sha256(value))
+        if (not made or made.get('tool')!='trailer_delivery_record' or made.get('generator_kind')!='local'
+            or made.get('normalized_inputs_hash')!=record['render_report']['edit_revision_sha256']):raise ValueError()
+    except (KeyError,TypeError,ValueError):
+        raise ValueError('This local render record is missing or changed. Make a fresh final file; an editable report cannot approve a different cut.') from None
     return record
 
 def _artifacts(root,identity,*,remeasure=False):

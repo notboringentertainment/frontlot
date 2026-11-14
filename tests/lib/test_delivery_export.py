@@ -72,14 +72,27 @@ def test_export_cannot_be_approved_as_a_later_cut(delivery_cut):
     with pytest.raises(ValueError,match='rough cut'):d.request_final(root,item['id'])
     assert len(provider['posts'])==3 and len(posts)==1
 
-def test_consistently_tampered_measurements_are_remeasured_at_signing(delivery_cut):
-    from lib import trailer_delivery as d
-    from lib.canonical_json import record_sha256
+def test_editable_export_report_cannot_relabel_an_old_file_as_a_new_cut(delivery_cut):
+    from lib import trailer_delivery as d,trailer_edit,cutting_view as cut
     root,provider,posts=delivery_cut;saved=approve_rough(root);item=d.export(root,saved['edit_revision_sha256'])
-    marker=root/'artifacts/deliveries'/item['id']/'complete.json'
-    item['final_review']['metadata']['measurements']['integrated_lufs']=-16.5
-    item['render_report']['metadata']['measurements_sha256']=record_sha256(item['final_review']['metadata']['measurements'])
-    marker.write_text(json.dumps(item))
+    changed=cut.editable(saved['timeline']);changed['picture'][0]['colour']['contrast']=30
+    cut.save_cut(root,changed,saved['edit_revision_sha256']);new=approve_rough(root)
+    item['render_report']['edit_revision_sha256']=new['edit_revision_sha256']
+    item['final_review']['edit_revision_sha256']=new['edit_revision_sha256']
+    (root/'artifacts/deliveries'/item['id']/'complete.json').write_text(json.dumps(item))
+    with pytest.raises(ValueError,match='render record'):d.request_final(root,item['id'])
+    assert len(provider['posts'])==3 and len(posts)==1
+
+def test_consistently_tampered_measurements_are_remeasured_at_signing(delivery_cut,monkeypatch):
+    from lib import trailer_delivery as d
+    root,provider,posts=delivery_cut;saved=approve_rough(root);original=d._measure
+    def wrong_measurement(*args):
+        probe,measured=original(*args);measured['integrated_lufs']=-16.5
+        return probe,measured
+    # Simulate an earlier faulty check with an otherwise genuine local
+    # render receipt. Signing must measure independently, not trust it.
+    with monkeypatch.context() as patch:
+        patch.setattr(d,'_measure',wrong_measurement);item=d.export(root,saved['edit_revision_sha256'])
     with pytest.raises(ValueError,match='measurements no longer match'):d.request_final(root,item['id'])
     assert len(provider['posts'])==3 and len(posts)==1
 
