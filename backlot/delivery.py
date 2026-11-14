@@ -55,13 +55,22 @@ def signing_packet(root,request):
         if request['stage']=='edit':
             record=delivery.rough_record(root)
             revision=record['edit_revision_sha256']
+            saved=trailer_edit.read_revision(root)
+            from lib.canonical_json import record_sha256
+            reason='Prepare rough-cut playback with the saved colour and sound settings before signing.'
+            if not saved or saved['edit_revision_sha256']!=revision:raise ValueError(reason)
             paths=sorted((root/'artifacts/cut-previews').glob(revision+'-*.mp4'),key=lambda p:p.stat().st_mtime,reverse=True)
-            if not paths:raise ValueError('Prepare rough-cut playback before reviewing its signature.')
-            path=resolve_input(str(paths[0].relative_to(root)),root)
-            review=json.loads(path.with_suffix('.review.json').read_text())
-            if sha256_file(path)!=review.get('output_sha256'):raise ValueError('The rough preview changed. Prepare playback again.')
-            return {'delivery_stage':'edit','number':trailer_edit.read_revision(root)['revision_number'],'play_url':f'/api/project/{root.name}/cut/play/{path.name}',
-                    'messages':['Your signature binds this saved cut. Any changed picture, sound, card or setting needs a fresh review.']}
+            for candidate in paths:
+                path=resolve_input(str(candidate.relative_to(root)),root)
+                try:review=json.loads(resolve_input(str(path.with_suffix('.review.json').relative_to(root)),root).read_text())
+                except (ValueError,OSError):raise ValueError(reason) from None
+                if not isinstance(review,dict):raise ValueError(reason)
+                if review.get('comparison')!='after':continue
+                if review.get('edit_revision_sha256')!=revision or review.get('settings_sha256')!=record_sha256(saved['timeline']):raise ValueError(reason)
+                if sha256_file(path)!=review.get('output_sha256'):raise ValueError('The rough preview changed. Prepare playback again.')
+                return {'delivery_stage':'edit','number':saved['revision_number'],'play_url':f'/api/project/{root.name}/cut/play/{path.name}',
+                        'messages':['Your signature binds this saved cut. Any changed picture, sound, card or setting needs a fresh review.']}
+            raise ValueError(reason)
         item=delivery.read_export(root,request['entity_id'])
         delivery._artifacts(root,request['entity_id'])
         return {'delivery_stage':'compose','play_url':f'/api/project/{root.name}/delivery/{item["id"]}/play','review':item['final_review'],

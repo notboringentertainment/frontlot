@@ -32,7 +32,16 @@ def delivery_cut(signed_cut):
 
 def test_delivery_controls_sign_export_watch_approve_and_reveal(delivery_cut,monkeypatch):
     from lib import trailer_delivery as d
+    from backlot import delivery as adapter
     root,provider,posts=delivery_cut;revealed=[];original=subprocess.run
+    comparisons=[];original_packet=adapter.signing_packet
+    def packet(root,request):
+        if request.get('stage')=='edit' and not comparisons:
+            from lib import cutting_view,trailer_edit
+            saved=trailer_edit.read_revision(root)
+            comparisons.append(cutting_view.render_preview(root,saved['edit_revision_sha256'],'before'))
+        return original_packet(root,request)
+    monkeypatch.setattr(adapter,'signing_packet',packet)
     def run(args,*a,**kw):
         if args[:2]==['open','-R']:revealed.append(args);return subprocess.CompletedProcess(args,0)
         return original(args,*a,**kw)
@@ -58,6 +67,7 @@ def test_delivery_controls_sign_export_watch_approve_and_reveal(delivery_cut,mon
             panel.get_by_role('button',name='Review and sign the saved rough cut',exact=True).click()
             signing=page.get_by_role('region',name='Delivery review');expect(signing).to_be_visible(timeout=240000)
             player=signing.locator('video');expect(player).to_have_js_property('readyState',4,timeout=30000)
+            assert comparisons and not player.get_attribute('src').endswith(comparisons[0].name)
             player.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=20000)
             capture(page,'rough-cut-signature',signing)
             page.get_by_role('button',name='Start signing',exact=True).click()
