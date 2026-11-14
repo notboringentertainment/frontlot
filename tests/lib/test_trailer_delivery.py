@@ -65,7 +65,7 @@ def test_delivery_checks_every_voice_and_keeps_quiet_as_a_listening_warning(stat
     presence={'sustained':status not in ('unheard','unmeasured')}
     measured={'on_target':True,'source_warnings':[],'source_failures':[],'effect_checks':[],
               'voice_checks':[{'number':1,'status':'unheard' if status=='gap-warning' else status,'presence':presence,'reference_presence':presence}],
-              'speech_checks':[] if status=='unmeasured' else [{'status':status}]}
+              'speech_checks':[] if status=='unmeasured' else [{'status':'unheard' if status=='gap-warning' else status}]}
     assert d._sound_ok(measured) is allowed
 
 def test_delivery_stage_controls_no_longer_claim_they_are_unavailable():
