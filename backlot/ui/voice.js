@@ -22,11 +22,12 @@ async function api(url,data){
 export async function applySignedAccountOutcome(project,identity){
   return api(`/api/project/${encodeURIComponent(project)}/voice/resolution/${encodeURIComponent(identity)}/apply`,{});
 }
+export function refreshAudioAfterSigning(){current?.refresh(true);}
 export function renderVoice(s,onSign){
   if(current?.project===s.project_id){current.refresh();return current.node;}
   const project=s.project_id,url=`/api/project/${encodeURIComponent(project)}/voice`;
   const node=el('section',{class:'voice-panel paper-editor','aria-label':'Trailer audio'}),message=el('p',{role:'status','aria-live':'polite'}),content=el('div',{});
-  const drafts=new Map(),players=new Map(),priceForm={},outcomes=new Map(),musicDraft={},effectDraft={};let voices=[],last='',busy=false,loading=false,pendingRefresh=false,changeGeneration=0;
+  const drafts=new Map(),players=new Map(),priceForm={},outcomes=new Map(),musicDraft={},effectDraft={};let voices=[],last='',busy=false,loading=false,pendingRefresh=false,changeGeneration=0,returningFromSigning=false;
   const act=async fn=>{if(busy)return;busy=true;changeGeneration++;message.textContent='Working…';let refused=false;try{const result=await fn();message.textContent=typeof result==='string'?result:'Saved. Review the request before signing.';}catch(e){message.textContent=e.message;refused=true;}finally{busy=false;last='';await refresh();if(refused)requestAnimationFrame(()=>message.scrollIntoView({block:'center'}));}};
   const loadVoices=button('Load account voices',()=>act(async()=>{voices=await api(url+'/catalogue',{});return 'Account voices loaded. Choose a voice for the saved line.';}));
   node.append(el('h2',{},'Voice, music and sound effects'),el('p',{},'Choose a voice for each saved spoken line, request instrumental music or describe an effect for a paper-cut moment. One signature buys one take. Keeping or declining a take needs its own signature; a decline is final.'),
@@ -117,10 +118,11 @@ export function renderVoice(s,onSign){
     }
     content.append(takes);
   }
-  async function refresh(){
+  async function refresh(afterSigning=false){
+    if(afterSigning){changeGeneration++;returningFromSigning=true;message.textContent='Checking the saved audio decisions…';}
     if(loading||busy){pendingRefresh=true;return;}loading=true;pendingRefresh=false;
     const generation=changeGeneration;
-    try{const data=await api(url);if(generation!==changeGeneration||busy){pendingRefresh=true;return;}const key=JSON.stringify(data)+JSON.stringify(voices);if(key!==last){last=key;draw(data);}}
+    try{const data=await api(url);if(generation!==changeGeneration||busy){pendingRefresh=true;return;}const key=JSON.stringify(data)+JSON.stringify(voices);if(key!==last){last=key;draw(data);}if(returningFromSigning){const count=status=>data.takes.filter(t=>t.status===status).length;message.textContent=`Audio loaded. Kept: ${count('Accepted')}. Waiting for a take decision: ${count('Waiting for your decision')}. Declined: ${count('Declined')}. Needs a fresh look: ${count('Needs a fresh look')}.`;returningFromSigning=false;}}
     catch(e){if(generation!==changeGeneration||busy){pendingRefresh=true;return;}message.textContent=e.message+' Check the approved story and signed audio price settings, then reload.';}
     finally{loading=false;if(pendingRefresh&&!busy){pendingRefresh=false;refresh();}}
   }

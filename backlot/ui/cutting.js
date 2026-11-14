@@ -68,7 +68,7 @@ export function renderCutting(s,onSign){
    const catalog=kind==='picture'?data.pictures:data.sounds,section=el('section',{class:'paper-panel'},el('h3',{},kind==='picture'?'Picture order and trims':'Layered sound'));
    const select=el('select',{'aria-label':kind==='picture'?'Kept picture take':'Kept sound take'});
    catalog.forEach((c,i)=>select.append(el('option',{value:i},c.label)));
-   const selected=el('div',{});function selectedTake(){selected.replaceChildren(identification(catalog[Number(select.value)]));}select.onchange=selectedTake;selectedTake();
+   const selected=el('div',{});function selectedTake(){const item=catalog[Number(select.value)];selected.replaceChildren(item?identification(item):el('p',{},kind==='picture'?'No kept pictures yet. Open footage requests and keep a take, then reopen this cut.':'No kept sound takes yet. Keep sound in Voice workspace, Music workspace or Sound effects workspace, then reopen this cut.'));}select.onchange=selectedTake;selectedTake();
    section.append(select,button(kind==='picture'?'Add picture':'Add sound',()=>{const c=catalog[Number(select.value)];if(!c)throw Error('Keep a take in its workspace first, then reopen this cut.');
     const rows=data.timeline[kind],start=kind==='picture'?rows.reduce((n,r)=>Math.max(n,r.start_frame+r.source_out_frame-r.source_in_frame),0):0;
     const end=data.timeline.picture.reduce((n,r)=>Math.max(n,r.start_frame+r.source_out_frame-r.source_in_frame),0);

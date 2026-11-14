@@ -2,7 +2,7 @@
 
 import { renderPaperCut } from "/ui/trailer.js";
 import {renderStory,renderStorySigning} from '/ui/story.js';
-import {renderVoice,renderAudioSigning,applySignedAccountOutcome} from '/ui/voice.js';
+import {renderVoice,renderAudioSigning,applySignedAccountOutcome,refreshAudioAfterSigning} from '/ui/voice.js';
 import {renderCutting,refreshCutting,renderCardSigning} from '/ui/cutting.js';
 import {renderDelivery,renderDeliverySigning,refreshDelivery} from '/ui/delivery.js';
 import { setFootageState, renderFootageControls, afterFootageSignature, footageDecision } from "/ui/footage.js";
@@ -426,7 +426,7 @@ function renderStatus(s) {
   if (s.is_trailer && s.trailer_damaged) { cls = "needs"; label = "Cannot continue"; }
   else if (needs) { cls = "needs"; label = "Needs you"; }
   else if (stalled) { cls = "stalled"; label = "Stalled?"; }
-  else if (s.live) { cls = "running"; label = "Working"; }
+  else if (s.live) { cls = "running"; label = "Recently updated"; }
   else if (inProgress) { label = `Paused${s.last_activity ? ` · ${fmtAgo(s.last_activity)}` : ""}`; }
   const hint = cls === "stalled" ? "A stage says it is running, but nothing has happened for a while." : null;
   return el("span", { class: `status ${cls}`.trim(), role: "status", title: hint }, el("span", { class: "lamp" }), label);
@@ -2530,7 +2530,7 @@ function renderGateViewer(s) {
   if(header.kind==='trailer_card')return renderCardSigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;await refreshCutting();render();});
   if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&['edit','compose'].includes(header.stage))return renderDeliverySigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;const verified=refreshDelivery();render();await verified;});
   const footageResolution=header.kind==='audio_resolution'&&gateDetail.request?.approval_record?.request?.provider==='fal';
-  if((['audio_spend','audio_take','audio_resolution'].includes(header.kind)&&!footageResolution)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError,gateDetail.packet?.budget_warning),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();},stale);
+  if((['audio_spend','audio_take','audio_resolution'].includes(header.kind)&&!footageResolution)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError,gateDetail.packet?.budget_warning),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;refreshAudioAfterSigning();render();},stale);
   let frames = gateFrames(gateDetail.packet);
   const key = entityKeyOf(header);
   const entity = key ? buildRoster(s).find((e) => e.key === key) : null;

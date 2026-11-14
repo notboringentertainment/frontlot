@@ -114,7 +114,7 @@ export function renderPaperCut(s) {
       timingText.textContent=total===target?"The shots match the target length.":`Shots total ${(total/24).toFixed(2)} seconds; target ${(target/24).toFixed(2)} seconds. ${Math.abs(total-target)} frames ${total>target?"over":"short"}.`;show();};
     cursor.oninput=show;
     const play=button("Play placeholders",()=>{if(playing){clearInterval(playing);playing=null;play.textContent="Play placeholders";}else{play.textContent="Pause";playing=setInterval(()=>{cursor.value=(Number(cursor.value)+1)%(Number(cursor.max)+1);show();},1000/24);}});
-    timing.append(el("p",{},"This timing sketch identifies shots with accepted footage and those still using placeholders. It cannot finish a stage. Timed playback and export of real media are not built yet. Watch full takes on their shot cards. Shot purposes remain private planning notes."),timingText,preview,cursor,play);updateTiming();
+    timing.append(el("p",{},"This timing sketch identifies shots with accepted footage and those still using placeholders. It cannot finish a stage. Play kept pictures and sound in Cutting workspace, then make the final file in Delivery workspace. Shot purposes remain private planning notes."),timingText,preview,cursor,play);updateTiming();
   }
   function showVersion(value, label) {
     const box=el("div",{},el("h4",{},label));
