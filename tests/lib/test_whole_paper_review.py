@@ -24,8 +24,10 @@ def test_whole_paper_signature_is_exact_and_does_not_complete_stages(tmp_path):
     receipt=approve_request(request,root)
     assert receipt['scope']=='trailer-paper' and review.state(root)=='Signed by you'
     assert receipts.verified_generation_receipts(root)==[]
-    assert not (root/'checkpoint_script.json').exists()
-    assert not (root/'checkpoint_scene_plan.json').exists()
+    import json
+    for stage in ('script','scene_plan'):
+        cp=json.loads((root/f'checkpoint_{stage}.json').read_text())
+        assert cp['status']=='in_progress' and not cp['human_approved']
     # Selecting media or changing the later cut is not a rewrite of this paper.
     edited=copy.deepcopy(saved);edited['local_preview_note']='A local cut was prepared.'
     trailer_edit.save_edit_revision(root,edited,saved['edit_revision_sha256'])

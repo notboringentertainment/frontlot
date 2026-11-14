@@ -102,7 +102,7 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
             form.get_by_role('button',name='Save effect brief',exact=True).click()
             expect(panel.get_by_role('status')).to_contain_text('brief saved')
             form.get_by_role('button',name='Prepare effect spending card',exact=True).click()
-            card=panel.locator('.voice-spend[data-kind="effect"]').first
+            card=panel.locator('.voice-spend[data-kind="effect"]').filter(has=page.get_by_role('button',name='Review and sign this request',exact=True))
             card.get_by_role('button',name='Review and sign this request',exact=True).click()
             from tests.backlot.test_early_paid_readiness import sign_audio
             sign_audio(page)

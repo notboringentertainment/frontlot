@@ -145,7 +145,8 @@ def repair_creation(root):
 
 def _inputs(root):
     result = {'project.json': record_sha256(json.loads((root/'project.json').read_text()))}
-    for stage in ('canon_ingest', 'proposal', 'script'):
+    # Script is now a projection of this paper, not an upstream input to it.
+    for stage in ('canon_ingest', 'proposal'):
         p = root/f'checkpoint_{stage}.json'
         if not p.exists():
             result[p.name] = 'ABSENT'
@@ -415,9 +416,10 @@ def save_revision(root, paper, expected_revision):
         _expect(old, expected_revision)
         inputs = _inputs(root)
         value = _paper_value(root, paper, old, inputs)
-        if old and all(old.get(k) == value.get(k) for k in ('paper_cut', 'inputs', 'story_check', 'trailer')):
-            return old
-        return _commit(root, value, old, inputs)
+        result=old if old and all(old.get(k)==value.get(k) for k in ('paper_cut','inputs','story_check','trailer')) else _commit(root,value,old,inputs)
+    from lib.trailer_records import sync_paper
+    sync_paper(root)
+    return result
 
 
 def restore_revision(root, revision, expected_revision):
@@ -443,7 +445,10 @@ def restore_revision(root, revision, expected_revision):
         else:
             value = copy.deepcopy(source)
         value['restored_from'] = revision
-        return _commit(root, value, old, inputs)
+        result=_commit(root,value,old,inputs)
+    from lib.trailer_records import sync_paper
+    sync_paper(root)
+    return result
 
 
 def _legacy_time(root, version):
