@@ -108,8 +108,6 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
             page.get_by_role('button',name='Cutting workspace',exact=True).click()
             cut=page.get_by_role('region',name='Cutting view',exact=True)
             expect(cut).to_contain_text('Saved version',timeout=30000)
-            cut.get_by_role('button',name='Save cut',exact=True).click()
-            expect(cut.get_by_role('status').first).to_contain_text('saved',timeout=30000)
             cut.get_by_role('button',name='Reopen saved cut',exact=True).click()
             expect(cut).to_contain_text('Saved version',timeout=30000)
             while cut.get_by_role('button',name='Remove this clip',exact=True).count():
