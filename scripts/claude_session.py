@@ -12,6 +12,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+from lib import programs
 
 from backlot import claude_frames as cf                       # noqa: E402
 from backlot import claude_settings as cs                     # noqa: E402
@@ -77,12 +78,12 @@ def paths(slug: str) -> dict[str, Path]:
 
 
 def boot_time() -> float:
-    out = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True).stdout
+    out = programs.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True).stdout
     return float(out.split("sec =")[1].split(",")[0])   # "{ sec = 1791400000, usec = 0 } ..."
 
 
 def proc_started(pid: int) -> float | None:
-    out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    out = programs.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
     if not out:
         return None
     return time.mktime(time.strptime(out, "%a %b %d %H:%M:%S %Y"))
@@ -97,13 +98,13 @@ def resolve_claude() -> tuple[str, str]:
         if os.environ.get("FRONTLOT_SKIP_PREFLIGHT"):
             return c, "test"
         try:
-            v = subprocess.run([c, "--version"], capture_output=True, text=True, timeout=20).stdout.strip()
+            v = programs.run([c, "--version"], capture_output=True, text=True, timeout=20).stdout.strip()
             nums = tuple(int(x) for x in v.split()[0].split(".")[:3])
         except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
             raise Unavailable("missing") from None
         if nums < cs.MIN_LIVE_VERSION:
             raise Unavailable("old-version", v)
-        auth = subprocess.run([c, "auth", "status", "--json"], capture_output=True, text=True, timeout=20)
+        auth = programs.run([c, "auth", "status", "--json"], capture_output=True, text=True, timeout=20)
         try:
             logged_in = json.loads(auth.stdout or "{}").get("loggedIn") is True
         except ValueError:
@@ -148,7 +149,7 @@ def sandbox_selfcheck(slug: str, claude: str, version: str, settings_file: Path,
     try:
         # Its own process group, and the handle goes to the broker (on_spawn), so a shutdown mid-check can kill
         # the whole check and remove the canaries even though this runs in an executor thread.
-        proc = subprocess.Popen(cs.selfcheck_argv(claude=claude, settings_file=settings_file,
+        proc = programs.Popen(cs.selfcheck_argv(claude=claude, settings_file=settings_file,
                                                   prompt=cs.selfcheck_prompt(p["canary"], allow_file, outside, trailer=trailer),
                                                   mod_dir=REPO / "backlot" / "claude_mod", trailer=trailer),
                                 cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -420,7 +421,7 @@ class Broker:
                               trailer=self.trailer)
         try:
             self._check()
-            self.claude = subprocess.Popen(
+            self.claude = programs.Popen(
                 ["/bin/sh", "-c", f'IFS= read -r go <&{r} && [ "$go" = go ] && exec "$@"; exit 70',
                  "frontlot-claude", *argv],
                 cwd=self.work, env=env, stdin=slave, stdout=slave, stderr=slave,

@@ -7,6 +7,7 @@ scene classification. Primary use case: visual QA for automated video review.
 
 from __future__ import annotations
 
+from lib import programs
 import subprocess
 import tempfile
 import time
@@ -293,7 +294,7 @@ class VideoUnderstand(BaseTool):
                     "-y", "-loglevel", "error",
                 ]
 
-            subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            programs.run(cmd, capture_output=True, text=True, timeout=60)
 
             # Load extracted frames
             frame_files = sorted(tmp.glob("frame_*.png"))

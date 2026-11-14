@@ -140,6 +140,8 @@ def _execute_locked(root,record, *, submit,download,validate_download=None):
     failure leaves billing pending; only the existing reconciler may resolve it.
     """
     root=_root(root);record=copy.deepcopy(record)
+    from lib.programs import preflight
+    preflight('ffprobe')
     with reservation_lock(root):
         config=check_current(root,record)
         approval=find_approval(root,'audio_spend',record_sha256=record_sha256(record),entity_id=record['request_id'])

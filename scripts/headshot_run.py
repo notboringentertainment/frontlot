@@ -32,6 +32,7 @@ from typing import Any, Callable, Optional
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+from lib import programs
 
 from lib.run_common import (  # noqa: E402
     EXIT_INPUT_CHANGED, Expectations, InputChanged, RunError, gate_command, hold_lease, parse_expectations, read_request, request_id_for, require_entity_id, resolve_project_root, write_decision,
@@ -700,7 +701,7 @@ def _present(ctx, cands: list[tuple[str, dict, str]], *, recipe: Optional[dict],
     headshot_request(root, ctx["project_id"], entity_id, request_id=request_id, source_checkpoint_digest=digest)
     paths = [str(root / "canon/visual/objects" / f"{a}.png") for a, _, _ in cands]
     if ctx["open"] and sys.platform == "darwin":
-        subprocess.run(["open", "-a", "Preview", *paths], check=False)
+        programs.run(["open", "-a", "Preview", *paths], check=False)
     _log(out, "Candidates (all passed hero QC):\n  " + "\n  ".join(paths))
     return _pending(root, entity_id, request_id, out, f"{len(cands)} candidate(s) presented for {entity_id!r} (revision {rev}); choose at the gate")
 

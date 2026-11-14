@@ -12,6 +12,7 @@ Platform capture devices:
 
 from __future__ import annotations
 
+from lib import programs
 import os
 import platform
 import signal
@@ -35,7 +36,7 @@ from tools.base_tool import (
 def _detect_audio_device_windows() -> str | None:
     """Find a working audio input device on Windows via dshow."""
     try:
-        result = subprocess.run(
+        result = programs.run(
             ["ffmpeg", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
             capture_output=True, text=True, timeout=10,
         )
@@ -57,7 +58,7 @@ def _detect_audio_device_windows() -> str | None:
 def _detect_audio_device_mac() -> str | None:
     """Find the default audio input index on macOS via avfoundation."""
     try:
-        result = subprocess.run(
+        result = programs.run(
             ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
             capture_output=True, text=True, timeout=10,
         )
@@ -198,7 +199,7 @@ class ScreenRecorder(BaseTool):
 
         start_time = time.time()
         try:
-            proc = subprocess.run(
+            proc = programs.run(
                 cmd, capture_output=True, text=True,
                 timeout=duration + 30,  # grace period
             )
@@ -376,7 +377,7 @@ class ScreenRecorder(BaseTool):
     def _probe_resolution(self, path: str) -> str:
         """Get video resolution via ffprobe."""
         try:
-            result = subprocess.run(
+            result = programs.run(
                 [
                     "ffprobe", "-v", "error",
                     "-select_streams", "v:0",
