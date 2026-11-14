@@ -2160,6 +2160,12 @@ function renderTakeScreen(s, take, label, fallback) {
 // live refreshes so a playing take never restarts and a half-written note is
 // never lost.
 const takeTiles = new Map();   // take_id -> {src, video, note}
+let footageSigningPlayer = null;
+function fullFootagePlayer(s,take) {
+  const key=JSON.stringify([s.project_id,take.path,take.sha256]);
+  if(footageSigningPlayer?.key!==key)footageSigningPlayer={key,node:el("video",{controls:"",preload:"metadata",src:mediaURL(s.project_id,take.path),"aria-label":"Full footage take",style:"width:100%;max-height:65vh"})};
+  return footageSigningPlayer.node;
+}
 const takeBusy = new Set();
 const takeErrors = new Map();
 
@@ -2550,7 +2556,7 @@ function renderGateViewer(s) {
         el("p",{},"The exact description and reference pictures shown here leave this computer for Fal. The approved looks below establish which pictures may be used; their text is not sent separately. This request is for silent widescreen footage. There are no automatic retries or changes of service or model.")) : el("p",{},footageCard.accounting),
       ...(footageCard.looks || []).map(spec=>lookCard(spec,"Approved look behind this request")),
       el("p",{},footageCard.decision ? "Declining is final for this take. Accepting completes no stage." : "A retake needs a new request and signature. Signing this request does not approve a stage.")) : null,
-    gateDetail.packet?.footage_take ? el("video",{controls:"",preload:"metadata",src:mediaURL(s.project_id,gateDetail.packet.footage_take.path),"aria-label":"Full footage take",style:"width:100%;max-height:65vh"}) : lookSpec ? lookCard(lookSpec) : renderScreen(s, frames[selectedFrame], blank),
+    gateDetail.packet?.footage_take ? fullFootagePlayer(s,gateDetail.packet.footage_take) : lookSpec ? lookCard(lookSpec) : renderScreen(s, frames[selectedFrame], blank),
     lookSpec ? null : renderFrameStrip(s, frames, "Request"),
     evidence,
     lookSpec ? null : gateActions(s, summary, stale, packetError),
