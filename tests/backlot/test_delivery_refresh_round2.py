@@ -1,4 +1,7 @@
 """A signing return waits for the newest response, including a queued refresh."""
+import os
+from pathlib import Path
+import pytest
 from playwright.sync_api import sync_playwright,expect
 from tests.backlot.test_voice_panel_browser import board,short_signing_folder
 from tests.lib.test_cutting_signed import signed_cut
@@ -14,7 +17,7 @@ def test_return_to_delivery_starts_one_read_not_two(signed_cut,monkeypatch):
     with board(root,monkeypatch) as url,sync_playwright() as pw:
         browser=pw.chromium.launch(headless=True)
         try:
-            page=browser.new_page();reads=[];errors=[]
+            page=browser.new_page(viewport={'width':1440,'height':1000});reads=[];errors=[];held=[]
             page.on('pageerror',lambda e:errors.append(str(e)))
             page.on('request',lambda r:reads.append(r.url) if r.method=='GET' and r.url==url+f'/api/project/{root.name}/delivery' else None)
             page.route('**/*',lambda r:r.continue_() if r.request.url.startswith(url+'/') else r.abort())
@@ -24,14 +27,25 @@ def test_return_to_delivery_starts_one_read_not_two(signed_cut,monkeypatch):
             review=page.get_by_role('region',name='Delivery review',exact=True)
             expect(review).to_be_visible(timeout=30000)
             before=len(reads)
+            page.route(url+f'/api/project/{root.name}/delivery',lambda r:held.append(r))
             review.get_by_role('button',name='Return to delivery',exact=True).click()
+            expect(panel).to_be_visible()
+            expect(panel.get_by_role('status')).to_have_text('Checking the saved cut and its approvals…')
+            expect(panel.get_by_role('button',name='Review and sign the saved rough cut',exact=True)).to_be_disabled()
+            if os.environ.get('DELIVERY_WAIT_CAPTURE'):
+                panel.scroll_into_view_if_needed()
+                page.screenshot(path=str(Path(os.environ['DELIVERY_WAIT_CAPTURE'])/'round2-verifying-return.png'))
+            assert len(held)==1
+            held[0].continue_()
             expect(panel.get_by_role('status')).to_contain_text('Saved cut loaded.',timeout=30000)
+            expect(panel.get_by_role('button',name='Review and sign the saved rough cut',exact=True)).to_be_enabled()
             assert len(reads)-before==1, 'Returning must not start a read and immediately abort it for a duplicate.'
             assert len(provider['posts'])==3 and len(posts)==1 and not errors
         finally:browser.close()
 
 
-def test_overlapping_returns_wait_for_verified_server_state_twenty_times(signed_cut,monkeypatch):
+@pytest.mark.parametrize('already_signed',[False,True])
+def test_overlapping_returns_wait_for_verified_server_state_twenty_times(signed_cut,monkeypatch,already_signed):
     root,provider,posts,*_=signed_cut
     with board(root,monkeypatch) as url,sync_playwright() as pw:
         browser=pw.chromium.launch(headless=True)
@@ -44,10 +58,10 @@ def test_overlapping_returns_wait_for_verified_server_state_twenty_times(signed_
             page.route('**/*',route)
             for iteration in range(20):
                 page.goto(url+'/delivery-refresh-harness')
-                page.evaluate('''async (iteration)=>{
+                page.evaluate('''async ({iteration,already_signed})=>{
                     const m=await import('/ui/delivery.js');
                     window.refreshDefinition=m.refreshDelivery.toString();
-                    const stale={number:1,revision:'invented-saved-version',rough_status:'Needs your signature',exports:[]};
+                    const stale={number:1,revision:'invented-saved-version',rough_status:already_signed?'Signed by you':'Needs your signature',exports:[]};
                     const latest={...stale,rough_status:'Signed by you'};
                     let count=0;window.reads=[];window.words=[];
                     window.fetch=async()=>{
@@ -61,8 +75,8 @@ def test_overlapping_returns_wait_for_verified_server_state_twenty_times(signed_
                     document.body.append(m.renderDelivery({project_id:'invented-return-'+iteration},()=>{}));
                     new MutationObserver(()=>window.words.push(document.querySelector('[role=status]').textContent)).observe(document.querySelector('[role=status]'),{childList:true,subtree:true});
                     window.module=m;
-                }''',iteration)
-                expect(page.get_by_role('status')).to_contain_text('Rough cut: Needs your signature.')
+                }''',dict(iteration=iteration,already_signed=already_signed))
+                expect(page.get_by_role('status')).to_contain_text('Rough cut: '+('Signed by you' if already_signed else 'Needs your signature')+'.')
                 page.evaluate('''()=>{
                     document.querySelector('button:last-of-type').click();
                     window.returned=false;
@@ -76,6 +90,8 @@ def test_overlapping_returns_wait_for_verified_server_state_twenty_times(signed_
                 # own read now, and wait for that verified response instead.
                 page.wait_for_function('()=>!!window.releaseLatest',timeout=5000)
                 assert page.evaluate('()=>window.returned') is False
+                expect(page.get_by_role('status')).to_have_text('Checking the saved cut and its approvals…')
+                expect(page.get_by_role('button',name='Review and sign the saved rough cut',exact=True)).to_be_disabled()
                 page.evaluate('async()=>{window.releaseLatest();await window.returnPromise;}')
                 # Simulate a late answer even if a transport ignores abort.
                 page.evaluate('()=>window.releaseOld()')
