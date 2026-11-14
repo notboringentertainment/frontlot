@@ -666,6 +666,11 @@ details.log-more[open] > summary { margin-bottom: 12px; }
 }
 .terminal-shell[hidden] { display: none; }
 .terminal-shell-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.terminal-shell-head { flex-wrap: wrap; }
+.terminal-shell { min-height: 0; overflow: auto; }
+.terminal-state { flex-shrink: 0; }
+.writer-warning { position: fixed; top: 0; left: 0; right: 0; z-index: 10000; padding: 12px 20px; background: #ffd780; color: #201800; font-weight: 700; }
+.writer-unavailable .table { margin-top: 76px; height: calc(100dvh - 76px); }
 .terminal-shell-head h2 { margin: 0; font: 700 15px/1 var(--plate); letter-spacing: .14em; text-transform: uppercase; }
 .terminal-state {
   font: 600 12px/1 var(--plate); letter-spacing: .1em; text-transform: uppercase;

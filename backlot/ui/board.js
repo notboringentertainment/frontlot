@@ -2971,11 +2971,17 @@ function renderBoard() {
   tableEl.classList.toggle("no-bin", !withBin);
 
   tableEl.classList.toggle("trailer-board", Boolean(s.is_trailer));
-  app.innerHTML = "";
-  app.append(renderBar(s));
-  if (withBin) app.append(renderBin(s, roster));
+  const mountedViewer=s.is_trailer?document.getElementById('viewer'):null;
+  if(!s.is_trailer)app.innerHTML='';
+  else for(const child of [...app.children])if(child!==mountedViewer)child.remove();
+  const bar=renderBar(s);app.prepend(bar);
+  if (withBin) bar.after(renderBin(s, roster));
 
-  const viewer = el("main", { class: "viewer", id: "viewer", tabindex: "-1", "aria-label": "Viewer" });
+  const viewerNode=mountedViewer||el("main", { class: "viewer", id: "viewer", tabindex: "-1", "aria-label": "Viewer" });
+  const wanted=[];
+  // Build a list, not a detached parent: moving a workspace through a fragment
+  // also loses focus and can cancel an in-progress physical click.
+  const viewer={append:(...nodes)=>wanted.push(...nodes),querySelector:(...args)=>viewerNode.querySelector(...args)};
   if(s.is_trailer && !s.trailer_damaged && !selectedGateId)viewer.append(el('nav',{class:'voice-workspace-nav','aria-label':'Trailer workspaces'},
     el('button',{type:'button',onclick:()=>viewer.querySelector('.story-panel')?.scrollIntoView({block:'start'})},'Story workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Trailer paper cut"]')?.scrollIntoView({block:'start'})},'Paper cut workspace'),
@@ -3017,7 +3023,10 @@ function renderBoard() {
   }
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId && shot) viewer.append(renderPaperCut(s));
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(renderFootageControls(s));
-  app.append(viewer);
+  const keep=new Set(wanted);
+  for(const child of [...viewerNode.childNodes])if(!keep.has(child))child.remove();
+  wanted.forEach((child,index)=>{if(viewerNode.childNodes[index]!==child)viewerNode.insertBefore(child,viewerNode.childNodes[index]||null);});
+  if(viewerNode.parentNode!==app)app.append(viewerNode);
 
   const { needs, history } = renderLog(s, roster);
   logFeed.innerHTML = "";

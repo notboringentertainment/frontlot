@@ -23,6 +23,31 @@ export function captureCapabilityToken() {
 
 captureCapabilityToken();
 
+// A refused write is never retried and never earns a replacement capability.
+function writerWarning(){
+  let banner=document.getElementById('writer-warning');
+  if(!banner){banner=el('aside',{id:'writer-warning',role:'alert',class:'writer-warning'},
+    'This window cannot save or sign. Open Front Lot from its app icon, then reopen this production. Your unfinished words remain in this tab. No refused action will be retried automatically.');document.body.prepend(banner);}
+  document.body.classList.add('writer-unavailable');
+}
+const originalFetch=window.fetch.bind(window);
+window.fetch=async(...args)=>{
+  const response=await originalFetch(...args);
+  if(response.status===401&&new URL(response.url,location.href).origin===location.origin)writerWarning();
+  return response;
+};
+export async function checkWriter(){
+  try{
+    const response=await originalFetch('/api/writer-status',{headers:{'x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},cache:'no-store'});
+    if(!response.ok)return;
+    const value=await response.json();
+    if(!value.writer)writerWarning();
+    else {document.getElementById('writer-warning')?.remove();document.body.classList.remove('writer-unavailable');}
+  }catch{/* Loss of a connection never grants permission. */}
+}
+window.addEventListener('focus',()=>checkWriter());
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>checkWriter());else checkWriter();
+
 export async function getJSON(url, options = {}) {
   const res = await fetch(url, options);
   if (!res.ok) throw new Error(`${res.status} ${url}`);
