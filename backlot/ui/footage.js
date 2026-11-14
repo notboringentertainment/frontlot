@@ -91,6 +91,14 @@ function shotPanel(s,shot){
     if(req.running)panel.append(el("p",{role:"status"},"Generating this one clip. Keep this board open to watch it arrive; no retry will be made."));
     if(req.error)panel.append(el("p",{role:"alert"},req.error));
     if(req.reservation&&["submitting","submitted","pending_billing"].includes(req.reservation.state)&&!req.running){
+      if(req.outcome_error){panel.append(el("p",{role:"alert"},req.outcome_error));continue;}
+      if(req.signed_outcome){
+        const outcome=req.signed_outcome;
+        panel.append(el("p",{},"Your account outcome is signed and still needs applying. No second signature or service call is needed."),
+          el("p",{},outcome.charged?`Signed charge: cash $${outcome.cash_usd.toFixed(4)} and credit replacement value $${outcome.credits_usd.toFixed(4)}.`:"Signed outcome: nothing was charged."),
+          el("p",{},outcome.note),button("Apply the signed account outcome",()=>perform(d,()=>footageAction("apply-resolution",{reservation_id:req.reservation.reservation_id})),d.busy));
+        continue;
+      }
       d.reviews||=new Map();
       if(!d.reviews.has(req.id))d.reviews.set(req.id,{charged:false,cash:"0",credits:"0",note:""});
       const review=d.reviews.get(req.id);

@@ -8,7 +8,7 @@ from fastapi import HTTPException, Request
 from lib import footage_requests as footage, receipts, supervised_production as shots
 from lib.canonical_json import record_sha256
 from lib.look_ingest import active_looks
-from lib.media_spending import _tracker, request_resolution, resolve_charge, call_lock
+from lib.media_spending import _tracker, request_resolution, resolve_charge, call_lock, signed_resolution, apply_signed_resolution
 from lib.pathsafe import resolve_input, sha256_file
 from lib.project_config import load_current_verified_project_config, ProjectConfigError
 from lib.run_common import request_paths
@@ -142,9 +142,13 @@ def inspect(root,jobs):
             approved=receipts.find_approval(root,'footage_spend',entity_id=rid,record_sha256=record_sha256(record)) is not None
             reservation=next((r for r in reservations.values() if (r.get('output_hint') or {}).get('footage_request_id')==rid),None)
             job=jobs.get((str(root),rid),{})
+            outcome=None;outcome_error=None
+            if reservation and reservation['state'] in ('submitting','submitted','pending_billing'):
+                try:outcome=signed_resolution(root,reservation['reservation_id'])
+                except (ValueError,OSError,KeyError,receipts.ReceiptChainError) as exc:outcome_error=plain_refusal(exc)
             requests.append({'id':rid,'gate_id':gate['request_id'] if gate else None,'approved':approved,
                              'running':job.get('running',False),'error':job.get('error'),
-                             'reservation':reservation,'record':record})
+                             'reservation':reservation,'record':record,'signed_outcome':outcome,'outcome_error':outcome_error})
         status='Nothing yet'
         if any(t['waiting'] for t in takes):status='Take waiting for your decision'
         elif any(t['selected'] for t in takes):status='Kept'
@@ -202,7 +206,8 @@ def install(app,require_writer,safe_project,invalidate):
         require_writer(request);root=safe_project(project_id)
         fields={'quote':{'shot_id','model','duration_seconds'},'create':{'shot_id','model','duration_seconds','looks','retake_of'},
                 'dispatch':{'request_id'},'decision':{'shot_id','take_id','decision'},'signed':{'gate_id'},
-                'apply':{'shot_id','take_id','decision'},'resolve':{'reservation_id','charged','cash','credits','note'}}
+                'apply':{'shot_id','take_id','decision'},'resolve':{'reservation_id','charged','cash','credits','note'},
+                'apply-resolution':{'reservation_id'}}
         try:
             footage.require_trailer(root)
             body=await request.json()
@@ -223,6 +228,7 @@ def install(app,require_writer,safe_project,invalidate):
                 await asyncio.to_thread(footage.apply_decision,root,body.get('shot_id'),body.get('take_id'),body.get('decision'))
                 result={'applied':True}
             elif action=='resolve':result={'gate':await asyncio.to_thread(request_resolution,root,body.get('reservation_id'),body.get('charged'),body.get('cash'),body.get('credits'),body.get('note'))}
+            elif action=='apply-resolution':result=await asyncio.to_thread(apply_signed_resolution,root,body.get('reservation_id'))
             else:
                 path=request_paths(root,body.get('gate_id'))['done']
                 req=json.loads(resolve_input(path.relative_to(root).as_posix(),root).read_text())
@@ -234,7 +240,7 @@ def install(app,require_writer,safe_project,invalidate):
                     await asyncio.to_thread(footage.apply_decision,root,record['shot_id'],record['take']['take_id'],record['decision'])
                     result={'applied':True}
                 elif kind=='audio_resolution':
-                    result=await asyncio.to_thread(resolve_charge,root,record['reservation_id'],record['charged'],record['cash_usd'],record['credits_usd'],record['note'])
+                    result=await asyncio.to_thread(apply_signed_resolution,root,record['reservation_id'])
                 else:raise ValueError('This signature is not a footage decision. Return to its own panel.')
             invalidate(project_id);return result
         except HTTPException:raise

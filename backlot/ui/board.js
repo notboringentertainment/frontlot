@@ -1,7 +1,7 @@
 // Front Lot film board (the cutting room) — renders BoardState and stays live via SSE.
 
 import { renderPaperCut } from "/ui/trailer.js";
-import {renderVoice,renderAudioSigning} from '/ui/voice.js';
+import {renderVoice,renderAudioSigning,applySignedAccountOutcome} from '/ui/voice.js';
 import {renderCutting,refreshCutting,renderCardSigning} from '/ui/cutting.js';
 import {renderDelivery,renderDeliverySigning,refreshDelivery} from '/ui/delivery.js';
 import { setFootageState, renderFootageControls, afterFootageSignature, footageDecision } from "/ui/footage.js";
@@ -99,6 +99,8 @@ function makeGateSession() {
     textFallback: false, // the signer never tagged a question: show its text instead
     note: null,         // a note Ben typed before answering; sent when the signer asks for it
     textTimer: null,
+    signingRequest: null,
+    refreshedPacketError: true,
   };
 
   if (terminal) {
@@ -159,6 +161,40 @@ function noteFits(note, ask) {
   return text.length >= (ask.min || 0) || (!ask.required && !text);
 }
 
+const finishingSignatures=new Map();
+function returnToWorkspace(){
+  selectedGateId=null;gateDetail=null;trailerWorkbenchChosen=true;closeSigning();
+}
+async function finishSignedRequest(request){
+  if(!request)return;
+  if(finishingSignatures.has(request.id))return finishingSignatures.get(request.id);
+  const work=(async()=>{
+    if(request.kind==='audio_resolution'){
+      // Both media use the same verified signed outcome and reconciliation.
+      await applySignedAccountOutcome(projectId,request.entity);
+      if(gateSession.signingRequest===request){returnToWorkspace();await refresh();}
+    }else if(['footage_spend','footage_take'].includes(request.kind)){
+      await afterFootageSignature(request.id,request.kind);
+    }
+  })();
+  finishingSignatures.set(request.id,work);
+  try{return await work;}finally{finishingSignatures.delete(request.id);}
+}
+async function signingStopped(request,message){
+  if(gateSession.signingRequest!==request)return;
+  gateSession.inputReady=false;gateSession.ask=null;gateSession.outcome='error';
+  setTerminalStatus('Signing stopped',message+' No approval has been confirmed. Try signing again, or return to the workspace to apply a recorded outcome.','warn');
+  renderSignPanel();
+  if(request?.kind==='audio_resolution'){
+    try{await finishSignedRequest(request);}
+    catch(error){
+      if(gateSession.signingRequest===request&&!terminalShell.hidden){
+        setTerminalStatus('Account review needs you',error.message+' Try signing again if nothing was signed.','warn');renderSignPanel();
+      }
+    }
+  }
+}
+
 function onSignerTag(tag) {
   if (!tag || typeof tag !== "object") return;
   if (!gateSession.appView) {
@@ -171,7 +207,7 @@ function onSignerTag(tag) {
     gateSession.inputReady = false;
     const [label, message, tone] = OUTCOME_WORDS[tag.outcome] || OUTCOME_WORDS.error;
     setTerminalStatus(label, message || tag.message || "The signing program stopped.", tone);
-    if(state?.is_trailer&&tag.outcome==="approved"&&(['footage_spend','footage_take'].includes(gateDetail?.request?.kind)||gateDetail?.packet?.footage_resolution))afterFootageSignature(gateSession.requestId,gateDetail?.request?.kind);
+    if(state?.is_trailer&&tag.outcome==='approved')finishSignedRequest(gateSession.signingRequest).catch(error=>signingStopped(gateSession.signingRequest,error.message));
   } else if (tag.ask === "note" && gateSession.note !== null && noteFits(gateSession.note, tag)) {
     const note = gateSession.note;
     gateSession.note = null;
@@ -292,6 +328,7 @@ function renderSignPanel() {
       el("p", { class: "sign-done-word" }, word),
       el("p", { class: "sign-done-line" }, terminalMessage.textContent || line),
       el("button", { type: "button", class: "quiet-btn", onclick: closeSigning }, "Close"))];
+    if(gateSession.outcome==='error')kids.push(el('button',{type:'button',class:'quiet-btn',onclick:()=>startSigning(gateSession.requestId)},'Try signing again'));
   } else if (gateSession.appView && gateSession.ask) {
     kids = askView(gateSession.ask);
   } else if (!gateSession.textFallback || gateSession.appView) {
@@ -312,12 +349,19 @@ function resetSignPanel() {
 
 function closeSigning() {
   const socket = gateSession.socket;
-  if (socket && socket.readyState === WebSocket.OPEN) socket.close(1000);
+  gateSession.socket=null;
+  if (socket && socket.readyState === WebSocket.OPEN){
+    if(!gateSession.outcome)socket.send(JSON.stringify({type:'cancel'}));
+    socket.close(1000);
+  }
   resetSignPanel();
   delete terminalShell.dataset.used;
   terminalShell.hidden = true;
   render();
 }
+window.addEventListener('pagehide',()=>{
+  if(gateSession.socket?.readyState===WebSocket.OPEN&&!gateSession.outcome)gateSession.socket.send(JSON.stringify({type:'cancel'}));
+});
 
 terminalToggle.addEventListener("click", () => {
   gateSession.showText = !gateSession.showText;
@@ -1587,6 +1631,10 @@ function startSigning(requestId) {
   socket.binaryType = "arraybuffer";
   gateSession.socket = socket;
   gateSession.requestId = requestId;
+  const header=gateDetail?.request;
+  gateSession.signingRequest=Object.freeze({id:requestId,kind:header?.kind,scope:header?.scope,entity:header?.entity_id});
+  const signingRequest=gateSession.signingRequest;
+  gateSession.refreshedPacketError=true;
   gateSession.inputReady = false;
   gateSession.receivedRefresh = false;
   gateSession.evidenceChanged = false;
@@ -1629,6 +1677,7 @@ function startSigning(requestId) {
       const packetError = Boolean(
         gateDetail.packet_error || gateDetail.error || gateDetail.packet?.packet_error,
       );
+      gateSession.refreshedPacketError=packetError;
       setTerminalStatus(
         packetError ? "Evidence missing" : changed ? "Pictures changed" : "Pictures checked",
         packetError
@@ -1641,9 +1690,7 @@ function startSigning(requestId) {
       return;
     }
     if (message.type === "input_ready") {
-      const packetError = Boolean(
-        gateDetail?.packet_error || gateDetail?.error || gateDetail?.packet?.packet_error,
-      );
+      const packetError = gateSession.refreshedPacketError;
       if (!gateSession.receivedRefresh || packetError) return;
       setTerminalStatus(
         gateSession.evidenceChanged ? "Pictures changed" : "Ready",
@@ -1675,6 +1722,7 @@ function startSigning(requestId) {
     if (message.type === "status") {
       if (message.signer === "exited") gateSession.inputReady = false;
       if (gateSession.outcome) return;
+      if(message.signer==='exited'){signingStopped(signingRequest,'The signing program stopped.');return;}
       setTerminalStatus(
         message.signer === "exited" ? "Finished" : "Signing",
         message.exit_code == null ? "The signing program is running." : message.exit_code ? `The signing program stopped with an error (code ${message.exit_code}).` : "The signing program finished.",
@@ -1689,7 +1737,7 @@ function startSigning(requestId) {
     if (message.type === "bye") {
       gateSession.inputReady = false;
       if (gateSession.outcome) return;
-      setTerminalStatus("Done", message.reason ? `Signing closed: ${message.reason}.` : "Signing is done.", "");
+      signingStopped(signingRequest,'The signing connection ended.');
     }
   });
   socket.addEventListener("error", () => {
@@ -1701,8 +1749,7 @@ function startSigning(requestId) {
     gateSession.socket = null;
     if (!gateSession.outcome) {
       const [label, message, tone] = websocketCloseMessage(event.code, event.reason);
-      setTerminalStatus(label, message, tone);
-      gateSession.ask = null;
+      signingStopped(signingRequest,message);
     }
     renderSignPanel();
     refresh().catch(() => {});
@@ -2164,7 +2211,7 @@ const takeTiles = new Map();   // take_id -> {src, video, note}
 let footageSigningPlayer = null;
 function fullFootagePlayer(s,take) {
   const key=JSON.stringify([s.project_id,take.path,take.sha256]);
-  if(footageSigningPlayer?.key!==key)footageSigningPlayer={key,node:el("video",{controls:"",preload:"metadata",src:mediaURL(s.project_id,take.path),"aria-label":"Full footage take",style:"width:100%;max-height:65vh"})};
+  if(footageSigningPlayer?.key!==key||footageSigningPlayer.node.error)footageSigningPlayer={key,node:el("video",{controls:"",preload:"metadata",src:mediaURL(s.project_id,take.path),"aria-label":"Full footage take",style:"width:100%;max-height:65vh"})};
   return footageSigningPlayer.node;
 }
 const takeBusy = new Set();
@@ -2471,7 +2518,8 @@ function renderGateViewer(s) {
   const packetError = Boolean(gateDetail.error || (gateDetail.packet && gateDetail.packet.packet_error));
   if(header.kind==='trailer_card')return renderCardSigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;await refreshCutting();render();});
   if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&['edit','compose'].includes(header.stage))return renderDeliverySigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();await refreshDelivery();});
-  if((['audio_spend','audio_take','audio_resolution'].includes(header.kind)&&!gateDetail.packet?.footage_resolution)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError,gateDetail.packet?.budget_warning),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();},stale);
+  const footageResolution=header.kind==='audio_resolution'&&gateDetail.request?.approval_record?.request?.provider==='fal';
+  if((['audio_spend','audio_take','audio_resolution'].includes(header.kind)&&!footageResolution)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError,gateDetail.packet?.budget_warning),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();},stale);
   let frames = gateFrames(gateDetail.packet);
   const key = entityKeyOf(header);
   const entity = key ? buildRoster(s).find((e) => e.key === key) : null;
@@ -2500,7 +2548,7 @@ function renderGateViewer(s) {
   const trailerCreation = Boolean(s.trailer_setup_pending && header.kind === "pipeline_migration");
   const footageCard=gateDetail.packet?.footage_card;
   const resolutionCard=gateDetail.packet?.footage_resolution;
-  const footageGate=["footage_spend","footage_take"].includes(header.kind) || Boolean(resolutionCard);
+  const footageGate=["footage_spend","footage_take"].includes(header.kind) || footageResolution;
   const facts = footageGate ? [["What you are signing",gateWords(header.kind)],["Stage approval","None"]] : trailerCreation ? [["What you are signing", "Trailer creation"], ["Stage approval", "None"], ["Spending permission", "None"]] : [
     ["what", gateWords(header.kind)], ["kind", header.kind], ["stage", header.stage], ["scope", header.scope],
     ["entity", header.entity_id], ["snapshot", fmtGateTime(gateDetail.snapshot_at)],
