@@ -52,7 +52,9 @@ def test_old_window_cannot_adopt_new_revision_by_checking(root,monkeypatch,isola
             first.get_by_role('button',name='Check paper cut against approved story',exact=True).click()
             expect(first.get_by_role('status')).to_contain_text('changed elsewhere',timeout=10000)
             expect(first.get_by_role('button',name='Open the latest saved version',exact=True)).to_be_visible()
-            first.get_by_role('button',name='Save a new version',exact=True).click()
+            with page.expect_response(lambda r:r.url.endswith('/paper-cut') and r.request.method=='POST') as refused:
+                first.get_by_role('button',name='Save a new version',exact=True).click()
+            assert refused.value.status>=400
             expect(first.get_by_role('status')).not_to_contain_text('Saved.')
             assert edit.read_revision(root)==current
             assert not page.errors and all(not v for v in isolated_standins.values())
