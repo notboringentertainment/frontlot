@@ -181,7 +181,8 @@ def snapshot(root):
     for r in receipts.verified_generation_receipts(root):
         if r.get('audio_approval_receipt_id'):charges[r['audio_approval_receipt_id']]=r
     for r in receipts.verified_approvals(root,'audio_resolution'):
-        record=r['record'];original=record['reservation']['output_hint']['audio_approval_receipt_id']
+        record=r['record'];original=record['reservation']['output_hint'].get('audio_approval_receipt_id')
+        if not original:continue
         charges.setdefault(original,{'cash_usd':record['cash_usd'],'credits_usd':record['credits_usd']})
     charges=list(charges.values())
     from backlot.music_panel import current_brief
@@ -264,10 +265,8 @@ def restore_prices(root):
 
 def apply_resolution(root,identity):
     root=root_checked(root)
-    rows=receipts.verified_approvals(root,'audio_resolution',entity_id=identity)
-    if len(rows)!=1:raise ValueError('Sign one account outcome before applying this resolution.')
-    r=rows[0]['record']
-    return audio.resolve_charge(root,identity,r['charged'],r['cash_usd'],r['credits_usd'],r['note'])
+    from lib.media_spending import apply_signed_resolution
+    return apply_signed_resolution(root,identity)
 
 def mount(app,require_writer,safe_root,invalidate):
     import asyncio

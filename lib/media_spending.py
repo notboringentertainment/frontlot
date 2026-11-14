@@ -105,17 +105,71 @@ def _resolution_material(root,identity,charged,cash,credits,note):
 
 
 def resolve_charge(root,identity,charged,cash,credits,note):
-    from tools.cost_tracker import reservation_lock,reconcile_paid_call
+    from tools.cost_tracker import reservation_lock,reconcile_paid_call,load_reservations
     with call_lock(root,reentrant=False), reservation_lock(root):
-        record=_resolution_material(root,identity,charged,cash,credits,note)
-        rows=receipts.verified_approvals(root,'audio_resolution',entity_id=identity)
-        if len(rows)>1:
-            raise ValueError('This request has conflicting signed account outcomes. Nothing was resolved.')
-        approval=receipts.find_approval(root,'audio_resolution',record_sha256=record_sha256(record),entity_id=identity)
-        if approval is None:raise ValueError("This resolution needs Ben's signed approval.")
+        record=signed_resolution(root,identity)
+        if record is None:raise ValueError("This resolution needs Ben's signed approval.")
+        _money(cash);_money(credits)
+        if type(charged) is not bool or not isinstance(note,str) or (charged,cash,credits,note.strip())!=(record['charged'],record['cash_usd'],record['credits_usd'],record['note']):
+            raise ValueError('This account outcome differs from your signed review. Nothing was resolved.')
         tracker=_tracker(root,load_current_verified_project_config(root))
+        current=load_reservations(root).get(identity)
+        if current and current['state'] in ('completed','failed'):
+            changing={'state','actual_usd','updated_at'}
+            origin=lambda r:{k:v for k,v in r.items() if k not in changing}
+            entry=tracker._find(current['cost_entry_id'])
+            if (origin(current)!=origin(record['reservation']) or current['state']!=('completed' if charged else 'failed')
+                or current.get('actual_usd')!=round(cash+credits,4)
+                or entry.get('status')!=('completed' if charged else 'failed')
+                or entry.get('actual_usd')!=round(cash+credits,4) or entry.get('reserved_usd')!=0):
+                raise ValueError('The recorded charge does not match your signed account outcome. Nothing was changed.')
+            return {'message':'The signed account outcome is already recorded. Nothing was charged or changed again.'}
+        if _resolution_material(root,identity,charged,cash,credits,note)!=record:
+            raise ValueError('The held request changed since your account review. Nothing was resolved.')
         reconcile_paid_call(root,identity,round(cash+credits,4),'completed' if charged else 'failed',tracker)
         return {'message':'The account outcome has been recorded. This approval cannot submit the request again.'}
+
+
+def signed_resolution(root,identity):
+    """Read the one verified account outcome, without trusting a request file."""
+    rows=receipts.verified_approvals(root,'audio_resolution',entity_id=identity)
+    if not rows:return None
+    if len(rows)!=1:raise ValueError('This request has conflicting signed account outcomes. Nothing was resolved.')
+    record=rows[0]['record']
+    if record.get('reservation_id')!=identity or type(record.get('charged')) is not bool:
+        raise ValueError('The signed account outcome cannot be verified. Nothing was resolved.')
+    _money(record.get('cash_usd'));_money(record.get('credits_usd'))
+    if (not record['charged'] and (record['cash_usd'] or record['credits_usd'])) or not isinstance(record.get('note'),str) or not record['note'].strip():
+        raise ValueError('The signed account outcome cannot be verified. Nothing was resolved.')
+    if reservation_request(root,record['reservation'])!=record['request']:
+        raise ValueError('The signed account outcome no longer matches its original request. Nothing was resolved.')
+    return record
+
+
+def apply_signed_resolution(root,identity):
+    root=_root(root)
+    record=signed_resolution(root,identity)
+    if record is None:raise ValueError('Sign one account outcome before applying this resolution. Nothing has been signed yet; review it and start signing.')
+    # A stopped signer may have committed its receipt before marking the
+    # request done. Reuse that exact signature, never mint another one.
+    from lib import gates
+    from scripts.gate_approve import _confined,_complete_done,REQUIRED
+    from lib.run_common import validate_request_id,RunError
+    with gates.receipt_lock(Path(root).name,'approval'):
+        row,=receipts.verified_approvals(root,'audio_resolution',entity_id=identity)
+        directory=_confined(Path(root)/'.gate-requests',Path(root))
+        for path in directory.glob('*.json'):
+            try:
+                request=json.loads(_confined(path,Path(root)).read_text())
+                if not isinstance(request,dict) or not all(k in request for k in REQUIRED) or 'declined_note' in request:continue
+                if validate_request_id(request.get('request_id'))!=path.stem:continue
+            except (ValueError,OSError,TypeError,RunError):continue
+            if (request.get('kind')=='audio_resolution' and request.get('entity_id')==identity
+                and request.get('approval_record')==record and request.get('project_id')==Path(root).name
+                and request.get('stage')==row.get('stage') and request.get('scope')==row.get('scope')
+                and request.get('source_checkpoint_digest')==row.get('source_checkpoint_digest')):
+                _complete_done(path,Path(root),request,row['receipt_id'])
+    return resolve_charge(root,identity,record['charged'],record['cash_usd'],record['credits_usd'],record['note'])
 
 _call_owners = threading.local()
 

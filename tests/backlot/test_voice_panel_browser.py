@@ -45,15 +45,10 @@ def board(root,monkeypatch):
     assert instance.started
     try:yield f'http://127.0.0.1:{port}'
     finally:
-        instance.should_exit=True;thread.join(15);assert not thread.is_alive()
-        from backlot.tty import session_paths
-        path=session_paths(root.name)['sidecar']
-        if path.exists():
-            value=json.loads(path.read_text());pid=value.get('pid')
-            if pid:
-                import signal
-                try:os.kill(pid,signal.SIGTERM)
-                except ProcessLookupError:pass
+        from tests.backlot.tty_helpers import finish_board_signers
+        try:finish_board_signers(instance.config.app)
+        finally:
+            instance.should_exit=True;thread.join(15);assert not thread.is_alive()
 
 def assert_board_locations(home,signing,metadata):
     import tempfile
@@ -193,20 +188,19 @@ def test_unknown_charge_controls_sign_and_apply_account_review(voice_world,monke
             panel.get_by_label('What I checked in the account',exact=True).fill('I checked my account. Nothing was charged.')
             panel.get_by_role('button',name='Review and sign this account outcome',exact=True).click()
             page.get_by_role('button',name='Start signing',exact=True).click()
-            page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=20000)
-            expect(page.locator('#gate-sign-panel').get_by_text('Your approval is recorded. You can close this.',exact=True)).to_be_visible(timeout=20000)
             old=vp.snapshot(root);held=[]
             def hold_first(route):
                 if not held:held.append(route)
                 else:route.continue_()
             page.route(f'{url}/api/project/{root.name}/voice',hold_first)
-            page.get_by_role('button',name='Return to audio',exact=True).click()
-            panel.get_by_role('button',name='Apply the signed account outcome',exact=True).click()
-            expect(panel.get_by_role('status')).to_contain_text('account outcome has been recorded',timeout=15000)
-            page.wait_for_timeout(500)
-            assert held
+            page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=20000)
+            from tools.cost_tracker import nonterminal_reservations
+            deadline=time.monotonic()+15
+            while nonterminal_reservations(root) or not held:
+                assert time.monotonic()<deadline,'The signed account outcome was not applied automatically.'
+                page.wait_for_timeout(20)
             held[0].fulfill(status=200,content_type='application/json',body=json.dumps(old))
-            expect(panel.get_by_role('heading',name='Review an unresolved audio charge',exact=True)).to_have_count(0)
+            expect(panel.get_by_role('heading',name='Review an unresolved audio charge',exact=True)).to_have_count(0,timeout=15000)
             assert len(posts)==1 and len(gets)==1 and not errors
             page.close()
         finally:browser.close()

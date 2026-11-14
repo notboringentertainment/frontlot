@@ -10,7 +10,7 @@ from tests.tools.test_signed_footage import film,provider,prepare,approve,worksp
 
 @pytest.fixture(autouse=True)
 def signing_folder(monkeypatch):
-    parent=Path(os.environ['FRONTLOT_FOLLOWUPS_PARENT'])
+    parent=Path(os.environ.get('FRONTLOT_FOLLOWUPS_PARENT') or Path(os.environ['TMPDIR']).parent)
     folder=parent/('g'+uuid.uuid4().hex[:6]);folder.mkdir()
     monkeypatch.setenv('OPENMONTAGE_GATES_DIR',str(folder))
     monkeypatch.setenv('FRONTLOT_CLAUDE','/nonexistent/invented-assistant')
@@ -71,7 +71,11 @@ print(json.dumps([t.budget_spent_usd,t.budget_reserved_usd,t.budget_remaining_us
 
 def signed_review(root,reservation,charged=False):
     from lib.media_spending import request_resolution
-    from tests.tools.test_signed_footage import sign
+    from lib import gates,receipts
+    from lib.canonical_json import record_sha256
     gate=request_resolution(root,reservation['reservation_id'],charged,.001 if charged else 0,.002 if charged else 0,'I checked the invented service account.')
-    sign(root,'audio_resolution',gate['approval_record'],reservation['reservation_id'])
+    with gates.handler_context():
+        token=gates.mint_gate_token(root.name,gate['stage'],gate['scope'],record_sha256(gate['approval_record']),user_response='yes')
+        receipts.record_human_approval(root,root.name,gate['stage'],gate['scope'],gate['approval_record'],token,
+            'audio_resolution',entity_id=reservation['reservation_id'])
     return gate
