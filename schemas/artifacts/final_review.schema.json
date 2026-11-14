@@ -5,7 +5,11 @@
   "description": "Structured self-review of the rendered output. The compose stage must produce this artifact to prove the agent inspected the actual rendered video before presenting it to the user. If status is 'revise' or 'fail', the agent must not present the video as complete.",
   "type": "object",
   "required": ["version", "output_path", "status", "checks"],
+  "allOf": [{"if": {"required": ["trailer"]}, "then": {"required": ["edit_revision_sha256", "export_sha256"], "properties": {"checks": {"properties": {"technical_probe": {"properties": {"duration_seconds": {"maximum": 120}}}}}}}}],
   "properties": {
+    "trailer": {"type": "object", "required": ["kind", "target_duration_seconds", "fps", "approval_points"], "properties": {"kind": {"const": "trailer"}, "target_duration_seconds": {"type": "number", "minimum": 1, "maximum": 120}, "fps": {"const": 24}, "approval_points": {"const": {"edit": "rough_cut", "compose": "final_export"}}}, "additionalProperties": false},
+    "edit_revision_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "export_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "version": { "type": "string", "const": "1.0" },
     "output_path": {
       "type": "string",
@@ -129,6 +133,72 @@
               "items": { "type": "string" }
             }
           }
+        },
+        "canon_pass": {
+          "type": "object",
+          "description": "Authored-film canon verification of the rendered output. Required at compose by the authored-canon validation profile: every lock and protected line gets an explicit verdict against the actual render.",
+          "required": ["status", "locks", "protected_lines", "continuity_spotchecks", "tone", "unresolved_flags"],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["pass", "fail"],
+              "description": "pass only when every lock is honored and every protected line is present verbatim and audible"
+            },
+            "locks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["lock_id", "verdict"],
+                "properties": {
+                  "lock_id": { "type": "string", "minLength": 1 },
+                  "verdict": { "type": "string", "enum": ["honored", "violated", "uncertain"] },
+                  "evidence": { "type": "string", "description": "How this was verified (frame refs, transcript excerpt, timestamp)" }
+                },
+                "additionalProperties": false
+              }
+            },
+            "protected_lines": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["line", "present_verbatim", "audible"],
+                "properties": {
+                  "line": { "type": "string", "minLength": 1 },
+                  "present_verbatim": { "type": "boolean" },
+                  "audible": { "type": "boolean", "description": "The line is hearable in the mix, not just present in the subtitle track" },
+                  "evidence": { "type": "string" }
+                },
+                "additionalProperties": false
+              }
+            },
+            "continuity_spotchecks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["subject", "verdict"],
+                "properties": {
+                  "subject": { "type": "string" },
+                  "verdict": { "type": "string", "enum": ["consistent", "inconsistent", "uncertain"] },
+                  "notes": { "type": "string" }
+                },
+                "additionalProperties": false
+              }
+            },
+            "tone": {
+              "type": "object",
+              "required": ["must_never_feel_like_verdict"],
+              "properties": {
+                "must_never_feel_like_verdict": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            },
+            "unresolved_flags": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Anything the canon pass could not verify — non-empty means the pass cannot be 'pass'"
+            }
+          },
+          "additionalProperties": false
         },
         "atelier": {
           "type": "object",

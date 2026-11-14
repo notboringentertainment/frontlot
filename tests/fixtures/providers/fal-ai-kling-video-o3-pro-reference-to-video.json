@@ -1,0 +1,57 @@
+{
+  "model_id": "fal-ai/kling-video/o3/pro/reference-to-video",
+  "app_id": "fal-ai/kling-video",
+  "verified_at": "2026-08-25",
+  "sources": [
+    "https://fal.ai/models/fal-ai/kling-video/o3/pro/reference-to-video/api",
+    "https://fal.ai/models/fal-ai/kling-video/o3/pro/reference-to-video/llms.txt"
+  ],
+  "endpoints": {
+    "sync": "https://fal.run/fal-ai/kling-video/o3/pro/reference-to-video",
+    "queue": "https://queue.fal.run/fal-ai/kling-video/o3/pro/reference-to-video",
+    "note": "status/result/cancel URLs use the app id fal-ai/kling-video (first two path segments), per fal-queue.json app_id_rule."
+  },
+  "input": {
+    "required": [],
+    "one_of": [["prompt"], ["multi_prompt"]],
+    "properties": {
+      "prompt": {"type": "string", "note": "XOR multi_prompt. References are prompt-addressable as @Image1..@ImageN (image_urls order) and @Element1..@ElementN (elements order)."},
+      "multi_prompt": {"type": "array", "items": {"type": "object", "required": ["prompt", "duration"],
+        "properties": {"prompt": {"type": "string"}, "duration": {"enum": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"]}}}},
+      "start_image_url": {"type": "string", "note": "optional start frame"},
+      "end_image_url": {"type": "string", "note": "optional end frame"},
+      "image_urls": {"type": "array", "items": {"type": "string"},
+        "note": "style / appearance references, addressed in the prompt as @Image1, @Image2 ..."},
+      "elements": {"type": "array", "items": {"type": "object", "required": ["frontal_image_url", "reference_image_urls"],
+        "properties": {
+          "frontal_image_url": {"type": "string"},
+          "reference_image_urls": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3},
+          "video_url": {"type": "string", "note": "optional; only ONE element in the request may carry a video"},
+          "voice_id": {"type": "string"}
+        }},
+        "note": "addressed in the prompt as @Element1, @Element2 ..."},
+      "duration": {"enum": ["3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"], "default": "5"},
+      "aspect_ratio": {"enum": ["16:9", "9:16", "1:1"], "default": "16:9"},
+      "generate_audio": {"type": "boolean", "default": false},
+      "shot_type": {"enum": ["customize", "intelligent"]}
+    },
+    "limits": {
+      "max_total_refs_with_video": 4,
+      "max_total_refs_with_video_note": "doc: 'maximum 4 total (elements + reference images) when using video'",
+      "max_elements_without_video": null,
+      "max_elements_without_video_note": "UNCONFIRMED by the doc; the tool applies a conservative cap of 9 images (KlingReferenceVideo.CONSERVATIVE_IMAGE_CAP) until verified live",
+      "max_element_reference_images": 3,
+      "elements_with_video": 1
+    }
+  },
+  "output": {"required": ["video"], "video_url_path": "video.url"},
+  "pricing": {"usd_per_second": {"audio_off": 0.112, "audio_on": 0.14}},
+  "idempotency": {"client_key_supported": false, "server_request_id": true, "no_retry_header": "X-Fal-No-Retry: 1"},
+  "start_frame_with_references": true,
+  "related": {
+    "fal-ai/kling-video/v3/pro/image-to-video": {
+      "note": "start-frame-driven shots: start_image_url is REQUIRED, elements supported; not implemented by kling_reference_video",
+      "pricing": {"usd_per_second": {"audio_off": 0.112, "audio_on": 0.168}}
+    }
+  }
+}

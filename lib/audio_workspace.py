@@ -1,0 +1,451 @@
+"""Local voice/music takes. Paid submissions still belong to the audio boundary."""
+import hashlib
+import json
+import os
+import stat
+import uuid
+from pathlib import Path
+from lib.canonical_json import record_sha256
+from lib import receipts
+from lib.media_spending import (_root, gate_request, call_lock, PaidCallBusy,
+    reservation_request, resolution_record, resolve_charge, request_resolution, take_decisions, check_quote)
+from tools.audio._legacy_guard import _checked_path
+
+TEST_ONLY = 'For the test trailer only until a person at ElevenLabs confirms otherwise in writing.'
+PRICE_UNAVAILABLE = 'A firm maximum charge for this account, voice and model is not established. This request cannot be approved.'
+
+
+class IncompleteAudioRecord(ValueError):
+    def __init__(self):
+        super().__init__('This audio take record is incomplete. Recover the paid take from its receipt, or choose the original imported file again.')
+
+
+def _directory(root):
+    root=_root(root)
+    directory=root/'.audio-workspace'
+    if directory.is_symlink():raise ValueError('Audio records must not use links.')
+    directory.mkdir(exist_ok=True)
+    return directory
+
+
+def _save(root,record,*,replace_incomplete=False):
+    from lib.state_io import atomic_write_json
+    directory=_directory(root)
+    path=_checked_path(directory/(record['id']+'.json'))
+    if path.exists():
+        if not replace_incomplete:raise FileExistsError('This audio take record already exists.')
+        try:read(root,record['id'])
+        except IncompleteAudioRecord:pass
+        else:raise ValueError('A complete audio take record cannot be replaced by recovery.')
+    atomic_write_json(path,record)
+    return record
+
+
+def read(root,identity):
+    if not isinstance(identity,str) or str(uuid.UUID(identity))!=identity:raise ValueError('Invalid audio take.')
+    path=_directory(root)/(identity+'.json')
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):raise ValueError('Audio records must be plain files.')
+        try:
+            with os.fdopen(os.dup(fd)) as f:record=json.load(f)
+        except (json.JSONDecodeError,UnicodeDecodeError):raise IncompleteAudioRecord() from None
+    finally:os.close(fd)
+    if not isinstance(record,dict):raise IncompleteAudioRecord()
+    if ('id' in record and record['id']!=identity) or ('project_id' in record and record['project_id']!=Path(root).name):
+        raise ValueError('Audio belongs to another production.')
+    required={'id','project_id','kind','origin','sha256','path','duration_seconds','codec'}
+    if not required<=record.keys():raise IncompleteAudioRecord()
+    generated=receipts.verified_generation_receipts(root)
+    actual=None
+    if isinstance(record.get('path'),str):
+        local=_checked_path(Path(root)/record['path']);local.relative_to(Path(root).resolve())
+        if local.is_file():actual=hashlib.sha256(local.read_bytes()).hexdigest()
+    matching=[r for r in generated if r['output_sha256'] in {record.get('sha256'),actual}
+              or r['receipt_id']==record.get('generation_receipt_id')]
+    approved={r['receipt_id']:r['record'] for r in receipts.verified_approvals(root,'audio_spend')}
+    sources=[(r,approved.get(r.get('audio_approval_receipt_id'))) for r in generated]
+    sources=[(r,request) for r,request in sources if request and (r['receipt_id']==record.get('generation_receipt_id') or request.get('request_id')==identity)]
+    if sources and any(record.get('origin')!='generated' or record.get('kind')!=request['kind'] for r,request in sources):
+        raise ValueError('Generated audio provenance cannot be changed by editing its record. Generated music stays marked as test-only.')
+    if record.get('origin')=='imported' and matching:
+        raise ValueError('Generated audio provenance cannot be changed to imported. Generated music stays marked as test-only.')
+    if record.get('origin') not in ('generated','imported'):raise IncompleteAudioRecord()
+    required=({'approved_request_id','approval_record_sha256','generation_receipt_id','binding','requested_duration_seconds'}
+              if record.get('origin')=='generated' else {'source','licence_note'} if record.get('origin')=='imported' else set())
+    if not required<=record.keys():raise IncompleteAudioRecord()
+    # Release status is fixed by provenance, never editable take metadata.
+    if record.get('origin')=='generated' and record.get('kind')=='music':
+        record['release_note']=TEST_ONLY
+    return record
+
+
+def line(root,index):
+    from lib.trailer_contract import edit_digest
+    path=Path(root)/'artifacts/edit_decisions.json'
+    _checked_path(path)
+    edit=require_checked_paper(root)['current']
+    if edit.get('edit_revision_sha256')!=edit_digest(edit):raise ValueError('The saved paper cut cannot be verified.')
+    if type(index) is not int or index<0:raise ValueError('Choose a spoken line from the paper cut.')
+    rows=edit.get('paper_cut',{}).get('lines',[])
+    if index>=len(rows):raise ValueError('That spoken line is no longer in the paper cut.')
+    row=rows[index]
+    if not isinstance(row.get('text'),str) or not row['text'].strip():raise ValueError('The spoken line needs exact words.')
+    if any(type(row.get(k)) is not int for k in ('start_frame','duration_frames')) or row['start_frame']<0 or row['duration_frames']<1:
+        raise ValueError('The spoken line needs whole-frame timing.')
+    return row
+
+
+def require_checked_paper(root):
+    from lib.trailer_edit import paper_state
+    state=paper_state(root)
+    if not state.get('usable_downstream'):
+        raise ValueError('Audio needs a checked, current paper cut before approval or sending. Review the story and save the paper cut first.')
+    return state
+
+
+def import_music(root,source,origin,licence,*,kind='music',brief_id=None):
+    noun='effect' if kind=='effect' else 'music'
+    if not isinstance(licence,str) or not licence.strip():raise ValueError(f'Write a licence note before importing this {noun}.')
+    if not isinstance(origin,str) or not origin.strip():raise ValueError(f'Record where this {noun} came from before importing it.')
+    raw=Path(source).expanduser()
+    if not raw.is_absolute() or '..' in raw.parts:raise ValueError('Choose a direct file path without path tricks or links.')
+    path=_checked_path(raw)
+    parent=os.open(path.anchor,os.O_RDONLY|os.O_DIRECTORY)
+    try:
+        for part in path.parts[1:-1]:
+            child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=parent)
+            os.close(parent);parent=child
+        fd=os.open(path.name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=parent)
+    finally:os.close(parent)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):raise ValueError('Choose a plain audio file, without links.')
+        with os.fdopen(os.dup(fd),'rb') as f:data=f.read(100_000_001)
+    finally:os.close(fd)
+    if not data or len(data)>100_000_000:raise ValueError('Choose an audio file smaller than one hundred megabytes.')
+    if any(r['output_sha256']==hashlib.sha256(data).hexdigest() for r in receipts.verified_generation_receipts(root)):
+        raise ValueError('This file matches audio generated by this production. Keep its generated provenance. Generated music stays marked as test-only and cannot be imported as licensed music.')
+    identity=str(uuid.uuid4());directory=_directory(root)
+    target=directory/(identity+path.suffix.lower())
+    if path.suffix.lower() not in ('.mp3','.wav','.m4a','.aiff','.flac'):raise ValueError('Choose a supported audio file.')
+    with target.open('xb') as f:f.write(data)
+    measured=probe_audio(target,maximum=None)
+    seconds=measured['duration_seconds']
+    binding=None
+    if kind=='effect':
+        binding={'kind':'effect','brief_id':brief_id}
+        current=binding_source(root,binding);binding['source_sha256']=record_sha256(current)
+        binding.update({key:current[key] for key in ('start_frame','shot_index','loop')})
+        if abs(seconds-current['duration_seconds'])>1/24:
+            raise ValueError('The imported effect length must match its saved brief within one frame. Adjust the brief or choose a matching file.')
+    elif kind!='music':raise ValueError('Choose music or a sound effect to import.')
+    take={'id':identity,'project_id':Path(root).name,'kind':kind,'origin':'imported',
+        'source':origin.strip(),'licence_note':licence.strip(),'sha256':hashlib.sha256(data).hexdigest(),
+        'path':str(target.relative_to(root)),'duration_seconds':seconds,'codec':measured['codec']}
+    if binding is not None:take.update(binding=binding,requested_duration_seconds=current['duration_seconds'])
+    return _save(root,take)
+
+
+def _take_decisions(root,take):
+    """Verify the subject of every signature, not just the ledger's entity label."""
+    return take_decisions(root,'audio_take',take['id'],take,identity_key='id',label='audio')
+
+
+def decision_record(root,identity,decision):
+    take=read(root,identity)
+    records=_take_decisions(root,take)
+    if any(record['decision']=='decline' for record in records):
+        raise ValueError('This take was declined. Ask for a new take with its own request and approval.')
+    if decision=='accept' and records:
+        raise ValueError('This take is already accepted. No second acceptance can be signed.')
+    return _decision_material(root,identity,decision)
+
+
+def _decision_material(root,identity,decision):
+    if decision not in ('accept','decline'):raise ValueError('Accept or decline this take.')
+    take=read(root,identity)
+    if take.get('origin')=='generated':
+        from tools.audio._governed import read_request
+        request=read_request(root,take.get('approved_request_id'))
+        approval=receipts.find_approval(root,'audio_spend',record_sha256=record_sha256(request),entity_id=request['request_id'])
+        rows=receipts.verified_generation_receipts(root)
+        if (not approval or record_sha256(request)!=take.get('approval_record_sha256')
+            or take['id']!=request['request_id'] or take['kind']!=request['kind']
+            or take.get('binding')!=request.get('binding')
+            or take.get('requested_duration_seconds')!=request['duration_seconds']
+            or take.get('path')!='assets/audio/'+request['request_id']+'.audio'
+            or not any(r['receipt_id']==take.get('generation_receipt_id') and r['output_sha256']==take['sha256']
+                and r.get('audio_approval_receipt_id')==approval['receipt_id']
+                and r.get('normalized_inputs_hash')==request['input_sha256']
+                and r.get('model_endpoint')==request['model'] and r.get('tool')=='elevenlabs_audio' for r in rows)):
+            raise ValueError('The generated audio provenance cannot be verified.')
+    elif take.get('origin')!='imported':raise ValueError('The audio origin cannot be verified.')
+    path=_checked_path(Path(root)/take['path']);path.relative_to(Path(root).resolve())
+    if hashlib.sha256(path.read_bytes()).hexdigest()!=take['sha256']:raise ValueError('The audio file changed. Nothing was approved.')
+    if take['origin']=='imported' and not take.get('licence_note','').strip():raise ValueError('A licence note is required.')
+    if decision=='accept' and take.get('binding') is not None:
+        source=binding_source(root,take['binding'])
+        check_binding(root,dict(kind=take['kind'],prompt=source['text'],duration_seconds=take.get('requested_duration_seconds',take['duration_seconds']),binding=take['binding'],loop=source.get('loop')))
+    if decision=='accept' and take.get('line_index') is not None and record_sha256(line(root,take['line_index']))!=take.get('line_sha256'):
+        raise ValueError('The spoken line changed. This take needs a fresh look.')
+    return {'take':take,'decision':decision}
+
+
+def request_decision(root,identity,decision):
+    record=decision_record(root,identity,decision)
+    return gate_request(root,'audio_take',identity,record,'Review this audio take, then sign your decision.')
+
+
+
+def take_state(root,take):
+    try:records=_take_decisions(root,take)
+    except ValueError:return 'Needs a fresh look'
+    if not records:return 'Waiting for your decision'
+    if any(record['decision']=='decline' for record in records):return 'Declined'
+    try:current=_decision_material(root,take['id'],'accept')
+    except (ValueError,OSError):return 'Needs a fresh look'
+    if any(record!=current for record in records):return 'Needs a fresh look'
+    return 'Accepted'
+
+
+def state(root):
+    takes=[];warnings=[]
+    for path in _directory(root).glob('*.json'):
+        try:take=read(root,path.stem)
+        except IncompleteAudioRecord as exc:
+            warnings.append(str(exc));continue
+        take['status']=take_state(root,take)
+        if take['origin']=='generated' and take['kind']=='music':take['release_note']=TEST_ONLY
+        takes.append(take)
+    from tools.cost_tracker import nonterminal_reservations
+    from tools.audio._governed import read_request
+    unresolved=[]
+    for reservation in nonterminal_reservations(root):
+        hint=reservation.get('output_hint') or {}
+        if hint.get('kind')!='audio':continue
+        try:request=reservation_request(root,reservation)
+        except (ValueError,OSError,TypeError):request=None
+        unresolved.append({'reservation':reservation,'request':request})
+    return {'takes':takes,'unresolved_requests':unresolved,'record_warnings':warnings}
+
+
+
+def save_music_brief(root,text,seconds,identity=None):
+    import math
+    from lib.state_io import atomic_write_json
+    if not isinstance(text,str) or not text.strip():raise ValueError('Write the exact music brief.')
+    if type(seconds) not in (int,float) or not math.isfinite(seconds) or not 3<=seconds<=120 or seconds*24!=round(seconds*24):
+        raise ValueError('Music needs three seconds to two minutes in whole frames.')
+    directory=_directory(root)/'briefs'
+    if directory.is_symlink():raise ValueError('Music briefs must not use links.')
+    directory.mkdir(exist_ok=True)
+    identity=identity or str(uuid.uuid4())
+    if str(uuid.UUID(identity))!=identity:raise ValueError('Invalid music brief.')
+    path=directory/(identity+'.json')
+    if path.is_symlink():raise ValueError('Music briefs must not use links.')
+    if path.exists():
+        old=path.read_bytes();archive=directory/(identity+'.'+hashlib.sha256(old).hexdigest()+'.history')
+        if not archive.exists():
+            with archive.open('xb') as f:f.write(old)
+    value={'text':text,'duration_seconds':seconds,'instrumental':True}
+    atomic_write_json(path,value)
+    return identity
+
+
+def effect_source(root,value):
+    import math
+    paper=require_checked_paper(root)['current']['paper_cut']
+    if not isinstance(value,dict) or set(value)!={'text','duration_seconds','loop','start_frame','shot_index','shot_sha256'}:
+        raise ValueError('Use the effect controls to save its description, moment, length and loop choice.')
+    if not isinstance(value['text'],str) or not value['text'].strip() or len(value['text'])>4000:
+        raise ValueError('Write an effect description of no more than four thousand characters.')
+    seconds=value['duration_seconds']
+    if type(seconds) not in (int,float) or not math.isfinite(seconds) or not .5<=seconds<=30:
+        raise ValueError('An effect needs half a second to thirty seconds.')
+    if seconds*24!=round(seconds*24):raise ValueError('Effect timing must fall on whole frames at 24 frames per second.')
+    if type(value['loop']) is not bool:raise ValueError('Choose whether this effect should loop.')
+    index=value['shot_index'];start=value['start_frame'];shots=paper['shots']
+    if type(index) is not int or not 0<=index<len(shots) or type(start) is not int:
+        raise ValueError('Choose a moment in the checked paper cut.')
+    shot_start=sum(shot['duration_frames'] for shot in shots[:index]);total=sum(shot['duration_frames'] for shot in shots)
+    if not shot_start<=start<shot_start+shots[index]['duration_frames'] or start+round(seconds*24)>total:
+        raise ValueError('The effect must start in its chosen shot and fit inside the paper cut. Adjust its moment or length.')
+    if record_sha256({'shot':shots[index],'start_frame':shot_start})!=value['shot_sha256']:
+        raise ValueError('This paper-cut moment changed. Save the effect brief again and review a new take.')
+    return value
+
+
+def save_effect_brief(root,text,seconds,loop,start_frame,shot_index,identity=None):
+    from lib.state_io import atomic_write_json
+    paper=require_checked_paper(root)['current']['paper_cut'];shots=paper['shots']
+    if type(shot_index) is not int or not 0<=shot_index<len(shots):raise ValueError('Choose a moment in the checked paper cut.')
+    value={'text':text,'duration_seconds':seconds,'loop':loop,'start_frame':start_frame,'shot_index':shot_index,
+           'shot_sha256':record_sha256({'shot':shots[shot_index],'start_frame':sum(s['duration_frames'] for s in shots[:shot_index])})}
+    effect_source(root,value)
+    directory=_checked_path(_directory(root)/'effects');directory.mkdir(exist_ok=True)
+    identity=identity or str(uuid.uuid4())
+    if not isinstance(identity,str) or str(uuid.UUID(identity))!=identity:raise ValueError('Choose a valid saved effect brief.')
+    path=_checked_path(directory/(identity+'.json'))
+    if path.exists():
+        old=path.read_bytes();archive=directory/(identity+'.'+hashlib.sha256(old).hexdigest()+'.history')
+        if not archive.exists():
+            with archive.open('xb') as f:f.write(old)
+    atomic_write_json(path,value)
+    return identity
+
+
+def binding_source(root,binding):
+    if not isinstance(binding,dict):raise ValueError('This audio needs its exact saved line or cue brief.')
+    if binding.get('kind')=='speech':return line(root,binding.get('line_index'))
+    if binding.get('kind')=='effect':
+        identity=binding.get('brief_id')
+        if not isinstance(identity,str) or str(uuid.UUID(identity))!=identity:raise ValueError('Choose a saved effect brief.')
+        value=json.loads(_checked_path(_directory(root)/'effects'/(identity+'.json')).read_text())
+        return effect_source(root,value)
+    if binding.get('kind')!='music':raise ValueError('Unknown audio source.')
+    marker_path=Path(root)/'project.json'
+    marker=json.loads(marker_path.read_text()) if marker_path.exists() else {}
+    from lib.trailer_contract import signed_trailer_pin,checkpoint_trailer_evidence
+    if ((Path(root)/'artifacts/edit_decisions.json').exists() or marker.get('production_kind')=='trailer'
+        or marker.get('pipeline_type')=='authored-film@1.6' or signed_trailer_pin(root) or checkpoint_trailer_evidence(root)):
+        require_checked_paper(root)
+    identity=binding.get('brief_id')
+    if not isinstance(identity,str) or str(uuid.UUID(identity))!=identity:raise ValueError('Invalid music brief.')
+    path=_checked_path(_directory(root)/'briefs'/(identity+'.json'))
+    value=json.loads(path.read_text())
+    import math
+    if (not isinstance(value,dict) or value.get('instrumental') is not True or not isinstance(value.get('text'),str) or not value['text'].strip()
+        or type(value.get('duration_seconds')) not in (int,float) or not math.isfinite(value['duration_seconds'])
+        or not 3<=value['duration_seconds']<=120 or value['duration_seconds']*24!=round(value['duration_seconds']*24)):
+        raise ValueError('Music needs an instrumental brief and whole-frame timing.')
+    return value
+
+
+def check_binding(root,record):
+    binding=record.get('binding')
+    current=binding_source(root,binding)
+    if record_sha256(current)!=binding.get('source_sha256'):
+        raise ValueError('The spoken line or music brief changed. This take needs a fresh look.')
+    prompt=current.get('text');seconds=current.get('duration_frames',0)/24 if binding['kind']=='speech' else current.get('duration_seconds')
+    if record['kind']!=binding['kind'] or record['prompt']!=prompt or record['duration_seconds']!=seconds:
+        raise ValueError('The request no longer matches its exact line or brief.')
+    if binding['kind']=='effect' and (record.get('loop')!=current['loop'] or any(binding.get(k)!=current[k] for k in ('start_frame','shot_index','loop'))):
+        raise ValueError('The effect loop choice changed. Prepare and sign a new request.')
+    return current
+
+
+def prepare_request(root,kind,model,*,line_index=None,voice=None,brief_id=None,performance_notes='',voice_label=None):
+    from lib.audio_prices import quote
+    from tools.audio import _governed
+    import re
+    if not isinstance(model,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',model):raise ValueError('Choose an explicit audio model.')
+    if kind=='speech' and (not isinstance(voice,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',voice)):
+        raise ValueError('Choose an explicit voice from the intended account.')
+    binding={'kind':kind}
+    if kind=='speech':binding['line_index']=line_index
+    elif kind in ('music','effect'):binding['brief_id']=brief_id
+    else:raise ValueError('Choose voice, instrumental music or a sound effect.')
+    source=binding_source(root,binding);binding['source_sha256']=record_sha256(source)
+    if kind=='effect':binding.update({key:source[key] for key in ('start_frame','shot_index','loop')})
+    if not isinstance(performance_notes,str) or len(performance_notes)>2000:
+        raise ValueError('Keep pronunciation and delivery notes under two thousand characters.')
+    if performance_notes or voice_label is not None:
+        binding.update(performance_notes=performance_notes,voice_label=voice_label,voice_rights_confirmed=True)
+    seconds=source['duration_frames']/24 if kind=='speech' else source['duration_seconds']
+    price=quote(root,kind,source['text'],seconds)
+    record=_governed.prepare(root,kind=kind,model=model,voice=voice,prompt=source['text'],duration_seconds=seconds,
+        max_cash_usd=price['max_cash_usd'],max_credits_usd=price['max_credits_usd'],price_expires_at=price['price_expires_at'],
+        binding=binding,price_basis_sha256=price['price_basis_sha256'],loop=source.get('loop'))
+    gate_request(root,'audio_spend',record['request_id'],record,'Review this individual audio request. '+(TEST_ONLY if kind=='music' else 'One signature buys one call.'))
+    return record
+
+
+def check_price(root,record):
+    from lib.audio_prices import quote
+    price=quote(root,record['kind'],record['prompt'],record['duration_seconds'])
+    check_quote(record,price,'audio')
+    check_binding(root,record)
+    return price
+
+
+def _generation_material(root,record,row):
+    identity=record['request_id']
+    path=Path(root)/'assets/audio'/(identity+'.audio')
+    _checked_path(path)
+    sha=hashlib.sha256(path.read_bytes()).hexdigest()
+    if sha!=row['output_sha256']:raise ValueError('The saved audio no longer matches its receipt.')
+    measured=probe_audio(path)
+    take={'id':identity,'project_id':Path(root).name,'kind':record['kind'],'origin':'generated',
+          'approved_request_id':identity,'approval_record_sha256':record_sha256(record),
+          'generation_receipt_id':row['receipt_id'],'sha256':sha,'path':str(path.relative_to(root)),
+          'duration_seconds':measured['duration_seconds'],'requested_duration_seconds':record['duration_seconds'],'codec':measured['codec'],'binding':record['binding']}
+    if record['kind']=='music':take['release_note']=TEST_ONLY
+    return take
+
+
+def _store_generated_take(root,take):
+    with call_lock(root):
+        directory=_directory(root);identity=take['id'];replace_incomplete=False
+        # A hard stop can leave this helper's hidden staging file. It is not
+        # a take. With the call lock held, no generation writer can own it.
+        for staged in directory.glob('.'+identity+'.json.*.tmp'):
+            _checked_path(staged).unlink()
+        path=directory/(identity+'.json')
+        if path.exists():
+            try:current=read(root,identity)
+            except IncompleteAudioRecord:replace_incomplete=True
+            else:
+                if current!=take:
+                    raise ValueError('The saved audio take does not match its verified generation receipt. Nothing was replaced.')
+                return current
+        return _save(root,take,replace_incomplete=replace_incomplete)
+
+
+def generated_take(root,record,row):
+    return _store_generated_take(root,_generation_material(root,record,row))
+
+
+def recorded_take_material(root,record):
+    """Read verified paid evidence and the unchanged local file, without saving.
+
+    This path has no transport, key lookup, new reservation or spending call.
+    Expired prices or a changed brief cannot erase a recorded take: it can be
+    recovered and will still need a fresh look before it can be kept.
+    """
+    approval=receipts.find_approval(root,'audio_spend',entity_id=record['request_id'],record_sha256=record_sha256(record))
+    if approval is None:raise ValueError('This recorded take needs its original verified spending signature.')
+    rows=[row for row in receipts.verified_generation_receipts(root)
+          if row.get('audio_approval_receipt_id')==approval['receipt_id']]
+    if not rows:return None
+    if len(rows)!=1:raise ValueError('The recorded take has conflicting receipts. Stop and have its history checked.')
+    row=rows[0]
+    if (row.get('normalized_inputs_hash')!=record['input_sha256'] or row.get('model_endpoint')!=record['model']
+            or row.get('tool')!='elevenlabs_audio'):
+        raise ValueError('The recorded take does not match its original signed request.')
+    return _generation_material(root,record,row)
+
+
+def recover_recorded_take(root,record):
+    take=recorded_take_material(root,record)
+    return _store_generated_take(root,take) if take is not None else None
+
+
+def require_accepted(root,identity):
+    take=read(root,identity)
+    if take_state(root,take)!='Accepted':raise ValueError('Only an accepted, unchanged audio take can be used.')
+    return take
+
+def approved_source_request(root,take):
+    row=receipts.find_approval(root,'audio_spend',entity_id=take['id'],record_sha256=take['approval_record_sha256'])
+    if row is None:raise ValueError('The audio request cannot be verified. Stop and have its approval history checked.')
+    return row['record']
+
+
+
+def probe_audio(path,maximum=120):
+    import math,subprocess
+    r=subprocess.run(['ffprobe','-v','error','-select_streams','a:0','-show_entries','stream=codec_name:format=duration','-of','json',str(path)],capture_output=True,text=True,check=True,timeout=15)
+    info=json.loads(r.stdout);seconds=float(info['format']['duration'])
+    if not info.get('streams') or not math.isfinite(seconds) or seconds<=0 or (maximum is not None and seconds>maximum):
+        raise ValueError('The take is not supported playable audio within its duration limit.')
+    return {'duration_seconds':seconds,'codec':info['streams'][0]['codec_name']}

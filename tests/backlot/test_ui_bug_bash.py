@@ -10,7 +10,7 @@ import urllib.request
 
 import pytest
 
-from lib.checkpoint import CANONICAL_STAGE_ARTIFACTS, init_project, write_checkpoint
+from lib.checkpoint import init_project, write_checkpoint
 from lib.pipeline_loader import get_stage_order, load_pipeline
 from scripts import backlot_screenshot_stage
 from tests.contracts.test_phase0_contracts import sample_artifact
@@ -33,17 +33,48 @@ APPROVAL_CASES = [
 ]
 
 
+def _stage_artifacts(
+    pipeline_type: str,
+    stage: str,
+    *,
+    primary_name: str | None = None,
+    primary_artifact: dict | None = None,
+) -> dict:
+    """Build every manifest-declared output while preserving the test target."""
+    manifest = load_pipeline(pipeline_type)
+    stage_spec = next(item for item in manifest["stages"] if item["name"] == stage)
+
+    def sample(name: str) -> dict:
+        if name == "final_review":
+            return {
+                "version": "1.0",
+                "output_path": "renders/output.mp4",
+                "status": "pass",
+                "checks": {
+                    "technical_probe": {"valid_container": True},
+                    "visual_spotcheck": {"frames_sampled": 4},
+                    "audio_spotcheck": {"narration_present": True},
+                    "promise_preservation": {"delivery_promise_honored": True},
+                    "subtitle_check": {"subtitles_expected": False},
+                },
+                "recommended_action": "present_to_user",
+            }
+        return sample_artifact(name)
+
+    artifacts = {
+        name: primary_artifact if name == primary_name else sample(name)
+        for name in stage_spec.get("produces") or []
+    }
+    edit = artifacts.get("edit_decisions")
+    if edit is not None:
+        edit["render_runtime"] = "ffmpeg"
+    return artifacts
+
+
 def _complete_predecessors(root, project_id: str, pipeline_type: str, stage: str) -> None:
     order = get_stage_order(load_pipeline(pipeline_type))
     for predecessor in order[: order.index(stage)]:
-        artifact_name = CANONICAL_STAGE_ARTIFACTS.get(predecessor)
-        if artifact_name:
-            artifact = sample_artifact(artifact_name)
-            if artifact_name == "edit_decisions":
-                artifact["render_runtime"] = "ffmpeg"
-            artifacts = {artifact_name: artifact}
-        else:
-            artifacts = {}
+        artifacts = _stage_artifacts(pipeline_type, predecessor)
         write_checkpoint(
             root,
             project_id,
@@ -61,6 +92,12 @@ def _build_approval_projects() -> None:
         artifact = sample_artifact(artifact_name)
         if artifact_name == "edit_decisions":
             artifact["render_runtime"] = "ffmpeg"
+        artifacts = _stage_artifacts(
+            pipeline_type,
+            stage,
+            primary_name=artifact_name,
+            primary_artifact=artifact,
+        )
         review_summary = (
             {
                 "critical": 0,
@@ -84,7 +121,7 @@ def _build_approval_projects() -> None:
             project_id,
             stage,
             "awaiting_human",
-            {artifact_name: artifact},
+            artifacts,
             pipeline_type=pipeline_type,
             review={
                 "round": 1,

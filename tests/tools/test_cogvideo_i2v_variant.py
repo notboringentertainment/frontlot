@@ -15,6 +15,9 @@ This pins:
 from __future__ import annotations
 
 import pytest
+from tests.tools.conftest import generation_tmp_path as tmp_path
+
+pytestmark = pytest.mark.usefixtures('verified_generation_project')
 
 from tools.base_tool import ToolStatus
 from tools.video._shared import COGVIDEO_VARIANTS

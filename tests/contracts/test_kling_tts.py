@@ -9,6 +9,24 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from tools.audio.kling_tts import KlingTTS
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def verified_older_audio_production(tmp_path,monkeypatch):
+    """Legacy positive calls now require a registered, signed older production."""
+    import hashlib,yaml
+    from tests.tools.test_audio_governance import sign
+    root=tmp_path if tmp_path.name=='older-audio' else tmp_path/'older-audio'
+    root.mkdir(exist_ok=True)
+    monkeypatch.setattr('lib.paths.PROJECTS_DIR',root.parent)
+    monkeypatch.setattr('lib.events.PROJECTS_DIR',root.parent)
+    data={'version':'1.2','budget_usd_cap':25,'wall_time_minutes':60,'cast_cap':{'characters':1,'locations':1},
+          'default_video_endpoint':'invented-video','provider_egress':[{'provider':'fal','content_classes':['prompts']}],
+          'qc':{'judge_provider':'openai','judge_model':'invented','policy_bundle_sha256':'a'*64,'max_attempts_per_series':1,'hero_policy_sha256':'b'*64,'max_hero_attempts':1}}
+    raw=yaml.safe_dump(data).encode();(root/'project.yaml').write_bytes(raw)
+    sign(root,'config',{'config_sha256':hashlib.sha256(raw).hexdigest()},'project_config')
+    return root
 
 
 def test_registry_discovers_kling_tts(monkeypatch, isolated_tool_registry):
@@ -64,7 +82,7 @@ def test_tts_payload_and_validation():
             raise AssertionError(f"Invalid TTS inputs should fail: {bad_inputs}")
 
 
-def test_execute_downloads_all_audio_results(monkeypatch, tmp_path):
+def test_execute_downloads_all_audio_results(monkeypatch, tmp_path, verified_older_audio_production):
     class FakeClient:
         def create_classic_task(self, path, payload):
             self.path = path
@@ -86,7 +104,7 @@ def test_execute_downloads_all_audio_results(monkeypatch, tmp_path):
     monkeypatch.setattr("tools.audio.kling_tts.KlingClient", lambda: FakeClient())
     monkeypatch.setattr("tools.audio.kling_tts.probe_duration", lambda path: 1.23)
 
-    output_path = tmp_path / "speech.mp3"
+    output_path = verified_older_audio_production / "speech.mp3"
     result = KlingTTS().execute(
         {
             "text": "Hello",
@@ -105,7 +123,7 @@ def test_execute_downloads_all_audio_results(monkeypatch, tmp_path):
     assert result.cost_usd > 0
 
 
-def test_execute_accepts_synchronous_create_response(monkeypatch, tmp_path):
+def test_execute_accepts_synchronous_create_response(monkeypatch, tmp_path, verified_older_audio_production):
     class FakeClient:
         def post(self, path, payload):
             assert path == "/v1/audio/tts"
@@ -140,7 +158,7 @@ def test_execute_accepts_synchronous_create_response(monkeypatch, tmp_path):
         {
             "text": "Hello",
             "voice_id": "voice-a",
-            "output_path": str(tmp_path / "sync.mp3"),
+            "output_path": str(verified_older_audio_production / "sync.mp3"),
         }
     )
 

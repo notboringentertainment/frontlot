@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 
 import pytest
+from tests.tools.conftest import generation_tmp_path as tmp_path
+
+pytestmark = pytest.mark.usefixtures('verified_generation_project')
 
 import tools.video.stock_sources as stock_sources
 from tools.video.corpus_builder import CorpusBuilder

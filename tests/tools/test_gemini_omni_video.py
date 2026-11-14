@@ -9,6 +9,9 @@ import types
 from pathlib import Path
 
 import pytest
+from tests.tools.conftest import generation_tmp_path as tmp_path
+
+pytestmark = pytest.mark.usefixtures('verified_generation_project')
 
 from tools.base_tool import ToolStatus
 
