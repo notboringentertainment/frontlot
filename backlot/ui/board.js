@@ -1,6 +1,6 @@
 // Front Lot film board (the cutting room) — renders BoardState and stays live via SSE.
 
-import { renderPaperCut } from "/ui/trailer.js";
+import { renderPaperCut,renderPaperSigning } from "/ui/trailer.js";
 import {renderStory,renderStorySigning} from '/ui/story.js';
 import {renderVoice,renderAudioSigning,applySignedAccountOutcome,refreshAudioAfterSigning} from '/ui/voice.js';
 import {renderCutting,refreshCutting,renderCardSigning} from '/ui/cutting.js';
@@ -2526,6 +2526,7 @@ function renderGateViewer(s) {
   const header = summary || gateDetail.request || {};
   const stale = !summary || summary.state !== "pending" || gateDetail.state !== "pending";
   const packetError = Boolean(gateDetail.error || (gateDetail.packet && gateDetail.packet.packet_error));
+  if(header.kind==='artifact_review'&&header.scope==='trailer-paper')return renderPaperSigning(gateDetail,gateActions(s,summary,stale,packetError),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();refresh();});
   if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&header.stage==='canon_ingest')return renderStorySigning(gateDetail,gateActions(s,summary,stale,packetError),()=>{selectedGateId=null;gateDetail=null;trailerWorkbenchChosen=true;closeSigning();render();},stale);
   if(header.kind==='trailer_card')return renderCardSigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;await refreshCutting();render();});
   if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&['edit','compose'].includes(header.stage))return renderDeliverySigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;const verified=refreshDelivery();render();await verified;});
@@ -2989,7 +2990,7 @@ function renderBoard() {
   const drawer = renderDrawer(s);
   if(s.is_trailer&&!s.trailer_damaged&&!selectedGateId){const story=renderStory(s,async(id)=>{await refresh();await selectGate(id);});if(story)viewer.append(story);}
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(
-    el("button",{type:"button",class:"quiet-btn",onclick:()=>viewer.querySelector('[aria-label="Footage workspace"]')?.scrollIntoView({block:"start"})},"Open footage requests"),renderPaperCut(s));
+    el("button",{type:"button",class:"quiet-btn",onclick:()=>viewer.querySelector('[aria-label="Footage workspace"]')?.scrollIntoView({block:"start"})},"Open footage requests"),renderPaperCut(s,async(id)=>{await refresh();await selectGate(id);}));
 
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderVoice(s,async(id)=>{await refresh();await selectGate(id);}));
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderCutting(s,async(id)=>{await refresh();await selectGate(id);}));
@@ -3019,7 +3020,7 @@ function renderBoard() {
     }
     viewer.append(inner);
   }
-  if (s.is_trailer && !s.trailer_damaged && !selectedGateId && shot) viewer.append(renderPaperCut(s));
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId && shot) viewer.append(renderPaperCut(s,async(id)=>{await refresh();await selectGate(id);}));
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(renderFootageControls(s));
   app.append(viewer);
 

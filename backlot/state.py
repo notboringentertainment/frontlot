@@ -1818,6 +1818,9 @@ def _render_trailer_card(root,req):
     except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This card changed. Save the cut and prepare a new review.'}
 
 def _render_artifact_review(root,req):
+    if req.get('scope')=='trailer-paper':
+        from lib.trailer_paper_review import packet
+        return packet(root,req)
     if req.get('scope')=='trailer-stage' and req.get('stage') in ('edit','compose'):
         from backlot.delivery import signing_packet
         return signing_packet(root,req)

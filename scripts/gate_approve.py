@@ -1217,6 +1217,15 @@ def _construct_poster(root: Path, req: dict) -> Constructed:
 
 
 def _construct_artifact_review(root: Path, req: dict) -> Constructed:
+    if req.get('scope')=='trailer-paper':
+        from lib.trailer_paper_review import signing_material,CHANGED
+        try:record=signing_material(root,req)
+        except (ValueError,OSError,KeyError) as exc:raise GateHandlerError(str(exc)) from None
+        def recheck_paper():
+            if signing_material(root,req)!=record:raise GateHandlerError(CHANGED)
+        artifact={'artifact_type':'trailer_paper_cut','artifact_version':'1.0','artifact_digest':record_sha256(record),'migration_status':'reviewed'}
+        return Constructed(record,None,'paper-cut',artifact=artifact,pre_commit_check=recheck_paper,
+            evidence=('Approve the beats, exact lines and cards, shot list, timing and displayed story warnings together. This is a paper-cut review only. No stage is finished and nothing is sent or spent.',))
     if req.get('scope')=='trailer-stage' and req.get('stage') in ('edit','compose'):
         from lib import trailer_delivery as delivery
         stage=req.get('stage');identity=_require_entity(req)

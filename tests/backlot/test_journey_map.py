@@ -91,6 +91,26 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
             expect(paper.get_by_role('status').first).to_contain_text('Saved.')
             paper.get_by_role('button',name='Check paper cut against approved story',exact=True).click()
             expect(paper.get_by_role('status').first).to_contain_text('compared')
+            # Adding the labelled reference changes the effect's exact shot
+            # binding. Buy a new effect for that revised moment through the
+            # same visible controls; never clear the previous take's warning.
+            page.get_by_role('button',name='Sound effects workspace',exact=True).click()
+            panel=page.get_by_role('region',name='Trailer audio',exact=True)
+            form=panel.locator('#effect-compose')
+            form.get_by_label('Effect description',exact=True).fill('A soft gallery door latch clicks.')
+            form.get_by_label('Effect length in seconds',exact=True).fill('2')
+            form.get_by_role('button',name='Save effect brief',exact=True).click()
+            expect(panel.get_by_role('status')).to_contain_text('brief saved')
+            form.get_by_role('button',name='Prepare effect spending card',exact=True).click()
+            card=panel.locator('.voice-spend[data-kind="effect"]').first
+            card.get_by_role('button',name='Review and sign this request',exact=True).click()
+            from tests.backlot.test_early_paid_readiness import sign_audio
+            sign_audio(page)
+            card.get_by_role('button',name='Make this approved take',exact=True).click()
+            tile=panel.locator('.voice-take[data-kind="effect"]').filter(has_text='Waiting for your decision')
+            expect(tile).to_be_visible(timeout=20000)
+            tile.get_by_role('button',name='Keep this take',exact=True).click();sign_audio(page)
+            expect(panel.locator('.voice-take[data-kind="effect"]').filter(has_text='Kept')).to_have_count(1,timeout=20000)
             page.get_by_role('button',name='Open footage requests',exact=True).click()
             shot=page.get_by_role('article',name='Shot 1 footage',exact=True)
             shot.get_by_label('Clip length in seconds',exact=True).fill('5')
@@ -107,9 +127,8 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
             expect(shot).to_contain_text('Kept',timeout=20000);note('kept-footage',shot)
             page.get_by_role('button',name='Cutting workspace',exact=True).click()
             cut=page.get_by_role('region',name='Cutting view',exact=True)
-            expect(cut).to_contain_text('Saved version',timeout=30000)
-            cut.get_by_role('button',name='Reopen saved cut',exact=True).click()
-            expect(cut).to_contain_text('Saved version',timeout=30000)
+            expect(cut.get_by_label('Kept picture take',exact=True).locator('option')).to_have_count(1,timeout=30000)
+            expect(cut.get_by_label('Kept sound take',exact=True).locator('option')).to_have_count(3,timeout=30000)
             while cut.get_by_role('button',name='Remove this clip',exact=True).count():
                 cut.get_by_role('button',name='Remove this clip',exact=True).first.click()
             for _ in range(3):cut.get_by_role('button',name='Add picture',exact=True).click()
@@ -156,7 +175,7 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
             delivery.get_by_role('button',name='Make the final file',exact=True).click()
             expect(delivery).to_contain_text('Loudness is on target',timeout=300000)
             note('exported-file',delivery)
-            assert len(calls['audio_posts'])==3 and len(calls['catalogues'])==1
+            assert len(calls['audio_posts'])==4 and len(calls['catalogues'])==1
             assert all(len(calls[k])==1 for k in ('uploads','video_posts','waits','downloads'))
             assert not page.errors
             from backlot.state import load_board_state

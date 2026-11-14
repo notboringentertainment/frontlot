@@ -527,6 +527,18 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
             message = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else "The save did not finish. Your previous version is safe. Check the panel and try again."
             raise HTTPException(400, message) from None
 
+    @app.post("/api/project/{project_id}/paper-cut/review")
+    async def review_paper(project_id: str, request: Request):
+        require_writer(request)
+        from lib.trailer_paper_review import request_review
+        try:
+            body=await request.json()
+            result=await asyncio.to_thread(request_review,_safe_project_dir(project_id),body.get('revision'))
+            _invalidate_summary(project_id)
+            return result
+        except (ValueError,OSError,KeyError,TypeError) as exc:
+            raise HTTPException(400,str(exc) if isinstance(exc,ValueError) else 'The paper-cut review could not be prepared. Reopen the saved version and try again.') from None
+
     @app.get("/api/project/{project_id}/paper-cut")
     async def paper_status(project_id: str):
         from lib.trailer_edit import paper_state
