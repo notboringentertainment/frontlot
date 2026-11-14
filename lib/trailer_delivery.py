@@ -13,6 +13,7 @@ from lib.pathsafe import resolve_input, validate_output_parent, sha256_file
 
 ROUGH_REQUIRED='Sign the rough cut for this saved version before making the final file.'
 CHANGED='This file or its cut needs a fresh look. Reopen the saved cut, sign it and make a new final file.'
+SPEECH_NOTES='These timed speech notes are listening warnings. Listen to those passages; you can approve this exact file if the pauses and balance are right to your ear.'
 
 def _saved(root,revision=None):
     from lib.footage_requests import require_trailer
@@ -122,10 +123,13 @@ def _samples(root,path,timeline,directory):
     return rows
 
 def _sound_ok(measured):
-    audible=('clear','quiet')
-    return (measured['on_target'] and not measured.get('source_warnings')
-            and all(r['status'] in audible for r in measured.get('voice_checks',[]))
-            and all(r['status'] in audible for r in measured['speech_checks'])
+    failures=measured.get('source_failures');voices=measured.get('voice_checks')
+    def present(row):
+        return (row.get('status') in ('clear','quiet','partial','hard_to_hear','uncertain','unheard')
+                and all(isinstance(row.get(k),dict) and row[k].get('sustained') is True
+                        for k in ('presence','reference_presence')))
+    return (measured['on_target'] and isinstance(failures,list) and not failures
+            and isinstance(voices,list) and all(present(r) for r in voices)
             and all(r['status']=='on_time' for r in measured['effect_checks']))
 
 def _measure(root,path,saved,timeline,refs):
@@ -151,12 +155,15 @@ def export(root,revision):
     output=job/'trailer.mp4';relative=str(output.relative_to(root));digest=sha256_file(target)
     test_only=any(r.get('test_only') for r in timeline['audio'])
     warnings=list(measured['messages'])
+    sound_ok=_sound_ok(measured)
+    speech_notes=sound_ok and (bool(measured['source_warnings']) or any(r['status']!='clear' for r in measured['voice_checks']+measured['speech_checks']))
+    if speech_notes:warnings.append(SPEECH_NOTES)
     if test_only:warnings.append('Generated ElevenLabs music is for the test trailer only until ElevenLabs confirms otherwise in writing. This file is not cleared for release.')
     review={'version':'1.0','trailer':contract.require_contract(root),'edit_revision_sha256':revision,'export_sha256':digest,
-        'output_path':relative,'status':'pass' if _sound_ok(measured) else 'revise','recommended_action':'present_to_user' if _sound_ok(measured) else 'revise_edit',
+        'output_path':relative,'status':'pass' if sound_ok else 'revise','recommended_action':'present_to_user' if sound_ok else 'revise_edit',
         'checks':{'technical_probe':probe,'visual_spotcheck':{'frames_sampled':len(samples),'frame_paths':[r['path'] for r in samples],'issues':[]},
             'audio_spotcheck':{'issues':warnings},'promise_preservation':{'render_runtime_used':'remotion','runtime_swap_detected':False,'issues':[]},'subtitle_check':{'subtitles_expected':False,'issues':[]}},
-        'issues_found':warnings,'metadata':{'measurements':measured,'boundary_samples':samples,'test_only':test_only,
+        'issues_found':warnings,'metadata':{'measurements':measured,'boundary_samples':samples,'test_only':test_only,'speech_warnings_advisory':speech_notes,
             'review_scope':'Local technical checks only. Watch and listen; acting, story meaning, rights and every word’s intelligibility are not automatically certified.',
             'compose_review':generic}}
     report={'version':'1.0','trailer':contract.require_contract(root),'edit_revision_sha256':revision,'export_sha256':digest,

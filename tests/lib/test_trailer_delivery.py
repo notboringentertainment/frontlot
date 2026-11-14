@@ -54,15 +54,17 @@ def test_signing_rechecks_changed_rough_cut(signed_cut):
 
 def test_safe_output_level_cannot_hide_a_silent_voice_source():
     from lib import trailer_delivery as d
-    measured={'on_target':True,'speech_checks':[],'effect_checks':[],
+    measured={'on_target':True,'speech_checks':[],'effect_checks':[],'voice_checks':[],
+              'source_failures':[{'kind':'inaudible_voice','number':1}],
               'source_warnings':['Sound 1 has no audible speech in its chosen trim.']}
     assert d._sound_ok(measured) is False
 
-@pytest.mark.parametrize('status,allowed',[('clear',True),('quiet',True),('partial',False),('unmeasured',False),('unheard',False),('uncertain',False),('hard_to_hear',False)])
+@pytest.mark.parametrize('status,allowed',[('clear',True),('quiet',True),('partial',True),('unmeasured',False),('unheard',False),('uncertain',True),('hard_to_hear',True),('gap-warning',True)])
 def test_delivery_checks_every_voice_and_keeps_quiet_as_a_listening_warning(status,allowed):
     from lib import trailer_delivery as d
-    measured={'on_target':True,'source_warnings':[],'effect_checks':[],
-              'voice_checks':[{'number':1,'status':status}],
+    presence={'sustained':status not in ('unheard','unmeasured')}
+    measured={'on_target':True,'source_warnings':[],'source_failures':[],'effect_checks':[],
+              'voice_checks':[{'number':1,'status':'unheard' if status=='gap-warning' else status,'presence':presence,'reference_presence':presence}],
               'speech_checks':[] if status=='unmeasured' else [{'status':status}]}
     assert d._sound_ok(measured) is allowed
 

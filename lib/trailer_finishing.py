@@ -212,5 +212,5 @@ def review_output(path,refs):
         elif effect['status']=='on_time':messages.append(f'Effect {number} is heard at its saved time near {expected}.')
         elif effect['status']=='wrong_time':messages.append(f'Effect {number} is heard near {time_words(effect["observed_frame"])} instead of {expected}. Check its placement and prepare playback again.')
         else:messages.append(f'Effect {number} could not be identified confidently near {expected}. Listen at that moment and choose a more distinct take if needed.')
-    return {'output_sha256':sha256_file(path),'source_warnings':list(refs.get('source_warnings',[])),'integrated_lufs':integrated,'true_peak_dbtp':peak,'channels':channels,'sample_rate':rate,
+    return {'output_sha256':sha256_file(path),'source_warnings':list(refs.get('source_warnings',[])),'source_failures':list(refs.get('source_failures',[])),'integrated_lufs':integrated,'true_peak_dbtp':peak,'channels':channels,'sample_rate':rate,
             'on_target':on_target,'speech_checks':checks,'voice_checks':voices,'effect_checks':effects,'silences':silences,'messages':messages}

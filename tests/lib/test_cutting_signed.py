@@ -5,13 +5,15 @@ from tests.tools.test_signed_footage import film,provider,looks,workspace,sign
 from tests.tools.test_audio_half_transport import wav_bytes
 
 @pytest.fixture
-def signed_cut(film,provider,monkeypatch):
+def signed_cut(film,provider,monkeypatch,request):
  from lib import trailer_edit,audio_workspace as audio,footage_requests as footage
  from lib.cutting_view import save_cut,render_preview,validate_cut
  from tools.audio.elevenlabs_tts import ElevenLabsTTS
  root,shot=film
+ paused=getattr(request,'param',None)=='speech-padding'
+ voice_frames=72 if paused else 24
  # Add the line before making any footage request, so its source stays current.
- saved=trailer_edit.read_revision(root);paper=saved['paper_cut'];paper['lines']=[{'text':'The lamp is still lit.','start_frame':0,'duration_frames':24}]
+ saved=trailer_edit.read_revision(root);paper=saved['paper_cut'];paper['lines']=[{'text':'The lamp is still lit.','start_frame':0,'duration_frames':voice_frames}]
  trailer_edit.save_revision(root,paper,saved['edit_revision_sha256'])
  settings=yaml.safe_load((root/'project.yaml').read_text());settings['provider_egress'].append({'provider':'elevenlabs','content_classes':['speech_text']})
  settings['audio_price_basis']={k:{'value':v,'set_at':1,'expires_at':4102444800} for k,v in [('dollars_per_credit',.0002),('speech_credits_per_character',1),('music_credits_per_minute',1200),('voice_multiplier_ceiling',2)]}
@@ -31,9 +33,14 @@ def signed_cut(film,provider,monkeypatch):
  import subprocess
  for name,hz in (('voice',440),('score',220),('latch',880)):
   subprocess.run(['ffmpeg','-v','error','-n','-f','lavfi','-i',f'sine=frequency={hz}:duration=1',str(root/f'assets/{name}.wav')],check=True)
+ voice_path=root/'assets/voice.wav'
+ if paused:
+  from tests.speech_fixtures import paused_voice
+  from tests.tools.test_trailer_colour_mix import write_signal
+  voice_path=root/'assets/voice-with-pauses.wav';write_signal(voice_path,paused_voice('padding'))
  posts=[]
  class Response:
-  status_code=200;headers={'character-cost':'1','request-id':'invented-speech'};content=(root/'assets/voice.wav').read_bytes()
+  status_code=200;headers={'character-cost':'1','request-id':'invented-speech'};content=voice_path.read_bytes()
   def raise_for_status(self):pass
  def post(*a,**kw):posts.append(kw);return Response()
  monkeypatch.setattr('requests.post',post);monkeypatch.setenv('ELEVENLABS_API_KEY','invented-only')
@@ -44,7 +51,7 @@ def signed_cut(film,provider,monkeypatch):
  effect=audio.save_effect_brief(root,'A quiet latch.',1,False,24,0)
  imported=[audio.import_music(root,root/'assets/score.wav','My score','I own this invented recording.'),audio.import_music(root,root/'assets/latch.wav','My latch','I own this invented recording.',kind='effect',brief_id=effect)]
  for item in imported:sign(root,'audio_take',audio.decision_record(root,item['id'],'accept'),item['id'])
- timeline={'fps':24,'picture':pictures,'audio':[dict(take_id=item['id'],start_frame=24 if item['kind']=='effect' else 0,source_in_frame=0,source_out_frame=24,level_db=-6,fade_in_frames=0,fade_out_frames=0) for item in [take,*imported]]}
+ timeline={'fps':24,'picture':pictures,'audio':[dict(take_id=item['id'],start_frame=24 if item['kind']=='effect' else 0,source_in_frame=0,source_out_frame=voice_frames if item['kind']=='speech' else 24,level_db=-6,fade_in_frames=0,fade_out_frames=0) for item in [take,*imported]]}
  old=trailer_edit.read_revision(root);saved=save_cut(root,timeline,old['edit_revision_sha256'])
  return root,provider,posts,timeline,take
 
