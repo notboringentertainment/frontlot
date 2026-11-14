@@ -22,7 +22,7 @@ def _flat_clip(a):
     return bool(len(high)>=3 and np.any(high[:-2]&high[1:-1]&high[2:]))
 
 def mix_timeline(tool,inputs):
-    from lib.trailer_finishing import decode_audio,loudness_stats,mix_settings,passage_levels,AUDIBLE_RMS,voice_warning
+    from lib.trailer_finishing import decode_audio,loudness_stats,mix_settings,passage_levels,AUDIBLE_RMS,voice_warning,voice_presence,presence_warning
     tracks=inputs['timeline_tracks'];frames=inputs['target_frames']
     if type(frames) is not int or not 1<=frames<=2880:raise ValueError('Keep the mix within the trailer’s two-minute timeline.')
     margin=mix_settings({'speech_margin_db':inputs['speech_margin_db']})['speech_margin_db']
@@ -65,10 +65,12 @@ def mix_timeline(tool,inputs):
     for i,t in enumerate(tracks,1):
         if t['role']!='speech':continue
         samples=stem([t],f'voice-{i}-source');mask=passage_levels(samples)>=AUDIBLE_RMS
-        voice_active|=mask
         end=t['start_frame']+t['source_out_frame']-t['source_in_frame']
+        presence=voice_presence(samples[t['start_frame']*2000:end*2000])
+        if presence['sustained']:voice_active|=mask
         voices.append({'path':str(directory/f'voice-{i}-source.wav'),'number':i,'start_frame':t['start_frame'],'end_frame':end})
-        if not np.any(mask):warnings.append(voice_warning(i,t['start_frame'],end))
+        if not presence['audible_seconds']:warnings.append(voice_warning(i,t['start_frame'],end))
+        elif not presence['sufficient']:warnings.append(presence_warning(i,t['start_frame'],end,presence,'at its saved level'))
     gains=np.ones(math.ceil(count/BLOCK))
     if automatic:
         for i in range(len(gains)):
@@ -91,7 +93,12 @@ def mix_timeline(tool,inputs):
         work_files.append(ref)
         effects.append({'path':str(ref),'number':i,'start_frame':t['start_frame'],'duration_frames':t['source_out_frame']-t['source_in_frame']})
     summed=directory/'summed.wav'
-    result=tool._mix({'tracks':[{'path':str(speech_path)},{'path':str(other_path)}],'normalize':False,'sum_without_attenuation':True,'float_output':True,'output_path':str(summed)})
+    # Give loudnorm a measured input within its supported range. This uniform
+    # temporary gain changes neither the balance nor any kept source; the
+    # two-pass normalizer then targets the actual finished level as usual.
+    peak=float(np.max(np.abs(speech)))+float(np.max(np.abs(background)))
+    input_gain=min(1,.25/max(peak,1e-12)) if automatic else 1
+    result=tool._mix({'tracks':[{'path':str(speech_path),'volume':input_gain},{'path':str(other_path),'volume':input_gain}],'normalize':False,'sum_without_attenuation':True,'float_output':True,'output_path':str(summed)})
     if not result.success:raise ValueError('The local mix failed. Check the sound files and try again.')
     work_files.append(summed)
     stats=loudness_stats(summed)

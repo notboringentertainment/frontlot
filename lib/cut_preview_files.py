@@ -14,11 +14,36 @@ def _hashes(value):
     elif isinstance(value,str) and re.fullmatch('[a-f0-9]{64}',value):yield value
 
 def _protected(root):
-    rows=receipts.chained_rows(root,'approval')
-    rows=[r for r in rows if gates.verify_receipt(r)]
-    revisions={r.get('record',{}).get('edit_revision_sha256') for r in rows}
-    hashes=set(_hashes(rows))|{r['output_sha256'] for r in receipts.verified_generation_receipts(root)}
+    blocked='This production’s approval or generation history cannot be verified. Nothing was cleared. Restore its signed history before preparing playback again.'
+    try:
+        rows=receipts.chained_rows(root,'approval')
+        generated=receipts.chained_rows(root,'generation')
+        verified=all(gates.verify_receipt(r) for r in rows) and all(gates.verify_generation_receipt(r) for r in generated)
+        waiting=False
+        for path in (gates.gates_dir()/'wal').glob('*.json'):
+            binding=gates.consumed_binding(path.stem)
+            if binding is not None and binding.project_id==root.name:
+                waiting=True
+        revisions={r.get('record',{}).get('edit_revision_sha256') for r in rows}
+        hashes=set(_hashes(rows))|{r['output_sha256'] for r in generated}
+    except (receipts.ReceiptError,gates.GateError,OSError,ValueError,KeyError,TypeError,AttributeError,RecursionError) as exc:
+        raise ValueError(blocked) from exc
+    if not verified:raise ValueError(blocked)
+    if waiting:raise ValueError('This production has an approval waiting for recovery. Nothing was cleared. Reopen its signing review to recover the approval before preparing playback again.')
     return revisions,hashes
+
+def _preview_record(root,path,owned_revisions):
+    match=re.fullmatch(r'([a-f0-9]{64})-[a-f0-9]{32}\.mp4',path.name)
+    if not match or match[1] not in owned_revisions:return None
+    try:
+        movie=resolve_input(str(path.relative_to(root)),root)
+        report=resolve_input(str(path.with_suffix('.review.json').relative_to(root)),root)
+        value=json.loads(report.read_text())
+        if (not isinstance(value,dict) or value.get('comparison') not in ('before','after')
+            or value.get('edit_revision_sha256')!=match[1] or value.get('output_sha256')!=sha256_file(movie)):
+            return None
+        return value
+    except (ValueError,OSError,TypeError,RecursionError):return None
 
 def _discard_tree(root,directory,protected):
     """The caller owns this one exclusive render job, never a source folder."""
@@ -38,6 +63,16 @@ def finish_preview(root,target,mixfile,refs,title_layer=None,*,rejected=False):
     # becomes permission to clear files.
     with gates.receipt_lock(root.name,'approval'):
         revisions,protected=_protected(root)
+        try:
+            resolve_input('artifacts/edit_decisions.json',root)
+            current=trailer_edit._read_current(root)
+            versions=trailer_edit._committed_versions(root,current)
+            owned_revisions={v['edit_revision_sha256'] for v in versions}
+            protected.update(_hashes(versions))
+        except (ValueError,OSError,KeyError,TypeError,RecursionError) as exc:
+            raise ValueError('This production’s saved edit history cannot be verified. Nothing was cleared. Restore its saved edit before preparing playback again.') from exc
+        if _preview_record(root,target,owned_revisions) is None:
+            raise ValueError('This preview’s file or record cannot be verified. Nothing was cleared. Prepare fresh playback from the saved cut.')
         owned=Path(refs['work_directory'])
         if owned==mixfile.parent/(mixfile.stem+'-parts'):
             expected={Path(p) for p in refs['temporary_files']}
@@ -52,10 +87,10 @@ def finish_preview(root,target,mixfile,refs,title_layer=None,*,rejected=False):
             if (target.parent==directory and re.fullmatch('[a-f0-9]{64}-[a-f0-9]{32}\\.mp4',target.name)
                 and not target.is_symlink() and sha256_file(target) not in protected
                 and not report.is_symlink() and sha256_file(report) not in protected
-                and record_sha256(json.loads(report.read_text())) not in protected):
+                and record_sha256(json.loads(report.read_text())) not in protected
+                and _preview_record(root,target,owned_revisions) is not None):
                 target.unlink();report.unlink()
             return
-        current=trailer_edit.read_revision(root)
         if not current or not target.name.startswith(current['edit_revision_sha256']):return
         candidates=[]
         for report in directory.iterdir():
@@ -63,9 +98,8 @@ def finish_preview(root,target,mixfile,refs,title_layer=None,*,rejected=False):
             if not match or report.is_symlink() or not report.is_file():continue
             path=report.with_name(report.name.removesuffix('.review.json')+'.mp4')
             if path.is_symlink() or not path.is_file():continue
-            try:review=json.loads(report.read_text())
-            except (ValueError,OSError):continue
-            if review.get('comparison') not in ('before','after') or review.get('edit_revision_sha256')!=match[1]:continue
+            review=_preview_record(root,path,owned_revisions)
+            if review is None:continue
             candidates.append((path,report,review))
         keep={target}
         for comparison in ('before','after'):
@@ -84,4 +118,5 @@ def finish_preview(root,target,mixfile,refs,title_layer=None,*,rejected=False):
             if wave.is_file() and not wave.is_symlink() and sha256_file(wave) not in protected:wave.unlink()
             if (path in keep or review['edit_revision_sha256'] in revisions or sha256_file(path) in protected
                 or sha256_file(report) in protected or record_sha256(review) in protected):continue
+            if _preview_record(root,path,owned_revisions) is None:continue
             path.unlink();report.unlink()
