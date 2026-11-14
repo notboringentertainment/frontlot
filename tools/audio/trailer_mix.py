@@ -22,7 +22,7 @@ def _flat_clip(a):
     return bool(len(high)>=3 and np.any(high[:-2]&high[1:-1]&high[2:]))
 
 def mix_timeline(tool,inputs):
-    from lib.trailer_finishing import decode_audio,loudness_stats,mix_settings,passage_levels,AUDIBLE_RMS,voice_warning
+    from lib.trailer_finishing import decode_audio,loudness_stats,mix_settings,passage_levels,AUDIBLE_RMS,voice_warning,voice_presence,presence_warning
     tracks=inputs['timeline_tracks'];frames=inputs['target_frames']
     if type(frames) is not int or not 1<=frames<=2880:raise ValueError('Keep the mix within the trailer’s two-minute timeline.')
     margin=mix_settings({'speech_margin_db':inputs['speech_margin_db']})['speech_margin_db']
@@ -65,10 +65,12 @@ def mix_timeline(tool,inputs):
     for i,t in enumerate(tracks,1):
         if t['role']!='speech':continue
         samples=stem([t],f'voice-{i}-source');mask=passage_levels(samples)>=AUDIBLE_RMS
-        voice_active|=mask
         end=t['start_frame']+t['source_out_frame']-t['source_in_frame']
+        presence=voice_presence(samples[t['start_frame']*2000:end*2000])
+        if presence['sustained']:voice_active|=mask
         voices.append({'path':str(directory/f'voice-{i}-source.wav'),'number':i,'start_frame':t['start_frame'],'end_frame':end})
-        if not np.any(mask):warnings.append(voice_warning(i,t['start_frame'],end))
+        if not presence['audible_seconds']:warnings.append(voice_warning(i,t['start_frame'],end))
+        elif not presence['sufficient']:warnings.append(presence_warning(i,t['start_frame'],end,presence,'at its saved level'))
     gains=np.ones(math.ceil(count/BLOCK))
     if automatic:
         for i in range(len(gains)):

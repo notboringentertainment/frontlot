@@ -13,6 +13,34 @@ NEUTRAL={'brightness':0,'warmth':0,'contrast':0,'colour':0}
 def passage_levels(samples):
     return np.array([math.sqrt(float(np.mean(samples[i:i+PASSAGE].astype(float)**2))) for i in range(0,len(samples),PASSAGE)])
 
+def voice_presence(samples):
+    """Count the entire placement, including pauses, in ten-ms windows.
+
+    Presence needs half the placement and a 100-ms audible run. For a
+    placement shorter than 200 ms, the required run is half its length.
+    This measures sustained sound, never words or intelligibility.
+    """
+    window=RATE//100;audible=0;run=0;longest=0
+    for start in range(0,len(samples),window):
+        piece=samples[start:start+window].astype(float)
+        if math.sqrt(float(np.mean(piece**2)))>=AUDIBLE_RMS:
+            audible+=len(piece);run+=len(piece);longest=max(longest,run)
+        else:run=0
+    sustained=bool(len(samples) and longest>=min(RATE//10,len(samples)/2))
+    share=audible/len(samples) if len(samples) else 0
+    return {'audible_seconds':round(audible/RATE,6),'placement_seconds':round(len(samples)/RATE,6),
+            'audible_fraction':round(share,6),'longest_run_seconds':round(longest/RATE,6),
+            'sustained':sustained,'sufficient':bool(sustained and share>=.5)}
+
+def presence_warning(number,start,end,presence,where):
+    timing=f'from {time_words(start)} to {time_words(end)}'
+    if presence['sustained']:
+        return (f'Voice in sound {number} is audible for only part of its placement {timing} {where} '
+                f'({presence["audible_seconds"]:.3f} of {presence["placement_seconds"]:.3f} seconds). '
+                'Listen there; check for a missing part of the line, choose a complete voice take or trim the placement to the intended line, then save and prepare playback again.')
+    return (f'Voice in sound {number} has no sustained audible sound {timing} {where}. '
+            'Listen there; choose a complete voice take or trim the placement to the intended line, then save and prepare playback again.')
+
 def voice_warning(number,start,end):
     return f'Voice in sound {number} has no audible speech at its saved level from {time_words(start)} to {time_words(end)}. Choose an audible voice take or raise its level, save and prepare playback again; listen there before approval.'
 
@@ -61,22 +89,27 @@ def _intervals(mask,block,total,min_seconds=0):
             start=None
     return rows
 
-def _speech_checks(actual,speech,background,margin):
+def _speech_checks(actual,speech,background,margin,start_sample,end_sample):
     checks=[];block=PASSAGE
-    for start in range(0,len(actual),block):
-        s=speech[start:start+block:8].reshape(-1).astype(float);b=background[start:start+block:8].reshape(-1).astype(float)
+    fitted=np.zeros((end_sample-start_sample,2),dtype=np.float32)
+    for start in range(start_sample,end_sample,block):
+        stop=min(start+block,end_sample)
+        s=speech[start:stop:8].reshape(-1).astype(float);b=background[start:stop:8].reshape(-1).astype(float)
         if not len(s) or np.sqrt(np.mean(s*s))<AUDIBLE_RMS:continue
-        y=actual[start:start+block:8].reshape(-1).astype(float);matrix=np.column_stack([s,b])
-        result={'start_frame':round(start/2000),'end_frame':round(min(len(actual),start+block)/2000),'margin_db':None}
+        y=actual[start:stop:8].reshape(-1).astype(float);matrix=np.column_stack([s,b])
+        result={'start_frame':round(start/2000),'end_frame':round(stop/2000),'margin_db':None}
         if np.sqrt(np.mean(b*b))>1e-7 and np.linalg.cond(matrix)>1e5:
             result['status']='uncertain';checks.append(result);continue
         coefficients=np.linalg.lstsq(matrix,y,rcond=None)[0]
+        fitted[start-start_sample:stop-start_sample]=speech[start:stop]*max(0,coefficients[0])
         voice=s*max(0,coefficients[0]);bed=b*max(0,coefficients[1]);residual=y-(s*coefficients[0]+b*coefficients[1])
         vr=np.sqrt(np.mean(voice*voice));br=np.sqrt(np.mean(bed*bed)+np.mean(residual*residual))
         measured=20*math.log10(max(vr,1e-12)/max(br,1e-12))
         status='unheard' if vr<AUDIBLE_RMS else 'hard_to_hear' if measured<margin-1 else 'quiet' if vr<QUIET_RMS else 'clear'
         result.update(margin_db=round(measured,2),voice_rms_dbfs=round(20*math.log10(max(vr,1e-12)),2),status=status);checks.append(result)
-    return checks
+    # Skipped quiet reference passages remain zero here: they count against
+    # the placement's presence rather than disappearing from its denominator.
+    return checks,voice_presence(fitted)
 
 def _effect_check(actual,ref,number,start_frame=0,*,nuisance=()):
     # Downsampling is for measurement only. Rendering and placement stay at
@@ -122,12 +155,18 @@ def review_output(path,refs):
     checks=[];voices=[]
     for row in refs.get('voices',[]):
         voice=_fit(decode_audio(row['path']),n)
-        passages=_speech_checks(actual,voice,bed+speech-voice,refs['speech_margin_db'])
+        start=row['start_frame']*2000;end=row['end_frame']*2000
+        reference=voice_presence(voice[start:end])
+        passages,presence=_speech_checks(actual,voice,bed+speech-voice,refs['speech_margin_db'],start,end)
         for p in passages:p['sound_number']=row['number']
         checks.extend(passages)
         statuses={p['status'] for p in passages}
         status=next((s for s in ('unheard','uncertain','hard_to_hear','quiet') if s in statuses),'clear') if passages else 'unmeasured'
+        if status!='uncertain':
+            if not reference['sustained'] or not presence['sustained']:status='unheard'
+            elif not reference['sufficient'] or not presence['sufficient']:status='partial'
         voices.append({'number':row['number'],'start_frame':row['start_frame'],'end_frame':row['end_frame'],'status':status,
+                       'presence':presence,'reference_presence':reference,
                        'minimum_margin_db':min((p['margin_db'] for p in passages if p['margin_db'] is not None),default=None)})
     music=_fit(decode_audio(refs['music_path']),n)
     effects=[_effect_check(actual,_fit(decode_audio(e['path']),n),e['number'],e.get('start_frame',0),nuisance=(speech,music)) for e in refs.get('effects',[])]
@@ -141,9 +180,11 @@ def review_output(path,refs):
     if integrated is not None:messages.append('Playback peaks are safely below the ceiling.' if peak is not None and peak<=-1 else 'Playback peaks exceed the ceiling or could not be measured. Lower loud sounds and prepare playback again.')
     if channels!=2 or rate!=48000:messages.append('The output is not the required stereo sound. Prepare playback again before reviewing it.')
     for row in voices:
-        if row['status']=='quiet':
+        if row['status'] in ('unheard','partial') and not any(f'Voice in sound {row["number"]} ' in m for m in messages):
+            messages.append(presence_warning(row['number'],row['start_frame'],row['end_frame'],row['presence'],'in the finished file'))
+        elif row['status']=='quiet':
             messages.append(f'Voice in sound {row["number"]} is present but quiet from {time_words(row["start_frame"])} to {time_words(row["end_frame"])}. Listen there; raise its level if the words are hard to hear, then save and prepare playback again.')
-        elif row['status'] in ('unheard','unmeasured','uncertain') and not any(f'Voice in sound {row["number"]} has no audible speech' in m for m in messages):
+        elif row['status'] in ('unheard','unmeasured','uncertain') and not any(f'Voice in sound {row["number"]} ' in m for m in messages):
             messages.append(f'Voice in sound {row["number"]} could not be confirmed as audibly present from {time_words(row["start_frame"])} to {time_words(row["end_frame"])}. Listen there, choose a clearer take or raise its level, then save and prepare playback again.')
     hard=[x for x in checks if x['status'] in ('hard_to_hear','uncertain','unheard')]
     if hard:

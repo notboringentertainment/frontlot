@@ -10,6 +10,8 @@ Before and after use the same saved cut, source trims, cards and timing. Before 
 
 The simpler alternative was the existing music-only compressor. It does not establish a margin for loud effects and does not make frame-exact placement. A general grading and audio application would add controls the writer did not request. The chosen extension stays inside the existing tools and saved edit.
 
+A voice placement must contain sustained audible sound across at least half its length before the cut gets a reassuring speech summary. It must also contain an uninterrupted audible stretch of a tenth of a second, or half the placement for very short clips. Short checks count the silent gaps too. Ordinary pauses can pass; one loud click cannot stand in for a line. An incomplete voice is named with its times and asks for listening, a complete take or a trim to the intended words. This measures sound, not intelligibility or performance. The mixer ignores isolated clicks for ducking and lowers other sounds only around the audible parts of a sustained voice.
+
 ## For the tools
 
 The approved source is item nine and the shared boundaries in the housekeeping trailer plan. Execution is native in the current worktree, with no subagents or new approval ritual. The branch starts at titles head 08a7a2a and retains its parent merges.
