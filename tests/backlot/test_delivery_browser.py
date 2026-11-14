@@ -1,5 +1,6 @@
 """The complete local delivery journey uses the actual board and signer."""
 import json,os,subprocess
+from threading import Lock
 from pathlib import Path
 import pytest
 from playwright.sync_api import sync_playwright,expect
@@ -34,12 +35,14 @@ def test_delivery_controls_sign_export_watch_approve_and_reveal(delivery_cut,mon
     from lib import trailer_delivery as d
     from backlot import delivery as adapter
     root,provider,posts=delivery_cut;revealed=[];original=subprocess.run
-    comparisons=[];original_packet=adapter.signing_packet
+    comparisons=[];comparison_lock=Lock();original_packet=adapter.signing_packet
     def packet(root,request):
-        if request.get('stage')=='edit' and not comparisons:
-            from lib import cutting_view,trailer_edit
-            saved=trailer_edit.read_revision(root)
-            comparisons.append(cutting_view.render_preview(root,saved['edit_revision_sha256'],'before'))
+        if request.get('stage')=='edit':
+            with comparison_lock:
+                if not comparisons:
+                    from lib import cutting_view,trailer_edit
+                    saved=trailer_edit.read_revision(root)
+                    comparisons.append(cutting_view.render_preview(root,saved['edit_revision_sha256'],'before'))
         return original_packet(root,request)
     monkeypatch.setattr(adapter,'signing_packet',packet)
     def run(args,*a,**kw):
