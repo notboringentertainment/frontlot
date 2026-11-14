@@ -132,14 +132,14 @@ def render_preview(root,revision,comparison='after'):
     if not mixed.success:raise ValueError('The local sound mix failed. Check the kept sounds, then prepare playback again.')
     args=['ffmpeg','-v','error','-n','-filter_complex_threads','1','-f','lavfi','-i',f'color=c=black:s=640x360:r=24:d={end/24}']
     filters=[];base='0:v';index=1
-    colour_notes=[]
+    colour_notes=[];untagged=[];layer=None
     for p in timeline['picture']:
         source=resolve_input(p['path'],root)
         try:probe=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0','-show_streams','-of','json',str(source)],timeout=30))['streams'][0]
         except (subprocess.SubprocessError,KeyError,IndexError):raise ValueError('A picture could not be read. Choose another kept take and prepare playback again.') from None
         grade=ColorGrade()._build_filter({'trailer_adjustments':p['colour'] if comparison=='after' else NEUTRAL,'source_colour':probe})
         if probe.get('color_space') not in ('bt709','bt470bg','smpte170m'):
-            colour_notes.append(f'Picture {index} has no recognised colour label. It is treated as ordinary standard-range picture using the conventional untagged conversion; compare it with its original.')
+            untagged.append(index)
         args+=['-i',str(source)]
         filters.append(f'[{index}:v]fps=24,trim=start_frame={p["source_in_frame"]}:end_frame={p["source_out_frame"]},setpts=PTS-STARTPTS+{p["start_frame"]}/24/TB,scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,setsar=1[v{index}]')
         filters[-1]=filters[-1].replace(f'[v{index}]',f',{grade}[v{index}]')
@@ -161,11 +161,18 @@ def render_preview(root,revision,comparison='after'):
     except subprocess.SubprocessError:raise ValueError('The local picture preview failed. Check the kept picture files and prepare playback again.') from None
     review=review_output(target,mixed.data)
     review.update(edit_revision_sha256=revision,settings_sha256=record_sha256(saved['timeline']),comparison=comparison)
+    if untagged:
+        numbers=' and '.join(map(str,untagged)) if len(untagged)<3 else ', '.join(map(str,untagged[:-1]))+' and '+str(untagged[-1])
+        colour_notes.append(f'Picture {numbers} has no recognised colour label. It is treated as ordinary standard-range picture; compare it with its original.' if len(untagged)==1 else f'Pictures {numbers} have no recognised colour label. They are treated as ordinary standard-range picture; compare them with their originals.')
     review['messages']+=colour_notes
     with target.with_suffix('.review.json').open('x') as file:json.dump(review,file,allow_nan=False,indent=2)
     if comparison=='after' and review['true_peak_dbtp'] is not None and review['true_peak_dbtp']>-1:
+        from lib.cut_preview_files import finish_preview
+        finish_preview(root,target,mixfile,mixed.data,layer,rejected=True)
         raise ValueError('The balanced preview still peaks above the ceiling. Lower the loud sounds, save and prepare playback again.')
     current=trailer_edit.read_revision(root)
     if current['edit_revision_sha256']!=revision:raise ValueError('The cut changed while preparing playback. Make a new preview.')
     validate_cut(root,editable(current['timeline']),verify_files=True)
+    from lib.cut_preview_files import finish_preview
+    finish_preview(root,target,mixfile,mixed.data,layer)
     return target

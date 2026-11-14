@@ -5,7 +5,7 @@ import numpy as np
 from tools.base_tool import ToolResult
 
 RATE=48000
-BLOCK=960  # twenty milliseconds; placement itself remains sample-exact.
+BLOCK=4800  # shared hundred-millisecond passages; placement stays sample-exact.
 
 def _run(args,**kw):
     import subprocess
@@ -22,7 +22,7 @@ def _flat_clip(a):
     return bool(len(high)>=3 and np.any(high[:-2]&high[1:-1]&high[2:]))
 
 def mix_timeline(tool,inputs):
-    from lib.trailer_finishing import decode_audio,loudness_stats,mix_settings
+    from lib.trailer_finishing import decode_audio,loudness_stats,mix_settings,passage_levels,AUDIBLE_RMS,voice_warning
     tracks=inputs['timeline_tracks'];frames=inputs['target_frames']
     if type(frames) is not int or not 1<=frames<=2880:raise ValueError('Keep the mix within the trailer’s two-minute timeline.')
     margin=mix_settings({'speech_margin_db':inputs['speech_margin_db']})['speech_margin_db']
@@ -48,40 +48,52 @@ def mix_timeline(tool,inputs):
         selected=samples[t['source_in_frame']*2000:t['source_out_frame']*2000]
         if _flat_clip(selected):
             warnings.append(f'Sound {i} already clips or has flat full-scale peaks. Listen to the original and choose another take if it is distorted; turning it down cannot repair the recording.')
-        if t['role']=='speech' and np.max(np.abs(selected))*10**(t['level_db']/20)<1e-5:
-            warnings.append(f'Sound {i} has no audible speech in its chosen trim. Choose an audible voice take or raise its level, then prepare playback again.')
     target=Path(inputs['output_path']);directory=target.parent/(target.stem+'-parts')
-    directory.mkdir()
+    directory.mkdir();work_files=[]
     def stem(rows,name):
         path=directory/(name+'.wav')
         if rows:
             result=tool._mix({'tracks':rows,'normalize':False,'sum_without_attenuation':True,'float_output':True,'output_path':str(path)})
             if not result.success:raise ValueError('A sound could not be mixed. Check the kept files and source trims, then try again.')
+            work_files.append(path)
             return _fit(decode_audio(path),count)
         return np.zeros((count,2),dtype=np.float32)
     speech=stem([r for r in tracks if r['role']=='speech'],'speech-source')
     background=stem([r for r in tracks if r['role']!='speech'],'other-source')
+    music=stem([r for r in tracks if r['role']=='music'],'music-source')
+    voices=[];voice_active=np.zeros(math.ceil(count/BLOCK),dtype=bool)
+    for i,t in enumerate(tracks,1):
+        if t['role']!='speech':continue
+        samples=stem([t],f'voice-{i}-source');mask=passage_levels(samples)>=AUDIBLE_RMS
+        voice_active|=mask
+        end=t['start_frame']+t['source_out_frame']-t['source_in_frame']
+        voices.append({'path':str(directory/f'voice-{i}-source.wav'),'number':i,'start_frame':t['start_frame'],'end_frame':end})
+        if not np.any(mask):warnings.append(voice_warning(i,t['start_frame'],end))
     gains=np.ones(math.ceil(count/BLOCK))
     if automatic:
         for i in range(len(gains)):
             s=speech[i*BLOCK:(i+1)*BLOCK];b=background[i*BLOCK:(i+1)*BLOCK]
             sr=math.sqrt(float(np.mean(s*s)));br=math.sqrt(float(np.mean(b*b)))
-            if sr>1e-5 and br>0:gains[i]=min(1,sr/(br*10**(margin/20)))
+            if voice_active[i] and sr>=AUDIBLE_RMS and br>0:gains[i]=min(1,sr/(br*10**(margin/20)))
         safe=np.minimum(gains,np.minimum(np.r_[gains[0],gains[:-1]],np.r_[gains[1:],gains[-1]]))
         for i in range(1,len(safe)):
-            if safe[i]>safe[i-1]:safe[i]=min(safe[i],safe[i-1]+.12*(safe[i]-safe[i-1]))
+            if safe[i]>safe[i-1]:safe[i]=min(safe[i],safe[i-1]+.5*(safe[i]-safe[i-1]))
         envelope=np.minimum(np.interp(np.arange(count),(np.arange(len(safe))+.5)*BLOCK,safe),np.repeat(gains,BLOCK)[:count])
         background*=envelope[:,None]
     else:envelope=np.ones(count)
     speech_path=directory/'speech.wav';other_path=directory/'other.wav'
     write_audio(speech_path,speech);write_audio(other_path,background)
+    music_path=directory/'music.wav';write_audio(music_path,music*envelope[:,None])
+    work_files.extend([speech_path,other_path,music_path])
     for i,t in enumerate((r for r in tracks if r['role']=='sfx'),1):
         effect=stem([t],f'effect-{i}-source')*envelope[:,None]
         ref=directory/f'effect-{i}.wav';write_audio(ref,effect)
+        work_files.append(ref)
         effects.append({'path':str(ref),'number':i,'start_frame':t['start_frame'],'duration_frames':t['source_out_frame']-t['source_in_frame']})
     summed=directory/'summed.wav'
     result=tool._mix({'tracks':[{'path':str(speech_path)},{'path':str(other_path)}],'normalize':False,'sum_without_attenuation':True,'float_output':True,'output_path':str(summed)})
     if not result.success:raise ValueError('The local mix failed. Check the sound files and try again.')
+    work_files.append(summed)
     stats=loudness_stats(summed)
     if automatic and math.isfinite(float(stats['input_i'])):
         graph=tool._loudnorm_filter({'loudnorm_target':-16,'true_peak_target':-2},'0:a','out')
@@ -89,4 +101,5 @@ def mix_timeline(tool,inputs):
         graph=graph.replace('[out]',measured+'[out]')
         _run(['ffmpeg','-v','error','-n','-i',str(summed),'-filter_complex',graph,'-map','[out]','-ar','48000','-ac','2','-c:a','pcm_f32le',str(target)])
     else:write_audio(target,speech+background)
-    return ToolResult(success=True,data={'speech_path':str(speech_path),'background_path':str(other_path),'effects':effects,'target_frames':frames,'speech_margin_db':margin,'source_warnings':warnings,'automatic':automatic},artifacts=[str(target)])
+    work_files.append(target)
+    return ToolResult(success=True,data={'speech_path':str(speech_path),'background_path':str(other_path),'music_path':str(music_path),'voices':voices,'effects':effects,'target_frames':frames,'speech_margin_db':margin,'source_warnings':warnings,'automatic':automatic,'temporary_files':[str(p) for p in work_files],'work_directory':str(directory)},artifacts=[str(target)])

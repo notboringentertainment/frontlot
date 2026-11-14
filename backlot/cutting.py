@@ -135,6 +135,8 @@ def mount(app,require_writer,safe_root,invalidate):
         from lib.canonical_json import record_sha256
         report=await run(resolve_input,'artifacts/cut-previews/'+path.with_suffix('.review.json').name,root)
         review=json.loads(report.read_text())
+        if review.get('comparison')=='after' and review.get('true_peak_dbtp') is not None and review['true_peak_dbtp']>-1:
+            raise HTTPException(400,'This balanced preview peaks above the ceiling. Lower the loud sounds, save and prepare playback again.')
         if review.get('output_sha256')!=await run(sha256_file,path) or review.get('settings_sha256')!=record_sha256(saved['timeline']):
             raise HTTPException(400,'This preview or its saved settings changed. Prepare fresh playback before reviewing it.')
         return FileResponse(path,media_type='video/mp4',headers={'Cache-Control':'no-store'})
