@@ -116,7 +116,11 @@ def _samples(root,path,timeline,directory):
     return rows
 
 def _sound_ok(measured):
-    return measured['on_target'] and not measured.get('source_warnings') and all(r['status']=='clear' for r in measured['speech_checks']) and all(r['status']=='on_time' for r in measured['effect_checks'])
+    audible=('clear','quiet')
+    return (measured['on_target'] and not measured.get('source_warnings')
+            and all(r['status'] in audible for r in measured.get('voice_checks',[]))
+            and all(r['status'] in audible for r in measured['speech_checks'])
+            and all(r['status']=='on_time' for r in measured['effect_checks']))
 
 def _measure(root,path,saved,timeline,refs):
     from lib.trailer_finishing import review_output

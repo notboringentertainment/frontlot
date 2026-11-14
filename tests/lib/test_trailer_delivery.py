@@ -58,6 +58,14 @@ def test_safe_output_level_cannot_hide_a_silent_voice_source():
               'source_warnings':['Sound 1 has no audible speech in its chosen trim.']}
     assert d._sound_ok(measured) is False
 
+@pytest.mark.parametrize('status,allowed',[('clear',True),('quiet',True),('unmeasured',False),('unheard',False),('uncertain',False),('hard_to_hear',False)])
+def test_delivery_checks_every_voice_and_keeps_quiet_as_a_listening_warning(status,allowed):
+    from lib import trailer_delivery as d
+    measured={'on_target':True,'source_warnings':[],'effect_checks':[],
+              'voice_checks':[{'number':1,'status':status}],
+              'speech_checks':[] if status=='unmeasured' else [{'status':status}]}
+    assert d._sound_ok(measured) is allowed
+
 def test_delivery_stage_controls_no_longer_claim_they_are_unavailable():
     from lib.trailer_contract import STAGE_LIMITS
     assert STAGE_LIMITS['edit']=='' and STAGE_LIMITS['compose']==''
