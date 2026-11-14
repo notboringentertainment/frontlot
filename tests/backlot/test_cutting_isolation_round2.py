@@ -19,8 +19,9 @@ def test_slow_broker_hello_is_unavailable_not_an_unhandled_timeout(tmp_path,monk
     import os,socket,tempfile
     # macOS Unix sockets have a short pathname limit. Keep this inside the
     # redirected app home without adding pytest's long per-test directory.
-    socket_path=Path(tempfile.mkdtemp(prefix='hello-',dir=os.environ.get('OPENMONTAGE_HOME') or tempfile.gettempdir()))/'pending.sock'
-    sock=socket.socket(socket.AF_UNIX);sock.bind(str(socket_path))
+    folder=tempfile.TemporaryDirectory(prefix='hello-',dir=os.environ.get('OPENMONTAGE_HOME') or tempfile.gettempdir())
+    socket_path=Path(folder.name)/'pending.sock'
+    sock=socket.socket(socket.AF_UNIX)
     class Writer:
         closed=False
         def close(self):self.closed=True
@@ -32,10 +33,12 @@ def test_slow_broker_hello_is_unavailable_not_an_unhandled_timeout(tmp_path,monk
     monkeypatch.setattr(asyncio,'open_unix_connection',connect)
     monkeypatch.setattr(tty,'read_frame',timed_read)
     try:
+        sock.bind(str(socket_path))
         with pytest.raises(tty.BrokerUnavailable,match='ready'):
             asyncio.run(tty._attach('invented','request'))
         assert writer.closed
-    finally:sock.close()
+    finally:
+        sock.close();folder.cleanup()
 
 @pytest.mark.parametrize('temporary',['/tmp','/private/tmp','/var/folders/t7/invented/T'])
 def test_resolved_locations_accept_default_named_and_mac_temporary_roots(tmp_path,monkeypatch,temporary):

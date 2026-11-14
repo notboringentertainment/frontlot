@@ -15,6 +15,11 @@ TEST_ONLY = 'For the test trailer only until a person at ElevenLabs confirms oth
 PRICE_UNAVAILABLE = 'A firm maximum charge for this account, voice and model is not established. This request cannot be approved.'
 
 
+class IncompleteAudioRecord(ValueError):
+    def __init__(self):
+        super().__init__('This audio take record is incomplete. Recover the paid take from its receipt, or choose the original imported file again.')
+
+
 def _directory(root):
     root=_root(root)
     directory=root/'.audio-workspace'
@@ -23,9 +28,16 @@ def _directory(root):
     return directory
 
 
-def _save(root,record):
+def _save(root,record,*,replace_incomplete=False):
+    from lib.state_io import atomic_write_json
     directory=_directory(root)
-    with (directory/(record['id']+'.json')).open('x') as f:json.dump(record,f,ensure_ascii=False,indent=2)
+    path=_checked_path(directory/(record['id']+'.json'))
+    if path.exists():
+        if not replace_incomplete:raise FileExistsError('This audio take record already exists.')
+        try:read(root,record['id'])
+        except IncompleteAudioRecord:pass
+        else:raise ValueError('A complete audio take record cannot be replaced by recovery.')
+    atomic_write_json(path,record)
     return record
 
 
@@ -35,9 +47,17 @@ def read(root,identity):
     fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):raise ValueError('Audio records must be plain files.')
-        with os.fdopen(os.dup(fd)) as f:record=json.load(f)
+        try:
+            with os.fdopen(os.dup(fd)) as f:record=json.load(f)
+        except (json.JSONDecodeError,UnicodeDecodeError):raise IncompleteAudioRecord() from None
     finally:os.close(fd)
-    if record.get('id')!=identity or record.get('project_id')!=Path(root).name:raise ValueError('Audio belongs to another production.')
+    if not isinstance(record,dict):raise IncompleteAudioRecord()
+    if ('id' in record and record['id']!=identity) or ('project_id' in record and record['project_id']!=Path(root).name):
+        raise ValueError('Audio belongs to another production.')
+    required={'id','project_id','kind','origin','sha256','path','duration_seconds','codec'}
+    if record.get('origin')=='generated':required|={'approved_request_id','approval_record_sha256','generation_receipt_id','binding','requested_duration_seconds'}
+    elif record.get('origin')=='imported':required|={'source','licence_note'}
+    if not required<=record.keys():raise IncompleteAudioRecord()
     generated=receipts.verified_generation_receipts(root)
     actual=None
     if isinstance(record.get('path'),str):
@@ -187,9 +207,11 @@ def take_state(root,take):
 
 
 def state(root):
-    takes=[]
+    takes=[];warnings=[]
     for path in _directory(root).glob('*.json'):
-        take=read(root,path.stem)
+        try:take=read(root,path.stem)
+        except IncompleteAudioRecord as exc:
+            warnings.append(str(exc));continue
         take['status']=take_state(root,take)
         if take['origin']=='generated' and take['kind']=='music':take['release_note']=TEST_ONLY
         takes.append(take)
@@ -202,7 +224,7 @@ def state(root):
         try:request=reservation_request(root,reservation)
         except (ValueError,OSError,TypeError):request=None
         unresolved.append({'reservation':reservation,'request':request})
-    return {'takes':takes,'unresolved_requests':unresolved}
+    return {'takes':takes,'unresolved_requests':unresolved,'record_warnings':warnings}
 
 
 
@@ -344,10 +366,8 @@ def check_price(root,record):
     return price
 
 
-def generated_take(root,record,row):
+def _generation_material(root,record,row):
     identity=record['request_id']
-    directory=_directory(root)
-    if (directory/(identity+'.json')).exists():return read(root,identity)
     path=Path(root)/'assets/audio'/(identity+'.audio')
     _checked_path(path)
     sha=hashlib.sha256(path.read_bytes()).hexdigest()
@@ -358,11 +378,33 @@ def generated_take(root,record,row):
           'generation_receipt_id':row['receipt_id'],'sha256':sha,'path':str(path.relative_to(root)),
           'duration_seconds':measured['duration_seconds'],'requested_duration_seconds':record['duration_seconds'],'codec':measured['codec'],'binding':record['binding']}
     if record['kind']=='music':take['release_note']=TEST_ONLY
-    return _save(root,take)
+    return take
 
 
-def recover_recorded_take(root,record):
-    """Rebuild a missing workspace entry from verified, already-paid evidence.
+def _store_generated_take(root,take):
+    with call_lock(root):
+        directory=_directory(root);identity=take['id'];replace_incomplete=False
+        # A hard stop can leave this helper's hidden staging file. It is not
+        # a take. With the call lock held, no generation writer can own it.
+        for staged in directory.glob('.'+identity+'.json.*.tmp'):
+            _checked_path(staged).unlink()
+        path=directory/(identity+'.json')
+        if path.exists():
+            try:current=read(root,identity)
+            except IncompleteAudioRecord:replace_incomplete=True
+            else:
+                if any(current.get(key)!=value for key,value in take.items()):
+                    raise ValueError('The saved audio take does not match its verified generation receipt. Nothing was replaced.')
+                return current
+        return _save(root,take,replace_incomplete=replace_incomplete)
+
+
+def generated_take(root,record,row):
+    return _store_generated_take(root,_generation_material(root,record,row))
+
+
+def recorded_take_material(root,record):
+    """Read verified paid evidence and the unchanged local file, without saving.
 
     This path has no transport, key lookup, new reservation or spending call.
     Expired prices or a changed brief cannot erase a recorded take: it can be
@@ -378,7 +420,12 @@ def recover_recorded_take(root,record):
     if (row.get('normalized_inputs_hash')!=record['input_sha256'] or row.get('model_endpoint')!=record['model']
             or row.get('tool')!='elevenlabs_audio'):
         raise ValueError('The recorded take does not match its original signed request.')
-    return generated_take(root,record,row)
+    return _generation_material(root,record,row)
+
+
+def recover_recorded_take(root,record):
+    take=recorded_take_material(root,record)
+    return _store_generated_take(root,take) if take is not None else None
 
 
 def require_accepted(root,identity):
