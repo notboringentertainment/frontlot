@@ -51,6 +51,6 @@ export function renderPriceSettings(data,state,{api,act,onSign,url}){
   })},'Prepare price settings for signing'),
   el('button',{type:'button',onclick:()=>act(async()=>{
     const result=await api(url+'/prices/restore',{});state.dirty=false;state.digest=null;return result.message;
-  })},'Discard draft and restore signed settings'));
+  })},'Discard unsigned price draft'));
   return box;
 }

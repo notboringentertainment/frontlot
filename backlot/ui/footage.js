@@ -1,5 +1,6 @@
 // Focused footage controls. Every write calls the existing signed operations.
 import {el, CAPABILITY_TOKEN_KEY, mediaURL, spendingCard} from "/ui/lib.js";
+import {savedPaperCut,paperCutChangedHere} from '/ui/trailer.js';
 let data=null,project=null,hooks=null,globalError="",observing=false;
 const drafts=new Map(),completed=new Set();
 export async function footageAction(action,body) {
@@ -18,11 +19,13 @@ export async function afterFootageSignature(id,kind) {
   if(!["footage_spend","footage_take","audio_resolution"].includes(kind)||completed.has(id))return;
   try {
     globalError="";
-    await footageAction("signed",{gate_id:id});completed.add(id);
+    const result=await footageAction("signed",{gate_id:id});
+    if(result.paper_cut)paperCutChangedHere(project,result.paper_cut);completed.add(id);
     hooks.returnToShots();await hooks.refresh();
   }catch(error){globalError=error.message;hooks.returnToShots();await hooks.refresh();}
 }
 export async function footageDecision(shot,take,decision) {
+  if(decision==='accept')try{savedPaperCut(project);}catch(error){globalError=error.message;hooks.render();return;}
   const result=await footageAction("decision",{shot_id:shot.id,take_id:take.take_id,decision});
   await hooks.refresh();await hooks.selectGate(result.gate.request_id);
 }

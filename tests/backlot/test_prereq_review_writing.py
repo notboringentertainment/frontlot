@@ -18,13 +18,23 @@ def test_story_save_locks_every_word_until_refresh_finishes(root,monkeypatch,iso
         try:
             page.goto(url);panel=page.get_by_role('region',name='Trailer story',exact=True)
             area=panel.get_by_label(field,exact=True);expect(area).not_to_have_value('')
-            original=area.input_value();held=[]
-            page.route('**/story',lambda route:held.append(route) if route.request.method=='POST' else route.continue_())
-            panel.get_by_role('button',name='Save story for review',exact=True).click()
+            original=area.input_value();held=[];refresh=[];block={'get':False}
+            def delay(route):
+                if route.request.method=='POST':held.append(route)
+                elif block['get']:refresh.append(route)
+                else:route.continue_()
+            page.route('**/story',delay)
+            area.focus()
+            panel.get_by_role('button',name='Save story for review',exact=True).evaluate('(b)=>b.click()')
             wait_for(page,lambda:bool(held));expect(area).to_be_disabled()
             # Keystrokes during the locked save cannot enter and then vanish.
             page.keyboard.insert_text(' Never lose these words.')
-            held.pop().continue_();expect(area).to_be_enabled(timeout=10000)
+            block['get']=True;held.pop().continue_()
+            wait_for(page,lambda:bool(refresh));expect(area).to_be_disabled()
+            assert area.input_value()==original
+            block['get']=False
+            for route in refresh:route.continue_()
+            refresh.clear();expect(area).to_be_enabled(timeout=10000)
             assert area.input_value()==original
             area.fill(original+' Later words.' if field=='Exact story text' else original)
             assert area.input_value().endswith('Later words.') if field=='Exact story text' else area.input_value()==original
@@ -84,11 +94,18 @@ def test_other_writing_panels_lock_through_their_save(root,monkeypatch,isolated_
                     value=data[key];panel.get_by_label(label,exact=True).fill('\n'.join(value) if isinstance(value,list) else value)
                 panel.get_by_label('This is an invented location, not a person or character.').check()
                 area=panel.get_by_label('Exact location description',exact=True);path='**/footage-setup/look';save='Prepare location look for signing'
-            value=area.input_value()
-            page.route(path,lambda route:held.append(route) if route.request.method=='POST' else route.continue_())
-            panel.get_by_role('button',name=save,exact=True).click();wait_for(page,lambda:bool(held))
+            value=area.input_value();refresh=[];block={'get':False}
+            page.route(path,lambda route:held.append(route) if route.request.method=='POST' else (refresh.append(route) if block['get'] else route.continue_()))
+            if kind=='look':page.route('**/footage-setup',lambda route:refresh.append(route) if block['get'] else route.continue_())
+            area.focus();handle=area.element_handle()
+            panel.get_by_role('button',name=save,exact=True).evaluate('(b)=>b.click()');wait_for(page,lambda:bool(held))
             expect(area).to_be_disabled();page.keyboard.insert_text(' Never disappear.')
-            held.pop().continue_()
+            block['get']=True;held.pop().continue_();wait_for(page,lambda:bool(refresh))
+            assert handle.evaluate('(e)=>e.matches(":disabled")'),'Typing unlocked before the saved state was refreshed.'
+            assert handle.evaluate('(e)=>e.value')==value
+            block['get']=False
+            for route in refresh:route.continue_()
+            refresh.clear()
             if kind=='paper':expect(area).to_be_enabled(timeout=10000);assert area.input_value()==value
             else:expect(page.get_by_role('region',name='Location source approval',exact=True)).to_be_visible(timeout=10000)
             assert not page.errors

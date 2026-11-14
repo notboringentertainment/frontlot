@@ -124,6 +124,8 @@ def test_writer_complete_request_keep_decline_and_retake(film,provider,monkeypat
             picture(page,'keep-signing',tmp_path)
             sign(page,'decision')
             panel.get_by_role('status').filter(has_text='Kept').wait_for(timeout=20000)
+            paper=page.get_by_role('region',name='Trailer paper cut',exact=True)
+            assert 'Another window saved' not in paper.inner_text()
             picture(page,'kept',tmp_path)
             panel.get_by_role('button',name='Decline this take',exact=True).first.click()
             sign(page,'decision')

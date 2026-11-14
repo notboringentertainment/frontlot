@@ -10,13 +10,15 @@ def signing_directory(prefix='g'):
         raw=os.environ.get(name)
         if raw:
             parent=Path(raw).resolve()
-            if parent.is_dir() and len(os.fsencode(parent))<=54:
-                return Path(tempfile.mkdtemp(prefix=prefix,dir=parent))
+            for candidate in (parent,parent.parent):
+                if candidate.is_dir() and len(os.fsencode(candidate))<=54:
+                    return Path(tempfile.mkdtemp(prefix=prefix,dir=candidate))
     metadata=os.environ.get('OPENMONTAGE_METADATA_PATH')
     if metadata:
         parent=Path(metadata).resolve().parent
-        if parent.is_dir() and len(os.fsencode(parent))<=54:
-            return Path(tempfile.mkdtemp(prefix=prefix,dir=parent))
+        for candidate in (parent,parent.parent):
+            if candidate.is_dir() and len(os.fsencode(candidate))<=54:
+                return Path(tempfile.mkdtemp(prefix=prefix,dir=candidate))
     # Ordinary pytest without any custom environment still owns a fresh,
     # private temporary folder. No application home is consulted.
     return Path(tempfile.mkdtemp(prefix=prefix,dir='/private/tmp' if Path('/private/tmp').is_dir() else '/tmp'))

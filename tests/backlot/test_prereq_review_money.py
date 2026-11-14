@@ -12,21 +12,22 @@ from tests.backlot.test_signing_outcome_browser import review_gate,open_review,w
 def test_unreadable_story_keeps_held_money_and_review_controls(request,monkeypatch,medium):
     root,reservation,count,ceiling=held(request,medium,monkeypatch);before=count()
     from backlot import voice_panel,footage_controls
-    from lib import story_ingest
-    from lib.pathsafe import PathSafetyError
-    monkeypatch.setattr(story_ingest,'story_checkpoint',lambda *a:(_ for _ in ()).throw(PathSafetyError('Invented unreadable story')))
+    from lib import trailer_edit
+    saved=trailer_edit.read_revision(root)
+    assert saved and saved['paper_cut']['shots']
+    # Damage the real checkpoint the panels read, not an unused helper.
+    (root/'checkpoint_canon_ingest.json').write_text('{')
     if medium=='audio':
         value=voice_panel.snapshot(root)
         assert value['budget']['held']==figures(root,ceiling)[1]>0
         assert value['unresolved_requests'] and value['requests']
+        assert value['lines']==saved['paper_cut']['lines'] and value['shots']==saved['paper_cut']['shots']
         assert 'unavailable' in value['requests'][0]['source_warning'].lower()
     else:
-        # Force the paper display's safe error result as well as the advisory
-        # failure, without damaging the signed charge or its recovery inputs.
-        from lib import trailer_edit
-        monkeypatch.setattr(trailer_edit,'paper_state',lambda *a:{'error':'The supplied story cannot be read.','usable_downstream':False})
         value=footage_controls.inspect(root,{})
         assert value['shots'] and value['shots'][0]['requests']
+    from backlot.footage_prereqs import snapshot
+    assert snapshot(root)['shots']==saved['paper_cut']['shots']
     assert count()==before and figures(root,ceiling)[1]>0
 
 

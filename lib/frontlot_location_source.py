@@ -9,7 +9,7 @@ from lib import gates,receipts
 from lib.canonical_json import canonical_bytes,record_sha256
 from lib.look_spec import validate_look_spec,generation_sufficient,LookSpecError
 from lib.pathsafe import resolve_input,PathSafetyError
-from lib.state_io import atomic_write_bytes,atomic_write_json
+from lib.state_io import atomic_write_bytes,atomic_write_json,atomic_move
 from lib.story_ingest import root_checked
 
 DIRECTORY='.frontlot-location-looks'
@@ -18,6 +18,24 @@ FIELDS={'entity_kind','name','text','fictional_subject_attestation','minor','sha
     'establishing_view','time_of_day_default','palette_anchors','architecture_or_terrain','dressing',
     'weather_or_light_rules','continuity_risks','negative_lines'}
 LABELS={'prompt_safe_description':'the exact location description','establishing_view':'the establishing view','time_of_day_default':'the default time of day','palette_anchors':'the palette anchors','architecture_or_terrain':'the architecture or terrain','dressing':'the dressing','weather_or_light_rules':'the weather and light rules','continuity_risks':'the continuity risks','negative_lines':'the things to avoid'}
+
+def require_slot(root,entity_id):
+    from lib.look_ingest import active_looks
+    if any(kind=='location' and entity!=entity_id for kind,entity in active_looks(root)):
+        raise ValueError('This trailer already has one approved location. Use its current look; these first-location controls cannot approve another location.')
+
+def retire_unsigned(root,current):
+    from lib.story_ingest import pending_story_requests
+    signed={row['record_sha256'] for row in receipts.verified_approvals(root,'look_lock')}
+    for path,req in pending_story_requests(root):
+        if (req.get('request_id')==current or req.get('kind')!='look_lock' or req.get('project_id')!=root.name or
+            not str(req.get('scope','')).startswith('location:') or req.get('approval_receipt_id') or 'declined_note' in req or
+            not isinstance(req.get('approval_record'),dict) or record_sha256(req['approval_record']) in signed):continue
+        archive=root/'.gate-requests/abandoned'
+        if archive.is_symlink():raise ValueError('Saved request history cannot use links.')
+        archive.mkdir(exist_ok=True)
+        if (archive/path.name).exists():raise ValueError('This look request already has a history entry. Reopen its review.')
+        atomic_move(path,archive/path.name)
 
 def external_sources(root):
     from lib.look_ingest import (writeros_package_for,parse_writeros_export,wayfinder_root_for,
@@ -74,6 +92,7 @@ def prepare(root,data):
     from lib.look_ingest import IngestedLook,active_looks,look_lock_request
     root=root_checked(root);spec=_spec(data)
     with gates.receipt_lock(root.name,'approval'):
+        require_slot(root,ENTITY)
         if external_sources(root) or any(not v.writer_source_ref for v in active_looks(root).values()):
             raise ValueError('This production has existing look material. Prepare and sign its WriterOS or Wayfinder source instead of replacing it here.')
         raw=data['text'].encode('utf-8');text_sha=hashlib.sha256(raw).hexdigest()
@@ -91,6 +110,7 @@ def prepare(root,data):
         pointer=root/DIRECTORY/'current.json'
         if pointer.is_symlink():raise ValueError('Location source storage cannot use links.')
         atomic_write_json(pointer,ref)
+        retire_unsigned(root,path.stem)
         return {'gate':json.loads(path.read_text()),'look_refs':[{'entity_kind':'location','entity_id':ENTITY,'look_hash':look.look_hash}]}
 
 def read(root,ref=None):
@@ -132,10 +152,13 @@ def signing_material(root,req):
         ref=req['writer_source_ref'];doc=require_current(root,ref)
         if req.get('entity_id')!=ENTITY or req.get('scope')!='location:'+ENTITY:raise ValueError('This location request names another production or subject.')
         if external_sources(root):raise ValueError('Existing WriterOS or Wayfinder look material must be reviewed through its own source route.')
+        require_slot(root,ENTITY)
         current=active_look_for(root,'location',ENTITY)
         envelope={'action':'activate','entity_kind':'location','look_hash':record_sha256(doc['look_spec']),
             'supersedes_look_hash':current.look_hash if current else None,'writer_source_ref':ref}
-        def recheck():require_current(root,ref,doc['look_spec'])
+        def recheck():
+            require_current(root,ref,doc['look_spec']);require_slot(root,ENTITY)
+            if external_sources(root):raise ValueError('Existing WriterOS or Wayfinder look material must be reviewed through its own source route.')
         return {'record':doc['look_spec'],'envelope':envelope,'entity_id':ENTITY,'pre_commit_check':recheck,
             'evidence':('Written in Front Lot for this production. The exact text is kept without rewriting. No picture, upload, purchase or whole stage is approved.',)}
     except (KeyError,OSError,PathSafetyError):raise ValueError('The location source could not be verified. Review and sign its exact current wording again.') from None
@@ -144,11 +167,13 @@ def prepare_existing(root,source,entity_id):
     from lib.look_ingest import look_lock_request
     root=root_checked(root)
     with gates.receipt_lock(root.name,'approval'):
+        require_slot(root,entity_id)
         choices=[v for v in external_sources(root) if v['source']==source and v['entity_id']==entity_id and v['entity_kind']=='location']
         if len(choices)!=1:raise ValueError('Choose one verified existing location source. Character looks stay with their existing controls.')
         item=choices[0]
         path=look_lock_request(root,root.name,item['look'],request_id='location-look-'+uuid.uuid4().hex,
             ticket_path=item.get('ticket_path'))
+        retire_unsigned(root,path.stem)
         return {'gate':json.loads(path.read_text())}
 
 def apply(root,request_id):
@@ -159,11 +184,13 @@ def apply(root,request_id):
     with gates.receipt_lock(root.name,'approval'):
         _,req=read_request(root,request_id)
         if not req or req.get('project_id')!=root.name or req.get('kind')!='look_lock':raise ValueError('Choose the signed location-look request for this production.')
+        require_slot(root,req['entity_id'])
         row=receipts.find_approval(root,'look_lock',entity_id=req['entity_id'],record_sha256=record_sha256(req['approval_record']))
         if row is None:raise ValueError('Sign this location look before applying it. Nothing is approved by saving.')
         current=active_look_for(root,'location',req['entity_id'])
         if current is None or current.receipt_id!=row['receipt_id']:raise ValueError('This is no longer the current location look. Review its latest source.')
         if row.get('writer_source_ref'):
+            if external_sources(root):raise ValueError('Existing WriterOS or Wayfinder look material appeared. Review its source before applying this location.')
             require_current(root,row['writer_source_ref'],row['record']);source={'writer_source_ref':row['writer_source_ref']}
         else:
             choices=[v for v in external_sources(root) if v['entity_id']==req['entity_id'] and v['look'].look_hash==current.look_hash]

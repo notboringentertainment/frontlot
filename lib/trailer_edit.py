@@ -14,6 +14,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from lib.canonical_json import record_sha256
+from lib.pathsafe import PathSafetyError
 from lib.trailer_contract import make_contract, require_contract, signed_trailer_pin, edit_digest
 
 
@@ -486,9 +487,10 @@ def paper_state(root):
         # read is never permission, and must not take the whole board down.
         return {'current': current, 'needs_review': True, 'usable_downstream': False,
                 'error': 'The story’s signed approval records could not be verified. Refresh to try again; if this continues, review the approval records. Existing takes and held money remain recorded. No new purchase is permitted by this check.'}
-    except (ValueError, OSError, KeyError, TypeError, AttributeError):
-        return {'current': None, 'needs_review': True, 'usable_downstream': False,
-                'error': 'The paper cut could not be read. Earlier versions have been kept. Restore a safe copy before editing.'}
+    except (ValueError, OSError, KeyError, TypeError, AttributeError, PathSafetyError):
+        return {'current': current, 'needs_review': True, 'usable_downstream': False,
+                'error': ('The saved paper cut is still available, but its story checks could not be read. Review the approved story, then check the paper cut again. Existing takes and held money remain recorded.' if current else
+                    'The paper cut could not be read. Earlier versions have been kept. Restore a safe copy before editing.')}
 
 
 def creation_facts(root):

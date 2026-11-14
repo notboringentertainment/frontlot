@@ -1,6 +1,6 @@
 // Front Lot film board (the cutting room) — renders BoardState and stays live via SSE.
 
-import { renderPaperCut } from "/ui/trailer.js";
+import { renderPaperCut,paperCutEpoch } from "/ui/trailer.js";
 import {renderStory,renderStorySigning} from '/ui/story.js';
 import {renderFootageSetup,renderPrereqSigning,applyLocationApproval} from '/ui/footage_setup.js';
 import {renderPriceSigning} from '/ui/media_prices.js';
@@ -2096,7 +2096,7 @@ function renderEntityViewer(s, e) {
     el("div", {}, el("b", {}, "Nothing on film yet"), el("p", {}, nextStep)));
 
   const lookText = e.lookSpec && (e.lookSpec.prompt_safe_description || e.lookSpec.description);
-  const source = e.look && e.look.source_ref && typeof e.look.source_ref === "object"
+  const source = e.look?.writer_source_ref ? 'Written in Front Lot' : e.look && e.look.source_ref && typeof e.look.source_ref === "object"
     ? "From WriterOS"
     : e.look ? "From a Story-drive ticket" : null;
 
@@ -2994,7 +2994,7 @@ function renderBoard() {
     el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Cutting view"]')?.scrollIntoView({block:'start'})},'Cutting workspace')));
   const drawer = renderDrawer(s);
   if(s.is_trailer&&!s.trailer_damaged&&!selectedGateId){const story=renderStory(s,async(id)=>{await refresh();await selectGate(id);});if(story)viewer.append(story);}
-  if(s.is_trailer&&!s.trailer_damaged&&!selectedGateId){const setup=renderFootageSetup(s,async(id)=>{await refresh();await selectGate(id);});if(setup)viewer.append(setup);}
+  if(s.is_trailer&&!s.trailer_damaged&&!selectedGateId){const setup=renderFootageSetup(s,async(id)=>{await refresh();await selectGate(id);},refresh);if(setup)viewer.append(setup);}
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(
     el("button",{type:"button",class:"quiet-btn",onclick:()=>viewer.querySelector('[aria-label="Footage workspace"]')?.scrollIntoView({block:"start"})},"Open footage requests"),renderPaperCut(s));
 
@@ -3079,6 +3079,7 @@ function normalize(s) {
 }
 
 async function refresh() {
+  const paperEpoch=paperCutEpoch();
   const generation = ++refreshGeneration;
   if (refreshController) refreshController.abort();
   const controller = new AbortController();
@@ -3102,6 +3103,7 @@ async function refresh() {
         take:(s,shot,take)=>renderTakeTile(s,shot,take,{decidable:true,othersWaiting:0}),
         returnToShots:()=>{selectedGateId=null;gateDetail=null;closeSigning();}});
     }
+    if(paperEpoch!==paperCutEpoch()){queueMicrotask(()=>refresh().catch(console.error));return;}
     const creationJustSigned = state?.trailer_setup_pending && nextState.is_trailer && !nextState.trailer_setup_pending;
     if(creationJustSigned){selectedGateId=null;gateDetail=null;}
     state = normalize(nextState);

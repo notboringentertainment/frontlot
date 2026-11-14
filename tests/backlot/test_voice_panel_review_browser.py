@@ -29,8 +29,8 @@ def test_signed_price_values_survive_reload_and_restore_has_a_true_answer(voice_
             page.reload();expect(panel).to_contain_text('One production ceiling',timeout=15000);open_prices(panel)
             expect(field).to_have_value('0.0003');expect(panel.get_by_label('Prices expire',exact=True)).to_have_value('2099-12-31T23:00')
             capture(page,'signed-figures-after-reload',field)
-            panel.get_by_role('button',name='Discard draft and restore signed settings',exact=True).click()
-            expect(panel.get_by_role('status')).to_contain_text('already signed')
+            panel.get_by_role('button',name='Discard unsigned price draft',exact=True).click()
+            expect(panel.get_by_role('status')).to_contain_text('No unsigned price draft is waiting')
             capture(page,'already-signed-restore',panel.get_by_role('status'))
             assert posts==[] and gets==[] and not errors
             page.close()

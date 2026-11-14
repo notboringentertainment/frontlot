@@ -1,4 +1,5 @@
 import {el,CAPABILITY_TOKEN_KEY,thumbURL} from '/ui/lib.js';
+import {changeSavedPaperCut} from '/ui/trailer.js';
 let current=null;
 const button=(name,fn)=>el('button',{type:'button',onclick:fn},name);
 async function api(project,action='',data){
@@ -7,7 +8,7 @@ async function api(project,action='',data){
   if(!r.ok)throw Error(typeof result.detail==='string'?result.detail:'Footage setup could not be saved. Review the form and try again.');return result;
 }
 export async function applyLocationApproval(project,id){return api(project,`/look/${encodeURIComponent(id)}/apply`,{});}
-export function renderFootageSetup(s,onSign){
+export function renderFootageSetup(s,onSign,onChange=async()=>{}){
   if(s.trailer_setup_pending)return null;
   if(current?.project===s.project_id){current.refresh();return current.node;}
   const project=s.project_id,node=el('section',{class:'paper-editor footage-setup','aria-label':'Footage prerequisites'}),status=el('p',{role:'status'}),error=el('p',{role:'alert'});
@@ -19,7 +20,8 @@ export function renderFootageSetup(s,onSign){
   const look=group('Location written in Front Lot'),answers={};
   look.append(el('p',{},'Write twenty to eighty words, no more than six hundred characters, in the exact location description. These are the existing look limits. Supply the required visual answers yourself; nothing is invented or sent to a model.'));
   const fields=[['Location name','name'],['Exact location description','text'],['Establishing view','establishing_view'],['Default time of day','time_of_day_default'],['Palette anchors, one per line','palette_anchors'],['Architecture or terrain','architecture_or_terrain'],['Dressing, one item per line','dressing'],['Weather and light rules','weather_or_light_rules'],['Continuity risks, one per line','continuity_risks'],['Things to avoid, one per line','negative_lines']];
-  for(const [label,key] of fields){const input=el(key==='name'?'input':'textarea',{'aria-label':label,rows:key==='text'?7:2});input.oninput=()=>{lookDirty=true;};answers[key]=input;look.append(el('label',{},label,input));}
+  for(const [label,key] of fields){const input=el(key==='name'?'input':'textarea',{'aria-label':label,required:true,rows:key==='text'?7:2});input.oninput=()=>{lookDirty=true;};answers[key]=input;look.append(el('label',{},label+' (required)',input));}
+  look.append(el('p',{},'Use dawn, morning, midday, afternoon, golden hour, dusk, night or variable for the default time of day. Supply three or four palette anchors and at least one dressing item, continuity risk and thing to avoid. All visual answers are required.'));
   // Keep the exact supplied description separately from HTML's normalised
   // textarea. This is the same bounded rule as the story source editor.
   const text=answers.text,endings=value=>new Set(value.match(/\r\n|\r|\n/g)||[]),normal=value=>value.replace(/\r\n|\r/g,'\n');
@@ -29,11 +31,11 @@ export function renderFootageSetup(s,onSign){
   text.onpaste=e=>{const pasted=e.clipboardData?.getData('text/plain');if(pasted===undefined)return;e.preventDefault();const all=text.selectionStart===0&&text.selectionEnd===text.value.length;
     if(mixed&&!all){error.textContent=blocked;return;}const prefix=all?'':raw.slice(0,offset(text.selectionStart)),suffix=all?'':raw.slice(offset(text.selectionEnd));
     raw=prefix+pasted+suffix;text.value=raw;const styles=endings(raw);style=styles.size===1?[...styles][0]:'\n';mixed=false;lookDirty=true;error.textContent='';const caret=normal(prefix+pasted).length;text.setSelectionRange(caret,caret);};
-  const fictional=el('input',{type:'checkbox','aria-label':'This is an invented location, not a person or character.'});look.append(el('label',{},fictional,'This is an invented location, not a person or character.'));
+  const fictional=el('input',{type:'checkbox','aria-label':'This is an invented location, not a person or character.'});fictional.onchange=()=>{lookDirty=true;};look.append(el('label',{},fictional,'This is an invented location, not a person or character.'));
   look.append(button('Prepare location look for signing',()=>act(async()=>{
     if(mixed)throw Error(blocked);
     const data={entity_kind:'location',fictional_subject_attestation:fictional.checked,minor:false,shape_only:false,spoiler:false,depends_on:[]};
-    for(const [,key] of fields)data[key]=key==='text'?raw:['palette_anchors','dressing','continuity_risks','negative_lines'].includes(key)?answers[key].value.split(/\r\n|\r|\n/).filter(v=>v.trim()):answers[key].value;
+    for(const [,key] of fields)data[key]=key==='text'?raw:['palette_anchors','dressing','continuity_risks','negative_lines'].includes(key)?answers[key].value.split(/\r\n|\r|\n/).filter(v=>v.trim()):key==='time_of_day_default'?answers[key].value.trim().toLowerCase().replace(/\s+/g,'_'):answers[key].value;
     const result=await api(project,'/look',data);await onSign(result.gate.request_id);
   })));
   const existing=el('div',{}),pending=el('div',{}),lookChoice=el('select',{'aria-label':'Approved location look'}),shotChoice=el('select',{'aria-label':'Paper-cut shot'}),pictureChoice=el('select',{'aria-label':'Signed picture'});
@@ -41,12 +43,16 @@ export function renderFootageSetup(s,onSign){
   chooser.onchange=()=>act(async()=>{const picked=chooser.files?.[0];if(!picked)return;if(picked.size>64*1024*1024)throw Error('Choose a picture no larger than 64 megabytes.');
     const bytes=new Uint8Array(await picked.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));file={name:picked.name,base64:btoa(binary)};return {message:'Picture chosen. The original will stay unchanged on your Mac.'};});
   const tool=el('input',{'aria-label':'Tool that made this picture'}),machine=el('input',{type:'checkbox','aria-label':'This picture is machine-generated.'}),noPerson=el('input',{type:'checkbox','aria-label':'This picture depicts no real person.'});
-  const usePicture=button('Use signed picture for selected shot',()=>act(async()=>{const selected=snapshot.approved_looks[Number(lookChoice.value)];return api(project,'/picture/use',{receipt_id:pictureChoice.value,shot_id:shotChoice.value,look:selected?.ref||null});}));usePicture.disabled=true;
+  const usePicture=button('Use signed picture for selected shot',()=>act(async()=>{const result=await changeSavedPaperCut(project,revision=>{const selected=snapshot.approved_looks[Number(lookChoice.value)];
+    return api(project,'/picture/use',{receipt_id:pictureChoice.value,shot_id:shotChoice.value,look:selected?.ref||null,expected_revision:revision});});await onChange();return result;}));usePicture.disabled=true;
   picture.append(el('p',{},'Choose a PNG or JPEG, up to 64 megabytes. Only a machine-generated picture depicting no real person is allowed. Personal photographs, real-person inspiration and other origins are refused. Importing signs its origin; the exact picture-and-look pairing is signed in each footage request.'),
     el('label',{},'Approved location look',lookChoice),el('label',{},'Choose a picture file',chooser),el('label',{},'Tool that made this picture',tool),el('label',{},machine,'This picture is machine-generated.'),el('label',{},noPerson,'This picture depicts no real person.'),
     button('Prepare picture origin for signing',()=>act(async()=>{const selected=snapshot.approved_looks[Number(lookChoice.value)];const result=await api(project,'/picture',{file,look:selected?.ref||null,origin_class:'imported_synthetic',machine_generated:machine.checked,no_real_person:noPerson.checked,origin_tool:tool.value});await onSign(result.gate.request_id);})),
     el('label',{},'Signed picture',pictureChoice),el('label',{},'Paper-cut shot',shotChoice),el('p',{},'The use button becomes available after the picture origin is signed and a current location look and saved shot are available.'),usePicture);
   const prices=group('Fal footage prices and permissions'),priceFields={};
+  const priceStatus=el('p',{'aria-live':'polite'}),signedPrice=el('p',{});
+  const discardPrices=button('Discard unsigned footage price draft',()=>act(async()=>{const result=await api(project,'/prices/discard',{});await onChange();return result;}));
+  prices.append(priceStatus,signedPrice,discardPrices);
   prices.append(el('p',{},'One supported model: Kling o3 Pro reference video through Fal. Bring your own confirmed maximum cash rate and maximum dollar replacement value of credits, both per second, from your Fal account. Do not use an estimate or make a purchase to discover a price. Front Lot supplies no default prices. Both amounts count within the existing shared production ceiling.'));
   for(const [label,key,type] of [['Highest cash dollars per second','cash_usd_per_second','number'],['Highest credit replacement dollars per second','credits_usd_per_second','number'],['Footage prices expire','expiry','datetime-local']]){
     const input=el('input',{type,'aria-label':label,step:type==='number'?'0.0001':null,min:type==='number'?'0':null});priceFields[key]=input;prices.append(el('label',{},label,input));}
@@ -58,12 +64,16 @@ export function renderFootageSetup(s,onSign){
     })));
   const select=(input,items)=>{const old=input.value;input.replaceChildren(...items.map(v=>el('option',{value:v.value},v.label)));if(items.some(v=>v.value===old))input.value=old;};
   async function refresh(){if(loading){refreshAgain=true;return new Promise(resolve=>refreshWaiters.push({after:refreshSerial+1,resolve}));}loading=true;refreshAgain=false;const serial=++refreshSerial;try{snapshot=await api(project);status.textContent=notice||snapshot.message;if(snapshot.location_error)error.textContent=snapshot.location_error;
+    priceStatus.textContent=snapshot.price_draft_message||'Drafts do not change your current signed settings. Preparing a draft pauses all purchases until you sign or discard it.';
+    discardPrices.disabled=!snapshot.footage_price_draft;
+    const rate=snapshot.footage_prices;signedPrice.textContent=rate&&snapshot.price_settings_signed?`Current signed footage rates: $${rate.cash_usd_per_second.toFixed(4)} cash and $${rate.credits_usd_per_second.toFixed(4)} credit replacement per second. Expire ${new Date(rate.expires_at*1000).toLocaleString()}. Enter new account-confirmed figures below to change them.`:'No signed footage figures are available. Bring both figures from your Fal account; no price is pre-filled.';
     if(snapshot.location&&!lookLoaded&&!lookDirty){const doc=snapshot.location;for(const [,key] of fields)answers[key].value=key==='name'?doc.name:key==='text'?doc.look_spec.prompt_safe_description:Array.isArray(doc.look_spec[key])?doc.look_spec[key].join('\n'):doc.look_spec[key];raw=doc.look_spec.prompt_safe_description;const styles=endings(raw);style=styles.size===1?[...styles][0]:'\n';fictional.checked=doc.look_spec.fictional_subject_attestation;lookLoaded=true;}
     select(lookChoice,snapshot.approved_looks.map((v,i)=>({value:String(i),label:v.name})));select(shotChoice,snapshot.shots.map((v,i)=>({value:v.id,label:`Shot ${i+1}: ${v.purpose}`})));select(pictureChoice,snapshot.pictures.map(v=>({value:v.receipt_id,label:`Machine-generated picture · ${v.tool}`})));
     usePicture.disabled=!snapshot.approved_looks.length||!snapshot.pictures.length||!snapshot.shots.length;
     look.hidden=snapshot.external_material;existing.replaceChildren();if(snapshot.external_material&&!snapshot.existing_sources.length)existing.append(el('p',{},'Existing WriterOS or Wayfinder look material was found. This form does not replace it. Supply its resolved location look through that existing source; it can then be reviewed here.'));
     for(const source of snapshot.existing_sources)existing.append(button(`Review ${source.source==='writeros'?'WriterOS':'Wayfinder'} location: ${source.name}`,()=>act(async()=>{const result=await api(project,'/look/existing',{source:source.source,entity_id:source.entity_id});await onSign(result.gate.request_id);})));
     pending.replaceChildren();for(const request of snapshot.pending)pending.append(button(request.kind==='look_lock'?'Review pending location look':'Review pending picture origin',()=>act(()=>onSign(request.request_id))));
+    for(const id of snapshot.signed_locations_to_apply||[])pending.append(button('Apply signed location look',()=>act(()=>applyLocationApproval(project,id))));
   }catch(e){error.textContent=e.message;}finally{loading=false;for(let i=refreshWaiters.length-1;i>=0;i--)if(refreshWaiters[i].after<=serial)refreshWaiters.splice(i,1)[0].resolve();if(refreshAgain){refreshAgain=false;queueMicrotask(refresh);}}}
   node.append(el('h2',{},'First location, reference picture and footage prices'),el('p',{},'Location looks only. No person or character look can be created here. Every source, picture origin and set of prices needs its own signature. Nothing here sends a prompt or picture to a service, buys a clip or completes a whole stage.'),status,error,existing,look,picture,prices,pending);
   controls.append(...node.childNodes);node.append(controls);

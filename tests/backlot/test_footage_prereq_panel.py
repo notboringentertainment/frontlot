@@ -38,6 +38,8 @@ def test_picture_needs_a_real_current_signed_location_look(root,isolated_standin
 def test_price_draft_can_be_corrected_without_signing_wrong_figures(root):
     from lib import media_settings
     from tests.backlot.test_footage_price_settings import footage
+    from tests.backlot.test_footage_price_settings import audio
+    approve_request(media_settings.prepare_audio(root,audio()),root)
     first=media_settings.prepare_footage(root,footage());second=media_settings.prepare_footage(root,{**footage(),'cash_usd_per_second':.12})
     assert first['request_id']!=second['request_id']
     assert (root/'.gate-requests/abandoned'/(first['request_id']+'.json')).is_file()
@@ -70,7 +72,7 @@ def test_five_second_clip_over_the_shared_ceiling_is_refused_plainly(root,monkey
     made=looks.prepare(root,form());approve_request(made['gate'],root);looks.apply(root,made['gate']['request_id']);look=made['look_refs'][0]
     image=panel().prepare_picture(root,picture(look));receipt=approve_request(image['gate'],root)
     shot=trailer_edit.read_revision(root)['paper_cut']['shots'][0]
-    panel().use_picture(root,{'receipt_id':receipt['receipt_id'],'shot_id':shot['id'],'look':look})
+    panel().use_picture(root,{'receipt_id':receipt['receipt_id'],'shot_id':shot['id'],'look':look,'expected_revision':trailer_edit.read_revision(root)['edit_revision_sha256']})
     approve_request(media_settings.prepare_footage(root,{**footage(),'cash_usd_per_second':3}),root)
     before=(root/'approvals.jsonl').read_bytes();monkeypatch.setattr(server,'PROJECTS_DIR',root.parent)
     with TestClient(server.create_app(port=4961,capability_token='invented-ceiling')) as client:

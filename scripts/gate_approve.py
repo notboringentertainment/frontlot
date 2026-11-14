@@ -690,12 +690,15 @@ def _construct_config(root: Path, req: dict) -> Constructed:
     from lib.project_config import ProjectConfigError, read_project_config
 
     try:
-        data, digest = read_project_config(root)
-    except ProjectConfigError as exc:
+        if req.get('scope') in {'audio:project_config','footage:project_config'}:
+            from lib.media_settings import draft_material
+            data,digest,_=draft_material(root,req)
+        else:data, digest = read_project_config(root)
+    except (ProjectConfigError,ValueError) as exc:
         raise GateHandlerError(str(exc)) from exc
     record = config_approval_record(digest)
-    if req.get('scope')=='audio:project_config' and req.get('approval_record')!=record:
-        raise GateHandlerError('The audio price settings changed. Prepare a new price-settings request before signing.')
+    if req.get('scope') in {'audio:project_config','footage:project_config'} and req.get('approval_record')!=record:
+        raise GateHandlerError('The price settings changed. Prepare a new price-settings request before signing.')
     entity_id = req.get("entity_id") or "project_config"
     evidence = (
         f"project.yaml sha256 {digest}",
@@ -705,7 +708,12 @@ def _construct_config(root: Path, req: dict) -> Constructed:
     if "audio_price_basis" in data:
         evidence += ("Audio prices you are signing (values, date set and expiry): " + json.dumps(data["audio_price_basis"], sort_keys=True),
                      "These are your approved maximum rates, not a provider quote. Expired rates refuse audio approval.")
-    return Constructed(record, None, str(entity_id), evidence=evidence)
+    if 'footage_price_basis' in data:evidence += ('Footage prices you are signing: '+json.dumps(data['footage_price_basis'],sort_keys=True),)
+    def recheck():
+        from lib.media_settings import draft_material
+        if draft_material(root,req)[1]!=digest:raise GateHandlerError('The price draft changed. Prepare it again before signing.')
+    return Constructed(record, None, str(entity_id), evidence=evidence,
+        pre_commit_check=recheck if req.get('scope') in {'audio:project_config','footage:project_config'} else None)
 
 
 def _construct_storyboard_batch(root: Path, req: dict) -> Constructed:
@@ -1840,6 +1848,18 @@ def construct(root: Path, req: dict, *, selection: Optional[int] = None) -> Cons
     if kind not in CONSTRUCTORS:
         raise GateHandlerError(f"unknown kind {kind!r}")
     built = CONSTRUCTORS[kind](root, req, selection) if kind in SELECTION_KINDS else CONSTRUCTORS[kind](root, req)
+    if kind=='look_lock' and str(req.get('scope','')).startswith('location:'):
+        from lib.trailer_contract import signed_trailer_pin
+        if signed_trailer_pin(root) is not None:
+            from lib.frontlot_location_source import require_slot
+            try:require_slot(root,built.entity_id)
+            except ValueError as exc:raise GateHandlerError(str(exc)) from None
+            original_check=built.pre_commit_check
+            def location_recheck():
+                require_slot(root,built.entity_id)
+                if original_check:original_check()
+            from dataclasses import replace
+            built=replace(built,pre_commit_check=location_recheck)
     hint = req.get("approval_record")
     if hint is not None and hint != built.record:
         raise GateHandlerError(
@@ -1940,7 +1960,8 @@ def _decline_request(req: dict, root: Path, note: str | None) -> None:
     if req["kind"] in SELECTION_KINDS and not note:
         raise GateHandlerError("reject-all needs a note (it is logged for the regeneration round)")
     _pending_request_path(req, root)  # grammar + existence before any lock file is touched
-    with gates.receipt_lock(str(req["project_id"]), "approval"):
+    from lib.media_settings import decision_lock
+    with decision_lock(root,req),gates.receipt_lock(str(req["project_id"]), "approval"):
         req_path, current = _reload_pending(req, root)
         current["declined_note"] = note
         atomic_write_json(req_path, current)
@@ -2002,7 +2023,8 @@ def _decide(
         raise GateHandlerError(f"unknown kind {kind!r}")
     _pending_request_path(req, root)  # grammar + existence before any lock file is touched
 
-    with gates.receipt_lock(str(req["project_id"]), "approval"):
+    from lib.media_settings import decision_lock,apply_signed,SCOPES
+    with decision_lock(root,req),gates.receipt_lock(str(req["project_id"]), "approval"):
         req_path, current = _reload_pending(req, root)
         is_batch_override = kind == "qc_override" and bool(current.get("batch"))
         try:
@@ -2043,6 +2065,7 @@ def _decide(
             if kind=='artifact_review' and current.get('scope')=='trailer-stage' and current.get('stage')=='canon_ingest':
                 from lib.story_ingest import complete
                 complete(root)
+            if kind=='config' and current.get('scope') in SCOPES:apply_signed(root,current)
             _complete_done(req_path, root, current, receipt["receipt_id"])
             return receipt
 
@@ -2055,6 +2078,8 @@ def _decide(
             try:require_stage_approval(root,signed_trailer_pin(root),'canon_ingest',checkpoint['artifacts'])
             except ValueError:pass
             else:receipt=matches[-1]
+        elif kind=='config' and current.get('scope') in SCOPES and len(matches)==1:
+            receipt=matches[0]
         elif kind == "sheet":
             # Tuple recovery (crash after commit, before the rewrite) exists
             # only for sheets, and only while the bound digest still
@@ -2121,6 +2146,12 @@ def _decide(
         if kind=='artifact_review' and current.get('scope')=='trailer-stage' and current.get('stage')=='canon_ingest':
             from lib.story_ingest import complete
             complete(root)
+        if kind=='config' and current.get('scope') in SCOPES:apply_signed(root,current)
+        if kind=='look_lock' and str(current.get('scope','')).startswith('location:'):
+            from lib.trailer_contract import signed_trailer_pin
+            if signed_trailer_pin(root) is not None:
+                from lib.frontlot_location_source import apply
+                apply(root,current['request_id'])
         _complete_done(req_path, root, current, receipt["receipt_id"])
         return receipt
 

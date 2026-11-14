@@ -46,12 +46,14 @@ def prepare_picture(root,data):
 def use_picture(root,data):
     from lib import trailer_edit as edit
     root=root_checked(root)
-    if not isinstance(data,dict) or set(data)!={'receipt_id','shot_id','look'}:raise ValueError('Choose the signed picture, its approved look and the paper-cut shot.')
+    if not isinstance(data,dict) or set(data)!={'receipt_id','shot_id','look','expected_revision'}:raise ValueError('Choose the signed picture, its approved look and the current saved paper-cut shot.')
     checked_look(root,data['look'])
     row=next((r for r in pictures.reference_import_receipts(root,project_id=root.name) if r['receipt_id']==data['receipt_id']),None)
     if row is None or row.get('origin_class')!='imported_synthetic':raise ValueError('Sign this machine-generated picture’s origin for this production before using it.')
     current=edit.read_revision(root)
     if not current or 'paper_cut' not in current:raise ValueError('Save the paper cut and its shots before assigning a picture.')
+    if data['expected_revision']!=current['edit_revision_sha256']:
+        raise ValueError('The paper cut changed elsewhere. Load its current saved version before assigning this picture; nothing was changed.')
     shot=next((s for s in current['paper_cut']['shots'] if s['id']==data['shot_id']),None)
     if shot is None:raise ValueError('This paper-cut shot changed or is missing. Choose its current shot again.')
     # The existing import creates an imported lineage root only from its real
@@ -62,7 +64,8 @@ def use_picture(root,data):
     if relative not in shot['references']:
         shot['references'].append(relative)
         edit.save_revision(root,current['paper_cut'],current['edit_revision_sha256'])
-    return {'message':'The signed picture is in the selected shot. Choose its approved look on the footage card; that exact pairing is bound by each footage signature. No clip was made.'}
+    return {'message':'The signed picture is in the selected shot. Choose its approved look on the footage card; that exact pairing is bound by each footage signature. No clip was made.',
+        'paper_cut':edit.paper_state(root)}
 
 def snapshot(root):
     from lib.look_ingest import active_looks,verify_look_refs,LookIngestError
@@ -88,14 +91,30 @@ def snapshot(root):
     gate_rows=_gate_rows(root,root.name,limit=None)
     if gate_rows.get('error'):raise ValueError('The saved signing requests could not be read safely. Reopen their review before continuing.')
     pending=[r for r in gate_rows['requests'] if r.get('state')=='pending' and (r.get('kind')=='reference_import' or r.get('kind')=='look_lock' and str(r.get('scope','')).startswith('location:'))]
+    from lib.run_common import read_request
+    from lib.canonical_json import record_sha256
+    from lib import receipts
+    checkpoint=root/'checkpoint_look_lock.json'
+    applied={v.get('receipt_id') for v in json.loads(resolve_input(checkpoint,root).read_text()).get('artifacts',{}).get('look_packet',{}).get('looks',[])} if checkpoint.exists() else set()
+    recover=[]
+    for gate in gate_rows['requests']:
+        if gate.get('kind')!='look_lock' or not str(gate.get('scope','')).startswith('location:') or gate['state'] not in {'pending','done'}:continue
+        _,req=read_request(root,gate['request_id'])
+        row=receipts.find_approval(root,'look_lock',entity_id=req['entity_id'],record_sha256=record_sha256(req['approval_record']))
+        if row and row['receipt_id'] not in applied and any(v['ref']['look_hash']==row.get('look_hash') for v in approved):recover.append(gate['request_id'])
+    pending=[r for r in pending if r['request_id'] not in recover]
     imports=[{'receipt_id':r['receipt_id'],'tool':r['record'].get('origin_tool'),'hash':r['normalized_pixel_hash']}
         for r in pictures.reference_import_receipts(root,project_id=root.name) if r.get('origin_class')=='imported_synthetic']
     state=paper_state(root);settings,_=read_project_config(root)
+    from lib.media_settings import pending as price_requests,PAUSED
+    price_drafts=price_requests(root)
     try:load_current_verified_project_config(root);signed=True
     except ProjectConfigError:signed=False
-    return {'location':doc,'location_error':location_error,'approved_looks':approved,'existing_sources':existing,'external_material':bool(external),'pending':pending,
+    return {'location':doc,'location_error':location_error,'approved_looks':approved,'existing_sources':existing,'external_material':bool(external),'pending':pending,'signed_locations_to_apply':recover,
         'pictures':imports,'shots':((state.get('current') or {}).get('paper_cut') or {}).get('shots',[]),
         'price_settings_signed':signed,'footage_prices':settings.get('footage_price_basis'),
+        'price_draft_message':PAUSED if price_drafts else None,
+        'footage_price_draft':any(req['scope']=='footage:project_config' for _,req in price_drafts),
         'message':('The location look is signed and current.' if approved else 'Location looks only. Write and sign an invented place, or review its existing WriterOS or Wayfinder source. No person or character look can be created here.')}
 
 def mount(app,require_writer,safe_root,invalidate):
@@ -139,3 +158,7 @@ def mount(app,require_writer,safe_root,invalidate):
     @app.post(prefix+'/prices')
     async def prices(project_id:str,request:Request):
         result=await run(project_id,prepare_footage,await form(request));invalidate(project_id);return result
+    @app.post(prefix+'/prices/discard')
+    async def discard_prices(project_id:str,request:Request):
+        from lib.media_settings import discard
+        require_writer(request);result=await run(project_id,discard,'footage:project_config');invalidate(project_id);return result

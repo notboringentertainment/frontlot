@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from lib import audio_workspace as audio, receipts
 from lib.project_config import load_current_verified_project_config
+from lib.pathsafe import PathSafetyError
 from lib.trailer_contract import signed_trailer_pin
 from tools.audio import _governed
 
@@ -41,7 +42,7 @@ def catalogue(root):
     from lib.project_config import ProjectConfigError
     try:config.require_egress('elevenlabs','speech_text')
     except ProjectConfigError:raise ValueError(SIGN_PRICES_FIRST) from None
-    key=os.environ.get('ELEVENLABS_API_KEY')
+    key=os.environ.get('ELEVENLABS_API_KEY','').strip()
     account=account_status()
     if not account['configured']:raise ValueError(account['message'])
     try:
@@ -70,7 +71,7 @@ def prepare_voice(root,data):
         raise ValueError('Use the saved line and voice controls. Replacement words need a new paper cut.')
     account=account_status()
     if not account['configured']:raise ValueError(account['message'])
-    cached=_catalogues.get(str(root));key=os.environ.get('ELEVENLABS_API_KEY','')
+    cached=_catalogues.get(str(root));key=os.environ.get('ELEVENLABS_API_KEY','').strip()
     config=_price_config(root)
     if not cached or time.time()-cached[0]>600 or cached[1]!=config.digest or cached[2]!=hashlib.sha256(key.encode()).hexdigest():
         raise ValueError('Load account voices again before preparing this request.')
@@ -139,6 +140,8 @@ def snapshot(root):
         ceiling=draft['budget_usd_cap']
         settings_error=SIGN_PRICES_FIRST
     account=account_status()
+    from lib.media_settings import pending,PAUSED
+    if pending(root):settings_error=PAUSED
     from tools.cost_tracker import CostTracker
     tracker=CostTracker(budget_total_usd=ceiling,reserve_pct=0,cost_log_path=root/'cost_log.json')
     state=audio.state(root)
@@ -215,20 +218,8 @@ def prepare_resolution(root,data):
     return audio.request_resolution(root_checked(root),data['reservation_id'],data['charged'],data['cash'],data['credits'],data['note'])
 
 def restore_prices(root):
-    from lib.state_io import atomic_write_bytes
-    root=root_checked(root)
-    with audio.call_lock(root):
-        rows=receipts.verified_approvals(root,'config')
-        if not rows:raise ValueError('No prior signed prices exist. Fill in the price form again instead.')
-        sha=rows[-1]['record']['config_sha256']
-        current=audio._checked_path(root/'project.yaml')
-        if hashlib.sha256(current.read_bytes()).hexdigest()==sha:
-            return {'message':'These settings are already signed. To change them, edit the figures and sign a new settings request.'}
-        path=audio._checked_path(root/'.audio-price-history'/(sha+'.yaml'))
-        data=path.read_bytes()
-        if hashlib.sha256(data).hexdigest()!=sha:raise ValueError('The prior settings cannot be verified. Nothing was restored.')
-        atomic_write_bytes(root/'project.yaml',data)
-    return {'message':'The signed settings are restored. The unsigned draft was discarded; no new prices were approved.'}
+    from lib.media_settings import discard
+    return discard(root)
 
 def apply_resolution(root,identity):
     root=root_checked(root)
@@ -247,7 +238,7 @@ def mount(app,require_writer,safe_root,invalidate):
     # Annotation resolution for FastAPI's deferred annotations.
     async def run(project_id,fn,*args):
         try:return await asyncio.to_thread(fn,safe_root(project_id),*args)
-        except (ValueError,OSError,RuntimeError) as exc:
+        except (ValueError,OSError,RuntimeError,PathSafetyError) as exc:
             message=str(exc) if isinstance(exc,ValueError) else 'Voice could not be read safely. Review the story and signed audio settings, then try again.'
             raise HTTPException(400,message) from None
     @app.get('/api/project/{project_id}/voice')

@@ -9,7 +9,7 @@ from lib import footage_requests as footage, receipts, supervised_production as 
 from lib.canonical_json import record_sha256
 from lib.look_ingest import active_looks,verify_look_refs,LookIngestError
 from lib.media_spending import _tracker, request_resolution, resolve_charge, call_lock, signed_resolution, apply_signed_resolution
-from lib.pathsafe import resolve_input, sha256_file
+from lib.pathsafe import resolve_input, sha256_file,PathSafetyError
 from lib.project_config import load_current_verified_project_config, ProjectConfigError
 from lib.run_common import request_paths
 from tools.cost_tracker import load_reservations, BudgetExceededError, IndeterminatePaidCallError
@@ -48,7 +48,7 @@ def _paper(root):
         # even when story comparisons are unavailable. The authoritative
         # request checks still refuse new work against unreadable sources.
         try:state={**state,'current':read_revision(root)}
-        except (ValueError,OSError):pass
+        except (ValueError,OSError,PathSafetyError):pass
     return state,(state.get('current') or {}).get('paper_cut',{}).get('shots',[])
 
 
@@ -56,7 +56,7 @@ def _looks(root):
     current={}
     for (kind,identity),value in active_looks(root).items():
         try:verify_look_refs(root,[{'entity_kind':kind,'entity_id':identity,'look_hash':value.look_hash}])
-        except (LookIngestError,ValueError,OSError):continue
+        except (LookIngestError,ValueError,OSError,PathSafetyError):continue
         current[kind+':'+identity]=value
     return current
 
@@ -256,7 +256,8 @@ def install(app,require_writer,safe_project,invalidate):
                 if kind=='footage_spend':result=await dispatch(root,record['request_id'])
                 elif kind=='footage_take':
                     await asyncio.to_thread(footage.apply_decision,root,record['shot_id'],record['take']['take_id'],record['decision'])
-                    result={'applied':True}
+                    from lib.trailer_edit import paper_state
+                    result={'applied':True,'paper_cut':await asyncio.to_thread(paper_state,root)}
                 elif kind=='audio_resolution':
                     result=await asyncio.to_thread(apply_signed_resolution,root,record['reservation_id'])
                 else:raise ValueError('This signature is not a footage decision. Return to its own panel.')

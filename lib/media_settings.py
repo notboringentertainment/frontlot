@@ -1,11 +1,95 @@
 """Two price forms update one signed production configuration and ceiling."""
 import hashlib,json,math,time
+from contextlib import contextmanager
 from datetime import datetime,timezone
 from lib import gates,receipts,media_spending as media
 from lib.project_config import read_project_config,load_current_verified_project_config
 from lib.pathsafe import resolve_input,PathSafetyError
 from lib.state_io import atomic_write_bytes,atomic_move
 from lib.story_ingest import root_checked
+
+SCOPES={'audio:project_config','footage:project_config'}
+PAUSED='A price-settings draft is waiting. All purchases are paused until you sign or discard that draft. Current signed figures have not been changed.'
+
+def pending(root):
+    # This is a safe read of pending requests, not a story approval check.
+    # Each caller retains its own signed production and spending verification.
+    from tools.audio._legacy_guard import _checked_path
+    root=_checked_path(root);base=root/'.gate-requests'
+    try:
+        if base.is_symlink():raise PathSafetyError()
+        rows=[]
+        for path in base.glob('*.json'):
+            req=json.loads(resolve_input(path,root).read_text())
+            if req.get('kind')=='config' and req.get('project_id')==root.name and req.get('scope') in SCOPES:rows.append((path,req))
+        return rows
+    except (OSError,ValueError,PathSafetyError):raise ValueError('The saved price requests could not be read safely. Reopen their review before changing prices or buying a take.') from None
+
+def require_no_draft(root):
+    if pending(root):raise ValueError(PAUSED)
+
+@contextmanager
+def decision_lock(root,req):
+    # Same lock order as preparation and sending: call, reservation, approval.
+    from tools.cost_tracker import reservation_lock
+    if req.get('kind')=='config' and req.get('scope') in SCOPES:
+        with media.call_lock(root),reservation_lock(root):yield
+    else:yield
+
+def _retire(root,path):
+    directory=root/'.gate-requests'/'abandoned'
+    if directory.is_symlink():raise ValueError('Saved request history cannot use links.')
+    directory.mkdir(exist_ok=True)
+    if (directory/path.name).exists():raise ValueError('This request already has a history entry. Reopen its review.')
+    atomic_move(path,directory/path.name)
+
+def draft_material(root,req):
+    """Read the immutable candidate; an unsigned draft is never current settings."""
+    import yaml
+    from jsonschema.exceptions import ValidationError
+    from lib.project_config import normalize_egress
+    from schemas.artifacts import validate_project_config
+    root=root_checked(root)
+    try:
+        sha=req['approval_record']['config_sha256']
+        if not isinstance(sha,str) or len(sha)!=64 or any(c not in '0123456789abcdef' for c in sha):raise ValueError()
+        raw=resolve_input('.audio-price-history/'+sha+'.yaml',root).read_bytes()
+        if len(raw)>1024*1024 or hashlib.sha256(raw).hexdigest()!=sha:raise ValueError()
+        data=yaml.safe_load(raw);validate_project_config(data);normalize_egress(data)
+        current,digest=read_project_config(root)
+        if digest not in {req['settings_base_sha256'],sha}:
+            raise ValueError('The signed settings changed elsewhere. Discard this price draft and prepare it again from the current figures.')
+        if digest!=sha:
+            # Only this form's owned figures and sending permissions may change.
+            own={'version','provider_egress'}|({'audio_price_basis'} if req['scope']=='audio:project_config' else {'footage_price_basis','default_video_endpoint'})
+            if {k:v for k,v in current.items() if k not in own}!={k:v for k,v in data.items() if k not in own}:raise ValueError()
+            provider='elevenlabs' if req['scope']=='audio:project_config' else 'fal'
+            if [v for v in current['provider_egress'] if v['provider']!=provider]!=[v for v in data['provider_egress'] if v['provider']!=provider]:raise ValueError()
+        return data,sha,raw
+    except (OSError,ValueError,KeyError,TypeError,PathSafetyError,yaml.YAMLError,ValidationError):raise ValueError('The price draft changed or cannot be verified. Discard it and prepare the current figures again. Nothing was approved or bought.') from None
+
+def apply_signed(root,req):
+    root=root_checked(root)
+    with decision_lock(root,req),gates.receipt_lock(root.name,'approval'):
+        data,sha,raw=draft_material(root,req)
+        rows=receipts.verified_approvals(root,'config')
+        if not rows or rows[-1]['record']!={'config_sha256':sha}:
+            raise ValueError('These price settings have no current verified signature. Sign their request first; saving approves nothing.')
+        if read_project_config(root)[1]!=sha:atomic_write_bytes(resolve_input('project.yaml',root),raw)
+
+def discard(root,scope=None):
+    root=root_checked(root)
+    retired=0
+    with decision_lock(root,{'kind':'config','scope':'audio:project_config'}),gates.receipt_lock(root.name,'approval'):
+        signed=receipts.verified_approvals(root,'config')
+        for path,req in pending(root):
+            if scope is not None and req['scope']!=scope:continue
+            if req.get('approval_receipt_id') or any(row['record']==req.get('approval_record') for row in signed):
+                raise ValueError('These settings were signed. Open that signing request to finish applying the recorded decision; it cannot be discarded.')
+            _retire(root,path)
+            retired+=1
+    return {'message':('The unsigned price draft was discarded. Current signed settings and the shared ceiling are unchanged.' if retired else
+        'No unsigned price draft is waiting. Current signed settings and the shared ceiling are unchanged.')}
 
 def _expiry(value):
     if type(value) not in (int,float) or not math.isfinite(value) or value<=time.time():
@@ -18,9 +102,7 @@ def _permissions(settings,provider,classes):
     if not isinstance(providers,list):raise ValueError('Review this trailer’s production settings before preparing prices.')
     entry=next((v for v in providers if v['provider']==provider),None)
     if entry is None:providers.append({'provider':provider,'content_classes':classes})
-    else:
-        for value in classes:
-            if value not in entry['content_classes']:entry['content_classes'].append(value)
+    else:entry['content_classes']=list(classes)
 
 def _prepare(root,update,scope,summary):
     from schemas.artifacts import validate_project_config
@@ -29,18 +111,12 @@ def _prepare(root,update,scope,summary):
     with media.call_lock(root),reservation_lock(root),gates.receipt_lock(root.name,'approval'):
         if nonterminal_reservations(root):raise ValueError('Finish or resolve paid work before changing price settings.')
         signed=receipts.verified_approvals(root,'config')
-        if signed:load_current_verified_project_config(root)
-        base=root/'.gate-requests'
         superseded=[]
-        try:
-            if base.is_symlink():raise PathSafetyError()
-            for path in base.glob('*.json'):
-                request=json.loads(resolve_input(path,root).read_text())
-                if request.get('kind')=='config' and request.get('project_id')==root.name and not any(row['record']==request.get('approval_record') for row in signed):
-                    if request.get('scope')!=scope:raise ValueError('Finish signing the pending price settings, or discard their draft, before preparing the other form.')
-                    if request.get('approval_receipt_id') or 'declined_note' in request:raise ValueError('Finish the recorded settings decision before preparing another draft.')
-                    superseded.append(path)
-        except (PathSafetyError,OSError,json.JSONDecodeError):raise ValueError('The saved settings requests could not be read safely. Reopen their review before changing prices.') from None
+        for path,request in pending(root):
+            if request.get('approval_receipt_id') or any(row['record']==request.get('approval_record') for row in signed):raise ValueError('Finish applying the signed settings decision before preparing another draft.')
+            if request.get('scope')!=scope:raise ValueError('Finish signing the pending price settings, or discard their draft, before preparing the other form.')
+            superseded.append(path)
+        if signed:load_current_verified_project_config(root)
         settings,_=read_project_config(root);settings['version']='1.4';update(settings)
         validate_project_config(settings)
         path=resolve_input('project.yaml',root);old=path.read_bytes()
@@ -52,14 +128,15 @@ def _prepare(root,update,scope,summary):
         if not prior.exists():atomic_write_bytes(prior,old)
         import yaml
         raw=yaml.safe_dump(settings,sort_keys=True).encode()
-        atomic_write_bytes(path,raw)
-        request=media.gate_request(root,'config','project_config',{'config_sha256':hashlib.sha256(raw).hexdigest()},summary,scope=scope)
+        digest=hashlib.sha256(raw).hexdigest();candidate=archive/(digest+'.yaml')
+        if candidate.is_symlink():raise ValueError('Saved settings history cannot use links.')
+        if candidate.exists():
+            if candidate.read_bytes()!=raw:raise ValueError('The saved price draft changed. Nothing was replaced.')
+        else:atomic_write_bytes(candidate,raw)
+        request=media.gate_request(root,'config','project_config',{'config_sha256':digest},summary+' '+PAUSED,scope=scope,
+            metadata={'settings_base_sha256':hashlib.sha256(old).hexdigest()})
         for old_request in superseded:
-            abandoned=base/'abandoned'
-            if abandoned.is_symlink():raise ValueError('Saved request history cannot use links.')
-            abandoned.mkdir(exist_ok=True)
-            if (abandoned/old_request.name).exists():raise ValueError('The earlier settings request already has a history entry. Reopen its review.')
-            atomic_move(old_request,abandoned/old_request.name)
+            _retire(root,old_request)
         return request
 
 def prepare_audio(root,data):
