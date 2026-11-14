@@ -1,4 +1,5 @@
 """Local board adapters for the authoritative saved cut."""
+from lib import programs
 from pathlib import Path
 from lib import cutting_view as cut,trailer_edit,footage_requests,audio_workspace,supervised_production
 from lib.pathsafe import resolve_input
@@ -121,7 +122,7 @@ def mount(app,require_writer,safe_root,invalidate):
         import subprocess
         def draw():
             root=safe_root(project_id);take=cut.require_source(root,{'take_id':identity},'audio',1)
-            return subprocess.check_output(['ffmpeg','-v','error','-i',str(resolve_input(take['path'],root)),'-filter_complex','showwavespic=s=160x48:colors=white','-frames:v','1','-f','image2pipe','-vcodec','png','pipe:1'],timeout=15)
+            return programs.check_output(['ffmpeg','-v','error','-i',str(resolve_input(take['path'],root)),'-filter_complex','showwavespic=s=160x48:colors=white','-frames:v','1','-f','image2pipe','-vcodec','png','pipe:1'],timeout=15)
         return Response(await run(draw),media_type='image/png')
     @app.get('/api/project/{project_id}/cut/play/{name}')
     async def play(project_id:str,name:str):

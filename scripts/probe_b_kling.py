@@ -23,7 +23,7 @@ def main():
     import os
     api_key = os.environ["FAL_KEY"]
     inputs = {"project_dir": str(PROJECT), "prompt": "@Image1 and @Image2 show the same lighthouse keeper. He turns his head slowly toward the camera, wind in his beard, grey studio background, 5 seconds, no dialogue.", "duration": "5"}
-    root, tracker, config = _shared.paid_call_context(inputs)
+    root, tracker, config = _shared.paid_call_context(inputs, media="video")
     config.require_egress("fal", "prompts", "reference_images")
     refs = [pathsafe.resolve_input(str(root / "canon/visual/objects" / n), root) for n in (HERO, VIEW)]
     out_dir = root / "assets" / "smoke"; out_dir.mkdir(parents=True, exist_ok=True)

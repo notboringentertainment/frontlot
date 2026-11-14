@@ -14,6 +14,7 @@ music sources.
 
 from __future__ import annotations
 
+from lib import programs
 import os
 import shutil
 import subprocess
@@ -152,10 +153,10 @@ class MusicLibrary(BaseTool):
     @staticmethod
     def _probe_duration(path: Path) -> Optional[float]:
         """Best-effort track duration via ffprobe; None if unavailable."""
-        if shutil.which("ffprobe") is None:
+        if programs.which("ffprobe") is None:
             return None
         try:
-            out = subprocess.run(
+            out = programs.run(
                 [
                     "ffprobe",
                     "-v",

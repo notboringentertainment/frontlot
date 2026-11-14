@@ -51,7 +51,7 @@ from backlot.tty import (
     session_paths,
     valid_resize,
 )
-from lib import run_lease
+from lib import programs, run_lease
 from lib.run_common import RunError, resolve_project_root, validate_request_id
 
 
@@ -119,7 +119,7 @@ def _login_environment() -> dict[str, str]:
     environment = os.environ.copy()
     shell = environment.get("SHELL") or "/bin/sh"
     try:
-        result = subprocess.run(
+        result = programs.run(
             [shell, "-lc", 'printf %s "$PATH"'],
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -130,7 +130,7 @@ def _login_environment() -> dict[str, str]:
         login_path = result.stdout.strip()
         if result.returncode == 0 and login_path and "\x00" not in login_path:
             environment["PATH"] = login_path
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, ValueError, subprocess.SubprocessError):
         pass
     environment["TERM"] = environment.get("TERM") or "xterm-256color"
     return environment
@@ -225,7 +225,7 @@ class _HoldLifecycleSignals:
                 raise _DeferredLifecycleSignal
             if "preexec_fn" in kwargs:
                 raise TypeError("signer spawn owns preexec_fn")
-            return subprocess.Popen(argv, preexec_fn=restore_child_mask, **kwargs)
+            return programs.Popen(argv, preexec_fn=restore_child_mask, **kwargs)
         finally:
             # Popen returns only after fork/exec setup has either committed a
             # child handle or failed. Pending lifecycle signals are delivered

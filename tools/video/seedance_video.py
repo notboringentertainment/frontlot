@@ -417,6 +417,8 @@ class SeedanceVideo(BaseTool):
             )
             video_url = data["video"]["url"]
             staging = pathsafe.staging_file(project_root, ".mp4")
+            from tools.cost_tracker import retain_download
+            retain_download(project_root,reservation_id,staging)
             _shared.fal_download(
                 video_url,
                 staging,
@@ -454,11 +456,8 @@ class SeedanceVideo(BaseTool):
             receipts.complete_generation(project_root, execution_id, tracker=tracker)
             state = "completed"
         except Exception as exc:
-            if staging is not None and not completion_started:
-                try:
-                    staging.unlink()
-                except FileNotFoundError:
-                    pass
+            # Never discard a provider-accepted download because a local
+            # verifier failed. Its hold and quarantined bytes need review.
             return ToolResult(success=False, error=f"Seedance 2.5 video generation failed: {exc}")
         finally:
             # Submit-without-persisted-request-id is INDETERMINATE (the provider

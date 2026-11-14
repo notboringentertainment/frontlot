@@ -330,57 +330,52 @@ class SeedreamImage(BaseTool):
             import hashlib
 
             staged: list[dict[str, Any]] = []
-            try:
-                for item in images:
-                    staging = pathsafe.staging_file(project_root, ".img")
-                    entry = {"staging_path": staging}
-                    staged.append(entry)  # registered first so a failed download is cleaned up
-                    _shared.fal_download(
-                        item["url"],
-                        staging,
-                        max_bytes=self.MAX_DOWNLOAD_BYTES,
-                        allowed_mime_prefixes=("image/",),
-                    )
-                    # The content address is the hash of the deterministic PNG
-                    # re-encode (what store_content_addressed will produce).
-                    asset_id = hashlib.sha256(pathsafe.reencode_png_bytes(staging)).hexdigest()
-                    entry.update({"output_path": objects_dir / f"{asset_id}.png", "output_sha256": asset_id})
-                # Crash-safe completion (Codex R2 #5): WAL before the moves, then
-                # receipt → ledger → terminal reservation → WAL delete.
-                receipts.stage_generation_wal(
-                    project_root,
-                    execution_id=execution_id,
-                    reservation_id=reservation_id,
-                    actual_usd=actual_usd,
-                    outputs=staged,
-                    receipt={
-                        "tool": self.name,
-                        "generator_kind": "model",
-                        "model_endpoint": model_id,
-                        "provider_request_id": request_id,
-                        "normalized_inputs_hash": normalized_inputs_hash(inputs),
-                        "cost_usd": actual_usd,
-                        "started_at": started_at,
-                        "prompt": inputs["prompt"],
-                        "seed": data.get("seed"),
-                        "references_applied": references_applied,
-                        **_shared.receipt_governance_fields(governance),
-                    },
+            # Paid downloads remain quarantined if any local filing step fails.
+            for item in images:
+                staging = pathsafe.staging_file(project_root, ".img")
+                entry = {"staging_path": staging}
+                staged.append(entry)
+                from tools.cost_tracker import retain_download
+                retain_download(project_root,reservation_id,staging)
+                _shared.fal_download(
+                    item["url"],
+                    staging,
+                    max_bytes=self.MAX_DOWNLOAD_BYTES,
+                    allowed_mime_prefixes=("image/",),
                 )
-                completion_started = True
-                for entry in staged:
-                    asset_id, final_path = pathsafe.store_content_addressed(entry["staging_path"], objects_dir, ".png")
-                    if asset_id != entry["output_sha256"]:
-                        raise RuntimeError(f"content address drift: staged {entry['output_sha256']}, stored {asset_id}")
-                    asset_ids.append(asset_id)
-                    output_paths.append(str(final_path))
-            finally:
-                if not completion_started:
-                    for entry in staged:
-                        try:
-                            Path(entry["staging_path"]).unlink()
-                        except FileNotFoundError:
-                            pass
+                # The content address is the hash of the deterministic PNG
+                # re-encode (what store_content_addressed will produce).
+                asset_id = hashlib.sha256(pathsafe.reencode_png_bytes(staging)).hexdigest()
+                entry.update({"output_path": objects_dir / f"{asset_id}.png", "output_sha256": asset_id})
+            # Crash-safe completion (Codex R2 #5): WAL before the moves, then
+            # receipt → ledger → terminal reservation → WAL delete.
+            receipts.stage_generation_wal(
+                project_root,
+                execution_id=execution_id,
+                reservation_id=reservation_id,
+                actual_usd=actual_usd,
+                outputs=staged,
+                receipt={
+                    "tool": self.name,
+                    "generator_kind": "model",
+                    "model_endpoint": model_id,
+                    "provider_request_id": request_id,
+                    "normalized_inputs_hash": normalized_inputs_hash(inputs),
+                    "cost_usd": actual_usd,
+                    "started_at": started_at,
+                    "prompt": inputs["prompt"],
+                    "seed": data.get("seed"),
+                    "references_applied": references_applied,
+                    **_shared.receipt_governance_fields(governance),
+                },
+            )
+            completion_started = True
+            for entry in staged:
+                asset_id, final_path = pathsafe.store_content_addressed(entry["staging_path"], objects_dir, ".png")
+                if asset_id != entry["output_sha256"]:
+                    raise RuntimeError(f"content address drift: staged {entry['output_sha256']}, stored {asset_id}")
+                asset_ids.append(asset_id)
+                output_paths.append(str(final_path))
             receipts.complete_generation(project_root, execution_id, tracker=tracker)
             state = "completed"
         except Exception as exc:

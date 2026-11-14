@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from lib import programs
 import shutil
 import subprocess
 import time
@@ -101,7 +102,7 @@ class PiperTTS(BaseTool):
     user_visible_verification = ["Listen to generated audio for intelligibility"]
 
     def get_status(self) -> ToolStatus:
-        if shutil.which("piper"):
+        if programs.which("piper"):
             return ToolStatus.AVAILABLE
         return ToolStatus.UNAVAILABLE
 
@@ -145,7 +146,7 @@ class PiperTTS(BaseTool):
         if Path(data_dir).is_dir():
             cmd += ["--data-dir", str(data_dir)]
 
-        proc = subprocess.run(
+        proc = programs.run(
             cmd,
             input=inputs["text"],
             capture_output=True,

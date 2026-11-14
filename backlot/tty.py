@@ -8,6 +8,7 @@ broker to stop its own signer only while it is waiting for a human answer.
 
 from __future__ import annotations
 
+from lib import programs
 import asyncio
 import errno
 import json
@@ -657,7 +658,7 @@ def _spawn_broker(registry: TTYRegistry, project_dir: Path, request_id: str) -> 
     from lib.run_common import gate_invocation
 
     invocation = gate_invocation(project_dir, request_id)
-    process = subprocess.Popen(
+    process = programs.Popen(
         [*invocation["argv"], "--broker"],
         cwd=invocation["cwd"],
         stdin=subprocess.DEVNULL,

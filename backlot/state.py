@@ -1779,7 +1779,10 @@ def _render_account_review(root: Path, req: dict[str, Any]) -> dict[str, Any]:
         record=_resolution_material(root,req.get('entity_id'),supplied.get('charged'),
             supplied.get('cash_usd'),supplied.get('credits_usd'),supplied.get('note'))
         if record['request'].get('provider')!='fal':raise ValueError('This account review is for a different service.')
+        from tools.cost_tracker import retained_download_paths
+        retained=retained_download_paths(root,record['reservation'])
         return {'footage_resolution':{'description':record['request']['prompt'],'charged':record['charged'],
+            'retained_note':('Some downloaded bytes were kept in this production, but a complete usable clip has not been verified. They are not an approved take. This signature settles only the money.' if retained else None),
             'cash':record['cash_usd'],'credits':record['credits_usd'],'note':record['note']}}
     except (ValueError,OSError,TypeError,KeyError,receipts.ReceiptChainError):
         return {'packet_error':True,'error':'The original signed footage request or proposed account outcome cannot be verified. Nothing was resolved.'}

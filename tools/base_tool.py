@@ -6,6 +6,7 @@ interface for discovery, execution, cost estimation, and health reporting.
 
 from __future__ import annotations
 
+from lib import programs
 import functools
 import hashlib
 import inspect
@@ -519,7 +520,7 @@ class BaseTool(ABC):
             if dep.startswith(("cmd:", "binary:")):
                 prefix = "cmd:" if dep.startswith("cmd:") else "binary:"
                 cmd_name = dep[len(prefix):]
-                if shutil.which(cmd_name) is None:
+                if programs.which(cmd_name) is None:
                     raise DependencyError(
                         f"Command {cmd_name!r} not found. {self.install_instructions}"
                     )
@@ -630,15 +631,15 @@ class BaseTool(ABC):
         """Run a subprocess command with standard error handling.
 
         On Windows, resolves .cmd/.bat wrappers (e.g. npx, npm) via
-        shutil.which() so subprocess.run() can find them without shell=True.
+        programs.which() so programs.run() can find them without shell=True.
         """
         resolved_cmd = list(cmd)
         if platform.system() == "Windows" and resolved_cmd:
-            exe = shutil.which(resolved_cmd[0])
+            exe = programs.which(resolved_cmd[0])
             if exe:
                 resolved_cmd[0] = exe
         try:
-            return subprocess.run(
+            return programs.run(
                 resolved_cmd,
                 capture_output=True,
                 text=True,

@@ -1,4 +1,5 @@
 """Trailer facts and verification through the existing signed approval ledger."""
+from lib import programs
 import hashlib
 import json
 import math
@@ -151,7 +152,7 @@ def _file_digest(path):
 
 
 def _export_duration(path):
-    result = subprocess.run(['ffprobe','-v','error','-show_entries','format=duration',
+    result = programs.run(['ffprobe','-v','error','-show_entries','format=duration',
                              '-of','json',str(path)], capture_output=True, text=True, timeout=30, check=True)
     return float(json.loads(result.stdout)['format']['duration'])
 

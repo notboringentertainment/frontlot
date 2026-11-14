@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from lib import programs
 from contextlib import contextmanager
 
 import os
@@ -664,13 +665,13 @@ def generate_ltx_modal_video(inputs: dict[str, Any]) -> ToolResult:
 
 def probe_output(path: Path) -> dict[str, Any]:
     info: dict[str, Any] = {"file_size_bytes": path.stat().st_size}
-    if not shutil.which("ffprobe"):
+    if not programs.which("ffprobe"):
         return info
 
     import json
 
     try:
-        proc = subprocess.run(
+        proc = programs.run(
             [
                 "ffprobe",
                 "-v",
@@ -936,10 +937,10 @@ def verify_video_file(path: Path | str, *, require_audio: bool = False) -> dict[
     path = Path(path)
     if not path.is_file():
         raise VideoVerificationError(f"downloaded file missing: {path}")
-    if not shutil.which("ffprobe"):
+    if not programs.which("ffprobe"):
         raise VideoVerificationError("ffprobe is not installed; cannot verify the downloaded video")
     try:
-        proc = subprocess.run(
+        proc = programs.run(
             ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
             capture_output=True,
             text=True,
@@ -1028,6 +1029,8 @@ def paid_call_context(
     call's kind, so only a video call consumes a take. The same check runs
     again inside ``reserve_paid_call`` under the reservation lock.
     """
+    if media == 'video':
+        programs.preflight('ffprobe')
     from lib.config_model import BudgetMode
     from lib.events import infer_project_dir
     from lib.paths import PROJECTS_DIR

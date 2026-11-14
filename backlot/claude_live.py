@@ -7,6 +7,7 @@ cursor (the last event seq it applied).
 """
 from __future__ import annotations
 
+from lib import programs
 import asyncio, contextlib, fcntl, json, os, signal, subprocess, sys, threading, time
 from contextlib import contextmanager
 from pathlib import Path
@@ -187,7 +188,7 @@ def spawn_broker(slug: str, mode: str) -> dict:
         argv = [sys.executable, str(REPO / "scripts" / "claude_session.py"), "--broker", "--project", slug]
         if mode == "resume" and p["session"].exists():
             argv.append("--resume")
-        proc = subprocess.Popen(argv, cwd=REPO, start_new_session=True,
+        proc = programs.Popen(argv, cwd=REPO, start_new_session=True,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Reap it when it exits: an unreaped broker stays a zombie that `ps` still reports as started,
         # so its identity record would read as a live broker.

@@ -143,6 +143,9 @@ def save_paper_with_controls(page,reference='',purpose='The gallery keeper looks
     remainder.get_by_label('Difficulty',exact=True).fill('Unfinished placeholder.')
     paper.get_by_role('button',name='Save a new version',exact=True).click()
     expect(paper.get_by_role('status').first).to_contain_text('Saved.')
+    # Saved words are reported before the awaited board refresh finishes.
+    # Complete this visible busy action before choosing another workspace.
+    expect(paper.get_by_role('button',name='Save a new version',exact=True)).to_be_enabled(timeout=20000)
     return paper
 
 
