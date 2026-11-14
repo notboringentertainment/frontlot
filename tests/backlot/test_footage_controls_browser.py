@@ -177,8 +177,9 @@ def test_missing_material_controls_explain_the_next_step(film,provider,monkeypat
             try:create.wait_for(timeout=15000)
             except Exception:pytest.fail('Missing control: '+str(errors)+' '+page.locator('#viewer').inner_text())
             assert create.is_disabled()
-            text={'story':'current signed story','looks':'No look is approved yet','pictures':'Add reference pictures','prices':'No footage price figures have been signed'}[missing]
+            text={'story':'current signed story','looks':'No current approved look is available','pictures':'Add reference pictures','prices':'No footage price figures have been signed'}[missing]
             panel.get_by_text(text,exact=False).wait_for()
+            if missing=='looks':panel.get_by_text('Open Footage setup',exact=False).wait_for()
             picture(page,'missing-'+missing,tmp_path)
             assert not errors and not provider['posts'] and not provider['uploads']
         finally:browser.close()
