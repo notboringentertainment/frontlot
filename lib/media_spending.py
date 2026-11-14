@@ -148,6 +148,8 @@ def signed_resolution(root,identity):
 
 def apply_signed_resolution(root,identity):
     root=_root(root)
+    directory=Path(root)/'.gate-requests'
+    if directory.is_symlink():raise ValueError('Signing requests cannot use links. Reopen the production from Front Lot.')
     record=signed_resolution(root,identity)
     if record is None:raise ValueError('Sign one account outcome before applying this resolution. Nothing has been signed yet; review it and start signing.')
     # A stopped signer may have committed its receipt before marking the
@@ -156,6 +158,7 @@ def apply_signed_resolution(root,identity):
     from scripts.gate_approve import _confined,_complete_done,REQUIRED
     from lib.run_common import validate_request_id,RunError
     with gates.receipt_lock(Path(root).name,'approval'):
+        if directory.is_symlink():raise ValueError('Signing requests cannot use links. Reopen the production from Front Lot.')
         row,=receipts.verified_approvals(root,'audio_resolution',entity_id=identity)
         directory=_confined(Path(root)/'.gate-requests',Path(root))
         for path in directory.glob('*.json'):

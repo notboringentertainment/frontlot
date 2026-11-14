@@ -44,8 +44,9 @@ STAGE_LABELS = {
     'script': 'Lines and title cards', 'scene_plan': 'Shot list',
     'assets': 'Footage and sound', 'edit': 'Rough cut', 'compose': 'Final assembly',
 }
-STAGE_LIMITS = {name: 'Signed stage approval controls are not available yet.' for name in STAGE_LABELS}
+STAGE_LIMITS = {name: 'Signed stage approval controls are not available yet.' for name in STAGE_LABELS if name!='canon_ingest'}
 STAGE_LIMITS.update({
+    'canon_ingest': '',
     'assets': 'The complete trailer footage, sound and signed stage approval controls are not available yet.',
     'edit': '',
     'compose': '',
@@ -160,10 +161,15 @@ def _export_duration(path):
 def approval_record(root, pin, stage, artifacts):
     """The existing artifact-review signer must approve this exact record.
 
-    The board's delivery controls use the same gate-side constructor and
-    signature machinery as every other governed approval.
+    The story source and delivery controls use this record and the same
+    gate-side construction and signing machinery as other governed approvals.
     """
     contract = require_contract(root)
+    if stage=='canon_ingest':
+        packet=artifacts.get('canon_packet') or {}
+        if 'verbatim_story' in packet.get('metadata',{}):
+            from lib.story_ingest import material
+            material(root,packet)
     validate_stage_contract(contract, stage, artifacts)
     record = {'stage': stage, 'pipeline': pin.to_dict(), 'trailer': contract,
               'artifacts_sha256': record_sha256(artifacts)}

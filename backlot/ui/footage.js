@@ -52,7 +52,7 @@ function shotPanel(s,shot){
   const model=el("select",{"aria-label":"Footage model",onchange:()=>{d.model=model.value;quote(shot,d);}},
     ...data.models.map(m=>el("option",{value:m.id},m.label)));model.value=d.model;
   const length=input("Clip length in seconds",d.length,{type:"number",min:3,max:15,step:1});
-  length.field.addEventListener("input",()=>{d.length=length.field.value===""?null:Number(length.field.value);d.quote=null;d.error="";d.quoteVersion=(d.quoteVersion||0)+1;d.updateQuote?.();});
+  length.field.addEventListener("input",()=>{d.length=length.field.value===""?null:Number(length.field.value);d.quote=null;d.error="";d.quoteVersion=(d.quoteVersion||0)+1;d.updateQuote?.();queueMicrotask(()=>quote(shot,d));});
   length.field.addEventListener("change",()=>{d.length=length.field.value===""?null:Number(length.field.value);quote(shot,d);});
   panel.append(el("label",{},el("span",{},"Model"),model),el("p",{},"Only this model has a signed footage operation here. Other models are not built yet."),length.node);
   for(const [index,path] of shot.references.entries()){
@@ -124,7 +124,7 @@ function shotPanel(s,shot){
 export function renderFootageControls(s){
   if(!data)return el("p",{},"Loading footage controls…");
   return el("section",{class:"footage-controls","aria-label":"Footage workspace"},el("h2",{},"Footage"),
-    el("p",{},"Story and look approval happens outside these panels for now; those approval controls are not built here. Signing price figures and changing the production ceiling also happen outside these panels. Every clip and every keep or decline decision needs your signature. Keeping a take completes no stage."),
+    el("p",{},"Supply and sign the story in Story workspace, then check the saved paper cut. Look approval, footage price figures and changing the production ceiling still happen outside these panels; those approval controls are not built here. Every clip and every keep or decline decision needs your signature. Keeping a take completes no stage."),
     data.error||globalError?el("p",{role:"alert"},data.error||globalError):null,...(data.shots||[]).map(shot=>shotPanel(s,shot)));
 }
 

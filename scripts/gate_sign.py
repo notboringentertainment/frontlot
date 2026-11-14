@@ -348,6 +348,7 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
     exit_flush_deadline: Optional[float] = None
     abandoned = False
     waiting_for_answer = False
+    detached_since = None
     session_id = uuid.uuid4().hex
     started = dt.datetime.now(dt.timezone.utc).isoformat()
     try:
@@ -418,7 +419,7 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
                 pass
 
         def detach_client() -> None:
-            nonlocal client
+            nonlocal client,detached_since
             if client is None:
                 return
             with contextlib.suppress(Exception):
@@ -426,6 +427,7 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
             with contextlib.suppress(OSError):
                 client.sock.close()
             client = None
+            detached_since = time.monotonic()
 
         def close_client(reason: str) -> None:
             if client is None:
@@ -473,6 +475,11 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
                 client.queue(encode_frame(OUT, clean[offset : offset + 65536]))
 
         while True:
+            # A lost tab gets a short reconnect window. Only an unanswered
+            # question can expire; a complete answer and its receipt commit
+            # are never interrupted by this cleanup.
+            if client is None and detached_since is not None and time.monotonic()-detached_since>=5 and waiting_for_answer:
+                abandoned=True
             if abandoned and waiting_for_answer and child.poll() is None:
                 # Cancel only this wrapper's child while it is waiting for a
                 # human answer. An answer already in flight gets to finish;
@@ -589,13 +596,15 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
                                         close_client("mismatch")
                                         break
                                     client.authenticated = True
+                                    detached_since=None
                                     if replay:
                                         client.queue(encode_frame(OUT, bytes(replay)))
                                     if last_tag is not None:
                                         client.queue(encode_json_frame(STATUS, {"tag": last_tag}))
                                     continue
                                 if frame_type == IN:
-                                    waiting_for_answer=False
+                                    if any(c in payload for c in (10,13,4)):
+                                        waiting_for_answer=False
                                     pty_input.extend(payload)
                                     if len(pty_input) > MAX_CLIENT_QUEUE:
                                         raise ProtocolError("pty input queue exceeded")

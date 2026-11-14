@@ -454,6 +454,8 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
         if not expected or not given or not secrets.compare_digest(expected, given):
             raise HTTPException(401, "Reload Front Lot from its app icon before saving.")
 
+    from backlot.story_panel import mount as mount_story
+    mount_story(app,require_writer,_safe_project_dir,_invalidate_summary)
     from backlot.voice_panel import mount as mount_voice
     mount_voice(app,require_writer,_safe_project_dir,_invalidate_summary)
     from backlot.music_panel import mount as mount_music

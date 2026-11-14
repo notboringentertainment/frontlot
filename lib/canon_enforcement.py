@@ -299,6 +299,13 @@ def _trailer_spoiler(text, refs, lock):
     return len(shared) >= 2 and len(shared) / max(1, len(a)) >= 2/3 and len(shared) / max(1, len(b)) >= .5
 
 
+def exact_passage_warning(canon,text,label):
+    if canon.get('metadata',{}).get('verbatim_story'):
+        source=''.join(b.get('summary','') for b in canon.get('structure',{}).get('beats',[]))
+        if text and text not in source:
+            return f'{label} is not an exact passage from the approved story. Compare it with the source; the wording has not been cleared as a quotation.'
+    return None
+
 def check_trailer_text(paper, canon):
     """Selective trailer excerpts use the same story enforcement as scripts.
 
@@ -310,6 +317,8 @@ def check_trailer_text(paper, canon):
     for key, label in (('lines', 'Line'), ('cards', 'Card')):
         for n, row in enumerate(paper.get(key, []), 1):
             text = row.get('text', '')
+            warning=exact_passage_warning(canon,text,f'{label} {n}')
+            if warning:warnings.append(warning)
             for protected in canon.get('protected_lines', []):
                 wording = protected.get('line', '')
                 if wording and text != wording and _resembles_protected(text, wording):
