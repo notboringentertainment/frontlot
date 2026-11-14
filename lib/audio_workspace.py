@@ -55,8 +55,6 @@ def read(root,identity):
     if ('id' in record and record['id']!=identity) or ('project_id' in record and record['project_id']!=Path(root).name):
         raise ValueError('Audio belongs to another production.')
     required={'id','project_id','kind','origin','sha256','path','duration_seconds','codec'}
-    if record.get('origin')=='generated':required|={'approved_request_id','approval_record_sha256','generation_receipt_id','binding','requested_duration_seconds'}
-    elif record.get('origin')=='imported':required|={'source','licence_note'}
     if not required<=record.keys():raise IncompleteAudioRecord()
     generated=receipts.verified_generation_receipts(root)
     actual=None
@@ -72,6 +70,9 @@ def read(root,identity):
         raise ValueError('Generated audio provenance cannot be changed by editing its record. Generated music stays marked as test-only.')
     if record.get('origin')=='imported' and matching:
         raise ValueError('Generated audio provenance cannot be changed to imported. Generated music stays marked as test-only.')
+    required=({'approved_request_id','approval_record_sha256','generation_receipt_id','binding','requested_duration_seconds'}
+              if record.get('origin')=='generated' else {'source','licence_note'} if record.get('origin')=='imported' else set())
+    if not required<=record.keys():raise IncompleteAudioRecord()
     # Release status is fixed by provenance, never editable take metadata.
     if record.get('origin')=='generated' and record.get('kind')=='music':
         record['release_note']=TEST_ONLY
