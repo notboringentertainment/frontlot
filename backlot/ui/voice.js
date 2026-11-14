@@ -39,6 +39,7 @@ export function renderVoice(s,onSign){
       el('p',{},`Recorded audio: ${money(b.audio_cash)} new cash · ${money(b.audio_credits)} replacement value of credits. Credits are counted once in the production total.`)));
     content.append(renderPriceSettings(data,priceForm,{api,act,onSign,url}));
     if(data.message)content.append(el('p',{role:'alert'},data.message));
+    for(const warning of data.record_warnings||[])content.append(el('p',{role:'alert'},warning));
     for(const item of data.unresolved_requests){
       const id=item.reservation.reservation_id,r=item.request,form=el('section',{class:'paper-panel'},el('h3',{},'Review an unresolved audio charge'),
         el('p',{role:'alert'},'Paid work is stopped. Check your ElevenLabs account; time passing will not resolve this charge.'),el('blockquote',{},r?.prompt||'The original signed request cannot be verified. Stop and investigate its approval history.'));

@@ -47,7 +47,7 @@ export function renderPriceSettings(data,state,{api,act,onSign,url}){
   }
   box.append(el('button',{type:'button',onclick:()=>act(async()=>{
     const body={expires_at:Date.parse(state.values.expiry)/1000};for(const [,key] of fields)if(key!=='expiry'&&(key!=='effect_credits_per_second'||state.values[key]))body[key]=Number(state.values[key]);
-    const request=await api(url+'/prices',body);state.dirty=false;state.digest=null;onSign(request.request_id);
+    const request=await api(url+'/prices',body);state.dirty=false;state.digest=null;await onSign(request.request_id);
   })},'Prepare price settings for signing'),
   el('button',{type:'button',onclick:()=>act(async()=>{
     const result=await api(url+'/prices/restore',{});state.dirty=false;state.digest=null;return result.message;
