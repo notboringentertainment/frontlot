@@ -1120,3 +1120,4 @@ details.log-more[open] > summary { margin-bottom: 12px; }
 .footage-shot .look-row p, .footage-shot .look-row ul,
 .footage-shot .take-facts, .footage-shot .take-facts small { color:#252a24; }
 .footage-shot [role=alert] { color:#963c2d; }
+.paper-controls { border: 0; padding: 0; margin: 0; min-width: 0; width: 100%; }

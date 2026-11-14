@@ -11,8 +11,10 @@ export function renderFootageSetup(s,onSign){
   if(s.trailer_setup_pending)return null;
   if(current?.project===s.project_id){current.refresh();return current.node;}
   const project=s.project_id,node=el('section',{class:'paper-editor footage-setup','aria-label':'Footage prerequisites'}),status=el('p',{role:'status'}),error=el('p',{role:'alert'});
+  const controls=el('fieldset',{class:'paper-controls'});
   let snapshot=null,busy=false,loading=false,refreshAgain=false,notice='',raw='',style='\n',mixed=false,file=null,lookDirty=false,lookLoaded=false;
-  const act=async fn=>{if(busy)return;busy=true;error.textContent='';notice='';try{const result=await fn();notice=result?.message||'';}catch(e){error.textContent=e.message;}finally{busy=false;await refresh();}};
+  const refreshWaiters=[];let refreshSerial=0;
+  const act=async fn=>{if(busy)return;busy=true;controls.disabled=true;error.textContent='';notice='';try{const result=await fn();notice=result?.message||'';}catch(e){error.textContent=e.message;}finally{try{await refresh();}finally{busy=false;controls.disabled=false;}}};
   const group=name=>el('fieldset',{class:'paper-panel'},el('legend',{},name));
   const look=group('Location written in Front Lot'),answers={};
   look.append(el('p',{},'Write twenty to eighty words, no more than six hundred characters, in the exact location description. These are the existing look limits. Supply the required visual answers yourself; nothing is invented or sent to a model.'));
@@ -55,15 +57,16 @@ export function renderFootageSetup(s,onSign){
       const result=await api(project,'/prices',{cash_usd_per_second:Number(priceFields.cash_usd_per_second.value),credits_usd_per_second:Number(priceFields.credits_usd_per_second.value),expires_at:Date.parse(priceFields.expiry.value)/1000,allow_prompts:allowPrompts.checked,allow_reference_images:allowPictures.checked});await onSign(result.request_id);
     })));
   const select=(input,items)=>{const old=input.value;input.replaceChildren(...items.map(v=>el('option',{value:v.value},v.label)));if(items.some(v=>v.value===old))input.value=old;};
-  async function refresh(){if(loading){refreshAgain=true;return;}loading=true;refreshAgain=false;try{snapshot=await api(project);status.textContent=notice||snapshot.message;if(snapshot.location_error)error.textContent=snapshot.location_error;
+  async function refresh(){if(loading){refreshAgain=true;return new Promise(resolve=>refreshWaiters.push({after:refreshSerial+1,resolve}));}loading=true;refreshAgain=false;const serial=++refreshSerial;try{snapshot=await api(project);status.textContent=notice||snapshot.message;if(snapshot.location_error)error.textContent=snapshot.location_error;
     if(snapshot.location&&!lookLoaded&&!lookDirty){const doc=snapshot.location;for(const [,key] of fields)answers[key].value=key==='name'?doc.name:key==='text'?doc.look_spec.prompt_safe_description:Array.isArray(doc.look_spec[key])?doc.look_spec[key].join('\n'):doc.look_spec[key];raw=doc.look_spec.prompt_safe_description;const styles=endings(raw);style=styles.size===1?[...styles][0]:'\n';fictional.checked=doc.look_spec.fictional_subject_attestation;lookLoaded=true;}
     select(lookChoice,snapshot.approved_looks.map((v,i)=>({value:String(i),label:v.name})));select(shotChoice,snapshot.shots.map((v,i)=>({value:v.id,label:`Shot ${i+1}: ${v.purpose}`})));select(pictureChoice,snapshot.pictures.map(v=>({value:v.receipt_id,label:`Machine-generated picture · ${v.tool}`})));
     usePicture.disabled=!snapshot.approved_looks.length||!snapshot.pictures.length||!snapshot.shots.length;
     look.hidden=snapshot.external_material;existing.replaceChildren();if(snapshot.external_material&&!snapshot.existing_sources.length)existing.append(el('p',{},'Existing WriterOS or Wayfinder look material was found. This form does not replace it. Supply its resolved location look through that existing source; it can then be reviewed here.'));
     for(const source of snapshot.existing_sources)existing.append(button(`Review ${source.source==='writeros'?'WriterOS':'Wayfinder'} location: ${source.name}`,()=>act(async()=>{const result=await api(project,'/look/existing',{source:source.source,entity_id:source.entity_id});await onSign(result.gate.request_id);})));
     pending.replaceChildren();for(const request of snapshot.pending)pending.append(button(request.kind==='look_lock'?'Review pending location look':'Review pending picture origin',()=>act(()=>onSign(request.request_id))));
-  }catch(e){error.textContent=e.message;}finally{loading=false;if(refreshAgain){refreshAgain=false;queueMicrotask(refresh);}}}
+  }catch(e){error.textContent=e.message;}finally{loading=false;for(let i=refreshWaiters.length-1;i>=0;i--)if(refreshWaiters[i].after<=serial)refreshWaiters.splice(i,1)[0].resolve();if(refreshAgain){refreshAgain=false;queueMicrotask(refresh);}}}
   node.append(el('h2',{},'First location, reference picture and footage prices'),el('p',{},'Location looks only. No person or character look can be created here. Every source, picture origin and set of prices needs its own signature. Nothing here sends a prompt or picture to a service, buys a clip or completes a whole stage.'),status,error,existing,look,picture,prices,pending);
+  controls.append(...node.childNodes);node.append(controls);
   current={project,node,refresh};refresh();return node;
 }
 export function renderPrereqSigning(detail,actions,onReturn,lookCard,project,stale){

@@ -84,7 +84,7 @@ function shotPanel(s,shot){
   };
   d.updateQuote();
   if(!shot.references.length)panel.append(el("p",{role:"note"},"Add reference pictures in the paper-cut shot before creating a request."));
-  if(shot.references.length&&!data.looks.length)panel.append(el("p",{role:"note"},"No look is approved yet. Approve its look outside these panels before creating a footage request."));
+  if(shot.references.length&&!data.looks.length)panel.append(el("p",{role:"note"},"No current approved look is available. Open Footage setup to review and sign the location look before creating a footage request."));
   if(data.refusal)panel.append(el("p",{role:"note"},data.refusal));
   for(const req of shot.requests){
     if(!req.approved&&req.gate_id)panel.append(button("Review and sign request",()=>hooks.selectGate(req.gate_id),d.busy));

@@ -10,12 +10,14 @@ import threading
 import time
 import uuid
 import wave
+import tempfile
+from datetime import datetime,timedelta
 from pathlib import Path
 
 import pytest
 from playwright.sync_api import sync_playwright, expect
 
-PARENT = Path(os.environ['TMPDIR']).resolve().parent
+PARENT=Path(os.environ.get('FRONTLOT_FOLLOWUPS_PARENT') or tempfile.gettempdir())
 RUN = os.environ.get('EARLY_PICTURE_PREFIX',uuid.uuid4().hex)
 LINE = 'The gallery is closed.'
 
@@ -27,7 +29,8 @@ def isolated_standins(monkeypatch):
     assert not (Path(__file__).resolve().parents[2]/'.env').exists()
     for name in ('ELEVENLABS_API_KEY', 'FAL_KEY', 'FAL_AI_API_KEY'):
         monkeypatch.setenv(name, 'invented-readiness-only')
-    folder=PARENT/('g'+uuid.uuid4().hex[:6]);folder.mkdir()
+    from tests.backlot.isolation_helpers import signing_directory
+    folder=signing_directory()
     monkeypatch.setenv('OPENMONTAGE_GATES_DIR',str(folder))
     monkeypatch.setenv('FRONTLOT_CLAUDE','/nonexistent/readiness-no-assistant')
     import requests
@@ -97,7 +100,7 @@ def set_prices(page,panel,prefix):
     panel.get_by_text('Audio account consent and price ceilings',exact=True).click()
     for label,value in [('Dollar replacement value per credit','.0002'),('Highest speech credits per character','1'),
                         ('Highest music credits per minute','1200'),('Highest voice rate multiplier','2'),
-                        ('Highest sound-effect credits per second','40'),('Prices expire','2026-11-15T12:00')]:
+                        ('Highest sound-effect credits per second','40'),('Prices expire',(datetime.now()+timedelta(days=2)).strftime('%Y-%m-%dT%H:%M'))]:
         panel.get_by_label(label,exact=True).fill(value)
     panel.get_by_role('button',name='Prepare price settings for signing',exact=True).click()
     expect(page.get_by_role('heading',name='Review and sign audio',exact=True)).to_be_visible(timeout=20000)
@@ -159,7 +162,7 @@ def buy_three_audio(page,panel,calls,prefix):
             expect(panel.get_by_role('status')).to_contain_text('brief saved')
             form.get_by_role('button',name='Prepare '+kind+' spending card',exact=True).click()
         card=panel.locator('.voice-spend[data-kind="'+kind+'"]')
-        expect(card).to_contain_text(maximum)
+        expect(card).to_contain_text(maximum,timeout=20000)
         before=len(calls['audio_posts'])
         card.get_by_role('button',name='Review and sign this request',exact=True).click()
         expect(page.get_by_role('heading',name='Review and sign audio',exact=True)).to_be_visible(timeout=20000)
@@ -289,7 +292,7 @@ def test_prepared_prerequisites_allow_four_separately_signed_purchases(tmp_path,
     data['default_video_endpoint']='fal-ai/kling-video/o3/pro/reference-to-video'
     data['provider_egress'].append({'provider':'fal','content_classes':['prompts','reference_images']})
     data['footage_price_basis']={'provider':'fal','model':data['default_video_endpoint'],
-        'cash_usd_per_second':.112,'credits_usd_per_second':0,'set_at':time.time()-60,'expires_at':1794772800}
+        'cash_usd_per_second':.112,'credits_usd_per_second':0,'set_at':time.time()-60,'expires_at':time.time()+2*86400}
     raw=yaml.safe_dump(data).encode();(root/'project.yaml').write_bytes(raw)
     sign_settings(root,'config',{'config_sha256':hashlib.sha256(raw).hexdigest()},'project_config')
     monkeypatch.setattr(looks,'PROJECT',root.name)
@@ -319,7 +322,7 @@ def test_prepared_prerequisites_allow_four_separately_signed_purchases(tmp_path,
                     expect(panel.get_by_role('status')).to_contain_text('brief saved')
                     form.get_by_role('button',name='Prepare '+kind+' spending card',exact=True).click()
                 card=panel.locator('.voice-spend[data-kind="'+kind+'"]')
-                expect(card).to_contain_text(maximum)
+                expect(card).to_contain_text(maximum,timeout=20000)
                 prices[kind]=card.inner_text()
                 assert len(isolated_standins['audio_posts'])==len(prices)-1
                 card.get_by_role('button',name='Review and sign this request',exact=True).click()

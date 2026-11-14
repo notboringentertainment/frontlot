@@ -128,10 +128,12 @@ def test_signing_fixture_needs_no_extra_parent_or_tmpdir(monkeypatch):
     import os
     from pathlib import Path
     from tests.backlot.signing_outcome_helpers import signing_folder
-    monkeypatch.delenv('TMPDIR',raising=False);monkeypatch.delenv('FRONTLOT_FOLLOWUPS_PARENT',raising=False)
+    monkeypatch.delenv('TMPDIR',raising=False);monkeypatch.delenv('FRONTLOT_FOLLOWUPS_PARENT',raising=False);monkeypatch.delenv('OPENMONTAGE_HOME',raising=False)
     signing_folder.__wrapped__(monkeypatch)
     assert Path(os.environ['OPENMONTAGE_GATES_DIR']).is_dir()
-    assert Path(os.environ['OPENMONTAGE_GATES_DIR']).is_relative_to(Path(os.environ['OPENMONTAGE_HOME']))
+    from tests import conftest as guard
+    assert not guard._inside_real_app(os.environ['OPENMONTAGE_GATES_DIR'])
+    assert len(os.fsencode(Path(os.environ['OPENMONTAGE_GATES_DIR'])/'sessions'/'invented-trailer-12345678.sock'))<104
 
 
 def test_late_error_for_finished_request_cannot_disable_another_question(request,monkeypatch,bounded_signers):

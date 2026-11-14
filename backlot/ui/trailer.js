@@ -38,6 +38,9 @@ export function renderPaperCut(s) {
   }
   lastProject=s.project_id;wasPending=Boolean(s.trailer_setup_pending);
   const node=el("section",{class:"paper-editor","aria-label":"Trailer paper cut"});
+  const controls=el('fieldset',{class:'paper-controls'});
+  let busy=false;
+  const operation=async fn=>{if(busy)return;busy=true;controls.disabled=true;try{await fn();}finally{busy=false;controls.disabled=false;}};
   const folder=el("details",{},el("summary",{},"Where this trailer is kept"),el("p",{},`Its folder is called ${s.project_id}. This unique folder name keeps punctuation in your title safe and prevents folder names colliding.`));
   if(s.trailer_setup_pending) {
     node.append(el("h2",{},"Start this trailer"),folder,el("p",{},s.trailer_creation?.message || "This trailer has not been signed."));
@@ -161,27 +164,28 @@ export function renderPaperCut(s) {
     history.replaceChildren(el("h3",{},"Saved versions"));
     for(const version of state.history || [])history.append(button(`Open version ${version.number} · ${savedTime(version)}${version.id===state.current?.edit_revision_sha256?" · Current":""}`,async()=>{
       try{const value=await request(`${api}/${version.id}`);
-        details.replaceChildren(showVersion(value,`Saved version ${version.number} · ${savedTime(version)}`),button("Restore this as a new version",async()=>{
+        details.replaceChildren(showVersion(value,`Saved version ${version.number} · ${savedTime(version)}`),button("Restore this as a new version",()=>operation(async()=>{
           try{const result=await request(`${api}/restore`,{revision:version.id,expected_revision:revision});
             if(dirty)preserved=structuredClone(draft);draft=structuredClone(result.paper_cut || emptyPaper());revision=result.edit_revision_sha256;dirty=false;draw();await refreshFromServer();status.textContent="Restored as a new saved version. Every previous version is kept.";
           }catch(error){status.textContent=error.message;await refreshFromServer();}
-        }));
+        })));
       }catch(error){status.textContent=error.message;}
     }));
   }
   draw();
-  const save=button("Save a new version",async()=>{save.disabled=true;try{
+  const save=button("Save a new version",()=>operation(async()=>{try{
     const result=await request(api,{paper:draft,expected_revision:revision});revision=result.edit_revision_sha256;
     draft.shots.forEach((shot,i)=>{shot.id=result.paper_cut.shots[i].id;});dirty=false;
     status.textContent=`Saved. ${result.timing_message} No stage is approved.`;await refreshFromServer();
-  }catch(error){status.textContent=error.message;try{await refreshFromServer();}catch{ /* Keep the original save failure visible. */ }}finally{save.disabled=false;}});
-  node.append(save,button("Check paper cut against approved story",async()=>{try{
+  }catch(error){status.textContent=error.message;try{await refreshFromServer();}catch{ /* Keep the original save failure visible. */ }}}));
+  node.append(save,button("Check paper cut against approved story",()=>operation(async()=>{try{
     if(dirty)throw Error('Save your changed draft as a new version before comparing it with the approved story.');
-    const result=await request(`/api/project/${encodeURIComponent(s.project_id)}/story/check`,{});
-    revision=result.paper_cut.edit_revision_sha256;await refreshFromServer();status.textContent=result.message;
-  }catch(error){status.textContent=error.message;}}),button("Refresh story checks and saved versions",async()=>{try{await refreshFromServer();status.textContent="Story checks and versions refreshed. Your draft text is kept.";}catch(error){status.textContent=error.message;}}),
+    const result=await request(`/api/project/${encodeURIComponent(s.project_id)}/story/check`,{expected_revision:revision});
+    draft=structuredClone(result.paper_cut.paper_cut);revision=result.paper_cut.edit_revision_sha256;draw();await refreshFromServer();status.textContent=result.message;
+  }catch(error){status.textContent=error.message;try{await refreshFromServer();}catch{}}})),button("Refresh story checks and saved versions",async()=>{try{await refreshFromServer();status.textContent="Story checks and versions refreshed. Your draft text is kept.";}catch(error){status.textContent=error.message;}}),
     el("p",{},"Previous versions are kept in the order saved. Opening a version does not change your draft. Restoring makes another version."),history,details);
   update(state);
+  controls.append(...node.childNodes);node.append(controls);
   window.addEventListener("beforeunload",e=>{if(dirty){e.preventDefault();e.returnValue="";}});
   editor={node,refresh:update};return node;
 }

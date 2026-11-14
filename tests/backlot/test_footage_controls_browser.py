@@ -11,7 +11,8 @@ from tests.tools.test_signed_footage import film as original_film,provider
 def film(tmp_path,monkeypatch):
     # Unix signing sockets need a short pathname on macOS. Both locations and
     # the fallback home remain temporary and are checked before the board.
-    short=Path(tempfile.mkdtemp(prefix='fc-',dir=os.environ.get('OPENMONTAGE_HOME') or '/tmp'))
+    from tests.backlot.isolation_helpers import signing_directory
+    short=signing_directory('f')
     home=short/'h';home.mkdir();gates=short/'g';gates.mkdir()
     monkeypatch.setenv('HOME',str(home))
     monkeypatch.setenv('OPENMONTAGE_GATES_DIR',str(gates))

@@ -2714,7 +2714,7 @@ function renderLog(s, roster) {
         onclick: () => { selectedEntity = key; selectGate(row.request_id); },
       },
         el("span", { class: "what" }, gateWords(row.kind,row)),
-        el("span", { class: "text" }, plain(row.summary) || gateWords(row.kind,row)),
+        el("span", { class: "text" }, s.is_trailer&&row.kind==='reference_import' ? 'Review the copied picture and sign its origin. This buys nothing and permits no upload by itself.' : plain(row.summary) || gateWords(row.kind,row)),
         who ? el("span", { class: "who" }, who) : null));
     }
     if (s.gates && s.gates.error) needs.append(el("div", { class: "alert", role: "alert" }, el("b", {}, "Couldn't read the approvals"), el("span", {}, s.gates.error)));

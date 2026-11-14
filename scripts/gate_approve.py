@@ -120,7 +120,11 @@ def _tell_app(**event: Any) -> None:
 
 def _ask(kind: str, text: str, **extra: Any) -> str:
     _tell_app(ask=kind, **extra)
-    return input(text)
+    answer=input(text)
+    # Only the signer knows that a complete answer was consumed. A terminal
+    # frame can already contain the answer to the following note question.
+    _tell_app(answered=kind)
+    return answer
 
 
 def _done(outcome: str, line: str) -> None:
@@ -1224,13 +1228,22 @@ def _construct_artifact_review(root: Path, req: dict) -> Constructed:
     from lib.canon_enforcement import _version, artifact_review_digest
 
     if req.get('scope')=='trailer-stage' and req.get('stage')=='canon_ingest':
-        from lib.story_ingest import material,UNREADABLE
+        from lib.story_ingest import material,story_json,UNREADABLE
         from lib.pathsafe import PathSafetyError
-        from lib.trailer_contract import approval_record,signed_trailer_pin
+        from lib.trailer_contract import approval_record,signed_trailer_pin,require_stage_approval
+        def checkpoint_now():
+            from lib.checkpoint import validate_checkpoint
+            checkpoint=story_json(root,'checkpoint_canon_ingest.json')
+            validate_checkpoint(checkpoint)
+            if checkpoint.get('project_id')!=req['project_id'] or checkpoint.get('stage')!='canon_ingest' or checkpoint.get('status') not in ('awaiting_human','completed'):
+                raise ValueError(UNREADABLE)
+            if checkpoint['status']=='completed':
+                require_stage_approval(root,signed_trailer_pin(root),'canon_ingest',checkpoint['artifacts'])
+            return checkpoint
         try:
             _pending_request_path(req,root)
-            _,checkpoint=_load_pending_checkpoint(root,req,'canon_ingest')
-            material(root,checkpoint['artifacts']['canon_packet'])
+            checkpoint=checkpoint_now()
+            source=material(root,checkpoint['artifacts']['canon_packet'])
             record=approval_record(root,signed_trailer_pin(root),'canon_ingest',checkpoint['artifacts'])
             if req.get('approval_record')!=record:
                 raise ValueError('The story changed. Review its exact text and sign the new version.')
@@ -1240,14 +1253,16 @@ def _construct_artifact_review(root: Path, req: dict) -> Constructed:
         def current():
             try:
                 _pending_request_path(req,root)
-                _,latest=_load_pending_checkpoint(root,req,'canon_ingest')
+                latest=checkpoint_now()
                 material(root,latest['artifacts']['canon_packet'])
                 unchanged=approval_record(root,signed_trailer_pin(root),'canon_ingest',latest['artifacts'])==record
             except (PathSafetyError,OSError,ValueError,KeyError,TypeError,GateHandlerError):raise GateHandlerError(UNREADABLE) from None
             if not unchanged:
                 raise GateHandlerError('The story changed while signing. Review its exact text and sign the new version.')
         return Constructed(record,None,None,artifact=artifact,pre_commit_check=current,
-            evidence=('Approve this exact story source and its explicit protected passages only. No purchase or later stage is approved.',))
+            evidence=('Approve this exact story source and its explicit protected passages only. No purchase or later stage is approved.',
+                source['line_endings'],'Exact story text:',source['text'],
+                'Protected wording:',*source['protected'],'Spoiler passages:',*source['spoilers']))
 
     hint = req.get("artifact") or {}
     name = hint.get("artifact_type")
@@ -2032,7 +2047,14 @@ def _decide(
 
         matches = _matching_receipts(root, kind, built.entity_id, built.digest, bound)
         receipt: Optional[dict] = None
-        if kind == "sheet":
+        if kind=='artifact_review' and current.get('scope')=='trailer-stage' and current.get('stage')=='canon_ingest' and matches:
+            from lib.trailer_contract import require_stage_approval,signed_trailer_pin
+            from lib.story_ingest import story_json
+            checkpoint=story_json(root,'checkpoint_canon_ingest.json')
+            try:require_stage_approval(root,signed_trailer_pin(root),'canon_ingest',checkpoint['artifacts'])
+            except ValueError:pass
+            else:receipt=matches[-1]
+        elif kind == "sheet":
             # Tuple recovery (crash after commit, before the rewrite) exists
             # only for sheets, and only while the bound digest still
             # revalidates against the current checkpoint (construct did that).
@@ -2140,6 +2162,16 @@ def main(argv: list[str] | None = None) -> int:
                 show_constructed(construct(root, req))
                 print("dry-run: record constructed and verified; nothing signed.")
             return 0
+        if req.get('kind')=='artifact_review' and req.get('scope')=='trailer-stage' and req.get('stage')=='canon_ingest':
+            from lib.trailer_contract import require_stage_approval,signed_trailer_pin
+            from lib.story_ingest import story_json
+            checkpoint=story_json(root,'checkpoint_canon_ingest.json')
+            try:require_stage_approval(root,signed_trailer_pin(root),'canon_ingest',checkpoint['artifacts'])
+            except ValueError:pass
+            else:
+                with gates.handler_context():receipt=_decide(req,root,shown=construct(root,req),note=None)
+                _done('approved',f"Your existing story signature was applied and filed — receipt {receipt['receipt_id']}")
+                return 0
         selection: int | None = None
         shown: Optional[Constructed] = None
         approved = False

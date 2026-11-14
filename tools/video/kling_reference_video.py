@@ -161,7 +161,7 @@ class KlingReferenceVideo(BaseTool):
     ]
 
     def _get_api_key(self) -> str | None:
-        return os.environ.get("FAL_KEY") or os.environ.get("FAL_AI_API_KEY")
+        return (os.environ.get("FAL_KEY") or '').strip() or (os.environ.get("FAL_AI_API_KEY") or '').strip() or None
 
     def get_status(self) -> ToolStatus:
         return ToolStatus.AVAILABLE if self._get_api_key() else ToolStatus.UNAVAILABLE

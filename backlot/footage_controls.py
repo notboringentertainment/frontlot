@@ -41,8 +41,14 @@ def _gate(root,kind,entity):
 
 def _paper(root):
     footage.require_trailer(root)
-    from lib.trailer_edit import paper_state
+    from lib.trailer_edit import paper_state,read_revision
     state=paper_state(root)
+    if state.get('error'):
+        # Display the saved shot cards and their existing financial history
+        # even when story comparisons are unavailable. The authoritative
+        # request checks still refuse new work against unreadable sources.
+        try:state={**state,'current':read_revision(root)}
+        except (ValueError,OSError):pass
     return state,(state.get('current') or {}).get('paper_cut',{}).get('shots',[])
 
 

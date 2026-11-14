@@ -32,9 +32,10 @@ function cueForms(data,draft,{api,act,url},kind){
   }
   compose.append(el('p',{},effect?'Half a second to thirty seconds, timed in whole frames at 24 frames per second. The effect must fit inside the paper cut.':'Three seconds to two minutes, timed in whole frames at 24 frames per second.'),
     button(`Save ${noun} brief`,()=>act(async()=>{
+      const submitted=Object.fromEntries(keys.map(k=>[k,draft[k]]));
       const body={text:draft.text,seconds:Number(draft.seconds),brief_id:draft.briefId};
       if(effect)Object.assign(body,{start_frame:Number(draft.start)*24,shot_index:draft.shot,loop:draft.loop});
-      const result=await api(url+'/brief',body);draft.new=false;draft.briefId=result.brief_id;draft.saved=Object.fromEntries(keys.map(k=>[k,draft[k]]));return result.message;
+      const result=await api(url+'/brief',body);draft.new=false;draft.briefId=result.brief_id;draft.saved=submitted;return result.message;
     })));
   const prepare=button(`Prepare ${noun} spending card`,()=>act(async()=>{
     if(!clean())throw Error(`Save the current ${noun} brief and timing before preparing its spending card.`);

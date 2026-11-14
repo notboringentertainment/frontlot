@@ -32,6 +32,7 @@ def complete_footage_prerequisites(page,root,calls,tmp_path):
     review=page.get_by_role('region',name='Location source approval',exact=True)
     expect(review).to_contain_text('Written in Front Lot')
     assert review.locator('.exact-location').text_content()==TEXT
+    expect(page.get_by_role('button',name='Start signing',exact=True)).to_be_enabled(timeout=20000)
     shot_picture(page,'location-signing',review.get_by_role('heading').first)
     assert not calls['video_posts'] and len(calls['audio_posts'])==3
     simple_sign(page,'Return to footage setup')
@@ -45,6 +46,7 @@ def complete_footage_prerequisites(page,root,calls,tmp_path):
     review=page.get_by_role('region',name='Picture origin approval',exact=True)
     expect(review).to_contain_text('machine-generated, depicts no real person')
     expect(review.locator('img')).to_have_js_property('naturalWidth',960,timeout=15000)
+    expect(page.get_by_role('button',name='Start signing',exact=True)).to_be_enabled(timeout=20000)
     shot_picture(page,'picture-origin-signing',review.get_by_role('heading').first)
     simple_sign(page,'Return to footage setup')
     setup.get_by_role('button',name='Use signed picture for selected shot',exact=True).click()
@@ -64,6 +66,7 @@ def complete_footage_prerequisites(page,root,calls,tmp_path):
     price.get_by_role('button',name='Prepare footage price settings for signing',exact=True).click()
     review=page.get_by_role('region',name='Price settings approval',exact=True)
     expect(review).to_contain_text('ElevenLabs');expect(review).to_contain_text('Fal');expect(review).to_contain_text('$10.0000')
+    expect(page.get_by_role('button',name='Start signing',exact=True)).to_be_enabled(timeout=20000)
     shot_picture(page,'prices-signing',review.get_by_role('heading').first)
     simple_sign(page,'Return to footage setup')
     page.get_by_role('button',name='Open footage requests',exact=True).click()

@@ -306,7 +306,7 @@ def _apply_resize(master: int, payload: dict[str, Any]) -> None:
 
 _TAG_ASKS = {"approve", "sign_choice", "choose", "reject_confirm", "note", "accept_items", "why"}
 _TAG_OUTCOMES = {"approved", "declined", "left", "error"}
-_TAG_KEYS = {"ask", "outcome", "n", "required", "min", "items", "message"}
+_TAG_KEYS = {"ask", "answered", "outcome", "n", "required", "min", "items", "message"}
 
 
 def _signer_tag(line: bytes) -> Optional[dict[str, Any]]:
@@ -319,7 +319,7 @@ def _signer_tag(line: bytes) -> Optional[dict[str, Any]]:
         return None
     if not isinstance(tag, dict) or not set(tag) <= _TAG_KEYS:
         return None
-    if tag.get("ask") not in _TAG_ASKS and tag.get("outcome") not in _TAG_OUTCOMES:
+    if tag.get("ask") not in _TAG_ASKS and tag.get("answered") not in _TAG_ASKS and tag.get("outcome") not in _TAG_OUTCOMES:
         return None
     return tag
 
@@ -348,6 +348,7 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
     exit_flush_deadline: Optional[float] = None
     abandoned = False
     waiting_for_answer = False
+    queued_answers = 0
     detached_since = None
     session_id = uuid.uuid4().hex
     started = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -440,7 +441,7 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
                 detach_client()
 
         def read_tags() -> None:
-            nonlocal last_tag,waiting_for_answer
+            nonlocal last_tag,waiting_for_answer,queued_answers
             while True:
                 try:
                     chunk = os.read(tag_read, 4096)
@@ -459,6 +460,10 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
                     tag = _signer_tag(line)
                     if tag is None:
                         continue
+                    if tag.get('answered'):
+                        queued_answers=max(0,queued_answers-1)
+                        waiting_for_answer=False
+                        continue  # Internal acknowledgement, never a new UI question.
                     last_tag = tag
                     waiting_for_answer=bool(tag.get('ask'))
                     if client is not None and client.authenticated:
@@ -478,9 +483,9 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
             # A lost tab gets a short reconnect window. Only an unanswered
             # question can expire; a complete answer and its receipt commit
             # are never interrupted by this cleanup.
-            if client is None and detached_since is not None and time.monotonic()-detached_since>=5 and waiting_for_answer:
+            if client is None and detached_since is not None and time.monotonic()-detached_since>=5 and waiting_for_answer and not queued_answers:
                 abandoned=True
-            if abandoned and waiting_for_answer and child.poll() is None:
+            if abandoned and waiting_for_answer and not queued_answers and child.poll() is None:
                 # Cancel only this wrapper's child while it is waiting for a
                 # human answer. An answer already in flight gets to finish;
                 # a receipt commit is never interrupted for page cleanup.
@@ -603,8 +608,8 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
                                         client.queue(encode_json_frame(STATUS, {"tag": last_tag}))
                                     continue
                                 if frame_type == IN:
-                                    if any(c in payload for c in (10,13,4)):
-                                        waiting_for_answer=False
+                                    lines=payload.replace(b'\r\n',b'\n')
+                                    queued_answers+=sum(lines.count(bytes([c])) for c in (10,13,4))
                                     pty_input.extend(payload)
                                     if len(pty_input) > MAX_CLIENT_QUEUE:
                                         raise ProtocolError("pty input queue exceeded")

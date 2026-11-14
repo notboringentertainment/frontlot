@@ -20,11 +20,8 @@ def capture(page,name,target=None):
 
 @pytest.fixture(autouse=True)
 def short_signing_folder(monkeypatch,_isolated_gates_dir):
-    import tempfile
-    # Keep the Unix socket below macOS's path limit even under the named
-    # isolated parent required for a full run. It stays inside TMPDIR.
-    folder=tempfile.mkdtemp(prefix='v-',dir=tempfile.gettempdir())
-    monkeypatch.setenv('OPENMONTAGE_GATES_DIR',folder)
+    from tests.backlot.isolation_helpers import signing_directory
+    monkeypatch.setenv('OPENMONTAGE_GATES_DIR',str(signing_directory('v')))
     monkeypatch.setenv('FRONTLOT_CLAUDE','/nonexistent/frontlot-no-assistant')
 
 @contextmanager
