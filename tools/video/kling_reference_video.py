@@ -306,7 +306,7 @@ class KlingReferenceVideo(BaseTool):
         from lib import pathsafe, receipts
         from lib.state_io import atomic_move
         from tools.base_tool import current_execution_id, normalized_inputs_hash
-        from tools.cost_tracker import attach_request_id, reconcile_paid_call, reserve_paid_call
+        from tools.cost_tracker import attach_request_id, reconcile_paid_call, reserve_paid_call, retain_download
         from tools.video import _shared
 
         start = time.time()
@@ -412,12 +412,14 @@ class KlingReferenceVideo(BaseTool):
             if signed_bound is not None:actual_usd = footage.actual_charge(inputs,data)
             video_url = data["video"]["url"]
             staging = pathsafe.staging_file(project_root, ".mp4")
+            retain_download(project_root,reservation_id,staging)
             _shared.fal_download(
                 video_url,
                 staging,
                 max_bytes=self.MAX_DOWNLOAD_BYTES,
                 allowed_mime_prefixes=("video/", "application/octet-stream"),
             )
+            if signed_bound is not None:footage.mark_download_received(project_root,inputs)
             probed = _shared.verify_video_file(staging, require_audio=bool(payload["generate_audio"]))
             if signed_bound is not None and (not 0<probed['duration_seconds']<=float(inputs['duration'])+1/24):
                 raise ValueError('The returned clip length exceeds its signed request. Billing needs signed review.')
@@ -449,11 +451,8 @@ class KlingReferenceVideo(BaseTool):
             receipts.complete_generation(project_root, execution_id, tracker=tracker)
             state = "completed"
         except Exception as exc:
-            if staging is not None and not completion_started:
-                try:
-                    staging.unlink()
-                except FileNotFoundError:
-                    pass
+            # A provider-accepted download is paid evidence, even if local
+            # inspection fails. Keep it quarantined; it is not a usable take.
             return ToolResult(success=False, error=f"Kling o3 video generation failed: {exc}")
         finally:
             # Submit without a persisted request id is INDETERMINATE: leave the

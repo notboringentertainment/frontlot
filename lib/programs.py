@@ -6,51 +6,61 @@ import subprocess
 
 STANDARD_DIRS = ('/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin')
 
-def which(name, *, path=None):
-    name=os.fspath(name)
-    setting='OPENMONTAGE_'+Path(name).name.upper().replace('-','_')
-    def find(candidate):
-        return shutil.which(candidate) if path is None else shutil.which(candidate,path=path)
-    explicit=os.environ.get(setting,'').strip()
-    if explicit:
-        return find(os.path.expanduser(explicit))
-    found=find(name)
-    if found:return found
-    if Path(name).name!=name:return None
-    return next((found for directory in STANDARD_DIRS
-                 if (found:=shutil.which(str(Path(directory)/name)))),None)
+def _search_path(path):
+    entries=(os.environ.get('PATH','') if path is None else path).split(os.pathsep)
+    return os.pathsep.join(dict.fromkeys(p for p in [*entries,*STANDARD_DIRS]
+        if p and Path(p).is_absolute() and Path(p).resolve()!=Path.cwd().resolve()))
 
-def require(name):
-    result=which(name)
+def _candidate(name):
+    name=os.fspath(name)
+    if Path(name).name!=name:
+        if not Path(name).is_absolute():
+            raise ValueError('A program path must be absolute. Relative programs cannot run in Front Lot.')
+        return name
+    setting='OPENMONTAGE_'+name.upper().replace('-','_')
+    explicit=os.environ.get(setting,'').strip()
+    if explicit and not Path(explicit).is_absolute():
+        raise ValueError(f'{setting} must name an absolute program path. Ask the person who starts Front Lot to correct it.')
+    return explicit or name
+
+def which(name, *, path=None):
+    found=shutil.which(_candidate(name),path=_search_path(path))
+    return found if (found and Path(found).is_absolute()
+        and Path(found).resolve().parent!=Path.cwd().resolve()) else None
+
+def require(name, *, path=None):
+    result=which(name,path=path)
     if result is None:
-        raise ValueError(f'{name} is missing or its explicit setting cannot run. Ask the person who starts Front Lot to install or configure it and restart the board. Nothing was reserved or sent.')
+        raise ValueError(f'{Path(name).name} is missing or its explicit setting cannot run. Ask the person who starts Front Lot to install or configure it and restart the board.')
     return result
 
 def preflight(*names):
     for name in names:
-        executable=require(name)
         try:
-            subprocess.run([executable,'-version'],stdout=subprocess.DEVNULL,
+            executable=require(name)
+            run([executable,'-version'],stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL,check=True,timeout=10)
+        except ValueError as exc:
+            raise ValueError(str(exc)+' Nothing was reserved or sent.') from None
         except (OSError,subprocess.SubprocessError):
             raise ValueError(f'{name} could not run. Ask the person who starts Front Lot to repair its installation and restart the board. Nothing was reserved or sent.') from None
 
 def _command(args,kwargs):
-    lookup_path=(kwargs.get('env') or {}).get('PATH')
+    if kwargs.get('shell') or kwargs.get('executable') is not None:
+        raise ValueError('Front Lot starts programs directly. Shell and alternate-program overrides are not available.')
     # Scripts such as npx also need their interpreter to be discoverable.
-    env=dict(kwargs.get('env') or os.environ)
-    env['PATH']=os.pathsep.join(dict.fromkeys([*env.get('PATH','').split(os.pathsep),*STANDARD_DIRS]))
+    env=dict(os.environ if kwargs.get('env') is None else kwargs['env'])
+    child_cwd=Path(kwargs.get('cwd') or Path.cwd()).resolve()
+    env['PATH']=os.pathsep.join(p for p in _search_path(env.get('PATH','')).split(os.pathsep)
+                               if p and Path(p).resolve()!=child_cwd)
     kwargs['env']=env
     if isinstance(args,(list,tuple)) and args:
         cmd=list(args)
-        executable=os.fspath(cmd[0])
-        if Path(executable).name==executable:
-            found=which(executable,path=lookup_path)
-            if found:cmd[0]=found
-            elif os.environ.get('OPENMONTAGE_'+executable.upper().replace('-','_'),'').strip():
-                require(executable)
+        cmd[0]=require(os.fspath(cmd[0]),path=env['PATH'])
+        if Path(cmd[0]).resolve().parent==child_cwd:
+            raise ValueError('A program in the current folder cannot run. Configure its installed full path instead.')
         return cmd
-    return args
+    raise ValueError('Give Front Lot a program and its arguments as a list.')
 
 def run(args,*a,**kw):return subprocess.run(_command(args,kw),*a,**kw)
 def check_output(args,*a,**kw):return subprocess.check_output(_command(args,kw),*a,**kw)

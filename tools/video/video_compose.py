@@ -232,9 +232,7 @@ class VideoCompose(BaseTool):
 
     def _remotion_available(self) -> bool:
         """Check if Remotion rendering is available (requires npx + composer project + node_modules)."""
-        import shutil as _shutil
-
-        if not _shutil.which("npx"):
+        if not programs.which("npx"):
             return False
         composer_dir = Path(__file__).resolve().parent.parent.parent / "remotion-composer"
         if not composer_dir.exists() or not (composer_dir / "package.json").exists():
@@ -247,9 +245,7 @@ class VideoCompose(BaseTool):
 
     def _ffmpeg_available(self) -> bool:
         """Check if the ffmpeg binary is actually resolvable on PATH."""
-        import shutil as _shutil
-
-        return bool(_shutil.which("ffmpeg"))
+        return bool(programs.which("ffmpeg"))
 
     def _hyperframes_available(self) -> bool:
         """Check if HyperFrames rendering is available.

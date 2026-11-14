@@ -19,7 +19,7 @@ def test_quote_refresh_preserves_account_review_draft():
                         'max_credits_usd':0,'remaining_usd':49.5,'price_expires_at':4102444800}))
                 else:route.fulfill(content_type='text/html',body='<main></main>')
             page.route('http://127.0.0.1:4777/**',respond)
-            page.goto('http://127.0.0.1:4777/')
+            page.goto('http://127.0.0.1:4777/#k=invented-draft-writer')
             page.evaluate('''async()=>{
               const ui=await import('/ui/footage.js');
               const state={models:[{id:'invented',label:'Invented model'}],looks:[],remaining_usd:49.5,story_ready:true,

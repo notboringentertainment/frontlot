@@ -146,7 +146,7 @@ def test_execute_blocks_dangerous_code_before_running_manim(monkeypatch):
     # Pretend manim is installed so execute() reaches the safety gate rather
     # than short-circuiting on a missing binary. The scan must reject before any
     # subprocess runs.
-    monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/manim")
+    monkeypatch.setattr("shutil.which", lambda _,**kw: "/usr/bin/manim")
 
     def boom(*a, **k):  # subprocess must never be reached
         raise AssertionError("subprocess.run should not be called for blocked code")
@@ -169,7 +169,7 @@ def test_execute_blocks_dangerous_code_before_running_manim(monkeypatch):
 def test_allow_unsafe_code_bypasses_scan(monkeypatch):
     # With the opt-out, execution proceeds past the scan to Manim (which we stub
     # to fail); the failure must NOT be the safety-scan message.
-    monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/manim")
+    monkeypatch.setattr("shutil.which", lambda _,**kw: "/usr/bin/manim")
 
     class FakeProc:
         returncode = 1
