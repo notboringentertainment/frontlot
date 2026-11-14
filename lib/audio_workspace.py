@@ -361,6 +361,26 @@ def generated_take(root,record,row):
     return _save(root,take)
 
 
+def recover_recorded_take(root,record):
+    """Rebuild a missing workspace entry from verified, already-paid evidence.
+
+    This path has no transport, key lookup, new reservation or spending call.
+    Expired prices or a changed brief cannot erase a recorded take: it can be
+    recovered and will still need a fresh look before it can be kept.
+    """
+    approval=receipts.find_approval(root,'audio_spend',entity_id=record['request_id'],record_sha256=record_sha256(record))
+    if approval is None:raise ValueError('This recorded take needs its original verified spending signature.')
+    rows=[row for row in receipts.verified_generation_receipts(root)
+          if row.get('audio_approval_receipt_id')==approval['receipt_id']]
+    if not rows:return None
+    if len(rows)!=1:raise ValueError('The recorded take has conflicting receipts. Stop and have its history checked.')
+    row=rows[0]
+    if (row.get('normalized_inputs_hash')!=record['input_sha256'] or row.get('model_endpoint')!=record['model']
+            or row.get('tool')!='elevenlabs_audio'):
+        raise ValueError('The recorded take does not match its original signed request.')
+    return generated_take(root,record,row)
+
+
 def require_accepted(root,identity):
     take=read(root,identity)
     if take_state(root,take)!='Accepted':raise ValueError('Only an accepted, unchanged audio take can be used.')
