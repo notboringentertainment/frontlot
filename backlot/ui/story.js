@@ -44,7 +44,12 @@ export function renderStory(s,onSign){
     setText(prefix+pasted+suffix);const caret=boxText(prefix+pasted).length;text.setSelectionRange(caret,caret);
     message.textContent='';dirty=true;file=null;
   };
-  const act=async fn=>{if(busy)return;busy=true;editEpoch++;controls.disabled=true;message.textContent='';try{await fn();}catch(e){message.textContent=e.message;}finally{try{await refresh();}finally{busy=false;controls.disabled=false;}}};
+  const act=async fn=>{
+    if(busy)return;busy=true;editEpoch++;controls.disabled=true;message.textContent='';let completedMessage;
+    try{completedMessage=await fn();}catch(e){message.textContent=e.message;}
+    finally{try{await refresh();}finally{busy=false;controls.disabled=false;}
+      if(typeof completedMessage==='string'&&!message.textContent)message.textContent=completedMessage;}
+  };
   const chooser=el('input',{type:'file',accept:'.txt,.md,text/plain,text/markdown','aria-label':'Choose a text file'});
   chooser.onclick=()=>{chooser.value='';};
   chooser.onchange=()=>act(async()=>{
@@ -54,7 +59,7 @@ export function renderStory(s,onSign){
     let decoded;try{decoded=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);}catch{throw Error('This file is not readable UTF-8 text. Choose a plain text or Markdown file.');}
     let binary='';for(let start=0;start<bytes.length;start+=8192)binary+=String.fromCharCode(...bytes.subarray(start,start+8192));
     file={name:picked.name,base64:btoa(binary)};setText(decoded);dirty=true;
-    message.textContent='File chosen. Its original bytes will be copied; the original file will not be changed. Save it for review.';
+    return 'File chosen. Its original bytes will be copied; the original file will not be changed. Save it for review.';
   });
   function drawAnnotations(){
     annotations.replaceChildren();

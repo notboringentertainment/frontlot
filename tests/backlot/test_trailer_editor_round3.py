@@ -30,7 +30,7 @@ def editor_server(projects):
     assert any(gates_dir().resolve().is_relative_to(p.resolve()) for p in (Path('/tmp'),Path(tempfile.gettempdir())))
     with socket.socket() as sock:
         sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
-    env=dict(os.environ,OPENMONTAGE_PROJECTS_DIR=str(projects))
+    env=dict(os.environ,OPENMONTAGE_PROJECTS_DIR=str(projects),FRONTLOT_CLAUDE='/nonexistent/frontlot-editor-proof')
     code=f"from backlot.server import create_app;import uvicorn;uvicorn.run(create_app(port={port},capability_token='invented-browser-proof'),host='127.0.0.1',port={port},log_level='error')"
     process=subprocess.Popen([sys.executable,'-c',code],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     url=f'http://127.0.0.1:{port}'
@@ -57,17 +57,17 @@ def fill_example(page):
     p=collection_paper()
     for label,beat in zip(['Hook','Escalation','Reversal','Final invitation'],p['beats']):page.get_by_label(label,exact=True).fill(beat['text'])
     page.get_by_role('button',name='Add spoken line',exact=True).click()
-    line=page.locator('fieldset').filter(has=page.locator('legend',has_text='Line 1'))
+    line=page.locator('fieldset').filter(has=page.locator(':scope > legend',has_text='Line 1'))
     line.get_by_label('Exact wording').fill(p['lines'][0]['text'])
     line.get_by_label('Starts at frame').fill('168');line.get_by_label('Screen time in frames').fill('72')
     for n,card in enumerate(p['cards'],1):
         page.get_by_role('button',name='Add title card',exact=True).click()
-        box=page.locator('fieldset').filter(has=page.locator('legend',has_text=f'Card {n}'))
+        box=page.locator('fieldset').filter(has=page.locator(':scope > legend',has_text=f'Card {n}'))
         box.get_by_label('Exact wording').fill(card['text']);box.get_by_label('Starts at frame').fill(str(card['start_frame']))
         box.get_by_label('Screen time in frames').fill(str(card['duration_frames']))
     for n,shot in enumerate(p['shots'],1):
         page.get_by_role('button',name='Add shot',exact=True).click()
-        box=page.locator('fieldset').filter(has=page.locator('legend',has_text=f'Shot {n}'))
+        box=page.locator('fieldset').filter(has=page.locator(':scope > legend',has_text=f'Shot {n}'))
         box.get_by_label('Purpose (private plan)').fill(shot['purpose'])
         box.get_by_label('Screen time in frames').fill(str(shot['duration_frames']))
         box.get_by_label('References, separated by commas').fill(', '.join(shot['references']))

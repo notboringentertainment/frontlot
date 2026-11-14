@@ -95,3 +95,36 @@ def test_other_writing_panels_lock_through_their_save(root,monkeypatch,isolated_
         finally:
             for route in held:route.abort()
             browser.close()
+
+
+def test_file_chosen_is_announced_only_when_the_editor_can_accept_an_edit(root,tmp_path,monkeypatch,isolated_standins):
+    from lib import story_ingest
+    raw=b'\xef\xbb\xbf  A gallery waits.\r\nThe gallery is closed.\r\n'
+    source=tmp_path/'Invented file-ready story.txt';source.write_bytes(raw)
+    with browser_board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser,page=start_browser(pw,url);held=[];block={'active':True}
+        try:
+            page.goto(url);panel=page.get_by_role('region',name='Trailer story',exact=True)
+            expect(panel.get_by_role('status')).to_contain_text('Supply the exact story')
+            def delay(route):
+                if block['active'] and route.request.method=='GET':held.append(route)
+                else:route.continue_()
+            page.route('**/story',delay)
+            panel.get_by_label('Choose a text file',exact=True).set_input_files(str(source))
+            wait_for(page,lambda:bool(held));area=panel.get_by_label('Exact story text',exact=True)
+            expect(area).to_be_disabled()
+            expect(panel.get_by_role('alert')).not_to_contain_text('File chosen')
+            block['active']=False
+            for route in held:route.continue_()
+            held.clear()
+            expect(panel.get_by_role('alert')).to_contain_text('File chosen')
+            expect(area).to_be_enabled()
+            area.focus();area.evaluate('(e)=>e.setSelectionRange(e.value.length,e.value.length)');page.keyboard.insert_text('X')
+            panel.get_by_role('button',name='Save story for review',exact=True).click()
+            expect(panel.get_by_role('status')).to_contain_text('Saved')
+            assert story_ingest.material(root)['text'].encode()==raw+b'X'
+            assert source.read_bytes()==raw and not page.errors
+            assert all(not v for v in isolated_standins.values())
+        finally:
+            for route in held:route.abort()
+            page.unroute_all(behavior='ignoreErrors');browser.close()
