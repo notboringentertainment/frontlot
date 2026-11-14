@@ -55,7 +55,7 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
     # prices and story, checks the paper cut, and buys/keeps all three sounds.
     # It records the genuine first-time stop at the missing footage controls.
     walk_to_footage(tmp_path,monkeypatch,calls)
-    root=next((tmp_path/'empty-projects').iterdir())
+    root=next(p for p in (tmp_path/'empty-projects').iterdir() if (p/'project.json').is_file())
     parent=Path(os.environ['TMPDIR']).resolve().parent
     evidence={'root':str(root),'steps':[],
               'labelled_setup':['A signed fixture look, an already-made receipted picture and signed footage prices stand in only for the other builder’s three unfinished controls.'],
