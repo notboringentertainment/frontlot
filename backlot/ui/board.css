@@ -1086,6 +1086,8 @@ details.log-more[open] > summary { margin-bottom: 12px; }
 .paper-panel button:disabled { background:#d5d5cc; color:#666; cursor:default; }
 /* Trailer voice uses the same readable paper panels and natural page height. */
 .voice-panel { border-top:1px solid var(--line, #ddd); margin-top:24px; padding-top:24px; }
+.story-panel label { display:grid; gap:6px; margin:12px 0; }
+.story-panel textarea { box-sizing:border-box; width:100%; font:inherit; padding:8px; }
 .voice-panel label { display:grid; gap:6px; margin:12px 0; }
 .voice-panel label:has(input[type=checkbox]) { display:flex; flex-direction:row; align-items:center; }
 .voice-panel input[type=checkbox] { width:auto; flex:0 0 auto; padding:0; }

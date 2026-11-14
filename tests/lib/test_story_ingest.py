@@ -28,16 +28,17 @@ def test_exact_bytes_and_signature_only_complete_story(story,root):
     from lib.checkpoint import read_checkpoint
     from lib import receipts
     before=(root/'approvals.jsonl').read_bytes()
-    result=supply(story,root)
-    assert (root/result['path']).read_bytes()==TEXT
-    assert result['sha256']==hashlib.sha256(TEXT).hexdigest()
+    raw=TEXT+b'A quiet invented frame.\r\n'*400+b'The final words are still here.\r\n'
+    result=supply(story,root,raw)
+    assert (root/result['path']).read_bytes()==raw
+    assert result['sha256']==hashlib.sha256(raw).hexdigest()
     cp=read_checkpoint(root.parent,root.name,'canon_ingest')
     assert cp['status']=='awaiting_human' and not cp['human_approved']
     assert (root/'approvals.jsonl').read_bytes()==before
     approve_request(result['gate'],root)
     cp=read_checkpoint(root.parent,root.name,'canon_ingest')
     assert cp['status']=='completed' and cp['human_approved']
-    assert cp['artifacts']['canon_packet']['structure']['beats'][0]['summary']==TEXT.decode()
+    assert cp['artifacts']['canon_packet']['structure']['beats'][0]['summary']==raw.decode()
     assert not (root/'cost_log.json').exists()
     assert not (root/'generation_receipts.jsonl').exists()
     assert not (root/'checkpoint_assets.json').exists()

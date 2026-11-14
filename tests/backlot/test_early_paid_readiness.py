@@ -163,6 +163,7 @@ def buy_three_audio(page,panel,calls,prefix):
         before=len(calls['audio_posts'])
         card.get_by_role('button',name='Review and sign this request',exact=True).click()
         expect(page.get_by_role('heading',name='Review and sign audio',exact=True)).to_be_visible(timeout=20000)
+        expect(page.get_by_role('button',name='Start signing',exact=True)).to_be_enabled(timeout=20000)
         shot_picture(page,prefix+'-'+kind+'-purchase-signing',page.get_by_role('heading',name='Review and sign audio',exact=True))
         assert len(calls['audio_posts'])==before
         sign_audio(page)
@@ -251,6 +252,13 @@ def test_empty_production_signs_story_checks_paper_and_keeps_three_audio_purchas
             evidence={'root':str(root),'calls':isolated_standins,'body':page.locator('body').inner_text(),
                       'state':__import__('backlot.state',fromlist=['load_board_state']).load_board_state(root)}
             with (PARENT/(RUN+'-empty-evidence.json')).open('x') as f:json.dump(evidence,f,default=str,indent=2)
+            preview=os.environ.get('EARLY_TEST_PREVIEW')
+            if preview:
+                with Path(preview).open('x') as f:json.dump({'url':page.url},f)
+                end=time.monotonic()+180
+                while not Path(preview+'.done').exists():
+                    assert time.monotonic()<end,'The shared preview must be closed before this test stops.'
+                    threading.Event().wait(.1)
         except Exception:
             with (tmp_path/'empty-failure.txt').open('x') as f:f.write(page.locator('body').inner_text())
             page.screenshot(path=str(tmp_path/'empty-failure.png'));raise
@@ -334,7 +342,7 @@ def test_prepared_prerequisites_allow_four_separately_signed_purchases(tmp_path,
             expect(shot).to_contain_text('Highest charge: $0.5600',timeout=15000)
             with page.expect_response(lambda r:'/footage/create' in r.url,timeout=30000) as created:
                 shot.get_by_role('button',name='Create footage request',exact=True).click()
-            with (PARENT/('footage-create-'+os.environ.get('EARLY_PICTURE_PREFIX','probe')+'.json')).open('x') as f:
+            with (PARENT/('footage-create-'+RUN+'.json')).open('x') as f:
                 json.dump({'status':created.value.status,'body':created.value.json()},f,indent=2)
             details=page.get_by_label('Footage request details',exact=True)
             expect(details).to_contain_text('$0.5600',timeout=20000)
