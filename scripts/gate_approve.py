@@ -1234,7 +1234,8 @@ def _construct_artifact_review(root: Path, req: dict) -> Constructed:
         def checkpoint_now():
             from lib.checkpoint import validate_checkpoint
             checkpoint=story_json(root,'checkpoint_canon_ingest.json')
-            validate_checkpoint(checkpoint)
+            try:validate_checkpoint(checkpoint)
+            except ValueError:raise GateHandlerError(UNREADABLE) from None
             if checkpoint.get('project_id')!=req['project_id'] or checkpoint.get('stage')!='canon_ingest' or checkpoint.get('status') not in ('awaiting_human','completed'):
                 raise ValueError(UNREADABLE)
             if checkpoint['status']=='completed':

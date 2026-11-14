@@ -46,6 +46,16 @@ def test_terminal_preview_shows_exact_story_and_designations(root,capsys):
     assert 'Protected wording:' in output and 'Spoiler passages:' in output
 
 
+def test_invalid_story_checkpoint_schema_keeps_the_plain_signing_refusal(root):
+    from lib import story_ingest as story
+    from scripts import gate_approve as signer
+    gate=story.supply(root,b'An invented gallery waits.')['gate']
+    path=root/'checkpoint_canon_ingest.json';value=json.loads(path.read_text());value['status']='invented-invalid-status'
+    path.write_text(json.dumps(value))
+    with pytest.raises(signer.GateHandlerError) as caught:signer.construct(root,gate)
+    assert str(caught.value)==story.UNREADABLE
+
+
 def test_blank_primary_fal_connection_falls_back_to_trimmed_alternative(monkeypatch):
     from tools.video.kling_reference_video import KlingReferenceVideo
     monkeypatch.setenv('FAL_KEY',' \t ');monkeypatch.setenv('FAL_AI_API_KEY',' invented-fallback ')
