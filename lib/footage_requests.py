@@ -534,6 +534,8 @@ def execute(root, identity):
             if hint.get('footage_request_id') != identity and hint.get('footage_approval_receipt_id') != approval['receipt_id']:continue
             if reservation['state'] != 'completed':raise ValueError('This signature was already used. A retake needs a new request and signature.')
             return generated_take(root,record,reservation)
+        if not (os.environ.get('FAL_KEY','').strip() or os.environ.get('FAL_AI_API_KEY','').strip()):
+            raise ValueError('Fal is not connected to this board. Ask the person who starts Front Lot to connect the account securely and restart the board, then reload this page. Account connection is not available on this screen. Nothing was sent or reserved.')
         approval_material(root,record)
         auth = {'root':root,'record':record,'approval':approval}
         token = _AUTH.set(auth)

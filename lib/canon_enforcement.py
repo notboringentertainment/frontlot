@@ -310,6 +310,10 @@ def check_trailer_text(paper, canon):
     for key, label in (('lines', 'Line'), ('cards', 'Card')):
         for n, row in enumerate(paper.get(key, []), 1):
             text = row.get('text', '')
+            if canon.get('metadata',{}).get('verbatim_story'):
+                source=''.join(b.get('summary','') for b in canon.get('structure',{}).get('beats',[]))
+                if text and text not in source:
+                    warnings.append(f'{label} {n} is not an exact passage from the approved story. Compare it with the source; the wording has not been cleared as a quotation.')
             for protected in canon.get('protected_lines', []):
                 wording = protected.get('line', '')
                 if wording and text != wording and _resembles_protected(text, wording):

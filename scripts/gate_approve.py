@@ -1212,6 +1212,24 @@ def _construct_poster(root: Path, req: dict) -> Constructed:
 def _construct_artifact_review(root: Path, req: dict) -> Constructed:
     from lib.canon_enforcement import _version, artifact_review_digest
 
+    if req.get('scope')=='trailer-stage' and req.get('stage')=='canon_ingest':
+        from lib.story_ingest import material
+        from lib.trailer_contract import approval_record,signed_trailer_pin
+        _,checkpoint=_load_pending_checkpoint(root,req,'canon_ingest')
+        try:
+            material(root,checkpoint['artifacts']['canon_packet'])
+            record=approval_record(root,signed_trailer_pin(root),'canon_ingest',checkpoint['artifacts'])
+            if req.get('approval_record')!=record:
+                raise ValueError('The story changed. Review its exact text and sign the new version.')
+        except (ValueError,KeyError) as exc:raise GateHandlerError(str(exc)) from None
+        artifact={'artifact_type':'trailer_stage','artifact_version':'1.0','artifact_digest':record_sha256(record),'migration_status':'reviewed'}
+        def current():
+            _,latest=_load_pending_checkpoint(root,req,'canon_ingest')
+            if approval_record(root,signed_trailer_pin(root),'canon_ingest',latest['artifacts'])!=record:
+                raise GateHandlerError('The story changed while signing. Review its exact text and sign the new version.')
+        return Constructed(record,None,None,artifact=artifact,pre_commit_check=current,
+            evidence=('Approve this exact story source and its explicit protected passages only. No purchase or later stage is approved.',))
+
     hint = req.get("artifact") or {}
     name = hint.get("artifact_type")
     if not isinstance(name, str) or not name:
@@ -1698,7 +1716,7 @@ def _construct_audio_workspace(root: Path, req: dict) -> Constructed:
             return decision_record(root, identity, supplied.get("decision"))
         from lib.media_spending import PaidCallBusy
         try:return resolution_record(root, identity, supplied.get("charged"), supplied.get("cash_usd"), supplied.get("credits_usd"), supplied.get("note"))
-        except PaidCallBusy as exc:raise GateHandlerError(str(exc)+' Wait for that operation to finish, then start signing again.') from None
+        except PaidCallBusy:raise GateHandlerError('An audio or footage operation is still running. Wait for it to finish, then start signing again.') from None
     record = build()
     def recheck():
         if build() != record:
@@ -1982,6 +2000,9 @@ def _decide(
                     f"pending request {current['request_id']!r} names approval_receipt_id {marker!r}, which is not "
                     f"the verified receipt for this record — refused: {exc}"
                 ) from exc
+            if kind=='artifact_review' and current.get('scope')=='trailer-stage' and current.get('stage')=='canon_ingest':
+                from lib.story_ingest import complete
+                complete(root)
             _complete_done(req_path, root, current, receipt["receipt_id"])
             return receipt
 
@@ -2050,6 +2071,9 @@ def _decide(
                 from lib.pipeline_pin import refresh_cache
 
                 refresh_cache(root, built.extra["pipeline_name"])
+        if kind=='artifact_review' and current.get('scope')=='trailer-stage' and current.get('stage')=='canon_ingest':
+            from lib.story_ingest import complete
+            complete(root)
         _complete_done(req_path, root, current, receipt["receipt_id"])
         return receipt
 

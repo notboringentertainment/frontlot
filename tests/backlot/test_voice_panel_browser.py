@@ -21,7 +21,7 @@ def capture(page,name,target=None):
 @pytest.fixture(autouse=True)
 def short_signing_folder(monkeypatch,_isolated_gates_dir):
     import tempfile
-    folder=tempfile.mkdtemp(prefix='vp-sign-',dir='/tmp')
+    folder=tempfile.mkdtemp(prefix='vp-sign-',dir=os.environ.get('OPENMONTAGE_HOME') or tempfile.gettempdir())
     monkeypatch.setenv('OPENMONTAGE_GATES_DIR',folder)
     monkeypatch.setenv('FRONTLOT_CLAUDE','/nonexistent/frontlot-no-assistant')
 

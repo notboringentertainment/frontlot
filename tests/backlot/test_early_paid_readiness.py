@@ -143,7 +143,42 @@ def save_paper_with_controls(page,reference=''):
     return paper
 
 
-def test_empty_production_stops_at_missing_story_approval(tmp_path,monkeypatch,isolated_standins):
+def buy_three_audio(page,panel,calls,prefix):
+    panel.get_by_role('button',name='Load account voices',exact=True).click()
+    line=panel.locator('[data-voice-line="0"]')
+    line.get_by_label('Voice for line 1',exact=True).select_option('invented_voice')
+    line.get_by_label('I have permission to use this voice.').check()
+    line.get_by_role('button',name='Prepare a spending card',exact=True).click()
+    for kind,maximum in [('speech','$0.0088'),('music','$0.0480'),('effect','$0.0160')]:
+        if kind!='speech':
+            form=panel.locator('#'+kind+'-compose')
+            form.get_by_label('Music brief' if kind=='music' else 'Effect description',exact=True).fill(
+                'A quiet instrumental pulse with room for speech.' if kind=='music' else 'A soft gallery door latch clicks.')
+            form.get_by_label('Music length in seconds' if kind=='music' else 'Effect length in seconds',exact=True).fill('12' if kind=='music' else '2')
+            form.get_by_role('button',name='Save '+kind+' brief',exact=True).click()
+            expect(panel.get_by_role('status')).to_contain_text('brief saved')
+            form.get_by_role('button',name='Prepare '+kind+' spending card',exact=True).click()
+        card=panel.locator('.voice-spend[data-kind="'+kind+'"]')
+        expect(card).to_contain_text(maximum)
+        before=len(calls['audio_posts'])
+        card.get_by_role('button',name='Review and sign this request',exact=True).click()
+        expect(page.get_by_role('heading',name='Review and sign audio',exact=True)).to_be_visible(timeout=20000)
+        shot_picture(page,prefix+'-'+kind+'-purchase-signing',page.get_by_role('heading',name='Review and sign audio',exact=True))
+        assert len(calls['audio_posts'])==before
+        sign_audio(page)
+        assert len(calls['audio_posts'])==before
+        card.get_by_role('button',name='Make this approved take',exact=True).click()
+        tile=panel.locator('.voice-take[data-kind="'+kind+'"]')
+        expect(tile).to_be_visible(timeout=20000)
+        player=tile.locator('audio');expect(player).to_have_js_property('readyState',4,timeout=15000)
+        player.evaluate('(p)=>{p.muted=true;return p.play()}');player.evaluate('(p)=>p.pause()')
+        tile.get_by_role('button',name='Keep this take',exact=True).click();sign_audio(page)
+        expect(tile).to_contain_text('Kept',timeout=20000)
+        shot_picture(page,prefix+'-'+kind+'-kept',tile)
+        assert len(calls['audio_posts'])==before+1
+
+
+def test_empty_production_signs_story_checks_paper_and_keeps_three_audio_purchases(tmp_path,monkeypatch,isolated_standins):
     from tests.backlot.test_footage_controls_browser import browser_board
     projects=tmp_path/'empty-projects';projects.mkdir()
     monkeypatch.setattr('lib.paths.PROJECTS_DIR',projects)
@@ -169,19 +204,47 @@ def test_empty_production_stops_at_missing_story_approval(tmp_path,monkeypatch,i
             set_prices(page,panel,'empty')
             paper=save_paper_with_controls(page)
             expect(paper).to_contain_text('This draft is not yet checked against the approved story.')
-            expect(paper).to_contain_text('The story approval control is not built yet.')
             shot_picture(page,'empty-unchecked-story',paper.get_by_role('button',name='Save a new version'))
             page.get_by_role('button',name='Voice workspace',exact=True).click()
             for label in ('Prepare a spending card','Prepare music spending card','Prepare effect spending card'):
                 expect(panel.get_by_role('button',name=label,exact=True)).to_be_disabled()
             shot_picture(page,'empty-audio-blocked',panel.locator('[data-voice-line="0"]'))
+            story=page.get_by_role('region',name='Trailer story',exact=True)
+            expect(story).to_be_visible(timeout=5000)
+            text='  A gallery waits.\nThe gallery is closed.\nKeep the light on.\nThe keeper is the thief.  \n'
+            story.get_by_label('Exact story text',exact=True).fill(text)
+            story.get_by_role('button',name='Add protected wording',exact=True).click()
+            story.get_by_label('Protected wording 1',exact=True).fill('Keep the light on.')
+            story.get_by_role('button',name='Add spoiler passage',exact=True).click()
+            story.get_by_label('Spoiler passage 1',exact=True).fill('The keeper is the thief.')
+            story.get_by_role('button',name='Save story for review',exact=True).click()
+            expect(story.get_by_role('status')).to_contain_text('Saved')
+            assert all(not v for v in isolated_standins.values())
+            story.get_by_role('button',name='Review and sign this story',exact=True).click()
+            review=page.get_by_role('region',name='Story approval',exact=True)
+            expect(review).to_contain_text(text)
+            shot_picture(page,'exact-story-signing',review.get_by_role('heading').first)
+            page.get_by_role('button',name='Start signing',exact=True).click()
+            page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=20000)
+            expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded.',timeout=20000)
+            page.get_by_role('button',name='Return to story',exact=True).click(timeout=20000)
+            expect(story.get_by_role('status')).to_contain_text('signed',timeout=15000)
+            for label in ('Prepare a spending card','Prepare music spending card','Prepare effect spending card'):
+                expect(panel.get_by_role('button',name=label,exact=True)).to_be_disabled()
+            paper.get_by_role('button',name='Check paper cut against approved story',exact=True).click()
+            expect(paper.get_by_role('status').first).to_contain_text('compared')
+            for label in ('Prepare a spending card','Prepare music spending card','Prepare effect spending card'):
+                expect(panel.get_by_role('button',name=label,exact=True)).to_be_enabled(timeout=15000)
+            shot_picture(page,'paper-compared',paper.get_by_role('button',name='Check paper cut against approved story'))
+            buy_three_audio(page,panel,isolated_standins,'empty')
             page.get_by_role('button',name='Open footage requests',exact=True).click()
             footage=page.get_by_label('Footage workspace',exact=True)
             expect(footage).to_contain_text('those approval controls are not built here')
             for control in footage.get_by_role('button',name='Create footage request',exact=True).all():
                 expect(control).to_be_disabled()
             shot_picture(page,'empty-footage-blocked',footage)
-            assert all(not v for v in isolated_standins.values())
+            assert len(isolated_standins['audio_posts'])==3 and len(isolated_standins['catalogues'])==1
+            assert all(not isolated_standins[k] for k in ('uploads','video_posts','waits','downloads'))
             assert not page.errors
             evidence={'root':str(root),'calls':isolated_standins,'body':page.locator('body').inner_text(),
                       'state':__import__('backlot.state',fromlist=['load_board_state']).load_board_state(root)}

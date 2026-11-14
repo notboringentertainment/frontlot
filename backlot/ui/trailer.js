@@ -58,7 +58,7 @@ export function renderPaperCut(s) {
   const status=el("p",{role:"status"},"Planning only. Nothing here approves a stage or buys media.");
   const checks=el("div",{"aria-live":"polite"}), conflict=el("div",{}), content=el("div",{}), history=el("section",{class:"paper-panel"}), details=el("div",{});
   node.append(el("h2",{},"Story and paper cut"),folder,status,checks,conflict,
-    el("p",{},"Approving the story happens outside these panels for now. The story approval control is not built yet. You can always save a draft here; later stages must wait for its story checks."),content);
+    el("p",{},"Supply and sign the story in Story workspace, then compare this saved paper cut against it. You can always save a draft here; later stages must wait for its story checks."),content);
   const button=(text,fn)=>el("button",{type:"button",onclick:fn},text);
   const panel=(title)=>{const n=el("section",{class:"paper-panel"},el("h3",{},title));content.append(n);return n;};
   const protectedPanels=[];
@@ -175,7 +175,11 @@ export function renderPaperCut(s) {
     draft.shots.forEach((shot,i)=>{shot.id=result.paper_cut.shots[i].id;});dirty=false;
     status.textContent=`Saved. ${result.timing_message} No stage is approved.`;await refreshFromServer();
   }catch(error){status.textContent=error.message;try{await refreshFromServer();}catch{ /* Keep the original save failure visible. */ }}finally{save.disabled=false;}});
-  node.append(save,button("Refresh story checks and saved versions",async()=>{try{await refreshFromServer();status.textContent="Story checks and versions refreshed. Your draft text is kept.";}catch(error){status.textContent=error.message;}}),
+  node.append(save,button("Check paper cut against approved story",async()=>{try{
+    if(dirty)throw Error('Save your changed draft as a new version before comparing it with the approved story.');
+    const result=await request(`/api/project/${encodeURIComponent(s.project_id)}/story/check`,{});
+    revision=result.paper_cut.edit_revision_sha256;await refreshFromServer();status.textContent=result.message;
+  }catch(error){status.textContent=error.message;}}),button("Refresh story checks and saved versions",async()=>{try{await refreshFromServer();status.textContent="Story checks and versions refreshed. Your draft text is kept.";}catch(error){status.textContent=error.message;}}),
     el("p",{},"Previous versions are kept in the order saved. Opening a version does not change your draft. Restoring makes another version."),history,details);
   update(state);
   window.addEventListener("beforeunload",e=>{if(dirty){e.preventDefault();e.returnValue="";}});

@@ -191,6 +191,7 @@ def snapshot(root):
     try:effect_brief=current_brief(root,kind='effect')
     except ValueError:effect_brief=None
     return {'lines':(paper.get('current') or {}).get('paper_cut',{}).get('lines',[]),
+            'paper_review_message':('The saved paper cut is marked for review. Open Cutting workspace, review and save the cut, then return here to check this take again.' if (paper.get('current') or {}).get('paper_cut_pending') else None),
             'music_brief':music_brief,
             'effect_brief':effect_brief,'shots':(paper.get('current') or {}).get('paper_cut',{}).get('shots',[]),
             'account':account,'price_basis':basis,'price_config_sha256':config_sha,'price_settings_signed':basis is not None,

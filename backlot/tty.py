@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
+from starlette.websockets import WebSocketDisconnect
 
 if TYPE_CHECKING:
     from fastapi import FastAPI, WebSocket
@@ -1006,7 +1007,7 @@ async def _tty_websocket(websocket: WebSocket, project_id: str, request_id: str)
         await _relay(websocket, broker_reader, writer, incoming)
         await _close(websocket,1000,'signing connection ended')
         _log(f"tty closed project={project_id} request={request_id} reason=relay-ended")
-    except (ConnectionError, OSError):
+    except (ConnectionError, OSError, WebSocketDisconnect):
         _log(f"tty closed project={project_id} request={request_id} reason=disconnected")
     except ProtocolError:
         await _close(websocket, 1002, "terminal protocol error")

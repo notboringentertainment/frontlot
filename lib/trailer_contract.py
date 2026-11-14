@@ -44,7 +44,7 @@ STAGE_LABELS = {
     'script': 'Lines and title cards', 'scene_plan': 'Shot list',
     'assets': 'Footage and sound', 'edit': 'Rough cut', 'compose': 'Final assembly',
 }
-STAGE_LIMITS = {name: 'Signed stage approval controls are not available yet.' for name in STAGE_LABELS}
+STAGE_LIMITS = {name: 'Signed stage approval controls are not available yet.' for name in STAGE_LABELS if name!='canon_ingest'}
 STAGE_LIMITS.update({
     'assets': 'The complete trailer footage, sound and signed stage approval controls are not available yet.',
     'edit': 'Playable rough-cut editing and signed approval controls are not available yet.',
@@ -162,6 +162,11 @@ def approval_record(root, pin, stage, artifacts):
     for the future human signing surface using the existing gate machinery.
     """
     contract = require_contract(root)
+    if stage=='canon_ingest':
+        packet=artifacts.get('canon_packet') or {}
+        if 'verbatim_story' in packet.get('metadata',{}):
+            from lib.story_ingest import material
+            material(root,packet)
     validate_stage_contract(contract, stage, artifacts)
     record = {'stage': stage, 'pipeline': pin.to_dict(), 'trailer': contract,
               'artifacts_sha256': record_sha256(artifacts)}

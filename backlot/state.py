@@ -1692,6 +1692,16 @@ def _render_audio_spend(root: Path, req: dict[str, Any]) -> dict[str, Any]:
 
 def _render_text_only(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     """Text-only kinds: no constructor source cites a required visual asset id."""
+    if req.get('kind')=='artifact_review' and req.get('scope')=='trailer-stage' and req.get('stage')=='canon_ingest':
+        from lib.story_ingest import material
+        from lib.pathsafe import resolve_input
+        try:
+            from lib.trailer_contract import approval_record,signed_trailer_pin
+            cp=json.loads(resolve_input('checkpoint_canon_ingest.json',root).read_text())
+            record=approval_record(root,signed_trailer_pin(root),'canon_ingest',cp['artifacts'])
+            if req.get('approval_record')!=record:raise ValueError('The story changed. Save and review its new signing request.')
+            return {'story':material(root)}
+        except ValueError as exc:return {'packet_error':True,'error':str(exc)}
     excluded = {"approval_record", "envelope"}
     request = {k: v for k, v in req.items() if k not in excluded and k != "preview_paths"}
     return {"summary": req.get("summary"), "request": request,
