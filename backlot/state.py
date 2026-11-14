@@ -1708,9 +1708,9 @@ def _render_audio_take(root,req):
     except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This take needs fresh review. Reopen its audio panel before signing.'}
 
 def _render_audio_resolution(root,req):
-    from lib.audio_workspace import resolution_record
+    from lib.media_spending import _resolution_material
     r=req.get('approval_record') or {}
-    try:return {'record':resolution_record(root,req['entity_id'],r['charged'],r['cash_usd'],r['credits_usd'],r['note'])}
+    try:return {'record':_resolution_material(root,req['entity_id'],r['charged'],r['cash_usd'],r['credits_usd'],r['note'])}
     except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This account review changed. Prepare a new account review before signing.'}
 def _render_footage(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     from lib import footage_requests as footage, receipts
@@ -1752,9 +1752,10 @@ def _footage_look_words(value):
 def _render_account_review(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     supplied=req.get('approval_record') or {}
     if (supplied.get('request') or {}).get('provider')!='fal':return _render_text_only(root,req)
-    from lib import audio_workspace,receipts
+    from lib import receipts
+    from lib.media_spending import _resolution_material
     try:
-        record=audio_workspace.resolution_record(root,req.get('entity_id'),supplied.get('charged'),
+        record=_resolution_material(root,req.get('entity_id'),supplied.get('charged'),
             supplied.get('cash_usd'),supplied.get('credits_usd'),supplied.get('note'))
         if record['request'].get('provider')!='fal':raise ValueError('This account review is for a different service.')
         return {'footage_resolution':{'description':record['request']['prompt'],'charged':record['charged'],

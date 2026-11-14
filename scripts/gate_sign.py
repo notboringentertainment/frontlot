@@ -2,7 +2,8 @@
 """Hold the project lease and run the human gate signer in a real terminal.
 
 With ``--broker`` this process owns a PTY and a private Unix socket so Backlot
-servers may detach and reconnect without owning or signalling the signer.
+servers may detach and reconnect. An authenticated abandonment stops only
+this wrapper's child at an unanswered question; a commit in flight finishes.
 """
 
 from __future__ import annotations
@@ -345,6 +346,8 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
     master_open = True
     exit_code: Optional[int] = None
     exit_flush_deadline: Optional[float] = None
+    abandoned = False
+    waiting_for_answer = False
     session_id = uuid.uuid4().hex
     started = dt.datetime.now(dt.timezone.utc).isoformat()
     try:
@@ -435,7 +438,7 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
                 detach_client()
 
         def read_tags() -> None:
-            nonlocal last_tag
+            nonlocal last_tag,waiting_for_answer
             while True:
                 try:
                     chunk = os.read(tag_read, 4096)
@@ -455,6 +458,7 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
                     if tag is None:
                         continue
                     last_tag = tag
+                    waiting_for_answer=bool(tag.get('ask'))
                     if client is not None and client.authenticated:
                         with contextlib.suppress(ProtocolError):
                             client.queue(encode_json_frame(STATUS, {"tag": tag}))
@@ -469,6 +473,12 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
                 client.queue(encode_frame(OUT, clean[offset : offset + 65536]))
 
         while True:
+            if abandoned and waiting_for_answer and child.poll() is None:
+                # Cancel only this wrapper's child while it is waiting for a
+                # human answer. An answer already in flight gets to finish;
+                # a receipt commit is never interrupted for page cleanup.
+                child.terminate()
+                waiting_for_answer=False
             if exit_code is None:
                 exit_code = child.poll()
                 if exit_code is not None:
@@ -585,11 +595,14 @@ def _broker(project: str, request_id: str, lifecycle: "_HoldLifecycleSignals") -
                                         client.queue(encode_json_frame(STATUS, {"tag": last_tag}))
                                     continue
                                 if frame_type == IN:
+                                    waiting_for_answer=False
                                     pty_input.extend(payload)
                                     if len(pty_input) > MAX_CLIENT_QUEUE:
                                         raise ProtocolError("pty input queue exceeded")
                                 elif frame_type == RESIZE:
                                     _apply_resize(master, decode_json_payload(RESIZE, payload))
+                                elif frame_type == BYE and decode_json_payload(BYE,payload).get('reason')=='abandoned':
+                                    abandoned=True
                                 else:
                                     raise ProtocolError("unexpected client frame")
                         except ProtocolError:

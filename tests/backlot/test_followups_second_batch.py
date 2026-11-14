@@ -132,6 +132,9 @@ def fake_owner(tmp_path,monkeypatch):
 
 def test_6_fingerprint_detects_root_permission_change(tmp_path,monkeypatch):
     safety,owner=fake_owner(tmp_path,monkeypatch)
+    monkeypatch.setenv('FRONTLOT_FOLLOWUPS_PARENT',str(tmp_path))
+    for name in ('HOME','OPENMONTAGE_HOME','OPENMONTAGE_GATES_DIR','OPENMONTAGE_METADATA_PATH','TMPDIR'):
+        monkeypatch.setenv(name,str(tmp_path/'isolated'/name))
     before=tmp_path/'before.json';after=tmp_path/'after.json'
     monkeypatch.setattr(safety.sys,'argv',['fingerprint',str(before)]);safety.main()
     owner.chmod(0o755)

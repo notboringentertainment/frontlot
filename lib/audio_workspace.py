@@ -70,6 +70,7 @@ def read(root,identity):
         raise ValueError('Generated audio provenance cannot be changed by editing its record. Generated music stays marked as test-only.')
     if record.get('origin')=='imported' and matching:
         raise ValueError('Generated audio provenance cannot be changed to imported. Generated music stays marked as test-only.')
+    if record.get('origin') not in ('generated','imported'):raise IncompleteAudioRecord()
     required=({'approved_request_id','approval_record_sha256','generation_receipt_id','binding','requested_duration_seconds'}
               if record.get('origin')=='generated' else {'source','licence_note'} if record.get('origin')=='imported' else set())
     if not required<=record.keys():raise IncompleteAudioRecord()
@@ -394,7 +395,7 @@ def _store_generated_take(root,take):
             try:current=read(root,identity)
             except IncompleteAudioRecord:replace_incomplete=True
             else:
-                if any(current.get(key)!=value for key,value in take.items()):
+                if current!=take:
                     raise ValueError('The saved audio take does not match its verified generation receipt. Nothing was replaced.')
                 return current
         return _save(root,take,replace_incomplete=replace_incomplete)

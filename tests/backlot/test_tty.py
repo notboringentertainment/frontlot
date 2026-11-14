@@ -977,7 +977,9 @@ def test_packet_error_refresh_never_advertises_input_ready_or_forwards_input(web
     websocket, writer = asyncio.run(scenario())
 
     assert [event["type"] for event in websocket.sent_json] == ["packet_refreshed"]
-    assert writer.data == b""
+    frames=FrameParser().feed(bytes(writer.data))
+    assert [kind for kind,_ in frames]==[BYE]
+    assert decode_json_payload(BYE,frames[0][1])=={'reason':'abandoned'}
     assert websocket.closed == [(4422, "gate evidence is unavailable")]
 
 

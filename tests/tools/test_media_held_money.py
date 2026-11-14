@@ -39,7 +39,13 @@ def test_unknown_footage_is_held_until_signed_review(film,provider,monkeypatch,f
     assert figures()==(0,.5,49.5)
     resolve_charge(root,reservation['reservation_id'],charged,amount,0,note)
     assert figures()==(amount,0,50-amount)
-    with pytest.raises(ValueError,match='already been resolved'):resolve_charge(root,reservation['reservation_id'],charged,amount,0,note)
+    ledger_paths=(root/'cost_log.json',root/'cost-reservations.jsonl')
+    saved={path:path.read_bytes() for path in ledger_paths}
+    contacts={kind:len(calls) for kind,calls in provider.items()}
+    resolve_charge(root,reservation['reservation_id'],charged,amount,0,note)
+    assert figures()==(amount,0,50-amount)
+    assert saved=={path:path.read_bytes() for path in ledger_paths}
+    assert contacts=={kind:len(calls) for kind,calls in provider.items()}
     assert len(provider['posts'])==1
 
 

@@ -41,8 +41,11 @@ def browser_board(root,monkeypatch):
             with Path(preview).open('x') as handle:handle.write(f'http://127.0.0.1:{port}/p/{root.name}?static=1#k=invented-browser-writer')
         yield f'http://127.0.0.1:{port}/p/{root.name}?static=1#k=invented-browser-writer'
     finally:
-        service.should_exit=True;worker.join(timeout=20)
-        assert not worker.is_alive(),'The invented board did not stop.'
+        from tests.backlot.tty_helpers import finish_board_signers
+        try:finish_board_signers(app)
+        finally:
+            service.should_exit=True;worker.join(timeout=20)
+            assert not worker.is_alive(),'The invented board did not stop.'
 
 
 def picture(page,name,tmp_path):

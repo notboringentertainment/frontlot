@@ -1696,7 +1696,9 @@ def _construct_audio_workspace(root: Path, req: dict) -> Constructed:
     def build():
         if req["kind"] == "audio_take":
             return decision_record(root, identity, supplied.get("decision"))
-        return resolution_record(root, identity, supplied.get("charged"), supplied.get("cash_usd"), supplied.get("credits_usd"), supplied.get("note"))
+        from lib.media_spending import PaidCallBusy
+        try:return resolution_record(root, identity, supplied.get("charged"), supplied.get("cash_usd"), supplied.get("credits_usd"), supplied.get("note"))
+        except PaidCallBusy as exc:raise GateHandlerError(str(exc)+' Wait for that operation to finish, then start signing again.') from None
     record = build()
     def recheck():
         if build() != record:

@@ -399,6 +399,28 @@ def attach_when_free(
     raise AssertionError("timed out waiting for broker to become attachable")
 
 
+def finish_board_signers(app) -> None:
+    """Abandon only real signers owned by this disposable board, then reap them."""
+    from backlot.tty import sessions_dir
+    for process in list(app.state.tty_registry.spawned):
+        if process.poll() is not None:continue
+        matches=[]
+        for path in sessions_dir().glob('*.session.json'):
+            try:row=json.loads(path.read_text())
+            except (OSError,ValueError):continue
+            if row.get('pid')==process.pid:matches.append(row)
+        if not matches:
+            process.wait(timeout=5);continue
+        assert len(matches)==1
+        row=matches[0];path=sessions_dir()/(row['project']+'.sock')
+        sock,hello=attach_when_free(path,project=row['project'],request_id=row['request_id'])
+        try:
+            assert hello['pid']==process.pid and hello['session_id']==row['session_id']
+            sock.sendall(encode_json_frame(BYE,{'reason':'abandoned'}))
+        finally:sock.close()
+        process.wait(timeout=5)
+
+
 def collect_until_bye(sock: socket.socket) -> tuple[list[bytes], list[dict[str, Any]]]:
     output: list[bytes] = []
     events: list[dict[str, Any]] = []
