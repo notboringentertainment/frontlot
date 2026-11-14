@@ -93,7 +93,12 @@ def mix_timeline(tool,inputs):
         work_files.append(ref)
         effects.append({'path':str(ref),'number':i,'start_frame':t['start_frame'],'duration_frames':t['source_out_frame']-t['source_in_frame']})
     summed=directory/'summed.wav'
-    result=tool._mix({'tracks':[{'path':str(speech_path)},{'path':str(other_path)}],'normalize':False,'sum_without_attenuation':True,'float_output':True,'output_path':str(summed)})
+    # Give loudnorm a measured input within its supported range. This uniform
+    # temporary gain changes neither the balance nor any kept source; the
+    # two-pass normalizer then targets the actual finished level as usual.
+    peak=float(np.max(np.abs(speech)))+float(np.max(np.abs(background)))
+    input_gain=min(1,.25/max(peak,1e-12)) if automatic else 1
+    result=tool._mix({'tracks':[{'path':str(speech_path),'volume':input_gain},{'path':str(other_path),'volume':input_gain}],'normalize':False,'sum_without_attenuation':True,'float_output':True,'output_path':str(summed)})
     if not result.success:raise ValueError('The local mix failed. Check the sound files and try again.')
     work_files.append(summed)
     stats=loudness_stats(summed)

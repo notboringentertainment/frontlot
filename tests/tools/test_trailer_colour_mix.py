@@ -120,9 +120,9 @@ def test_silent_effect_report_names_its_saved_moment(signals):
     # position, not an invented waveform onset at zero, must guide listening.
     refs['effects'][0]['start_frame']=96
     report=review_output(target,refs)
-    assert report['effect_checks'][0]['status']=='uncertain'
+    assert report['effect_checks'][0]['status']=='unheard'
     assert report['effect_checks'][0]['expected_frame']==96
-    assert any('not be identified confidently near 0:04.000' in s for s in report['messages'])
+    assert any('could not be heard at its saved level near 0:04.000' in s for s in report['messages'])
 
 def test_unused_clipped_part_is_not_reported_as_clipping_in_the_cut(signals):
     from tools.audio.audio_mixer import AudioMixer

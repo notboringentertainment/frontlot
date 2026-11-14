@@ -128,12 +128,13 @@ def _effect_check(actual,ref,number,start_frame=0,*,nuisance=()):
                 if np.isfinite(coefficients).all():
                     y[start:stop]-=sum(matrix[:,i]*coefficients[i] for i in range(matrix.shape[1]))
     active=np.flatnonzero(np.abs(r)>1e-5)
-    if not len(active):return {'number':number,'status':'uncertain','expected_frame':start_frame,'observed_frame':None}
+    if not len(active):return {'number':number,'status':'unheard','expected_frame':start_frame,'observed_frame':None,'audible_rms_dbfs':-240.0}
     first,last=int(active[0]),int(active[-1])+1;r=r[first:last]
     expected=round(first/6000*24)
     if len(r)>len(y):return {'number':number,'status':'uncertain','expected_frame':expected,'observed_frame':None}
     # Match changes in the waveform, so a steady low music note cannot hide
     # a distinctive quiet effect. This changes measurement, never playback.
+    residual=y.copy();reference=r.copy()
     y=np.diff(y,prepend=y[0]);r=np.diff(r,prepend=r[0])
     size=1<<(len(y)+len(r)-1).bit_length()
     corr=np.fft.irfft(np.fft.rfft(y,size)*np.conj(np.fft.rfft(r,size)),size)[:len(y)-len(r)+1]
@@ -143,8 +144,15 @@ def _effect_check(actual,ref,number,start_frame=0,*,nuisance=()):
     other[max(0,best-250):min(len(other),best+251)]=0
     certain=score>.2 and (not len(other) or np.max(other)<score*.9)
     observed=round(best/6000*24)
+    aligned=residual[best:best+len(reference)]
+    coefficient=float(np.dot(aligned,reference))/max(float(np.dot(reference,reference)),1e-20)
+    component=reference*coefficient
+    effect_passage=PASSAGE//8
+    rms=max((math.sqrt(float(np.mean(component[i:i+effect_passage]**2))) for i in range(0,len(component),effect_passage)),default=0)
+    audible=rms>=AUDIBLE_RMS
     return {'number':number,'expected_frame':expected,'observed_frame':observed,'confidence':round(score,3),
-            'status':('on_time' if abs(observed-expected)<=1 else 'wrong_time') if certain else 'uncertain'}
+            'audible_rms_dbfs':round(20*math.log10(max(rms,1e-12)),2),
+            'status':('on_time' if abs(observed-expected)<=1 else 'wrong_time') if certain and audible else 'unheard' if not audible else 'uncertain'}
 
 def review_output(path,refs):
     path=Path(path);stats=loudness_stats(path)
@@ -186,7 +194,10 @@ def review_output(path,refs):
             messages.append(f'Voice in sound {row["number"]} is present but quiet from {time_words(row["start_frame"])} to {time_words(row["end_frame"])}. Listen there; raise its level if the words are hard to hear, then save and prepare playback again.')
         elif row['status'] in ('unheard','unmeasured','uncertain') and not any(f'Voice in sound {row["number"]} ' in m for m in messages):
             messages.append(f'Voice in sound {row["number"]} could not be confirmed as audibly present from {time_words(row["start_frame"])} to {time_words(row["end_frame"])}. Listen there, choose a clearer take or raise its level, then save and prepare playback again.')
-    hard=[x for x in checks if x['status'] in ('hard_to_hear','uncertain','unheard')]
+    named={v['number'] for v in voices if v['status'] in ('unheard','partial')}
+    transient={v['number'] for v in voices if not v['reference_presence']['sustained']}
+    hard=[x for x in checks if x['status'] in ('hard_to_hear','uncertain','unheard') and x['sound_number'] not in transient
+          and not (x['status']=='unheard' and x['sound_number'] in named)]
     if hard:
         start=hard[0]['start_frame'];end=hard[-1]['end_frame']
         messages.append(f'Speech is hard to hear from {time_words(start)} to {time_words(end)}.' if any(x['status'] in ('hard_to_hear','unheard') for x in hard) else f'Speech balance cannot be confirmed from {time_words(start)} to {time_words(end)} because the sounds are too similar.')
@@ -197,7 +208,8 @@ def review_output(path,refs):
     for interval in silences:messages.append(f'Silence from {time_words(interval["start_frame"])} to {time_words(interval["end_frame"])}. Check that this pause is deliberate; add or move a kept sound if it is not.')
     for effect in effects:
         number=effect['number'];expected=time_words(effect['expected_frame'])
-        if effect['status']=='on_time':messages.append(f'Effect {number} is heard at its saved time near {expected}.')
+        if effect['status']=='unheard':messages.append(f'Effect {number} could not be heard at its saved level near {expected}. Listen there; raise its level or choose an audible effect take, then save and prepare playback again.')
+        elif effect['status']=='on_time':messages.append(f'Effect {number} is heard at its saved time near {expected}.')
         elif effect['status']=='wrong_time':messages.append(f'Effect {number} is heard near {time_words(effect["observed_frame"])} instead of {expected}. Check its placement and prepare playback again.')
         else:messages.append(f'Effect {number} could not be identified confidently near {expected}. Listen at that moment and choose a more distinct take if needed.')
     return {'output_sha256':sha256_file(path),'source_warnings':list(refs.get('source_warnings',[])),'integrated_lufs':integrated,'true_peak_dbtp':peak,'channels':channels,'sample_rate':rate,
