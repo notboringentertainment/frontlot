@@ -81,9 +81,10 @@ export function renderCutting(s,onSign){
     if(item?.problem)box.append(el('p',{role:'alert'},item.problem));
     if(kind==='picture'){
      row.colour ||= {brightness:0,warmth:0,contrast:0,colour:0};
-     const colour=el('section',{'data-colour-picture':i+1},el('h4',{},'Match this picture'),el('p',{},'These adjustments change only this placement. Compare neighbouring shots; they cannot repair a changing face.'));
+     const colour=el('section',{'data-colour-picture':i+1},el('h4',{},'Match this picture'),el('p',{},'These adjustments change only this placement. Start with five to twenty points for a small change; around fifty is strong. Each control changes the picture differently, so compare before and after. They cannot repair a changing face.'));
      for(const [key,label,positive,negative] of [['brightness','Brighter or darker','brighter','darker'],['warmth','Warmer or cooler','warmer','cooler'],['contrast','More or less contrast','more contrast','less contrast'],['colour','More or less colour','more colour','less colour']])slider(colour,`${label} for picture ${i+1}`,row.colour[key],-100,100,5,v=>row.colour[key]=v,v=>v===0?'Unchanged':`${Math.abs(v)} points ${v>0?positive:negative}`);
-     colour.append(button(`Compare picture ${i+1} before`,()=>prepare('before',row.start_frame)),button(`Compare picture ${i+1} after`,()=>prepare('after',row.start_frame)));box.append(colour);
+     const reset=button('Reset this picture',()=>{row.colour={brightness:0,warmth:0,contrast:0,colour:0};changed();draw();message.textContent=`Picture ${i+1} reset to its original look. Save the cut before comparing again.`;});reset.setAttribute('aria-label',`Reset picture ${i+1}`);
+     colour.append(reset,button(`Compare picture ${i+1} before`,()=>prepare('before',row.start_frame)),button(`Compare picture ${i+1} after`,()=>prepare('after',row.start_frame)));box.append(colour);
     }
     const fields=[['Starts at frame','start_frame'],['Source in frame','source_in_frame'],['Source out frame','source_out_frame'],...(kind==='audio'?[['Level in decibels','level_db'],['Fade in frames','fade_in_frames'],['Fade out frames','fade_out_frames']]:[])];
     for(const [label,key] of fields)numberField(box,row,key,label,`${kind} ${i+1}`);

@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import time
 from pathlib import Path
 from lib import audio_workspace as audio, receipts
@@ -159,7 +160,12 @@ def snapshot(root):
         approved=approval is not None
         error=None
         made=any(t.get('approved_request_id')==record['request_id'] for t in takes)
-        recoverable=bool(not made and approval and any(r.get('audio_approval_receipt_id')==approval['receipt_id'] for r in generations))
+        recoverable=False;recovery_error=None
+        if not made and approval and any(r.get('audio_approval_receipt_id')==approval['receipt_id'] for r in generations):
+            try:recoverable=audio.recorded_take_material(root,record) is not None
+            except ValueError as exc:recovery_error=str(exc)
+            except (OSError,subprocess.SubprocessError):
+                recovery_error='The recorded audio file is missing or cannot be read. Restore its original unchanged file before recovery.'
         if not made:
             try:audio.check_price(root,record)
             except Exception:error='This request needs fresh review. Check the paper cut and signed price settings, then prepare another request.'
@@ -169,6 +175,7 @@ def snapshot(root):
             if state['unresolved_requests']:error='Resolve the held audio charge in the account review above before submitting any request.'
             if not account['configured'] and error is None:error=account['message']
         if recoverable:error=None
+        elif recovery_error:error=recovery_error
         requests.append({'record':record,'approved':approved,'recoverable':recoverable,'error':error,'gate_request_id':_gate_id(root,record['request_id'],'audio_spend')})
     charges={}
     for r in receipts.verified_generation_receipts(root):
@@ -188,6 +195,7 @@ def snapshot(root):
             'account':account,'price_basis':basis,'price_config_sha256':config_sha,'price_settings_signed':basis is not None,
             'protected_lines':paper.get('protected_lines',[]),'usable':paper.get('usable_downstream',False),
             'message':settings_error or (None if paper.get('usable_downstream') else 'Review the approved story and save a checked paper cut before requesting audio.'),
+            'record_warnings':state['record_warnings'],
             'takes':takes,'requests':requests,'unresolved_requests':state['unresolved_requests'],
             'budget':{'ceiling':ceiling,'spent':tracker.budget_spent_usd,'held':tracker.budget_reserved_usd,
                       'remaining':tracker.budget_remaining_usd,'audio_cash':sum(r.get('cash_usd',0) for r in charges),

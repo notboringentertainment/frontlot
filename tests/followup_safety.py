@@ -20,7 +20,12 @@ def main():
         if not path.is_relative_to(parent):
             raise SystemExit('Stop: every home, signing, metadata and temporary location must be inside the test parent.')
     owner = Path(pwd.getpwuid(os.getuid()).pw_dir) / '.openmontage'
-    inventory = {}
+    output = Path(sys.argv[-1]).resolve()
+    if output.is_relative_to(owner.resolve()):
+        raise SystemExit('Stop: fingerprint output must never be written inside the real app folder.')
+    if not output.is_relative_to(parent):
+        raise SystemExit('Stop: fingerprint output must stay inside the test parent.')
+    inventory = {'.': {'mode':owner.lstat().st_mode}}
     for path in sorted(owner.rglob('*')):
         info = path.lstat()
         row = {'mode': info.st_mode, 'size': info.st_size, 'mtime_ns': info.st_mtime_ns}
@@ -33,19 +38,16 @@ def main():
         elif stat.S_ISLNK(info.st_mode):
             row['link'] = os.readlink(path)
         inventory[str(path.relative_to(owner))] = row
-    output = Path(sys.argv[-1]).resolve()
-    if not output.is_relative_to(parent):
-        raise SystemExit('Stop: fingerprint output must stay inside the test parent.')
     with output.open('x') as handle:
         json.dump(inventory, handle, indent=2)
     if len(sys.argv) == 3:
         before = json.loads(Path(sys.argv[1]).read_text())
         if before != inventory:
             raise SystemExit('STOP: the real app-folder fingerprint changed. Do not run further tests or helpers.')
-    if len(inventory) != 113:
+    if len(inventory)-1 != 113:
         raise SystemExit('STOP: the real app folder does not have the expected 113 entries.')
-    print('Real app-folder fingerprint: 113 entries; unchanged.' if len(sys.argv) == 3
-          else 'Real app-folder baseline: 113 entries recorded read-only.')
+    print('Real app-folder fingerprint: 113 entries and root permissions; unchanged.' if len(sys.argv) == 3
+          else 'Real app-folder baseline: 113 entries and root permissions recorded read-only.')
 
 
 if __name__ == '__main__':

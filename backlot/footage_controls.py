@@ -175,7 +175,15 @@ def install(app,require_writer,safe_project,invalidate):
         # Reopening a completed request is recovery, not another purchase.
         prior=next((r for r in load_reservations(root).values() if (r.get('output_hint') or {}).get('footage_request_id')==rid),None)
         if prior and prior['state']!='completed':
-            raise ValueError('This request was already submitted and its charge needs review. Check the service account and sign an outcome below; do not try it again.')
+            if prior['state']=='failed':
+                from lib.gates import verify_receipt_signature
+                cancelled=prior.get('not_submitted_receipt') or {}
+                if (cancelled.get('kind')=='footage_not_submitted' and cancelled.get('project_id')==root.name
+                    and cancelled.get('reservation_id')==prior['reservation_id'] and cancelled.get('request_id')==rid
+                    and cancelled.get('actual_usd')==0 and not prior.get('provider_request_id') and verify_receipt_signature(cancelled)):
+                    raise ValueError('Nothing was submitted or charged for this request. Its hold was released. Prepare and sign a new request; this signature cannot be used again.')
+                raise ValueError('This request has already been closed. Prepare and sign a new request; its signature cannot be used again.')
+            raise ValueError('This signature has already been used and its outcome needs signed account review. Check the service account and sign its outcome; do not try the request again.')
         job=jobs[key]={'running':True,'error':None}
         async def run():
             try:await asyncio.to_thread(footage.execute,root,rid)
