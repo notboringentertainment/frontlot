@@ -42,6 +42,13 @@ def test_real_export_measurements_exact_final_signature_and_reveal_refusal(deliv
     from scripts import gate_approve as ga
     shown=ga.construct(root,gate);looks.approve_request(gate,root)
     assert d.final_state(root,identity)=='Approved by you'
+    reads=[];original_saved=d._saved
+    def read_once(*a,**kw):reads.append(1);return original_saved(*a,**kw)
+    with monkeypatch.context() as patch:
+        patch.setattr(d,'_saved',read_once)
+        snapshot=d.snapshot(root)
+    assert reads==[1]
+    assert snapshot['rough_status']=='Signed by you' and snapshot['exports'][0]['status']=='Approved by you'
     assert (root/'artifacts/edit_decisions.json').read_bytes()==original
     assert all(sha256_file(root/p)==digest for p,digest in take_bytes.items())
     with (root/report['outputs'][0]['path']).open('ab') as f:f.write(b'invented change')

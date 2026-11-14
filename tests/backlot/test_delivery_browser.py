@@ -38,11 +38,13 @@ def test_delivery_controls_sign_export_watch_approve_and_reveal(delivery_cut,mon
         return original(args,*a,**kw)
     monkeypatch.setattr(subprocess,'run',run)
     destination=os.environ.get('DELIVERY_CAPTURE')
+    prefix=os.environ.get('DELIVERY_CAPTURE_PREFIX','')
     def capture(page,name,target):
         if destination:
             target.evaluate('(e)=>e.scrollIntoView({block:"center",behavior:"instant"})')
-            path=Path(destination)/(name+'.png');assert not path.exists();page.screenshot(path=str(path))
+            path=Path(destination)/(prefix+name+'.png');assert not path.exists();page.screenshot(path=str(path))
     with board(root,monkeypatch) as url,sync_playwright() as pw:
+        if destination:print('Invented delivery board:',url+'/p/'+root.name+'#k=invented-browser-proof',flush=True)
         browser=pw.chromium.launch(headless=True)
         try:
             page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
@@ -83,6 +85,9 @@ def test_delivery_controls_sign_export_watch_approve_and_reveal(delivery_cut,mon
             expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=120000)
             page.get_by_role('button',name='Return to delivery',exact=True).click()
             expect(panel).to_contain_text('Approved by you',timeout=30000)
+            page.reload()
+            panel=page.get_by_role('region',name='Trailer delivery')
+            expect(panel).to_contain_text('Approved by you',timeout=30000)
             panel.get_by_role('button',name='Record the signed final approval',exact=True).click()
             expect(panel.get_by_role('status').first).to_contain_text('signature',timeout=120000)
             panel.get_by_role('button',name='Show approved file in Finder',exact=True).click()
@@ -90,7 +95,7 @@ def test_delivery_controls_sign_export_watch_approve_and_reveal(delivery_cut,mon
             assert len(revealed)==1;capture(page,'approved-file-location',panel)
             snapshot=d.snapshot(root);item=snapshot['exports'][0]
             if destination:
-                with (Path(destination)/'delivery-final-proof.mp4').open('xb') as f:f.write((root/item['path']).read_bytes())
-                with (Path(destination)/'delivery-final-measurements.json').open('x') as f:json.dump(item['review'],f,indent=2)
+                with (Path(destination)/(prefix+'delivery-final-proof.mp4')).open('xb') as f:f.write((root/item['path']).read_bytes())
+                with (Path(destination)/(prefix+'delivery-final-measurements.json')).open('x') as f:json.dump(item['review'],f,indent=2)
             assert len(provider['posts'])==3 and len(posts)==1 and not errors
         finally:browser.close()

@@ -55,9 +55,15 @@ def require_rough(root,revision=None):
         raise ValueError(ROUGH_REQUIRED+' '+str(e)) from None
 
 def rough_state(root):
-    rows=[r for r in receipts.verified_approvals(root,'artifact_review') if r.get('stage')=='edit' and r.get('scope')=='trailer-stage']
-    if not rows:return 'Needs your signature'
-    try:require_rough(root);return 'Signed by you'
+    try:
+        saved,_=_saved(root)
+        return _approval_state(root,'edit',{'edit_decisions':saved},'Needs your signature','Signed by you')
+    except (ValueError,OSError,KeyError):return 'Needs a fresh look'
+
+def _approval_state(root,stage,artifacts,pending,approved):
+    rows=[r for r in receipts.verified_approvals(root,'artifact_review') if r.get('stage')==stage and r.get('scope')=='trailer-stage']
+    if not rows:return pending
+    try:contract.require_stage_approval(root,_pin(root),stage,artifacts);return approved
     except (ValueError,OSError,KeyError):return 'Needs a fresh look'
 
 def _directory(root):
@@ -187,6 +193,9 @@ def read_export(root,identity):
 
 def _artifacts(root,identity,*,remeasure=False):
     root=Path(root);saved,timeline=require_rough(root)
+    return _file_artifacts(root,identity,saved,timeline,remeasure=remeasure)
+
+def _file_artifacts(root,identity,saved,timeline,*,remeasure=False):
     item=read_export(root,identity);report=item['render_report'];review=item['final_review']
     if report.get('edit_revision_sha256')!=saved['edit_revision_sha256'] or review.get('edit_revision_sha256')!=saved['edit_revision_sha256']:
         raise ValueError(CHANGED)
@@ -222,11 +231,10 @@ def request_final(root,identity):
         'Watch and listen to this exact final file. Your signature binds its bytes, the saved cut and the measured checks. It permits no upload or spending.',scope='trailer-stage',stage='compose')
 
 def final_state(root,identity):
-    rows=[r for r in receipts.verified_approvals(root,'artifact_review') if r.get('stage')=='compose' and r.get('scope')=='trailer-stage']
     try:
         artifacts=_artifacts(root,identity)
-        if rows:contract.require_stage_approval(root,_pin(root),'compose',artifacts);return 'Approved by you'
-        return 'Needs your signature' if artifacts['final_review']['status']=='pass' else 'Sound check needs changes'
+        pending='Needs your signature' if artifacts['final_review']['status']=='pass' else 'Sound check needs changes'
+        return _approval_state(root,'compose',artifacts,pending,'Approved by you')
     except (ValueError,OSError,KeyError):return 'Needs a fresh look'
 
 def complete_stage(root,stage,identity=None):
@@ -251,10 +259,18 @@ def reveal(root,identity):
     return {'message':'The approved trailer is saved in this production’s delivery folder and has been shown in Finder.','path':str(path)}
 
 def snapshot(root):
-    saved,_=_saved(root);items=[]
+    root=Path(root);saved,timeline=_saved(root);items=[]
+    rough=_approval_state(root,'edit',{'edit_decisions':saved},'Needs your signature','Signed by you')
     for marker in sorted(_directory(root).glob('*/complete.json'),key=lambda p:p.stat().st_mtime,reverse=True):
         try:
             item=read_export(root,marker.parent.name)
-            items.append({'id':item['id'],'status':final_state(root,item['id']),'review':item['final_review'],'path':item['render_report']['outputs'][0]['path']})
+            status='Needs a fresh look'
+            if rough=='Signed by you':
+                try:
+                    artifacts=_file_artifacts(root,item['id'],saved,timeline)
+                    pending='Needs your signature' if artifacts['final_review']['status']=='pass' else 'Sound check needs changes'
+                    status=_approval_state(root,'compose',artifacts,pending,'Approved by you')
+                except (ValueError,OSError,KeyError):pass
+            items.append({'id':item['id'],'status':status,'review':item['final_review'],'path':item['render_report']['outputs'][0]['path']})
         except (ValueError,OSError,KeyError):continue
-    return {'revision':saved['edit_revision_sha256'],'number':saved['revision_number'],'rough_status':rough_state(root),'exports':items}
+    return {'revision':saved['edit_revision_sha256'],'number':saved['revision_number'],'rough_status':rough,'exports':items}
