@@ -386,11 +386,14 @@ def attach_when_free(
         frame_type, payload = recv_frame(sock)
         if frame_type == HELLO:
             hello = decode_json_payload(HELLO, payload)
-            sock.sendall(encode_json_frame(HELLO, {
-                "project": project,
-                "request_id": request_id,
-                "token_ok": True,
-            }))
+            try:
+                sock.sendall(encode_json_frame(HELLO, {
+                    "project": project,
+                    "request_id": request_id,
+                    "token_ok": True,
+                }))
+            except OSError:
+                sock.close();raise
             return sock, hello
         sock.close()
         if frame_type != BYE or decode_json_payload(BYE, payload).get("reason") != "busy":
@@ -413,11 +416,16 @@ def finish_board_signers(app) -> None:
             process.wait(timeout=5);continue
         assert len(matches)==1
         row=matches[0];path=sessions_dir()/(row['project']+'.sock')
-        sock,hello=attach_when_free(path,project=row['project'],request_id=row['request_id'])
         try:
-            assert hello['pid']==process.pid and hello['session_id']==row['session_id']
-            sock.sendall(encode_json_frame(BYE,{'reason':'abandoned'}))
-        finally:sock.close()
+            sock,hello=attach_when_free(path,project=row['project'],request_id=row['request_id'])
+            try:
+                assert hello['pid']==process.pid and hello['session_id']==row['session_id']
+                sock.sendall(encode_json_frame(BYE,{'reason':'abandoned'}))
+            finally:sock.close()
+        except (OSError,EOFError):
+            # A successful signer can exit between HELLO and attachment. Only
+            # accept that race if this exact owned child actually exits.
+            process.wait(timeout=5);continue
         process.wait(timeout=5)
 
 

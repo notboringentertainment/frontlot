@@ -463,6 +463,11 @@ def paper_state(root):
         canon = _load_canon(root.parent, root.name, {}) or {}
         sources = [{'value': x['id'], 'label': x.get('summary') or x.get('decision') or 'Story material'}
                    for x in canon.get('locks', [])+canon.get('structure', {}).get('beats', []) if x.get('id') and not x.get('spoiler')]
+        if canon.get('metadata',{}).get('verbatim_story'):
+            for source in sources:
+                if source['value']=='supplied-story':
+                    words=' '.join(source['label'].split()[:10])[:80]
+                    source['label']='Supplied story: '+words+('…' if len(words)<len(source['label']) else '')
         check = _story_check(root, current['paper_cut']) if current and 'paper_cut' in current else None
         changed = bool(current and 'paper_cut' in current and current.get('inputs') != _inputs(root))
         pending = bool(current and current.get('paper_cut_pending'))
