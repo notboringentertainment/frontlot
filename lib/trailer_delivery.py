@@ -299,11 +299,11 @@ def complete_stage(root,stage,identity=None):
     root=Path(root)
     artifacts={'edit_decisions':require_rough(root)[0]} if stage=='edit' else _artifacts(root,identity,remeasure=True)
     contract.require_stage_approval(root,_pin(root),stage,artifacts)
+    signature='Your rough-cut signature is recorded.' if stage=='edit' else 'Your final-file signature for this file is recorded.'
     try:write_checkpoint(root.parent,root.name,stage,'completed',artifacts,pipeline_type='authored-film@1.6',human_approved=True)
     except CheckpointValidationError:
-        signature='Your rough-cut signature is recorded.' if stage=='edit' else 'Your signature is recorded.'
         return signature+' Earlier stage reviews or the separate story review are still unfinished, so this stage has not been marked finished.'
-    return 'Your rough-cut signature is recorded.' if stage=='edit' else 'Your signed stage approval is recorded.'
+    return signature
 
 def playback(root,identity):
     artifacts=_artifacts(root,identity)
@@ -328,7 +328,7 @@ def reveal(root,identity):
     if final_state(root,identity)!='Approved by you':raise ValueError('Watch and sign final approval of this exact file before revealing the approved delivery.')
     path=playback(root,identity)
     subprocess.run(['open','-R',str(path)],check=True,timeout=15)
-    return {'message':'The approved trailer is saved in this production’s delivery folder and has been shown in Finder.','path':str(path)}
+    return {'message':'This approved file has been shown in Finder.','path':str(path)}
 
 def snapshot(root):
     root=Path(root);saved,timeline=_saved(root);items=[]

@@ -62,11 +62,12 @@ def test_summary_follows_main_file_after_actions_without_reopening(signed_cut,mo
                 page.screenshot(path=str(target))
             expect(status).to_contain_text('Current final file: '+expected+'.',timeout=5000)
             expect(status).not_to_contain_text('approved trailer is saved')
-            expect(panel.get_by_role('note')).not_to_contain_text('approved trailer is saved')
+            expect(panel.locator(':scope > [role="note"]')).not_to_contain_text('approved trailer is saved')
             if case=='new-export':
                 assert 'rough-cut signature' in result['stage_message'].lower()
             else:
                 expect(main.get_by_role('button',name='Show approved file in Finder',exact=True)).to_be_disabled()
+                expect(main.get_by_role('note')).to_be_empty()
             # Another explicit refresh must keep the same truthful summary.
             with page.expect_response(lambda r:r.url==endpoint and r.request.method=='GET',timeout=60000):
                 panel.get_by_role('button',name='Refresh delivery',exact=True).click()
