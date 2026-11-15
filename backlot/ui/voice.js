@@ -40,7 +40,10 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
   let last='',busy=false,loading=false,pendingRefresh=false,refreshFailed=false,editEpoch=0,catalogueLoaded=false,lastData=null;
   let signatureEpoch=0;
   let revealingRequest=null;
-  const revealResult=()=>{if(!revealingRequest)return;const target=document.querySelector(`[data-held-audio-notice="${revealingRequest}"]`);target?.scrollIntoView({block:'center',behavior:'instant'});};
+  const revealResult=()=>{if(!revealingRequest)return;const target=document.querySelector(`[data-held-audio-notice="${revealingRequest}"]`);if(target){revealingRequest=null;target.scrollIntoView({block:'center',behavior:'instant'});}};
+  const cancelReveal=()=>{revealingRequest=null;};
+  for(const event of ['input','pointerdown','wheel','touchmove'])document.addEventListener(event,cancelReveal,{capture:true,passive:true});
+  document.addEventListener('keydown',event=>{if(['Tab','PageDown','PageUp','Home','End','ArrowDown','ArrowUp',' '].includes(event.key))cancelReveal();},true);
   document.addEventListener('frontlot:signature-recorded',()=>{signatureEpoch++;message.textContent='';feedback.clear();node.querySelectorAll('.action-feedback').forEach(note=>note.remove());});
   let pressed=false,deferredData=null;
   node.addEventListener('pointerdown',()=>{pressed=true;},true);
@@ -118,7 +121,7 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
       if(item.recoverable)card.append(el('p',{},'A completed take is recorded in its receipt but is missing here. Recover it without another call or charge.'),
         button('Recover recorded take',()=>act(async()=>{return (await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/recover`,{})).message;}),'request:'+r.request_id+':recover'));
       else if(item.error&&!held)card.append(el('p',{role:'alert'},item.error));
-      else if(!made && item.approved&&!held)card.append(button('Make this approved take',async()=>{revealingRequest=r.request_id;try{const message=await act(async()=>{const result=await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/send`,{});if(!result.success)throw Error(result.message);return 'Take ready. Listen, then sign keeping or declining it.';});await new Promise(requestAnimationFrame);revealResult();return message;}finally{revealingRequest=null;}},'request:'+r.request_id+':send'));
+      else if(!made && item.approved&&!held)card.append(button('Make this approved take',async()=>{revealingRequest=r.request_id;const message=await act(async()=>{const result=await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/send`,{});if(!result.success)throw Error(result.message);revealingRequest=null;return 'Take ready. Listen, then sign keeping or declining it.';});await new Promise(requestAnimationFrame);revealResult();return message;},'request:'+r.request_id+':send'));
       else if(!made && !held && item.gate_request_id)card.append(button('Review and sign this request',()=>onSign(item.gate_request_id),'request:'+r.request_id+':sign'));
       if(made)card.append(el('p',{},'This signature already made a take. Another take needs another spending card and signature.'));
       requests.append(card);

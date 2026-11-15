@@ -268,8 +268,11 @@ function askView(ask) {
   if (ask.ask === "approve" || ask.ask === "sign_choice") {
     const note = noteBox("Add a note (optional)");
     const keep = () => { gateSession.note = note.value; };
+    const request=gateDetail?.packet?.record;
+    const named=gateSession.signingRequest?.kind==='audio_spend'&&request?.prompt&&Number.isFinite(request.max_cash_usd)&&Number.isFinite(request.max_credits_usd);
+    const wording=named?`Approve one ${request.kind==='effect'?'sound effect':request.kind} take for “${request.prompt.length>160?request.prompt.slice(0,160)+'…':request.prompt}”? Highest charge $${(request.max_cash_usd+request.max_credits_usd).toFixed(4)} ($${request.max_cash_usd.toFixed(4)} cash and $${request.max_credits_usd.toFixed(4)} replacement value of credits).`:"Approve this?";
     return [
-      el("p", { class: "sign-question" }, ask.ask === "approve" ? "Approve this?" : "Sign the one you picked?"),
+      el("p", { class: "sign-question" }, ask.ask === "approve" ? wording : "Sign the one you picked?"),
       note,
       choiceRow(
         answerButton(gateDetail?.request?.kind==="footage_spend" ? "Sign and make this clip" : gateDetail?.request?.kind==="footage_take" ? "Sign this decision" : ask.ask === "approve" ? "Approve and sign" : "Sign", "y", { primary: true, before: keep }),
