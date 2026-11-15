@@ -340,6 +340,7 @@ function askView(ask) {
   return [el("p", { class: "sign-question" }, "The signing program asked something this screen doesn't know. Show its text to answer.")];
 }
 
+let shownQuestion=null;
 function renderSignPanel() {
   const textOn = gateSession.showText || (gateSession.textFallback && !gateSession.appView);
   terminalMount.classList.toggle("is-hidden", !textOn);
@@ -363,6 +364,8 @@ function renderSignPanel() {
   terminalMessage.hidden = Boolean(gateSession.outcome);   // the card says it
   signPanel.replaceChildren(...kids);
   signPanel.hidden = kids.length === 0;
+  const question=gateSession.appView&&gateSession.ask&&!gateSession.outcome?JSON.stringify([gateSession.requestId,gateSession.ask]):null;
+  if(question!==shownQuestion){shownQuestion=question;if(question&&matchMedia('(max-width: 760px)').matches)requestAnimationFrame(()=>{if(shownQuestion===question)signPanel.scrollIntoView({block:'center',behavior:'instant'});});}
   if (textOn) scheduleTerminalFit();
 }
 
@@ -2499,12 +2502,12 @@ function gateActions(s, summary, stale, packetError, budgetWarning = null) {
   else if (budgetWarning) blocker = "Signing waits until this request fits under the production ceiling.";
   else if (packetError) blocker = "Signing is off until every picture in this request can be shown.";
   else if (reconnectable) blocker = "A signing session for this is still open. Reconnect to pick up where you left off.";
-  else if (socketOpen) blocker = "Answer the questions in the signing panel on the right.";
+  else if (socketOpen) blocker = "Answer the questions in the signing panel.";
 
   return el("section", { class: "sign-bay", "aria-label": "Sign" },
     el("p", {}, stale
       ? "Nothing to sign here."
-      : "Signing opens in the panel on the right. It asks one question at a time, with buttons: approve or decline, which candidate, and why. Nothing is decided until you answer."),
+      : "The signing panel asks one question at a time, with buttons: approve or decline, which candidate, and why. Nothing is decided until you answer."),
     stale ? null : button,
     blocker ? el("p", { class: "blocker", role: "status" }, blocker) : null);
 }

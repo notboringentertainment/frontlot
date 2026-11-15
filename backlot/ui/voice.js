@@ -39,6 +39,8 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
   let voices=Array.isArray(remembered?.voices)?remembered.voices.filter(v=>typeof v?.id==='string'&&typeof v.name==='string'):[];
   let last='',busy=false,loading=false,pendingRefresh=false,refreshFailed=false,editEpoch=0,catalogueLoaded=false,lastData=null;
   let signatureEpoch=0;
+  let revealingRequest=null;
+  const revealResult=()=>{if(!revealingRequest)return;const target=document.querySelector(`[data-held-audio-notice="${revealingRequest}"]`);target?.scrollIntoView({block:'center',behavior:'instant'});};
   document.addEventListener('frontlot:signature-recorded',()=>{signatureEpoch++;message.textContent='';feedback.clear();node.querySelectorAll('.action-feedback').forEach(note=>note.remove());});
   let pressed=false,deferredData=null;
   node.addEventListener('pointerdown',()=>{pressed=true;},true);
@@ -52,7 +54,7 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
   node.append(el('h2',{},'Voice, music and sound effects'),el('p',{},'Choose a voice for each saved spoken line, request instrumental music or describe an effect for a paper-cut moment. One signature buys one take. Keeping or declining a take needs its own signature; a decline is final.'),
     loadVoices,
     el('p',{class:'source'},'Loading voices reads the connected account only. It sends no story and buys no speech.'),message,content);
-  function draw(data){if(pressed){deferredData=data;return;}if(lastData&&JSON.stringify(lastData)!==JSON.stringify(data)){message.textContent='';feedback.clear();}keepEditorPosition(content,()=>drawContents(data));}
+  function draw(data){if(pressed){deferredData=data;return;}if(lastData&&JSON.stringify(lastData)!==JSON.stringify(data)){message.textContent='';feedback.clear();}keepEditorPosition(content,()=>drawContents(data));if(revealingRequest)requestAnimationFrame(revealResult);}
   function drawContents(data){
     lastData=data;
     content.replaceChildren();
@@ -112,11 +114,11 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
       if(item.source_warning)card.append(el('p',{role:'alert'},item.source_warning));
       const made=data.takes.some(t=>t.approved_request_id===r.request_id);
       const held=data.unresolved_requests.find(item=>item.request?.request_id===r.request_id);
-      if(held)card.append(el('p',{role:'alert'},heldExplanation(held)),button('Review this held charge',()=>{node.querySelector(`[data-account-review="${held.reservation.reservation_id}"]`)?.scrollIntoView({block:'center',behavior:'instant'});}));
+      if(held)card.append(el('div',{'data-held-audio-notice':r.request_id},el('p',{role:'alert'},heldExplanation(held)),button('Review this held charge',()=>{document.querySelector(`[data-account-review="${held.reservation.reservation_id}"]`)?.scrollIntoView({block:'center',behavior:'instant'});})));
       if(item.recoverable)card.append(el('p',{},'A completed take is recorded in its receipt but is missing here. Recover it without another call or charge.'),
         button('Recover recorded take',()=>act(async()=>{return (await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/recover`,{})).message;}),'request:'+r.request_id+':recover'));
       else if(item.error&&!held)card.append(el('p',{role:'alert'},item.error));
-      else if(!made && item.approved&&!held)card.append(button('Make this approved take',async()=>{const message=await act(async()=>{const result=await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/send`,{});if(!result.success)throw Error(result.message);return 'Take ready. Listen, then sign keeping or declining it.';});const target=node.querySelector(`[data-audio-request="${r.request_id}"] [role="alert"]`)||node.querySelector(`[data-take-id]`);target?.scrollIntoView({block:'center',behavior:'instant'});return message;},'request:'+r.request_id+':send'));
+      else if(!made && item.approved&&!held)card.append(button('Make this approved take',async()=>{revealingRequest=r.request_id;try{const message=await act(async()=>{const result=await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/send`,{});if(!result.success)throw Error(result.message);return 'Take ready. Listen, then sign keeping or declining it.';});await new Promise(requestAnimationFrame);revealResult();return message;}finally{revealingRequest=null;}},'request:'+r.request_id+':send'));
       else if(!made && !held && item.gate_request_id)card.append(button('Review and sign this request',()=>onSign(item.gate_request_id),'request:'+r.request_id+':sign'));
       if(made)card.append(el('p',{},'This signature already made a take. Another take needs another spending card and signature.'));
       requests.append(card);
