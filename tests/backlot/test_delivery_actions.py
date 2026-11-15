@@ -68,6 +68,7 @@ def test_delivery_buttons_are_spaced_and_next_action_follows_the_main_file(voice
                     expect(primary).to_have_count(1)
                     expect(primary).to_have_text(next_label)
                     expect(primary).to_be_enabled()
+                    assert primary.evaluate('(button)=>getComputedStyle(button).backgroundColor')!=panel.get_by_role('button',name='Refresh delivery',exact=True).evaluate('(button)=>getComputedStyle(button).backgroundColor'),'The next step looks the same as a secondary button.'
                     if final:
                         buttons=panel.locator('[data-delivery]').first.get_by_role('button').all()
                         for left,right in zip(buttons,buttons[1:]):
@@ -102,7 +103,7 @@ def test_finder_feedback_keeps_the_plain_sentence_and_omits_the_computer_path(vo
             page.route('**/*',route);page.goto(f'{url}/p/{root.name}#k=invented-browser-proof')
             panel=page.get_by_role('region',name='Trailer delivery',exact=True)
             panel.get_by_role('button',name='Show approved file in Finder',exact=True).click()
-            expect(panel.get_by_role('note')).to_have_text(words)
+            expect(panel.get_by_role('note')).to_have_text('The approved trailer has been shown in Finder.')
             expect(panel.get_by_role('note')).not_to_contain_text(str(root))
             expect(panel.get_by_role('status')).to_contain_text('Current final file: Approved by you.')
             assert revealed==['invented-final'] and posts==[] and gets==[] and outside==[] and not errors

@@ -110,7 +110,7 @@ export function renderDelivery(s,onSign){
    tile.append(el('div',{class:'delivery-actions'},
     action('Review and sign final approval',async()=>{preparing('Rechecking the exact final file and its sound…');const r=await api('/'+item.id+'/approval',{});await onSign(r.gate_request_id);},item.status!=='Needs your signature',index===0),
     action('Record the signed final approval',async()=>{const r=await api('/'+item.id+'/apply',{});notice.textContent=r.message;},item.status!=='Approved by you',index===0),
-    action('Show approved file in Finder',async()=>{const r=await api('/'+item.id+'/reveal',{});notice.textContent=r.message;},item.status!=='Approved by you',index===0)));
+    action('Show approved file in Finder',async()=>{await api('/'+item.id+'/reveal',{});notice.textContent='The approved trailer has been shown in Finder.';},item.status!=='Approved by you',index===0)));
    if(index===0)body.append(tile);else earlier.append(tile);
   }
   if(data.exports.length>1)body.append(earlier);
