@@ -114,9 +114,8 @@ def preflight_render(timeline):
     """Check installed local programs before starting picture or sound work."""
     programs.preflight('ffmpeg','ffprobe')
     if timeline.get('cards'):
-        from lib.trailer_titles import renderer_configuration
-        programs.require('node')
-        renderer_configuration()
+        from lib.trailer_titles import renderer_preflight
+        renderer_preflight()
 
 def render_saved(root,revision,comparison='after',*,resolution=(640,360),directory=None):
     import subprocess,uuid,json

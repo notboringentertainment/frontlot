@@ -156,6 +156,7 @@ def request_approval(root,identity):
 def renderer_configuration():
     """Inspect installed local tools without launching or downloading them."""
     import os,shutil
+    programs.require('node')
     modules=Path(os.environ.get('FRONTLOT_REMOTION_MODULES',REPO_ROOT/'remotion-composer'/'node_modules'))
     browser=os.environ.get('FRONTLOT_REMOTION_BROWSER')
     if not browser:
@@ -163,14 +164,23 @@ def renderer_configuration():
         cache=Path(os.environ.get('PLAYWRIGHT_BROWSERS_PATH',Path.home()/'Library/Caches/ms-playwright'))
         candidates+=sorted(cache.glob('chromium-*/chrome-mac-*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'))
         browser=next((str(p) for p in candidates if p.is_file()),None)
-    if not programs.which('node') or not (modules/'@remotion'/'renderer').is_dir() or not browser or not Path(browser).is_file():
+    if not all((modules/'@remotion'/name).is_dir() for name in ('renderer','bundler')) or not browser or not programs.which(browser):
         raise ValueError('Local title playback needs the installed Remotion tools and browser. Nothing was sent or spent; restore the local renderer before preparing playback.')
     return modules,browser
+
+def renderer_preflight():
+    """Check the installed title program before any composition work starts."""
+    import subprocess
+    configuration=renderer_configuration()
+    try:programs.run(['node','--version'],capture_output=True,check=True,timeout=10)
+    except (OSError,subprocess.SubprocessError):
+        raise ValueError('The local title program could not run. Ask the person who starts Front Lot to repair the installed Node program and restart the board. The saved cut is unchanged.') from None
+    return configuration
 
 def render_layer(root,cards,end,directory,*,resolution=(640,360)):
     """Remotion places literal title-tool PNGs; never downloads a runtime."""
     import base64,json,subprocess,uuid
-    modules,browser=renderer_configuration()
+    modules,browser=renderer_preflight()
     job=directory/('titles-'+uuid.uuid4().hex);job.mkdir()
     props={'end':end,'width':resolution[0],'height':resolution[1],'cards':[{**row,'image':'data:image/png;base64,'+base64.b64encode(card_png(row,resolution=resolution)).decode()} for row in cards]}
     request=job/'props.json'

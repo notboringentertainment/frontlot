@@ -2,6 +2,7 @@
 from pathlib import Path
 import json,os,subprocess
 from urllib.request import Request,urlopen
+from urllib.error import HTTPError
 import pytest
 from tests.backlot.test_delivery_browser import delivery_cut
 from tests.lib.test_cutting_signed import signed_cut
@@ -65,6 +66,14 @@ def test_actual_export_with_icon_path(delivery_cut,monkeypatch,short_signing_fol
         request=Request(url+f'/api/project/{root.name}/delivery/export',
             data=json.dumps({'revision':saved['edit_revision_sha256']}).encode(),
             headers={'Content-Type':'application/json','Origin':url,'X-Frontlot-Capability':'invented-browser-proof'})
+        before_jobs=set((root/'artifacts/deliveries').glob('*'))
+        with monkeypatch.context() as patch:
+            patch.setenv('OPENMONTAGE_FFMPEG','/nonexistent/invented-ffmpeg')
+            patch.setattr(d,'_job',lambda *a:pytest.fail('The board started export work before its program check.'))
+            with pytest.raises(HTTPError) as refused:urlopen(request,timeout=60)
+            assert refused.value.code==400 and 'ffmpeg is missing' in json.load(refused.value)['detail']
+        assert exported==[] and set((root/'artifacts/deliveries').glob('*'))==before_jobs
+        assert (len(provider['posts']),len(posts))==before_posts
         with urlopen(request,timeout=600) as response:
             result=json.load(response)
     assert len(exported)==1 and result['id']==exported[0]['id']
