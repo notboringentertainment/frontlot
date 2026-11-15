@@ -14,13 +14,15 @@ import threading
 import time
 import wave
 from pathlib import Path
+from contextlib import contextmanager
 
 import pytest
 from playwright.sync_api import sync_playwright, expect
 from tests.backlot.test_early_paid_readiness import (
-    isolated_standins, start_browser, shot_picture, RUN,
+    isolated_standins, start_browser, shot_picture, RUN as BASE_RUN,
     test_empty_production_signs_story_checks_paper_and_keeps_three_audio_purchases as walk_to_footage,
 )
+RUN=BASE_RUN+'-journey'
 
 
 def _wav(seconds,kind,seed=4):
@@ -37,7 +39,25 @@ def _wav(seconds,kind,seed=4):
 
 
 def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_standins):
+    # The readiness test also runs on its own in the full suite. This joined
+    # rehearsal must not reuse its exclusive evidence filenames.
+    monkeypatch.setattr('tests.backlot.test_early_paid_readiness.RUN',RUN)
     calls=isolated_standins
+    parent=Path(os.environ['TMPDIR']).resolve().parent
+    locations=[]
+    from tests.backlot import test_footage_controls_browser as browser_helpers
+    original_board=browser_helpers.browser_board
+    @contextmanager
+    def live_board(root,patch):
+        import backlot.server as server
+        from lib.gates import gates_dir
+        home=Path.home().resolve();signing=gates_dir().resolve();metadata=server.backlot_metadata_dir().resolve()
+        assert all(path.is_relative_to(parent) for path in (home,signing,metadata))
+        locations.append({'home':str(home),'signing':str(signing),'metadata':str(metadata),'project':str(root)})
+        patch.setattr(server,'_PROJECTS_ROOT_STR',os.path.normcase(str(root.parent.resolve())))
+        patch.setattr('backlot.state.PROJECTS_DIR',root.parent)
+        with original_board(root,patch) as address:yield address.replace('?static=1','')
+    monkeypatch.setattr(browser_helpers,'browser_board',live_board)
     calls['reveals']=[]
     original_run=subprocess.run
     def local_run(args,*values,**options):
@@ -68,12 +88,13 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
     # It records the genuine first-time stop at the missing footage controls.
     walk_to_footage(tmp_path,monkeypatch,calls)
     root=next(p for p in (tmp_path/'empty-projects').iterdir() if (p/'project.json').is_file())
-    parent=Path(os.environ['TMPDIR']).resolve().parent
     evidence={'root':str(root),'steps':[],
               'labelled_setup':['A signed fixture look, an already-made receipted picture and signed footage prices stand in only for the other builder’s three unfinished controls.'],
-              'calls':calls}
+              'calls':calls,'board_locations':locations}
     def note(name,panel):
         evidence['steps'].append({'step':name,'text':panel.inner_text()})
+        with (parent/(RUN+'-progress.jsonl')).open('a') as progress:
+            progress.write(json.dumps({'step':name,'at':time.time()})+'\n')
         shot_picture(page,'journey-'+name,panel)
     # No earlier stage or story approval is invented here. Creation, story,
     # price approval, all sound purchases and keep decisions used the screens.
@@ -165,8 +186,10 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
                 cut.get_by_label(f'Starts at frame for card {i}',exact=True).fill(str([6,36,60][i-1]))
                 cut.get_by_label(f'Lasts for frames for card {i}',exact=True).fill(str([6,6,12][i-1]))
                 if i==3:cut.get_by_label(f'Card kind for card {i}',exact=True).select_option('end')
-            cut.get_by_role('button',name='Save cut',exact=True).click()
-            expect(cut.get_by_role('status').first).to_contain_text('saved',timeout=30000)
+            with page.expect_response(lambda r:r.url.endswith('/cut') and r.request.method=='POST',timeout=30000) as saving:
+                cut.get_by_role('button',name='Save cut',exact=True).click()
+            assert saving.value.ok,saving.value.text()
+            expect(cut.get_by_role('status').first).to_contain_text(f'Version {saving.value.json()["number"]} saved.',timeout=30000)
             for i in (1,2,3):
                 cut.get_by_role('button',name=f'Review and sign card {i}',exact=True).click()
                 expect(page.get_by_role('region',name='Exact card review')).to_be_visible(timeout=30000)
@@ -175,11 +198,14 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
                 expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=30000)
                 page.get_by_role('button',name='Return to cutting view',exact=True).click()
             for _ in range(2):cut.get_by_label('Brighter or darker for picture 1',exact=True).press('ArrowRight')
-            cut.get_by_role('button',name='Save cut',exact=True).click()
-            expect(cut.get_by_role('status').first).to_contain_text('saved',timeout=30000)
+            with page.expect_response(lambda r:r.url.endswith('/cut') and r.request.method=='POST',timeout=30000) as saving:
+                cut.get_by_role('button',name='Save cut',exact=True).click()
+            assert saving.value.ok,saving.value.text()
+            expect(cut.get_by_role('status').first).to_contain_text(f'Version {saving.value.json()["number"]} saved.',timeout=30000)
             cut.get_by_role('button',name='Prepare saved playback',exact=True).click()
             expect(cut.get_by_role('status').first).to_contain_text('ready',timeout=240000)
             player=cut.locator('video');expect(player).to_have_js_property('readyState',4,timeout=20000)
+            player.evaluate('''v=>{window.cutPlaybackEvents=[];for(const kind of ['play','pause','ended','emptied','loadedmetadata','seeking','seeked','error'])v.addEventListener(kind,()=>window.cutPlaybackEvents.push({kind,time:v.currentTime,source:v.currentSrc,connected:v.isConnected}));}''')
             player.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=15000)
             note('cut-titles-colour-playback',cut)
             page.get_by_role('button',name='Delivery workspace',exact=True).click()
@@ -220,9 +246,10 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
             note('signed-final-and-reveal',delivery)
             assert len(calls['reveals'])==1
             import shutil
-            picture_folder=Path(os.environ['EARLY_TEST_PICTURES'])
-            with Path(calls['reveals'][0]).open('rb') as source,(picture_folder/(RUN+'-final-trailer.mp4')).open('xb') as destination:
-                shutil.copyfileobj(source,destination)
+            picture_folder=os.environ.get('EARLY_TEST_PICTURES')
+            if picture_folder:
+                with Path(calls['reveals'][0]).open('rb') as source,(Path(picture_folder)/(RUN+'-final-trailer.mp4')).open('xb') as destination:
+                    shutil.copyfileobj(source,destination)
             assert len(calls['audio_posts'])==4 and len(calls['catalogues'])==1
             assert all(len(calls[k])==1 for k in ('uploads','video_posts','waits','downloads'))
             assert not page.errors
@@ -233,6 +260,8 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
             with (parent/(RUN+'-journey-map.json')).open('x') as f:json.dump(evidence,f,default=str,indent=2)
         except Exception:
             evidence['body']=page.locator('body').inner_text();evidence['page_errors']=page.errors
+            evidence['playback_events']=page.evaluate('()=>window.cutPlaybackEvents||[]')
+            evidence['players']=page.locator('video').evaluate_all('(items)=>items.map(v=>({source:v.currentSrc,time:v.currentTime,duration:v.duration,paused:v.paused,ended:v.ended,ready:v.readyState,error:v.error?.message}))')
             with (parent/(RUN+'-journey-map-stop.json')).open('x') as f:json.dump(evidence,f,default=str,indent=2)
             shot_picture(page,'journey-stop')
             raise
