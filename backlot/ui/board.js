@@ -3012,6 +3012,12 @@ function renderBoard(deliveryVerified=false) {
     viewer.append(renderDelivery(s,openDeliveryReview,false));
     app.append(viewer);return;
   }
+  // Reopening a finished trailer must not queue its exact-file check behind
+  // full reads of every media workspace. Start that check first, but keep
+  // the panel in its usual place below the editor. Every read still verifies
+  // the current saved material; no approval result is cached.
+  const deliveryPanel=s.is_trailer&&!s.trailer_damaged&&!selectedGateId
+    ?renderDelivery(s,openDeliveryReview,!deliveryVerified):null;
   if(s.is_trailer&&!s.trailer_damaged&&!s.trailer_setup_pending&&!s.trimmed_contract&&!selectedGateId){
     const status=el('p',{role:'status'});
     viewer.append(el('section',{class:'paper-panel'},el('p',{},'Ben decided to trim the trailer contract for this test. Review and sign that change to use the five available reviews. Your saved work is kept.'),
@@ -3032,7 +3038,7 @@ function renderBoard(deliveryVerified=false) {
 
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderVoice(s,async(id)=>{await refresh();await selectGate(id);}));
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderCutting(s,async(id)=>{await refresh();await selectGate(id);}));
-  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderDelivery(s,openDeliveryReview,!deliveryVerified));
+  if (deliveryPanel) viewer.append(deliveryPanel);
   if (shot) {
     const inner = s.is_trailer ? renderFootageControls(s) : renderShotViewer(s, shot);
     if (drawer) inner.prepend(drawer);

@@ -5,6 +5,30 @@ from tests.lib.test_cutting_signed import signed_cut
 from tests.tools.test_signed_footage import film,provider,looks,workspace,sign
 
 
+def test_reopening_board_starts_delivery_check_before_other_media_workspaces(signed_cut,monkeypatch):
+    root,calls,posts,*_=signed_cut
+    with board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=browser.new_page();errors=[];reads=[]
+            page.on('pageerror',lambda error:errors.append(str(error)))
+            base=url+f'/api/project/{root.name}'
+            def capture(request):
+                if request.method=='GET' and request.url in [base+part for part in ('/voice','/cut','/delivery')]:reads.append(request.url)
+            page.on('request',capture)
+            page.route('**/*',lambda route:route.continue_() if route.request.url.startswith(url+'/') else route.abort())
+            page.goto(f'{url}/p/{root.name}#k=invented-browser-proof')
+            panel=page.get_by_role('region',name='Trailer delivery',exact=True)
+            expect(panel.get_by_role('button',name='Review and sign the saved rough cut',exact=True)).to_be_enabled(timeout=30000)
+            assert reads and reads[0]==base+'/delivery', reads
+            reads.clear()
+            page.reload()
+            expect(panel.get_by_role('button',name='Review and sign the saved rough cut',exact=True)).to_be_enabled(timeout=30000)
+            assert reads and reads[0]==base+'/delivery', reads
+            assert not errors and len(calls['posts'])==3 and len(posts)==1
+        finally:browser.close()
+
+
 def test_delivery_return_checks_itself_before_refreshing_other_workspaces(signed_cut,monkeypatch):
     from lib import cutting_view
     root,calls,posts,*_=signed_cut
