@@ -95,7 +95,11 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
         evidence['steps'].append({'step':name,'text':panel.inner_text()})
         with (parent/(RUN+'-progress.jsonl')).open('a') as progress:
             progress.write(json.dumps({'step':name,'at':time.time()})+'\n')
-        shot_picture(page,'journey-'+name,panel)
+        target=panel
+        if name=='cut-titles-colour-playback':target=panel.locator('video').first
+        elif name=='exported-file':target=panel.locator('[data-delivery] video').first
+        elif name in ('rough-signed-stage-incomplete','signed-final-and-reveal'):target=panel.get_by_role('status').first
+        shot_picture(page,'journey-'+name,target)
     # No earlier stage or story approval is invented here. Creation, story,
     # price approval, all sound purchases and keep decisions used the screens.
     from tests.lib import look_lock_helpers as looks
