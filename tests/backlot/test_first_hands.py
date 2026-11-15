@@ -34,6 +34,9 @@ def test_account_review_click_survives_focus_refresh(voice_world,monkeypatch,bou
             form.get_by_label('Actual credit replacement dollars',exact=True).fill('0.0038')
             form.get_by_label('What I checked in the account',exact=True).fill('I checked the invented account; nineteen credits were charged.')
             button=form.get_by_role('button',name='Review and sign this account outcome',exact=True)
+            def changed(route):
+                data=route.fetch().json();data['record_warnings']=['Invented changed information during account review.'];route.fulfill(json=data)
+            page.route('**/voice',changed)
             button.scroll_into_view_if_needed();box=button.bounding_box()
             page.mouse.move(box['x']+box['width']/2,box['y']+box['height']/2);page.mouse.down()
             with page.expect_response(url+'/api/project/'+root.name+'/state'):
@@ -119,7 +122,7 @@ def test_paper_seconds_required_words_and_open_unsigned_prices(voice_world,monke
             paper=page.get_by_role('region',name='Trailer paper cut')
             paper.get_by_role('button',name='Add shot',exact=True).click()
             shot=paper.get_by_role('group',name='Shot 2',exact=True)
-            expect(shot.get_by_label('Purpose (private plan)',exact=True)).to_have_attribute('required','')
+            expect(shot.get_by_label('Shot purpose',exact=True)).to_have_attribute('required','')
             shot.get_by_label('Screen time in seconds',exact=True).fill('5.25')
             expect(shot).to_contain_text('126 frames')
             expect(shot.get_by_label('Difficulty (optional planning note)',exact=True)).to_have_value('Not assessed')
@@ -187,7 +190,7 @@ def test_results_stay_beside_the_control_that_was_used(voice_world,monkeypatch):
             paper.get_by_role('button',name='Add shot',exact=True).click()
             save=paper.get_by_role('button',name='Save a new version',exact=True);save.click()
             expect(save.locator('xpath=following-sibling::*[1]')).to_contain_text('purpose')
-            paper.get_by_role('group',name='Shot 2',exact=True).get_by_label('Purpose (private plan)',exact=True).fill('A quiet closing invitation.')
+            paper.get_by_role('group',name='Shot 2',exact=True).get_by_label('Shot purpose',exact=True).fill('A quiet closing invitation.')
             save.click();expect(save.locator('xpath=following-sibling::*[1]')).to_contain_text('Saved.')
             check=paper.get_by_role('button',name='Check paper cut against approved story',exact=True);check.click()
             expect(check.locator('xpath=following-sibling::*[1]')).to_contain_text('compared with the approved story')

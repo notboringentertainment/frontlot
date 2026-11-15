@@ -96,7 +96,7 @@ export function renderPaperCut(s,onSaved=async()=>{}) {
             const label=`${key==="lines"?"Line":"Card"} ${index+1}`;
             for(const text of state.story_check?.warnings||[])if(text.startsWith(label+' resembles part of a protected line:')||text.startsWith(label+' is not an exact passage'))note.append(el("p",{role:"status"},text));};
           rowWarnings.push(show);show();}
-        const fields=shot?[["Purpose (private plan)","purpose","textarea"],["Screen time in seconds","duration_frames","number"],["References, separated by commas","references"],["Difficulty (optional planning note)","difficulty"]]:[["Exact wording","text","textarea"],["Starts at second","start_frame","number"],["Screen time in seconds","duration_frames","number"],["Story material","source_ref"]];
+        const fields=shot?[["Shot purpose","purpose","textarea"],["Screen time in seconds","duration_frames","number"],["References, separated by commas","references"],["Difficulty (optional planning note)","difficulty"]]:[["Exact wording","text","textarea"],["Starts at second","start_frame","number"],["Screen time in seconds","duration_frames","number"],["Story material","source_ref"]];
         fields.forEach(([label,k,type])=>{
           if(k==="source_ref") {
             const select=el("select",{'aria-label':label},el("option",{value:""},"Unassigned in this draft"));
@@ -108,6 +108,7 @@ export function renderPaperCut(s,onSaved=async()=>{}) {
           }
           const timed=type==='number',f=field(label,Array.isArray(row[k])?row[k].join(", "):timed?row[k]/24:row[k],type);
           f.input.setAttribute('aria-label',label);
+          if(k==='purpose')f.node.append(el('small',{},'Private planning note'));
           if(['purpose','text','duration_frames','start_frame'].includes(k)){f.input.required=true;f.node.querySelector('span').textContent=label+' (required)';}
           const frames=timed?el('small',{class:'timing-frames'}):null;
           const showFrames=()=>{if(frames)frames.textContent=`${row[k]??0} frames · rounded to the nearest whole frame at 24 per second`;};
@@ -184,7 +185,7 @@ export function renderPaperCut(s,onSaved=async()=>{}) {
       try{const value=await request(`${api}/${version.id}`);
         details.replaceChildren(showVersion(value,`Saved version ${version.number} · ${savedTime(version)}`),button("Restore this as a new version",()=>operation(async()=>{
           try{const result=await request(`${api}/restore`,{revision:version.id,expected_revision:revision});
-            if(dirty)preserved={paper:structuredClone(draft),revision};draft=structuredClone(result.paper_cut || emptyPaper());revision=result.edit_revision_sha256;dirty=false;editEpoch++;draw();await refreshFromServer();await onSaved();status.textContent="Restored as a new saved version. Every previous version is kept.";
+            if(dirty)preserved={paper:structuredClone(draft),revision};draft=structuredClone(result.paper_cut || emptyPaper());revision=result.edit_revision_sha256;dirty=false;editEpoch++;draw();await refreshFromServer();await onSaved(state);status.textContent="Restored as a new saved version. Every previous version is kept.";
           }catch(error){status.textContent=error.message;await refreshFromServer();}
         })));
       }catch(error){status.textContent=error.message;}
@@ -194,12 +195,12 @@ export function renderPaperCut(s,onSaved=async()=>{}) {
   const save=button("Save a new version",()=>operation(async()=>{try{
     const result=await request(api,{paper:draft,expected_revision:revision});revision=result.edit_revision_sha256;editEpoch++;
     draft.shots.forEach((shot,i)=>{shot.id=result.paper_cut.shots[i].id;});dirty=false;
-    await refreshFromServer();await onSaved();status.textContent=`Saved. ${result.timing_message} No stage is approved.`;return status.textContent;
+    await refreshFromServer();await onSaved(state);status.textContent=`Saved. ${result.timing_message} No stage is approved.`;return status.textContent;
   }catch(error){status.textContent=error.message;try{await refreshFromServer();}catch{ /* Keep the original save failure visible. */ }return status.textContent;}}));
   node.append(save,button("Check paper cut against approved story",()=>operation(async()=>{try{
     if(dirty)throw Error('Save your changed draft as a new version before comparing it with the approved story.');
     const result=await request(`/api/project/${encodeURIComponent(s.project_id)}/story/check`,{expected_revision:revision});
-    draft=structuredClone(result.paper_cut.paper_cut);revision=result.paper_cut.edit_revision_sha256;editEpoch++;draw();await refreshFromServer();await onSaved();status.textContent=result.message;return status.textContent;
+    draft=structuredClone(result.paper_cut.paper_cut);revision=result.paper_cut.edit_revision_sha256;editEpoch++;draw();await refreshFromServer();await onSaved(state);status.textContent=result.message;return status.textContent;
   }catch(error){status.textContent=error.message;try{await refreshFromServer();}catch{}return status.textContent;}})),button("Refresh story checks and saved versions",async()=>{try{await refreshFromServer();status.textContent="Story checks and versions refreshed. Your draft text is kept.";}catch(error){status.textContent=error.message;}return status.textContent;}),
     el("p",{},"Previous versions are kept in the order saved. Opening a version does not change your draft. Restoring makes another version."),history,details);
   update(state);

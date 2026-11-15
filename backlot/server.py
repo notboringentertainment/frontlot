@@ -453,7 +453,7 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
         if request.headers.get("origin") not in {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}:
             raise HTTPException(403, "This action must come from Front Lot.")
         if not expected or not given or not secrets.compare_digest(expected, given):
-            raise HTTPException(401, "Reload Front Lot from its app icon before saving.")
+            raise HTTPException(401, "Copy your unfinished words first. Then open Front Lot from its app icon and reopen this production before saving.")
 
     @app.get('/api/writer-status')
     async def writer_status(request:Request):

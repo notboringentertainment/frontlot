@@ -675,7 +675,9 @@ details.log-more[open] > summary { margin-bottom: 12px; }
 .timing-frames { display: block; margin: 4px 0 10px; }
 .trailer-board .viewer { overflow-anchor: none; scroll-behavior: auto; }
 .trailer-board .stage-select { cursor: default; }
-.writer-unavailable .table { margin-top: var(--writer-warning-height,76px); height: calc(100dvh - var(--writer-warning-height,76px)); }
+body:has(> .table) { overflow: hidden; }
+.writer-unavailable:has(> .table) { padding-top: var(--writer-warning-height,76px); }
+.writer-unavailable .table { height: calc(100dvh - var(--writer-warning-height,76px)); }
 .writer-unavailable #bk-conn-banner { display: none; } /* The permission warning also explains stale live updates. */
 .terminal-shell-head h2 { margin: 0; font: 700 15px/1 var(--plate); letter-spacing: .14em; text-transform: uppercase; }
 .terminal-state {
@@ -1115,7 +1117,7 @@ details.log-more[open] > summary { margin-bottom: 12px; }
 .voice-workspace-nav { display:flex; gap:12px; padding:12px 20px; border-bottom:1px solid #ddd; }
 @media(max-width:900px){.voice-lines { grid-template-columns:1fr; }.voice-lines > aside { position:static; }}
 .voice-spend,.voice-take { overflow-wrap:anywhere; }
-.voice-panel > [role=status]:not(:empty) { position:sticky; top:8px; z-index:5; padding:12px; background:#f4f0df; color:#252a24; border:1px solid #8b8067; border-radius:4px; }
+.voice-panel > [role=status]:not(:empty) { padding:12px; background:#f4f0df; color:#252a24; border:1px solid #8b8067; border-radius:4px; }
 .audio-price-field { display:grid; grid-template-columns:minmax(180px,.8fr) minmax(240px,1.2fr); gap:22px; align-items:center; border-bottom:1px solid #c7c3b5; }
 .audio-price-field .price-help { font-size:14px; line-height:1.5; }
 .audio-price-field a { color:#355239; text-decoration:underline; }

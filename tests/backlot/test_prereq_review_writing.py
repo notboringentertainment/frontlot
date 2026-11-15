@@ -83,7 +83,7 @@ def test_other_writing_panels_lock_through_their_save(root,monkeypatch,isolated_
                 area.fill('A gallery waits.');path='**/paper-cut';save='Save a new version'
                 # A complete minimal draft; no story signature is claimed.
                 panel.get_by_role('button',name='Add shot',exact=True).click()
-                panel.get_by_label('Purpose (private plan)',exact=True).fill('An empty gallery.')
+                panel.get_by_label('Shot purpose',exact=True).fill('An empty gallery.')
                 panel.get_by_label('Difficulty (optional planning note)',exact=True).fill('simple')
             else:
                 from tests.lib.test_frontlot_location_source import form

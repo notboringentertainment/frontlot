@@ -5,7 +5,7 @@ import {renderPriceSettings} from '/ui/audio_prices.js';
 import {priceReview} from '/ui/media_prices.js';
 import {paperCutEpoch} from '/ui/trailer.js';
 let current=null;
-export function refreshVoice(project){if(current?.project===project)current.refresh();}
+export async function refreshVoice(project){if(current?.project===project)await current.refresh();}
 // Keep the exact media element while live board data rebuilds the drawer.
 // A different file or take gets a new player and never starts itself.
 let signingPlayer=null;
@@ -26,7 +26,7 @@ async function api(url,data){
 export async function applySignedAccountOutcome(project,identity){
   return api(`/api/project/${encodeURIComponent(project)}/voice/resolution/${encodeURIComponent(identity)}/apply`,{});
 }
-export function renderVoice(s,onSign){
+export function renderVoice(s,onSign,onChanged=async()=>{}){
   if(current?.project===s.project_id){current.refresh();return current.node;}
   const project=s.project_id,url=`/api/project/${encodeURIComponent(project)}/voice`;
   const node=el('section',{class:'voice-panel paper-editor','aria-label':'Trailer audio'}),message=el('p',{role:'status','aria-live':'polite'}),content=el('div',{});
@@ -35,15 +35,21 @@ export function renderVoice(s,onSign){
   try{remembered=JSON.parse(localStorage.getItem(storageKey)||'{}');}catch{}
   let voices=Array.isArray(remembered?.voices)?remembered.voices.filter(v=>typeof v?.id==='string'&&typeof v.name==='string'):[];
   let last='',busy=false,loading=false,pendingRefresh=false,refreshFailed=false,editEpoch=0,catalogueLoaded=false,lastData=null;
+  let signatureEpoch=0;
+  document.addEventListener('frontlot:signature-recorded',()=>{signatureEpoch++;message.textContent='';feedback.clear();node.querySelectorAll('.action-feedback').forEach(note=>note.remove());});
+  let pressed=false,deferredData=null;
+  node.addEventListener('pointerdown',()=>{pressed=true;},true);
+  const released=()=>setTimeout(()=>{pressed=false;if(deferredData){const data=deferredData;deferredData=null;draw(data);}},0);
+  window.addEventListener('pointerup',released);window.addEventListener('pointercancel',released);
   const button=(label,fn,key=label)=>actionButton(label,fn,{feedback,key});
   const progress=()=>{if(lastData)setAudioProgress(project,{...lastData,catalogue_loaded:catalogueLoaded,choices:[...drafts].map(([index,d])=>({index,voice:d.voice,rights:d.rights}))});};
   const remember=()=>{try{localStorage.setItem(storageKey,JSON.stringify({voices,choices:Object.fromEntries([...drafts].map(([index,d])=>[index,d.voice]))}));}catch{}};
-  const act=async fn=>{if(busy)return;busy=true;editEpoch++;refreshFailed=false;message.textContent='Working…';try{const result=await fn();message.textContent=typeof result==='string'?result:'Saved. Review the request before signing.';}catch(e){message.textContent=e.message;}finally{busy=false;last='';await refresh();}return message.textContent;};
-  const loadVoices=button('Load account voices',()=>act(async()=>{voices=await api(url+'/catalogue',{});catalogueLoaded=true;remember();return 'Account voices loaded. Choose a voice for the saved line.';}));
+  const act=async fn=>{if(busy)return;const startedSignature=signatureEpoch;busy=true;editEpoch++;refreshFailed=false;message.textContent='Working…';let resultText='';try{const result=await fn();resultText=typeof result==='string'?result:'Saved. Review the request before signing.';}catch(e){resultText=e.message;}finally{busy=false;last='';await refresh();await onChanged();if(startedSignature!==signatureEpoch)resultText='';message.textContent=resultText;}return resultText;};
+  const loadVoices=button('Load account voices',()=>act(async()=>{voices=await api(url+'/catalogue',{});catalogueLoaded=true;remember();progress();return 'Account voices loaded. Choose a voice for the saved line.';}));
   node.append(el('h2',{},'Voice, music and sound effects'),el('p',{},'Choose a voice for each saved spoken line, request instrumental music or describe an effect for a paper-cut moment. One signature buys one take. Keeping or declining a take needs its own signature; a decline is final.'),
     loadVoices,
     el('p',{class:'source'},'Loading voices reads the connected account only. It sends no story and buys no speech.'),message,content);
-  function draw(data){keepEditorPosition(content,()=>drawContents(data));}
+  function draw(data){if(pressed){deferredData=data;return;}if(lastData&&JSON.stringify(lastData)!==JSON.stringify(data)){message.textContent='';feedback.clear();}keepEditorPosition(content,()=>drawContents(data));}
   function drawContents(data){
     lastData=data;
     content.replaceChildren();

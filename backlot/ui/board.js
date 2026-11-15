@@ -19,7 +19,8 @@ const projectId = decodeURIComponent(rawProjectPath);
 const encodedProjectId = encodeURIComponent(projectId);
 const app = document.getElementById("app");
 let trailerWorkspaceNav=null;
-function paperSavedHere(){
+function paperSavedHere(paper){
+  if(paper)document.dispatchEvent(new CustomEvent('frontlot:paper-saved',{detail:{project:projectId,paper}}));
   refreshVoice(projectId);
   refresh().catch(console.error);
 }
@@ -170,8 +171,15 @@ function noteFits(note, ask) {
 }
 
 const finishingSignatures=new Map();
+let workspaceReturn=null;
+function restoreWorkspacePosition(){
+  if(!workspaceReturn||selectedGateId)return;
+  const saved=workspaceReturn;
+  requestAnimationFrame(()=>{const viewer=document.getElementById('viewer');if(viewer){viewer.scrollTop=saved.top;saved.control?.isConnected&&saved.control.focus({preventScroll:true});}});
+}
 function returnToWorkspace(){
   selectedGateId=null;gateDetail=null;trailerWorkbenchChosen=true;closeSigning();
+  restoreWorkspacePosition();
 }
 async function finishSignedRequest(request){
   if(!request)return;
@@ -186,12 +194,17 @@ async function finishSignedRequest(request){
     }else if(request.kind==='look_lock'&&request.scope?.startsWith('location:')){
       await applyLocationApproval(projectId,request.id);await refresh();
     }
+    await refreshVoice(projectId);await refresh();
   })();
   finishingSignatures.set(request.id,work);
   try{return await work;}finally{finishingSignatures.delete(request.id);}
 }
 async function signingStopped(request,message){
   if(gateSession.signingRequest!==request)return;
+  if(gateSession.outcome==='approved'){
+    setTerminalStatus('Signature recorded','Your approval is recorded. The automatic follow-up did not finish. Return to its workspace and apply the signed outcome; do not sign again. '+message,'warn');
+    gateSession.ask=null;gateSession.inputReady=false;renderSignPanel();return;
+  }
   gateSession.inputReady=false;gateSession.ask=null;gateSession.outcome='error';
   setTerminalStatus('Signing stopped',message+' No approval has been confirmed. Try signing again, or return to the workspace to apply a recorded outcome.','warn');
   renderSignPanel();
@@ -212,6 +225,7 @@ function onSignerTag(tag) {
     clearTimeout(gateSession.textTimer);
   }
   if (tag.outcome) {
+    if(tag.outcome==='approved'||tag.outcome==='declined')document.dispatchEvent(new CustomEvent('frontlot:signature-recorded',{detail:{id:gateSession.signingRequest?.id}}));
     gateSession.outcome = tag.outcome;
     gateSession.ask = null;
     gateSession.inputReady = false;
@@ -1457,6 +1471,7 @@ function focusGateDetail(preferHeading = false) {
 }
 
 async function selectGate(requestId, { background = false } = {}) {
+  if(!background&&!selectedGateId){const viewer=document.getElementById('viewer');workspaceReturn={top:viewer?.scrollTop||0,control:document.activeElement};}
   if(!background&&gateSession.requestId!==requestId&&gateSession.outcome)closeSigning();
   if(!background)trailerWorkbenchChosen=false;
   const generation = ++gateSelectionGeneration;
@@ -2541,13 +2556,13 @@ function renderGateViewer(s) {
   const header = summary || gateDetail.request || {};
   const stale = !summary || summary.state !== "pending" || gateDetail.state !== "pending";
   const packetError = Boolean(gateDetail.error || (gateDetail.packet && gateDetail.packet.packet_error));
-  if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&header.stage==='canon_ingest')return renderStorySigning(gateDetail,gateActions(s,summary,stale,packetError),()=>{selectedGateId=null;gateDetail=null;trailerWorkbenchChosen=true;closeSigning();render();},stale);
+  if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&header.stage==='canon_ingest')return renderStorySigning(gateDetail,gateActions(s,summary,stale,packetError),()=>{returnToWorkspace();render();},stale);
   const setupReturn=()=>{returnToWorkspace();render();document.querySelector('.footage-setup')?.scrollIntoView({block:'start'});};
   if(s.is_trailer&&(header.kind==='reference_import'||header.kind==='look_lock'&&gateDetail.request?.writer_source_ref))return renderPrereqSigning(gateDetail,gateActions(s,summary,stale,packetError),setupReturn,lookCard,s.project_id,stale);
   if(header.kind==='config'&&header.scope==='footage:project_config')return renderPriceSigning(gateDetail,gateActions(s,summary,stale,packetError),setupReturn,stale);
-  if(header.kind==='trailer_card')return renderCardSigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;await refreshCutting();render();});
+  if(header.kind==='trailer_card')return renderCardSigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;await refreshCutting();render();restoreWorkspacePosition();});
   const footageResolution=header.kind==='audio_resolution'&&gateDetail.request?.approval_record?.request?.provider==='fal';
-  if((['audio_spend','audio_take','audio_resolution'].includes(header.kind)&&!footageResolution)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError,gateDetail.packet?.budget_warning),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();},stale);
+  if((['audio_spend','audio_take','audio_resolution'].includes(header.kind)&&!footageResolution)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError,gateDetail.packet?.budget_warning),()=>{returnToWorkspace();gateSession.inputReady=false;selectedEntity=null;render();},stale);
   let frames = gateFrames(gateDetail.packet);
   const key = entityKeyOf(header);
   const entity = key ? buildRoster(s).find((e) => e.key === key) : null;
@@ -3020,7 +3035,7 @@ function renderBoard() {
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(
     el("button",{type:"button",class:"quiet-btn",onclick:()=>viewer.querySelector('[aria-label="Footage workspace"]')?.scrollIntoView({block:"start"})},"Open footage requests"),renderPaperCut(s,paperSavedHere));
 
-  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderVoice(s,async(id)=>{await refresh();await selectGate(id);}));
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderVoice(s,async(id)=>{await refresh();await selectGate(id);},refresh));
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderCutting(s,async(id)=>{await refresh();await selectGate(id);}));
   if (shot && !s.is_trailer) {
     const inner = s.is_trailer ? renderFootageControls(s) : renderShotViewer(s, shot);
@@ -3126,7 +3141,7 @@ async function refresh() {
       setFootageState(projectId,footage,{render,refresh,selectGate,lookCard,isRefreshing:()=>refreshController!==null,
         takeFeedback:()=>JSON.stringify([[...takeBusy],[...takeErrors]]),
         take:(s,shot,take)=>renderTakeTile(s,shot,take,{decidable:true,othersWaiting:0}),
-        returnToShots:()=>{selectedGateId=null;gateDetail=null;closeSigning();}});
+        returnToShots:()=>returnToWorkspace()});
     }
     if(paperEpoch!==paperCutEpoch()){queueMicrotask(()=>refresh().catch(console.error));return;}
     const creationJustSigned = state?.trailer_setup_pending && nextState.is_trailer && !nextState.trailer_setup_pending;

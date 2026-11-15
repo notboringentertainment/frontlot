@@ -76,6 +76,9 @@ def test_empty_library_reaches_a_kept_speech_take_under_icon_path(tmp_path,faile
         page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=20000)
         expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded.',timeout=20000)
         page.get_by_role('button',name=back,exact=True).click()
+        if back=='Return to audio':
+            expect(page.get_by_role('region',name='Trailer audio',exact=True)).to_be_in_viewport()
+            expect(page.get_by_role('region',name='Next step',exact=True)).not_to_contain_text('A request is waiting for your signature')
     with icon_board(tmp_path,failed_filing) as (projects,counter,start,stop),sync_playwright() as pw:
         ready=start(1);browser=pw.chromium.launch(headless=True)
         try:
@@ -97,8 +100,9 @@ def test_empty_library_reaches_a_kept_speech_take_under_icon_path(tmp_path,faile
             capture(page,'02-story',area);story.get_by_role('button',name='Review and sign this story',exact=True).click()
             capture(page,'03-story-signing',page.get_by_role('region',name='Story approval',exact=True));sign(page,'Return to story')
             page.reload();audio=page.get_by_role('region',name='Trailer audio',exact=True)
-            capture(page,'00-next-step',page.get_by_role('region',name='Next step',exact=True))
             expect(audio.get_by_text('Audio account consent and price ceilings',exact=True).locator('..')).to_have_js_property('open',True,timeout=15000)
+            expect(page.get_by_role('region',name='Next step',exact=True)).to_contain_text('Audio account consent and price ceilings')
+            capture(page,'00-next-step',page.get_by_role('region',name='Next step',exact=True))
             capture(page,'04-prices-open',audio.get_by_text('Audio account consent and price ceilings',exact=True))
             def filled_prices():
                 capture(page,'04b-price-figures',audio.get_by_label('Highest music credits per minute',exact=True))
@@ -109,7 +113,7 @@ def test_empty_library_reaches_a_kept_speech_take_under_icon_path(tmp_path,faile
             paper.get_by_role('button',name='Add spoken line',exact=True).click();line=paper.get_by_role('group',name='Line 1',exact=True)
             line.get_by_label('Exact wording',exact=True).fill('The gallery is closed.');line.get_by_label('Screen time in seconds',exact=True).fill('3');line.get_by_label('Story material',exact=True).select_option(index=1)
             paper.get_by_role('button',name='Add shot',exact=True).click();shot=paper.get_by_role('group',name='Shot 1',exact=True)
-            shot.get_by_label('Purpose (private plan)',exact=True).fill('A steady view of the invented empty gallery.');shot.get_by_label('Screen time in seconds',exact=True).fill('28')
+            shot.get_by_label('Shot purpose',exact=True).fill('A steady view of the invented empty gallery.');shot.get_by_label('Screen time in seconds',exact=True).fill('28')
             expect(shot.get_by_label('Difficulty (optional planning note)',exact=True)).to_have_value('Not assessed')
             capture(page,'05a-required-shot-and-seconds',shot)
             paper.get_by_role('button',name='Save a new version',exact=True).click();expect(paper.get_by_role('status').first).to_contain_text('Saved.')
@@ -118,6 +122,7 @@ def test_empty_library_reaches_a_kept_speech_take_under_icon_path(tmp_path,faile
             page.get_by_role('button',name='Voice workspace',exact=True).click();audio.get_by_role('button',name='Load account voices',exact=True).click()
             voice=audio.get_by_label('Voice for line 1',exact=True);voice.select_option('invented_voice');page.reload()
             expect(voice).to_have_value('invented_voice',timeout=15000);audio.get_by_label('I have permission to use this voice.').check()
+            expect(page.get_by_role('region',name='Next step',exact=True)).not_to_contain_text('Use “Load account voices”')
             capture(page,'06-voice',audio.locator('[data-voice-line="0"]'));audio.get_by_role('button',name='Prepare a spending card',exact=True).click()
             card=audio.locator('.voice-spend');expect(card).to_contain_text('$0.0088');capture(page,'07-spending-card',card)
             assert not counter.exists() or sum(json.loads(x)['kind']=='speech' for x in counter.read_text().splitlines())==0
@@ -152,6 +157,7 @@ def test_empty_library_reaches_a_kept_speech_take_under_icon_path(tmp_path,faile
             player=take.locator('audio');expect(player).to_have_js_property('readyState',4,timeout=15000);player.evaluate('(e)=>e.play()');expect(player).to_have_js_property('ended',True,timeout=10000)
             capture(page,'09-take-arrived',take);take.get_by_role('button',name='Keep this take',exact=True).click();capture(page,'10-keep-signing',page.get_by_role('heading',name='Review and sign audio',exact=True));sign(page,'Return to audio')
             expect(take).to_contain_text('Kept',timeout=15000);capture(page,'11-kept',take)
+            expect(audio).not_to_contain_text('Keep decision ready for your signature.')
             root=next(p for p in projects.iterdir() if (p/'project.json').exists())
             assert figures(root,10,fresh=True)==pytest.approx([.004,0,9.996] if failed_filing else [.0002,0,9.9998])
             hook=paper.get_by_label('Hook',exact=True)
@@ -161,6 +167,7 @@ def test_empty_library_reaches_a_kept_speech_take_under_icon_path(tmp_path,faile
             banner=page.get_by_role('alert').filter(has_text='Open Front Lot from its app icon');expect(banner).to_be_visible(timeout=15000)
             expect(hook).to_have_value('Unfinished hook: keep the gallery light on.')
             expect(paper).to_be_visible();hook.scroll_into_view_if_needed();expect(hook).to_be_in_viewport()
+            assert page.locator('.bar').bounding_box()['y']>=banner.bounding_box()['y']+banner.bounding_box()['height']
             assert banner.evaluate('(e)=>{const r=e.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+5)===e;}'), 'Another banner covers the permission warning.'
             capture(page,'12-stale-window',hook)
             page.goto(ready['url']+'#k='+ready['token']);page.get_by_text(title,exact=True).click()

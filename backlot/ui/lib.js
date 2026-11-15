@@ -79,9 +79,9 @@ export function actionButton(label,action,{feedback,key=label,...attrs}={}){
   const control=el('button',{type:'button',...attrs},label);let running=false,local='',note=null;
   const paint=()=>{if(!control.isConnected)return;const text=feedback?.get(key)??local;
     if(!text){note?.remove();note=null;return;}
-    note??=el('p',{class:'action-feedback','aria-live':'polite'});note.textContent=text;control.after(note);};
+    note??=el('p',{class:'action-feedback','aria-live':'polite'});note.textContent=text;control.after(note);return note;};
   if(feedback){if(!feedbackViews.has(feedback))feedbackViews.set(feedback,new Map());feedbackViews.get(feedback).set(key,paint);}
-  const say=text=>{local=text;feedback?.set(key,text);(feedbackViews.get(feedback)?.get(key)||paint)();};
+  const say=text=>{local=text;feedback?.set(key,text);const shown=(feedbackViews.get(feedback)?.get(key)||paint)();if(shown&&text!=='Working…')shown.scrollIntoView({block:'nearest',behavior:'instant'});};
   control.onclick=async()=>{if(running)return;running=true;say('Working…');try{
     const result=await action();say(typeof result==='string'?result:result?.message||'');
   }catch(error){say(error.message||'The action did not finish. Review the form and try again.');}finally{running=false;}};

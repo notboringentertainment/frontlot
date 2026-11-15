@@ -68,7 +68,7 @@ def fill_example(page):
     for n,shot in enumerate(p['shots'],1):
         page.get_by_role('button',name='Add shot',exact=True).click()
         box=page.locator('fieldset').filter(has=page.locator(':scope > legend',has_text=f'Shot {n}'))
-        box.get_by_label('Purpose (private plan)').fill(shot['purpose'])
+        box.get_by_label('Shot purpose').fill(shot['purpose'])
         box.get_by_label('Screen time in seconds').fill(str(shot['duration_frames']/24))
         box.get_by_label('References, separated by commas').fill(', '.join(shot['references']))
         box.get_by_label('Difficulty (optional planning note)').fill(shot['difficulty'])
