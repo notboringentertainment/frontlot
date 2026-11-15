@@ -675,7 +675,8 @@ details.log-more[open] > summary { margin-bottom: 12px; }
 .timing-frames { display: block; margin: 4px 0 10px; }
 .trailer-board .viewer { overflow-anchor: none; scroll-behavior: auto; }
 .trailer-board .stage-select { cursor: default; }
-.writer-unavailable .table { margin-top: 76px; height: calc(100dvh - 76px); }
+.writer-unavailable .table { margin-top: var(--writer-warning-height,76px); height: calc(100dvh - var(--writer-warning-height,76px)); }
+.writer-unavailable #bk-conn-banner { display: none; } /* The permission warning also explains stale live updates. */
 .terminal-shell-head h2 { margin: 0; font: 700 15px/1 var(--plate); letter-spacing: .14em; text-transform: uppercase; }
 .terminal-state {
   font: 600 12px/1 var(--plate); letter-spacing: .1em; text-transform: uppercase;

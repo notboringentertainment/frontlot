@@ -89,11 +89,23 @@ def test_refused_writer_token_is_visible_across_the_page(voice_world,monkeypatch
     with board(root,monkeypatch) as url,sync_playwright() as pw:
         browser=pw.chromium.launch(headless=True)
         try:
-            page=open_page(browser,url,root);apps[0].state.capability_token='invented-rotated-token'
+            page=open_page(browser,url,root)
+            notes=page.get_by_label('Pronunciation and delivery notes for line 1',exact=True)
+            notes.fill('These unfinished words must stay visible.');notes.focus()
+            apps[0].state.capability_token='invented-rotated-token'
             page.get_by_role('button',name='Load account voices',exact=True).click()
             banner=page.get_by_role('alert').filter(has_text='Open Front Lot from its app icon')
             expect(banner).to_be_visible(timeout=7000)
-            page.reload();expect(banner).to_be_visible(timeout=7000)
+            expect(notes).to_have_value('These unfinished words must stay visible.')
+            notes.scroll_into_view_if_needed();expect(notes).to_be_in_viewport()
+            assert page.locator('#viewer').bounding_box()['height']>100
+            page.set_viewport_size({'width':390,'height':844})
+            page.wait_for_function("()=>document.getElementById('table').getBoundingClientRect().top>=document.getElementById('writer-warning').getBoundingClientRect().bottom")
+            notes.scroll_into_view_if_needed();expect(notes).to_be_in_viewport()
+            held=[];page.route('**/state',lambda route:held.append(route))
+            page.reload(wait_until='domcontentloaded');expect(banner).to_be_visible(timeout=7000)
+            expect(banner).not_to_contain_text('Your unfinished words remain in this tab')
+            expect(page.locator('#viewer')).to_contain_text('Loading this film')
             assert not posts
         finally:browser.close()
 

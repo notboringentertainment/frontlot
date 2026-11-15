@@ -24,10 +24,13 @@ export function captureCapabilityToken() {
 captureCapabilityToken();
 
 // A refused write is never retried and never earns a replacement capability.
+let writerBannerObserver=null;
 function writerWarning(){
   let banner=document.getElementById('writer-warning');
   if(!banner){banner=el('aside',{id:'writer-warning',role:'alert',class:'writer-warning'},
-    'This window cannot save or sign. Open Front Lot from its app icon, then reopen this production. Your unfinished words remain in this tab. No refused action will be retried automatically.');document.body.prepend(banner);}
+    'This window cannot save or sign. Its live updates may be out of date. Open Front Lot from its app icon, then reopen this production. Keep this window open to read or copy unfinished words before reloading it. No refused action will be retried automatically.');document.body.prepend(banner);
+    writerBannerObserver=new ResizeObserver(()=>document.documentElement.style.setProperty('--writer-warning-height',`${Math.ceil(banner.getBoundingClientRect().height)+8}px`));
+    writerBannerObserver.observe(banner);}
   document.body.classList.add('writer-unavailable');
 }
 const originalFetch=window.fetch.bind(window);
@@ -42,7 +45,7 @@ export async function checkWriter(){
     if(!response.ok)return;
     const value=await response.json();
     if(!value.writer)writerWarning();
-    else {document.getElementById('writer-warning')?.remove();document.body.classList.remove('writer-unavailable');}
+    else {writerBannerObserver?.disconnect();writerBannerObserver=null;document.getElementById('writer-warning')?.remove();document.body.classList.remove('writer-unavailable');}
   }catch{/* Loss of a connection never grants permission. */}
 }
 window.addEventListener('focus',()=>checkWriter());
