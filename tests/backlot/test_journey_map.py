@@ -278,7 +278,36 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
             expect(tile).to_contain_text('Approved by you',timeout=60000)
             tile.get_by_role('button',name='Record the signed final approval',exact=True).click()
             expect(delivery.get_by_role('status').first).to_contain_text('Your signed stage approval is recorded.',timeout=120000)
-            if reload_points:page.reload()
+            if reload_points:
+                # Check reopening from its fresh verified answer, as with a
+                # signing return. File/receipt verification has its own bound;
+                # the screen then has five seconds to show that exact record.
+                # This never accepts an old response or an unverified player.
+                from lib import trailer_edit
+                expected_id=tile.get_attribute('data-delivery')
+                expected_revision=trailer_edit.read_revision(root)['edit_revision_sha256']
+                endpoint=url+f'/api/project/{root.name}/delivery';started=[]
+                def requested(request):
+                    if request.method=='GET' and request.url==endpoint:started.append(request)
+                page.on('request',requested)
+                opening=time.monotonic()
+                try:
+                    with page.expect_response(lambda r:r.url==endpoint and r.request in started,timeout=90000) as reloaded:
+                        page.reload()
+                    response=reloaded.value
+                    assert response.ok,response.text()
+                    current=response.json()
+                    assert current['revision']==expected_revision
+                    assert current['rough_status']==current['colour_status']=='Signed by you'
+                    assert current['exports'][0]['id']==expected_id
+                    assert current['exports'][0]['status']=='Approved by you'
+                    expect(tile).to_contain_text('Approved by you',timeout=5000)
+                    expect(tile.get_by_role('button',name='Show approved file in Finder',exact=True)).to_be_enabled(timeout=5000)
+                    evidence['last_reopening_seconds']=time.monotonic()-opening
+                finally:page.remove_listener('request',requested)
+                reopened=tile.locator('video')
+                expect(reopened).to_have_js_property('readyState',4,timeout=30000)
+                reopened.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=reopened.element_handle(),timeout=15000)
             tile.get_by_role('button',name='Show approved file in Finder',exact=True).click()
             expect(delivery.get_by_role('status').first).to_contain_text('shown in Finder',timeout=30000)
             note('signed-final-and-reveal',delivery)

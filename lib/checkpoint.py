@@ -789,9 +789,14 @@ def write_checkpoint(
     # ``pipeline_type`` stays the bare name in the checkpoint and the tuple
     # {name, version, manifest_digest} rides alongside it.
     from lib.trailer_contract import signed_trailer_pin
+    from lib.receipts import ReceiptChainError
     try:
         trailer_pin = signed_trailer_pin(pipeline_dir / project_id)
-    except Exception as exc:
+    except ReceiptChainError:
+        # Keep a failed signature/ledger check distinguishable from invalid
+        # contract values. Both refuse the write; neither grants a fallback.
+        raise
+    except ValueError as exc:
         raise CheckpointValidationError(str(exc)) from exc
     if trailer_pin is None:
         from lib.trailer_contract import checkpoint_trailer_evidence
