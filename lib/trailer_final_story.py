@@ -30,6 +30,7 @@ def validate(root,value):
     from lib.canon_enforcement import _check_canon_pass
     from lib import trailer_edit,audio_workspace as audio
     import jsonschema
+    from schemas.artifacts import validate_against_schema
     import json
     root=Path(root);asked=questions(root)
     if not isinstance(value,dict) or set(value)!={'story_sha256','canon_pass'}:
@@ -40,7 +41,7 @@ def validate(root,value):
     check=value['canon_pass']
     try:
         schema=json.loads((Path(__file__).resolve().parents[1]/'schemas/artifacts/final_review.schema.json').read_text())
-        jsonschema.validate(check,schema['properties']['checks']['properties']['canon_pass'])
+        validate_against_schema(check,schema['properties']['checks']['properties']['canon_pass'])
         _check_canon_pass({'checks':{'canon_pass':check}},canon,True)
     except (ValueError,jsonschema.ValidationError):
         raise ValueError('The final story comparison is incomplete. Confirm each story finding and that every protected line is heard verbatim; fix the cut if it is not.') from None

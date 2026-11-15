@@ -15,6 +15,7 @@ artifact but is loaded from here too, via ``load_project_config_schema`` and
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,27 @@ import jsonschema
 
 SCHEMA_DIR = Path(__file__).parent
 PROJECT_CONFIG_SCHEMA_PATH = SCHEMA_DIR.parent / "project_config.schema.json"
+
+
+@lru_cache(maxsize=64)
+def _checked_validator(schema_json: str):
+    # Keep a private schema copy. A changed schema gets a new key; neither
+    # producer data nor a previous data verdict is ever cached here.
+    schema=json.loads(schema_json)
+    validator_type=jsonschema.validators.validator_for(schema)
+    validator_type.check_schema(schema)
+    return validator_type(schema)
+
+
+def validate_against_schema(data, schema):
+    """Validate every instance, compiling each distinct schema only once.
+
+    Use the same best-match error as jsonschema.validate. Repeated board
+    reads still check the current data and all signatures independently.
+    """
+    validator=_checked_validator(json.dumps(schema,sort_keys=True,separators=(',',':')))
+    error=jsonschema.exceptions.best_match(validator.iter_errors(data))
+    if error is not None:raise error
 
 ARTIFACT_NAMES = [
     "research_brief",
@@ -95,7 +117,7 @@ def validate_project_config(data: dict[str, Any]) -> None:
         raise ArtifactVersionError(
             f"project_config version {version!r} is not one of {sorted(branches)}"
         )
-    jsonschema.validate(instance=data, schema=schema)
+    validate_against_schema(data,schema)
 
 
 def artifact_version(data: dict[str, Any]) -> str:
@@ -131,7 +153,7 @@ def _validate_against_branch(name: str, version: str, schema: dict, ref: str, da
     branch_schema = {k: v for k, v in schema.items() if k not in ("oneOf", "properties", "required", "type")}
     branch_schema["$ref"] = ref
     try:
-        jsonschema.validate(instance=data, schema=branch_schema)
+        validate_against_schema(data,branch_schema)
     except jsonschema.ValidationError as exc:
         exc.message = f"[{name} v{version}] {exc.message}"
         raise
@@ -197,7 +219,7 @@ def validate_artifact(name: str, data: dict[str, Any]) -> None:
     schema = load_schema(name)
     branches = _version_branches(schema)
     if branches is None:
-        jsonschema.validate(instance=data, schema=schema)
+        validate_against_schema(data,schema)
         version = data.get("version", "") if isinstance(data, dict) else ""
     else:
         supported = sorted(branches)

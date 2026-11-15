@@ -39,7 +39,7 @@ import jsonschema
 
 from lib.receipts import record_human_approval  # noqa: F401  (re-export for callers)
 from lib.state_io import atomic_write_bytes, atomic_write_json
-from schemas.artifacts import ARTIFACT_NAMES, validate_artifact
+from schemas.artifacts import ARTIFACT_NAMES, validate_artifact,validate_against_schema
 from lib.trailer_policy import is_trailer
 
 # Stage names of every manifest version (used only for artifact-name lookup
@@ -324,7 +324,7 @@ def validate_checkpoint(checkpoint: dict[str, Any]) -> None:
     _validate_artifacts_for_stage(stage, status, artifacts)
 
     try:
-        jsonschema.validate(instance=checkpoint, schema=_load_checkpoint_schema())
+        validate_against_schema(checkpoint,_load_checkpoint_schema())
     except jsonschema.ValidationError as exc:
         raise CheckpointValidationError(f"Checkpoint failed schema validation: {exc.message}") from exc
 
