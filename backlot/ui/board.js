@@ -3124,6 +3124,7 @@ async function refresh() {
       catch(error){if(error.name==="AbortError")return;footage={error:"The footage panel could not be read. Check the saved story, looks and spending settings, then reopen this board.",shots:[]};}
       if(generation!==refreshGeneration)return;
       setFootageState(projectId,footage,{render,refresh,selectGate,lookCard,isRefreshing:()=>refreshController!==null,
+        takeFeedback:()=>JSON.stringify([[...takeBusy],[...takeErrors]]),
         take:(s,shot,take)=>renderTakeTile(s,shot,take,{decidable:true,othersWaiting:0}),
         returnToShots:()=>{selectedGateId=null;gateDetail=null;closeSigning();}});
     }

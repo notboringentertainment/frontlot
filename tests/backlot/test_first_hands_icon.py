@@ -97,6 +97,7 @@ def test_empty_library_reaches_a_kept_speech_take_under_icon_path(tmp_path,faile
             capture(page,'02-story',area);story.get_by_role('button',name='Review and sign this story',exact=True).click()
             capture(page,'03-story-signing',page.get_by_role('region',name='Story approval',exact=True));sign(page,'Return to story')
             page.reload();audio=page.get_by_role('region',name='Trailer audio',exact=True)
+            capture(page,'00-next-step',page.get_by_role('region',name='Next step',exact=True))
             expect(audio.get_by_text('Audio account consent and price ceilings',exact=True).locator('..')).to_have_js_property('open',True,timeout=15000)
             capture(page,'04-prices-open',audio.get_by_text('Audio account consent and price ceilings',exact=True))
             def filled_prices():
@@ -110,6 +111,7 @@ def test_empty_library_reaches_a_kept_speech_take_under_icon_path(tmp_path,faile
             paper.get_by_role('button',name='Add shot',exact=True).click();shot=paper.get_by_role('group',name='Shot 1',exact=True)
             shot.get_by_label('Purpose (private plan)',exact=True).fill('A steady view of the invented empty gallery.');shot.get_by_label('Screen time in seconds',exact=True).fill('28')
             expect(shot.get_by_label('Difficulty (optional planning note)',exact=True)).to_have_value('Not assessed')
+            capture(page,'05a-required-shot-and-seconds',shot)
             paper.get_by_role('button',name='Save a new version',exact=True).click();expect(paper.get_by_role('status').first).to_contain_text('Saved.')
             paper.get_by_role('button',name='Check paper cut against approved story',exact=True).click();expect(paper.get_by_role('status').first).to_contain_text('compared')
             capture(page,'05-checked-paper',paper.get_by_role('button',name='Check paper cut against approved story',exact=True))

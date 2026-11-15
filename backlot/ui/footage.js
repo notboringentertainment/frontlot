@@ -137,7 +137,7 @@ function shotPanel(s,shot){
 }
 export function renderFootageControls(s){
   if(!data)return el("p",{},"Loading footage controls…");
-  const key=()=>JSON.stringify([project,data,globalError,readRetries,[...drafts].map(([id,d])=>[id,d.looks,d.busy])]);
+  const key=()=>JSON.stringify([project,data,globalError,readRetries,hooks.takeFeedback?.(),[...drafts].map(([id,d])=>[id,d.looks,d.busy])]);
   if(controlsNode&&controlsKey===key())return controlsNode;
   controlsNode??=el("section",{class:"footage-controls","aria-label":"Footage workspace"});
   keepEditorPosition(controlsNode,()=>controlsNode.replaceChildren(el("h2",{},"Footage"),
