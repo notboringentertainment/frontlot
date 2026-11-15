@@ -26,13 +26,18 @@ def test_read_saved_invented_journey(monkeypatch):
         monkeypatch.setenv(key,str(value))
     assert not guard._unsafe_locations(os.environ)
     monkeypatch.setattr('lib.paths.PROJECTS_DIR',root.parent)
+    monkeypatch.setenv('OPENMONTAGE_PROJECTS_DIR',str(root.parent))
     calls=[]
     def refuse(*args,**kwargs):calls.append(1);raise AssertionError('A local review read must never contact a service.')
     monkeypatch.setattr('requests.sessions.Session.request',refuse)
     from lib import cutting_view,trailer_edit
+    from lib.trailer_contract import signed_trailer_pin
+    assert signed_trailer_pin(root) is not None
     from backlot.cutting import snapshot
-    for label,operation in [('snapshot',lambda:snapshot(root)),('validate',lambda:cutting_view.validate_cut(root,cutting_view.editable(trailer_edit.read_revision(root)['timeline']),verify_files=True))]:
-        profile=cProfile.Profile();profile.runcall(operation)
+    from lib import trailer_delivery
+    for label,operation in [('snapshot',lambda:snapshot(root)),('validate',lambda:cutting_view.validate_cut(root,cutting_view.editable(trailer_edit.read_revision(root)['timeline']),verify_files=True)),('delivery',lambda:trailer_delivery.snapshot(root))]:
+        profile=cProfile.Profile();result=profile.runcall(operation)
         profile.dump_stats(str(parent/('journey-'+label+'-'+uuid.uuid4().hex+'.profile')))
         print(label);pstats.Stats(profile).sort_stats('cumulative').print_stats(18)
+        if label=='delivery':print({key:result[key] for key in ('rough_status','colour_status')})
     assert calls==[]

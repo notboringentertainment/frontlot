@@ -1,5 +1,6 @@
 """The five real reviews have visible, capability-checked operations."""
 import json
+import pytest
 from fastapi.testclient import TestClient
 from tests.lib.test_trimmed_trailer_contract import trimmed,human_terminal,checked_paper,no_service_contact
 from tests.lib.look_lock_helpers import approve_request
@@ -55,3 +56,29 @@ def test_existing_trailer_updates_only_through_the_signed_screen(tmp_path,monkey
         approve_request(gate,root)
         assert trailer_contract.signed_trailer_pin(root).version=='1.7'
         assert not list(root.glob('checkpoint_*.json'))
+
+
+@pytest.mark.parametrize('bad',[None,{}, {'canon_pass':{}}])
+def test_a_broken_pending_final_story_request_is_not_a_ready_signing_packet(trimmed,monkeypatch,bad):
+    from backlot.delivery import signing_packet
+    from lib import trailer_delivery as delivery
+    checked_paper(trimmed)
+    # Isolate the presentation boundary after the file checks. The actual
+    # exported bytes and receipts are exercised in the five-signature test.
+    item={'id':'a'*32,'final_review':{'issues_found':[],'metadata':{'boundary_samples':[]}}}
+    monkeypatch.setattr(delivery,'read_export',lambda *args:item)
+    monkeypatch.setattr(delivery,'_artifacts',lambda *args,**kwargs:{'final_review':item['final_review']})
+    packet=signing_packet(trimmed,{'stage':'compose','entity_id':item['id'],'approval_record':{'final_story_review':bad}})
+    assert packet.get('packet_error') is True
+    assert 'final story comparison' in packet['error']
+    assert 'play_url' not in packet
+
+
+def test_earlier_stage_records_stay_saved_without_becoming_trailer_test_debts(trimmed):
+    from backlot.state import load_board_state
+    path=trimmed/'checkpoint_scene_plan.json'
+    previous=json.dumps({'stage':'scene_plan','status':'in_progress','artifacts':{}}).encode()
+    path.write_bytes(previous)
+    state=load_board_state(trimmed)
+    assert [row['label'] for row in state['stages']]==['Story','Paper cut','Rough cut','Colour and sound','Final file']
+    assert path.read_bytes()==previous

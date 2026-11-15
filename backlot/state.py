@@ -2032,6 +2032,10 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
     media = _scan_media(project_dir)
 
     stages = _build_stage_rail(pipeline_meta, checkpoints, history)
+    if trimmed(trailer_pin):
+        # Earlier signed definitions and their files remain historical facts;
+        # they do not add reviews Ben explicitly set aside for this test.
+        stages = [entry for entry in stages if entry['name'] in REVIEW_LABELS]
     if trailer_pin is not None or trailer_damaged or trailer_setup_pending:
         from lib.trailer_contract import STAGE_LABELS, STAGE_LIMITS
         for entry in stages:
