@@ -587,7 +587,8 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
         facts = creation_facts(root) if creation else None
     except (ValueError, KeyError, TypeError, OSError) as exc:
         raise GateHandlerError("The trailer name, length or spending ceiling is missing or invalid. Repair those settings before signing.") from exc
-    if creation and (version != "1.6" or pipeline_name != "authored-film" or facts != hint["trailer_creation"]):
+    from lib.trailer_policy import is_trailer
+    if creation and (not is_trailer({'name':pipeline_name,'version':version}) or facts != hint["trailer_creation"]):
         raise GateHandlerError("The trailer settings changed. Start signing again after reviewing them.")
     bound = checkpoint_digests_on_disk(root)
     try:

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import jsonschema
 from lib.canonical_json import record_sha256
+from lib.trailer_policy import is_trailer
 
 SCHEMA = Path(__file__).resolve().parents[1] / 'schemas/trailer_contract.schema.json'
 FPS = 24
@@ -292,7 +293,7 @@ def require_stage_approval(root, pin, stage, artifacts):
 
 
 def project_checkpoint(root, pin, cp):
-    if pin.name != 'authored-film' or pin.version != '1.6' or cp.get('status') != 'completed':
+    if not is_trailer(pin) or cp.get('status') != 'completed':
         return cp
     try:
         if cp.get('human_approved') is not True or cp.get('pipeline') != pin.to_dict() or cp.get('pipeline_type') not in {'authored-film', pin.ref} or cp.get('project_id') != Path(root).name:
@@ -308,19 +309,19 @@ def project_checkpoint(root, pin, cp):
 def signed_trailer_pin(root):
     """Discover the trailer from the signer-owned chain even if marker text was edited."""
     from lib.receipts import verified_approvals
-    from lib.pipeline_pin import PinnedPipeline, pinned_pipeline
+    from lib.pipeline_pin import pinned_pipeline
     from lib.pipeline_loader import manifest_digest
     rows = verified_approvals(root, 'pipeline_migration')
-    if any(r.get('kind') == 'pipeline_migration' and r.get('record', {}).get('pipeline_name') == 'authored-film'
-           and r.get('record', {}).get('version') == '1.6' for r in rows):
+    if any(is_trailer({'name':r.get('record',{}).get('pipeline_name'),'version':r.get('record',{}).get('version')}) for r in rows):
         # Verify the complete migration supersession chain, including a historical downgrade.
-        pinned_pipeline(root, 'authored-film')
-        row = next(r for r in rows if r.get('record', {}).get('pipeline_name') == 'authored-film'
-                   and r.get('record', {}).get('version') == '1.6')
-        record = row['record']
-        if record.get('manifest_digest') != manifest_digest('authored-film@1.6'):
+        pin=pinned_pipeline(root, 'authored-film')
+        if not is_trailer(pin):
             raise ValueError(HISTORY_DAMAGED)
-        return PinnedPipeline('authored-film', '1.6', record['manifest_digest'], row['receipt_id'])
+        for row in rows:
+            record=row['record']
+            if is_trailer({'name':record.get('pipeline_name'),'version':record.get('version')}) and record.get('manifest_digest')!=manifest_digest('authored-film@'+record['version']):
+                raise ValueError(HISTORY_DAMAGED)
+        return pin
     return None
 
 
@@ -333,8 +334,7 @@ def checkpoint_trailer_evidence(root):
             continue
         if not isinstance(checkpoint,dict):continue
         pipeline=checkpoint.get('pipeline')
-        if pipeline=='authored-film@1.6':return True
-        if isinstance(pipeline,dict) and pipeline.get('name')=='authored-film' and pipeline.get('version')=='1.6':return True
+        if is_trailer(pipeline):return True
     return False
 
 

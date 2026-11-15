@@ -306,8 +306,9 @@ def binding_source(root,binding):
     marker_path=Path(root)/'project.json'
     marker=json.loads(marker_path.read_text()) if marker_path.exists() else {}
     from lib.trailer_contract import signed_trailer_pin,checkpoint_trailer_evidence
+    from lib.trailer_policy import is_trailer
     if ((Path(root)/'artifacts/edit_decisions.json').exists() or marker.get('production_kind')=='trailer'
-        or marker.get('pipeline_type')=='authored-film@1.6' or signed_trailer_pin(root) or checkpoint_trailer_evidence(root)):
+        or is_trailer(marker.get('pipeline_type')) or signed_trailer_pin(root) or checkpoint_trailer_evidence(root)):
         require_checked_paper(root)
     identity=binding.get('brief_id')
     if not isinstance(identity,str) or str(uuid.UUID(identity))!=identity:raise ValueError('Invalid music brief.')

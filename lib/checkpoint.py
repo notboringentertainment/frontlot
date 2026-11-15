@@ -40,6 +40,7 @@ import jsonschema
 from lib.receipts import record_human_approval  # noqa: F401  (re-export for callers)
 from lib.state_io import atomic_write_bytes, atomic_write_json
 from schemas.artifacts import ARTIFACT_NAMES, validate_artifact
+from lib.trailer_policy import is_trailer
 
 # Stage names of every manifest version (used only for artifact-name lookup
 # and the pipeline-less fallback); the pinned manifest is the real stage list.
@@ -353,7 +354,7 @@ def init_project(
     """
     from lib.trailer_contract import make_contract
     trailer = None
-    if pipeline_type == "authored-film@1.6":
+    if is_trailer(pipeline_type):
         trailer = make_contract(target_duration_seconds)
     elif target_duration_seconds is not None:
         raise ValueError("A trailer target requires the trailer pipeline definition.")
@@ -806,7 +807,7 @@ def write_checkpoint(
     else:
         pipeline_ref = pipeline_type
 
-    if pin is not None and pin.name == "authored-film" and pin.version == "1.6":
+    if is_trailer(pin):
         from lib.trailer_contract import require_contract, require_stage_approval
         try:
             require_contract(pipeline_dir / project_id)
@@ -825,7 +826,7 @@ def write_checkpoint(
             f"Valid stages: {sorted(valid_stages)}"
         )
 
-    if pin is not None and pin.name == "authored-film" and pin.version == "1.6" and status in {"in_progress", "failed"}:
+    if is_trailer(pin) and status in {"in_progress", "failed"}:
         from lib.trailer_contract import require_contract, validate_stage_contract
         carried = {"script": ["script"], "scene_plan": ["scene_plan"], "edit": ["edit_decisions"], "compose": ["render_report", "final_review"]}.get(stage, [])
         if any(name in artifacts for name in carried):
@@ -849,7 +850,7 @@ def write_checkpoint(
     if gated:
         human_approval_required = True
         if status == "completed" and not human_approved:
-            if pin is not None and pin.name == "authored-film" and pin.version == "1.6":
+            if is_trailer(pin):
                 raise CheckpointValidationError("GATE VIOLATION: this trailer stage needs your signed approval. A bare flag cannot complete it; approval controls are not available yet.")
             gate_source = (
                 f"human_approval_default: true in the {pipeline_type!r} manifest"
@@ -935,7 +936,7 @@ def write_checkpoint(
     # previously the cumulative decision log was merged before validation,
     # so rejected checkpoints could still corrupt the audit trail.
     validate_checkpoint(checkpoint)
-    if pin is not None and pin.name == "authored-film" and pin.version == "1.6" and status in {"awaiting_human", "completed"}:
+    if is_trailer(pin) and status in {"awaiting_human", "completed"}:
         from lib.trailer_contract import validate_stage_contract
         marker_data = json.loads(marker_path.read_text()) if marker_path.exists() else {}
         try:
@@ -949,7 +950,11 @@ def write_checkpoint(
         except ValueError as exc:
             raise CheckpointValidationError(str(exc)) from exc
 
-    if manifest is not None and manifest.get("validation_profile") == "authored-canon":
+    if manifest is not None and manifest.get("validation_profile") == "trailer-test":
+        _halt_on_indeterminate_paid_calls(pipeline_dir / project_id)
+        from lib.trailer_test_contract import enforce
+        enforce(pipeline_dir/project_id,stage,status,artifacts)
+    elif manifest is not None and manifest.get("validation_profile") == "authored-canon":
         from lib.canon_enforcement import enforce_authored_canon
 
         _halt_on_indeterminate_paid_calls(pipeline_dir / project_id)

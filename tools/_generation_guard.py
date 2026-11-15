@@ -76,7 +76,8 @@ def refusal(inputs, expected_root=None, *, tool=None):
         if config.version not in ('1.0','1.1','1.2'):
             from lib.pipeline_pin import pinned_pipeline
             if not verified_approvals(root,'pipeline_migration'):return UNVERIFIED
-            if pinned_pipeline(root,'authored-film').version=='1.6':return CLOSED
+            from lib.trailer_policy import is_trailer
+            if is_trailer(pinned_pipeline(root,'authored-film')):return CLOSED
     except Exception:return UNVERIFIED
     return None
 

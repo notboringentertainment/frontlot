@@ -15,6 +15,7 @@ from pathlib import Path
 
 from lib.canonical_json import record_sha256
 from lib.trailer_contract import make_contract, require_contract, signed_trailer_pin, edit_digest
+from lib.trailer_policy import CURRENT_VERSION,CURRENT_REF
 
 
 def _creation_values(title, seconds, ceiling):
@@ -37,7 +38,7 @@ def _name_key(title):
 def _creation_request(root):
     from lib.pipeline_pin import prepare_migration_request
     facts = creation_facts(root)
-    prepare_migration_request(root, root.name, 'authored-film', '1.6', trailer_creation=True,
+    prepare_migration_request(root, root.name, 'authored-film', CURRENT_VERSION, trailer_creation=True,
         summary=f"Start {facts['title']}, lasting {facts['trailer']['target_duration_seconds']:g} seconds, with a total ceiling of ${facts['spending_ceiling_usd']:.2f}. This signs creation only. It approves no stage and authorises no spending. Separate signed spending settings are still required before any paid work.")
 
 
@@ -82,7 +83,7 @@ def create_trailer(base, title, seconds, ceiling, request_key=None):
         slug = 'trailer-' + secrets.token_hex(8)
         root = staging/slug
         try:
-            init_project(slug, title=facts['title'], pipeline_type='authored-film@1.6',
+            init_project(slug, title=facts['title'], pipeline_type=CURRENT_REF,
                          pipeline_dir=staging, target_duration_seconds=seconds)
             marker = json.loads((root/'project.json').read_text())
             marker.update(spending_ceiling_usd=ceiling, trailer_creation_pending=True,
