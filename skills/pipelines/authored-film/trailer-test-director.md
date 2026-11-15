@@ -33,3 +33,13 @@ sound stream merely existing is not evidence that it was heard. The screen
 requires the writer's actual confirmations; do not invent them. Technical sound
 checks measure sound, not understanding. Finish no stage without its verified
 signature and matching current material. Upload nothing.
+
+## For the tools
+
+The saved edit's `render_runtime` must be `remotion`. The
+`render_runtime_selection` is fixed by this signed trailer contract, not an
+agent preference. The alternative `hyperframes` (HyperFrames) is outside this
+contract: do not present both as choices or substitute either another renderer
+or paid poster generation. Explain the fixed local Remotion and FFmpeg route.
+The Paper cut stage is the planning review; there is no treatment or proposal
+stage to add back merely to record this fixed runtime.
