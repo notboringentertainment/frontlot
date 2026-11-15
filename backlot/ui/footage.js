@@ -1,8 +1,10 @@
 // Focused footage controls. Every write calls the existing signed operations.
-import {el, CAPABILITY_TOKEN_KEY, mediaURL, spendingCard} from "/ui/lib.js";
+import {el, CAPABILITY_TOKEN_KEY, mediaURL, spendingCard,keepEditorPosition,actionButton} from "/ui/lib.js";
 import {savedPaperCut,paperCutChangedHere} from '/ui/trailer.js';
-let data=null,project=null,hooks=null,globalError="",observing=false;
+let data=null,project=null,hooks=null,globalError="",observing=false,readRetries=0;
 const drafts=new Map(),completed=new Set();
+const feedback=new Map();
+let controlsNode=null,controlsKey='';
 export async function footageAction(action,body) {
   const response=await fetch(`/api/project/${encodeURIComponent(project)}/footage/${action}`,{
     method:"POST",headers:{"Content-Type":"application/json","x-frontlot-capability":sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||""},body:JSON.stringify(body)});
@@ -11,8 +13,9 @@ export async function footageAction(action,body) {
   return result;
 }
 export function setFootageState(id,next,callbacks) {
-  if(project!==id){drafts.clear();completed.clear();globalError="";}
-  if(data?.remaining_usd!==next?.remaining_usd)for(const d of drafts.values()){d.quote=null;d.quoteStarted=false;}
+  if(project!==id){drafts.clear();completed.clear();feedback.clear();globalError="";readRetries=0;data=null;}
+  if(next?.error){if(!data?.error)readRetries=3;}else readRetries=0;
+  if(data?.remaining_usd!==next?.remaining_usd||JSON.stringify(data?.quote_context)!==JSON.stringify(next?.quote_context))for(const d of drafts.values()){d.quote=null;d.quoteStarted=false;d.quoteVersion=(d.quoteVersion||0)+1;}
   project=id;data=next;hooks=callbacks;
 }
 export async function afterFootageSignature(id,kind) {
@@ -33,7 +36,8 @@ function input(label,value,attrs={}) {
   const field=el("input",{...attrs,"aria-label":label});field.value=value;
   return {field,node:el("label",{},el("span",{},label),field)};
 }
-function button(label,action,disabled=false){return el("button",{type:"button",disabled:disabled?"":null,onclick:action},label);}
+function makeButton(label,action,disabled=false,key=label){return actionButton(label,action,{disabled:disabled?"":null,feedback,key});}
+const button=makeButton;
 function draft(shot){
   if(!drafts.has(shot.id))drafts.set(shot.id,{length:Math.max(3,Math.min(15,Math.ceil(shot.duration_seconds))),model:data.models[0].id,looks:{},quote:null,error:"",busy:false});
   return drafts.get(shot.id);
@@ -46,10 +50,12 @@ async function quote(shot,d){
   try{const value=await footageAction("quote",{shot_id:shot.id,model:d.model,duration_seconds:d.length});if(version!==d.quoteVersion)return;d.quote=value;d.error="";}
   catch(error){if(version!==d.quoteVersion)return;d.quote=null;d.error=error.message;}
   d.updateQuote?.();
+  return d.error||(d.quote?'Price reviewed. The maximum charge and remaining ceiling are shown here.':'');
 }
-async function perform(d,action){d.busy=true;d.error="";hooks.render();try{await action();}catch(error){d.error=error.message;}finally{d.busy=false;await hooks.refresh();}}
+async function perform(d,action){d.busy=true;d.error="";hooks.render();let result;try{result=await action();}catch(error){d.error=error.message;}finally{d.busy=false;await hooks.refresh();}return d.error||result?.message;}
 
 function shotPanel(s,shot){
+  const button=(label,action,disabled=false,key=label)=>makeButton(label,action,disabled,shot.id+':'+key);
   const d=draft(shot),latest=shot.requests.at(-1);
   const panel=el("article",{class:"paper-panel footage-shot","aria-label":`${shot.label} footage`},
     el("h3",{},shot.label),el("p",{class:"footage-status",role:"status"},shot.status),
@@ -93,8 +99,9 @@ function shotPanel(s,shot){
   if(shot.references.length&&!data.looks.length)panel.append(el("p",{role:"note"},"No current approved look is available. Open Footage setup to review and sign the location look before creating a footage request."));
   if(data.refusal)panel.append(el("p",{role:"note"},data.refusal));
   for(const req of shot.requests){
-    if(!req.approved&&req.gate_id)panel.append(button("Review and sign request",()=>hooks.selectGate(req.gate_id),d.busy));
-    if(req.approved&&!req.running&&(!req.reservation||(req.reservation.state==="completed"&&!shot.takes.some(t=>t.reservation_id===req.reservation.reservation_id))))panel.append(button("Make signed clip",()=>perform(d,()=>footageAction("dispatch",{request_id:req.id})),d.busy));
+    if(!req.approved&&req.gate_id)panel.append(button("Review and sign request",()=>hooks.selectGate(req.gate_id),d.busy,req.id+':sign'));
+    if(req.approved&&!req.running&&!req.signed_outcome&&(!req.reservation||(req.reservation.state==="completed"&&!shot.takes.some(t=>t.reservation_id===req.reservation.reservation_id))))panel.append(button("Make signed clip",()=>perform(d,()=>footageAction("dispatch",{request_id:req.id})),d.busy,req.id+':make'));
+    if(req.signed_outcome&&req.reservation&&["completed","failed"].includes(req.reservation.state))panel.append(el("p",{},"Your signed account outcome is recorded. It settles the money and cannot make a clip. Create a retake request and sign it separately for another clip."));
     if(req.running)panel.append(el("p",{role:"status"},"Generating this one clip. Keep this board open to watch it arrive; no retry will be made."));
     if(req.error)panel.append(el("p",{role:"alert"},req.error));
     if(req.reservation&&["submitting","submitted","pending_billing"].includes(req.reservation.state)&&!req.running){
@@ -103,7 +110,7 @@ function shotPanel(s,shot){
         const outcome=req.signed_outcome;
         panel.append(el("p",{},"Your account outcome is signed and still needs applying. No second signature or service call is needed."),
           el("p",{},outcome.charged?`Signed charge: cash $${outcome.cash_usd.toFixed(4)} and credit replacement value $${outcome.credits_usd.toFixed(4)}.`:"Signed outcome: nothing was charged."),
-          el("p",{},outcome.note),button("Apply the signed account outcome",()=>perform(d,()=>footageAction("apply-resolution",{reservation_id:req.reservation.reservation_id})),d.busy));
+          el("p",{},outcome.note),button("Apply the signed account outcome",()=>perform(d,()=>footageAction("apply-resolution",{reservation_id:req.reservation.reservation_id})),d.busy,req.id+':apply'));
         continue;
       }
       d.reviews||=new Map();
@@ -117,7 +124,7 @@ function shotPanel(s,shot){
       for(const [key,control] of [["cash",cash],["credits",credits],["note",note]])control.field.oninput=()=>{review[key]=control.field.value;};
       panel.append(el("p",{},"Spending is blocked. Check the service account, then sign its outcome. This will never submit the old request again."),
         el("label",{},charged,"The service charged this request"),cash.node,credits.node,note.node,
-        button("Review account outcome",()=>perform(d,async()=>{const result=await footageAction("resolve",{reservation_id:req.reservation.reservation_id,charged:review.charged,cash:Number(review.cash),credits:Number(review.credits),note:review.note});await hooks.refresh();await hooks.selectGate(result.gate.request_id);}),d.busy));
+        button("Review account outcome",()=>perform(d,async()=>{const result=await footageAction("resolve",{reservation_id:req.reservation.reservation_id,charged:review.charged,cash:Number(review.cash),credits:Number(review.credits),note:review.note});await hooks.refresh();await hooks.selectGate(result.gate.request_id);}),d.busy,req.id+':account-review'));
     }
   }
   for(const take of shot.takes){
@@ -130,9 +137,21 @@ function shotPanel(s,shot){
 }
 export function renderFootageControls(s){
   if(!data)return el("p",{},"Loading footage controls…");
-  return el("section",{class:"footage-controls","aria-label":"Footage workspace"},el("h2",{},"Footage"),
+  const key=()=>JSON.stringify([project,data,globalError,readRetries,[...drafts].map(([id,d])=>[id,d.looks,d.busy])]);
+  if(controlsNode&&controlsKey===key())return controlsNode;
+  controlsNode??=el("section",{class:"footage-controls","aria-label":"Footage workspace"});
+  keepEditorPosition(controlsNode,()=>controlsNode.replaceChildren(el("h2",{},"Footage"),
     el("p",{},"Supply and sign the story in Story workspace, then check the saved paper cut. Use Footage setup to sign a location look, import a machine-generated reference picture and sign footage price figures. Changing the production ceiling still happens outside these panels. Every clip and every keep or decline decision needs your signature. Keeping a take completes no stage."),
-    data.error||globalError?el("p",{role:"alert"},data.error||globalError):null,...(data.shots||[]).map(shot=>shotPanel(s,shot)));
+    data.error||globalError?el("p",{role:"alert"},data.error||globalError):null,
+    data.error?el('p',{role:'status'},readRetries>0?'Trying up to three more reads. Nothing will be sent or bought.':'Automatic reads have stopped. Use Try reading footage again to retry; no purchase will be repeated.'):null,
+    data.error?button("Try reading footage again",()=>{readRetries=3;hooks.refresh();}):null,...(data.shots||[]).map(shot=>shotPanel(s,shot))));
+  controlsKey=key();return controlsNode;
+}
+
+function observationFailed(){
+  if(data?.error)return;
+  data={error:'The footage panel could not be read. Nothing was sent or bought.',shots:[]};
+  readRetries=3;hooks.render();
 }
 
 // Polling only observes. It never starts or retries a request.
@@ -140,13 +159,15 @@ setInterval(async()=>{
   if(!project||!hooks||document.hidden||hooks.isRefreshing()||observing)return;
   // Disk events already refresh idle boards. Poll only a dispatched job;
   // merely reading a second window must not create a refresh feedback loop.
-  if(!(data?.shots||[]).some(shot=>shot.requests.some(request=>request.running)))return;
+  const retrying=!!data?.error;
+  if(!(data?.shots||[]).some(shot=>shot.requests.some(request=>request.running))&&!(retrying&&readRetries>0))return;
+  if(retrying)readRetries--;
   observing=true;
   try{
     const response=await fetch(`/api/project/${encodeURIComponent(project)}/footage`);
-    if(!response.ok)return;
+    if(!response.ok){observationFailed();return;}
     const next=await response.json();
     if(JSON.stringify(next)!==JSON.stringify(data)&&!hooks.isRefreshing())await hooks.refresh();
-  }catch{/* A failed read grants no authority and will be read again. */}
-  finally{observing=false;}
+  }catch{observationFailed();}
+  finally{observing=false;if(retrying&&readRetries===0&&data?.error)hooks.render();}
 },1500);

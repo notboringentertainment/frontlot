@@ -140,7 +140,10 @@ def inspect(root,jobs):
     records=[]
     for path in sorted((root/'.footage-requests').glob('*.json'),key=lambda p:(p.stat().st_mtime_ns,p.name)):
         records.append(footage._read(root,path.stem))
-    try:remaining=_tracker(root,load_current_verified_project_config(root)).budget_remaining_usd
+    config=None
+    try:
+        config=load_current_verified_project_config(root)
+        remaining=_tracker(root,config).budget_remaining_usd
     except (ValueError,ProjectConfigError,OSError):remaining=None
     try:footage._paper_snapshot(root);source_refusal=None
     except Exception as exc:source_refusal=plain_refusal(exc)
@@ -163,7 +166,7 @@ def inspect(root,jobs):
             reservation=next((r for r in reservations.values() if (r.get('output_hint') or {}).get('footage_request_id')==rid),None)
             job=jobs.get((str(root),rid),{})
             outcome=None;outcome_error=None
-            if reservation and reservation['state'] in ('submitting','submitted','pending_billing'):
+            if reservation:
                 try:outcome=signed_resolution(root,reservation['reservation_id'])
                 except (ValueError,OSError,KeyError,receipts.ReceiptChainError) as exc:outcome_error=plain_refusal(exc)
             requests.append({'id':rid,'gate_id':gate['request_id'] if gate else None,'approved':approved,
@@ -182,7 +185,9 @@ def inspect(root,jobs):
         result.append({'id':shot['id'],'label':f'Shot {number}','purpose':shot['purpose'],
                        'duration_seconds':shot['duration_frames']/24,'references':shot['references'],
                        'brief':brief,'takes':takes,'requests':requests,'status':status})
+    from lib.media_settings import pending
     return {'shots':result,'looks':looks,'remaining_usd':remaining,
+            'quote_context':{'signed_settings':config.digest if config else None,'prices_waiting':bool(pending(root))},
             'models':[{'id':footage.MODEL,'label':'Kling o3 reference video · Fal'}],
             'story_ready':source_refusal is None,'refusal':source_refusal}
 
@@ -198,6 +203,8 @@ def install(app,require_writer,safe_project,invalidate):
         if jobs.get(key,{}).get('running'):return {'running':True}
         # Reopening a completed request is recovery, not another purchase.
         prior=next((r for r in load_reservations(root).values() if (r.get('output_hint') or {}).get('footage_request_id')==rid),None)
+        if prior and signed_resolution(root,prior['reservation_id']) is not None:
+            raise ValueError('Your signed account outcome is recorded. This signature cannot make a clip. Prepare and sign a new request; nothing was submitted again.')
         if prior and prior['state']!='completed':
             if prior['state']=='failed':
                 from lib.gates import verify_receipt_signature

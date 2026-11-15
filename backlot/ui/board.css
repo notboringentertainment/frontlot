@@ -670,6 +670,11 @@ details.log-more[open] > summary { margin-bottom: 12px; }
 .terminal-shell { min-height: 0; overflow: auto; }
 .terminal-state { flex-shrink: 0; }
 .writer-warning { position: fixed; top: 0; left: 0; right: 0; z-index: 10000; padding: 12px 20px; background: #ffd780; color: #201800; font-weight: 700; }
+.action-feedback { margin: 6px 0 14px; max-width: 72ch; font-weight: 600; }
+.next-step { border-left: 4px solid var(--accent, #9d7829); }
+.timing-frames { display: block; margin: 4px 0 10px; }
+.trailer-board .viewer { overflow-anchor: none; scroll-behavior: auto; }
+.trailer-board .stage-select { cursor: default; }
 .writer-unavailable .table { margin-top: 76px; height: calc(100dvh - 76px); }
 .terminal-shell-head h2 { margin: 0; font: 700 15px/1 var(--plate); letter-spacing: .14em; text-transform: uppercase; }
 .terminal-state {

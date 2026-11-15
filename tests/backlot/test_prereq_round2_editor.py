@@ -49,7 +49,7 @@ def test_unsaved_words_must_be_saved_before_assigning_a_picture(root,monkeypatch
         try:
             page.goto(url);setup=page.get_by_role('region',name='Footage prerequisites',exact=True)
             cut=page.get_by_role('region',name='Trailer paper cut',exact=True)
-            hook=cut.get_by_text('Hook',exact=True).locator('..').locator('textarea')
+            hook=cut.get_by_label('Hook',exact=True)
             hook.fill('Keep these newly written words.')
             setup.get_by_role('button',name='Use signed picture for selected shot',exact=True).click()
             expect(setup.get_by_role('alert')).to_contain_text('Save your changed paper cut')
@@ -91,7 +91,7 @@ def test_old_refresh_cannot_replace_state_after_a_save(root,monkeypatch,isolated
             page.route('**/state',lambda route:None)
             cut.get_by_role('button',name='Refresh story checks and saved versions',exact=True).click()
             wait_for(page,lambda:bool(held))
-            hook=cut.get_by_text('Hook',exact=True).locator('..').locator('textarea');hook.fill('A newly saved hook.')
+            hook=cut.get_by_label('Hook',exact=True);hook.fill('A newly saved hook.')
             cut.get_by_role('button',name='Save a new version',exact=True).click()
             expect(cut.get_by_role('status')).to_contain_text('Saved.')
             current=trailer_edit.read_revision(root)
@@ -119,7 +119,7 @@ def test_returning_to_a_preserved_draft_keeps_its_original_identity(root,monkeyp
         browser,page=start_browser(pw,url)
         try:
             page.goto(url);cut=page.get_by_role('region',name='Trailer paper cut',exact=True)
-            hook=cut.get_by_text('Hook',exact=True).locator('..').locator('textarea');hook.fill('My preserved words.')
+            hook=cut.get_by_label('Hook',exact=True);hook.fill('My preserved words.')
             old=trailer_edit.read_revision(root)
             use_picture(root,{'receipt_id':receipt,'shot_id':old['paper_cut']['shots'][0]['id'],'look':look,'expected_revision':old['edit_revision_sha256']})
             current=trailer_edit.read_revision(root)

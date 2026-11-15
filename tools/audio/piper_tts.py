@@ -102,7 +102,7 @@ class PiperTTS(BaseTool):
     user_visible_verification = ["Listen to generated audio for intelligibility"]
 
     def get_status(self) -> ToolStatus:
-        if programs.which("piper"):
+        if programs.available("piper"):
             return ToolStatus.AVAILABLE
         return ToolStatus.UNAVAILABLE
 

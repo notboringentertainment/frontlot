@@ -1,10 +1,11 @@
 // Front Lot film board (the cutting room) — renders BoardState and stays live via SSE.
 
 import { renderPaperCut,paperCutEpoch } from "/ui/trailer.js";
+import {renderNextStep} from '/ui/next_step.js';
 import {renderStory,renderStorySigning} from '/ui/story.js';
 import {renderFootageSetup,renderPrereqSigning,applyLocationApproval} from '/ui/footage_setup.js';
 import {renderPriceSigning} from '/ui/media_prices.js';
-import {renderVoice,renderAudioSigning,applySignedAccountOutcome} from '/ui/voice.js';
+import {renderVoice,refreshVoice,renderAudioSigning,applySignedAccountOutcome} from '/ui/voice.js';
 import {renderCutting,refreshCutting,renderCardSigning} from '/ui/cutting.js';
 import { setFootageState, renderFootageControls, afterFootageSignature, footageDecision } from "/ui/footage.js";
 import { mountSession } from "/ui/session.js";
@@ -17,6 +18,11 @@ const rawProjectPath = location.pathname.split("/p/")[1] || "";
 const projectId = decodeURIComponent(rawProjectPath);
 const encodedProjectId = encodeURIComponent(projectId);
 const app = document.getElementById("app");
+let trailerWorkspaceNav=null;
+function paperSavedHere(){
+  refreshVoice(projectId);
+  refresh().catch(console.error);
+}
 const modal = document.getElementById("modal");
 const player = document.getElementById("player");
 const terminalShell = document.getElementById("gate-terminal-shell");
@@ -472,12 +478,18 @@ function gatesCTA(label = "See what needs you") {
 }
 
 function renderBar(s) {
-  const counter = el("nav", { class: "counter", "aria-label": "Production stages" });
+  const counter = el("nav", { class: "counter", "aria-label": s.is_trailer?"Stage sign-offs":"Production stages" });
   for (const st of s.stages) {
     const cls = st.status === "completed" ? "done"
       : st.status === "in_progress" ? (st.stalled ? "active stalled" : "active")
       : st.status === "awaiting_human" ? "await"
       : st.status === "failed" ? "failed" : "";
+    if(s.is_trailer){
+      const status=st.status==='completed'?'Complete':st.status==='in_progress'?'In progress':st.status==='awaiting_human'?'Waiting for your signature':'Unfinished';
+      counter.append(el('div',{class:`stage ${cls}`,title:`${st.label||humanize(st.name)}: ${stageSub(st)}. This is a progress record; use the workspaces below.`},
+        el('span',{class:'stage-select'},el('span',{class:'name'},st.label||humanize(st.name),el('small',{},status)))));
+      continue;
+    }
     counter.append(el("div", {
       class: `stage ${cls}${selectedStage === st.name ? " selected" : ""}`.trim(),
       title: `${(st.label || humanize(st.name))}: ${stageSub(st)}${st.undeclared ? " (not part of this pipeline's plan)" : ""}`,
@@ -2990,27 +3002,31 @@ function renderBoard() {
   // Build a list, not a detached parent: moving a workspace through a fragment
   // also loses focus and can cancel an in-progress physical click.
   const viewer={append:(...nodes)=>wanted.push(...nodes),querySelector:(...args)=>viewerNode.querySelector(...args)};
-  if(s.is_trailer && !s.trailer_damaged && !selectedGateId)viewer.append(el('nav',{class:'voice-workspace-nav','aria-label':'Trailer workspaces'},
+  if(s.is_trailer && !s.trailer_damaged && !selectedGateId){
+    trailerWorkspaceNav??=el('nav',{class:'voice-workspace-nav','aria-label':'Trailer workspaces'},
     el('button',{type:'button',onclick:()=>viewer.querySelector('.story-panel')?.scrollIntoView({block:'start'})},'Story workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('.footage-setup')?.scrollIntoView({block:'start'})},'Footage setup'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Trailer paper cut"]')?.scrollIntoView({block:'start'})},'Paper cut workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('.voice-lines')?.scrollIntoView({block:'start'})},'Voice workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('#music-compose')?.scrollIntoView({block:'start'})},'Music workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('#effect-compose')?.scrollIntoView({block:'start'})},'Sound effects workspace'),
-    el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Cutting view"]')?.scrollIntoView({block:'start'})},'Cutting workspace')));
+    el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Cutting view"]')?.scrollIntoView({block:'start'})},'Cutting workspace'));
+    viewer.append(trailerWorkspaceNav);
+  }
   const drawer = renderDrawer(s);
+  if(s.is_trailer&&!s.trailer_damaged&&!selectedGateId)viewer.append(renderNextStep(s,async id=>{await refresh();await selectGate(id);}));
   if(s.is_trailer&&!s.trailer_damaged&&!selectedGateId){const story=renderStory(s,async(id)=>{await refresh();await selectGate(id);});if(story)viewer.append(story);}
   if(s.is_trailer&&!s.trailer_damaged&&!selectedGateId){const setup=renderFootageSetup(s,async(id)=>{await refresh();await selectGate(id);},refresh);if(setup)viewer.append(setup);}
-  if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(
-    el("button",{type:"button",class:"quiet-btn",onclick:()=>viewer.querySelector('[aria-label="Footage workspace"]')?.scrollIntoView({block:"start"})},"Open footage requests"),renderPaperCut(s));
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(
+    el("button",{type:"button",class:"quiet-btn",onclick:()=>viewer.querySelector('[aria-label="Footage workspace"]')?.scrollIntoView({block:"start"})},"Open footage requests"),renderPaperCut(s,paperSavedHere));
 
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderVoice(s,async(id)=>{await refresh();await selectGate(id);}));
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderCutting(s,async(id)=>{await refresh();await selectGate(id);}));
-  if (shot) {
+  if (shot && !s.is_trailer) {
     const inner = s.is_trailer ? renderFootageControls(s) : renderShotViewer(s, shot);
     if (drawer) inner.prepend(drawer);
     viewer.append(inner);
-  } else if (authoredGates && (selectedGateId || roster.length > 0)) {
+  } else if (authoredGates && (selectedGateId || (roster.length > 0&&!shot))) {
     let inner;
     if (selectedGateId) inner = renderGateViewer(s);
     else inner = renderEntityViewer(s, roster.find((e) => e.key === selectedEntity) || roster[0]);
@@ -3031,8 +3047,7 @@ function renderBoard() {
     }
     viewer.append(inner);
   }
-  if (s.is_trailer && !s.trailer_damaged && !selectedGateId && shot) viewer.append(renderPaperCut(s));
-  if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(renderFootageControls(s));
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderFootageControls(s));
   const keep=new Set(wanted);
   for(const child of [...viewerNode.childNodes])if(!keep.has(child))child.remove();
   wanted.forEach((child,index)=>{if(viewerNode.childNodes[index]!==child)viewerNode.insertBefore(child,viewerNode.childNodes[index]||null);});

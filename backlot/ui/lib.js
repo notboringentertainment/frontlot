@@ -69,6 +69,38 @@ export function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+// Results belong beside their control. A shared map keeps a result when a
+// panel redraws that same control; keys distinguish individual takes/requests.
+const feedbackViews=new WeakMap();
+export function actionButton(label,action,{feedback,key=label,...attrs}={}){
+  const control=el('button',{type:'button',...attrs},label);let running=false,local='',note=null;
+  const paint=()=>{if(!control.isConnected)return;const text=feedback?.get(key)??local;
+    if(!text){note?.remove();note=null;return;}
+    note??=el('p',{class:'action-feedback','aria-live':'polite'});note.textContent=text;control.after(note);};
+  if(feedback){if(!feedbackViews.has(feedback))feedbackViews.set(feedback,new Map());feedbackViews.get(feedback).set(key,paint);}
+  const say=text=>{local=text;feedback?.set(key,text);(feedbackViews.get(feedback)?.get(key)||paint)();};
+  control.onclick=async()=>{if(running)return;running=true;say('Working…');try{
+    const result=await action();say(typeof result==='string'?result:result?.message||'');
+  }catch(error){say(error.message||'The action did not finish. Review the form and try again.');}finally{running=false;}};
+  queueMicrotask(paint);return control;
+}
+
+// Preserve the writer's place when fresh read-only data rebuilds a panel.
+export function keepEditorPosition(root,redraw){
+  const fields=()=>[...root.querySelectorAll('input,textarea,select,button,summary')];
+  const name=e=>e.getAttribute('aria-label')||e.id||e.closest('label')?.textContent.trim()||e.textContent.trim();
+  const active=document.activeElement,inside=root.contains(active),identity=inside?name(active):null;
+  const ordinal=inside?fields().filter(e=>e.tagName===active.tagName&&name(e)===identity).indexOf(active):0;
+  const selection=inside&&typeof active.selectionStart==='number'?[active.selectionStart,active.selectionEnd]:null;
+  const open=[...root.querySelectorAll('details')].map(e=>[e.querySelector('summary')?.textContent,e.open]);
+  const scroll=[];for(let e=root;e;e=e.parentElement)scroll.push([e,e.scrollTop,e.scrollLeft]);
+  redraw();
+  for(const [label,value] of open){const e=[...root.querySelectorAll('details')].find(e=>e.querySelector('summary')?.textContent===label);if(e)e.open=value;}
+  const target=inside?fields().filter(e=>e.tagName===active.tagName&&name(e)===identity)[ordinal]:null;
+  if(target){target.focus({preventScroll:true});if(selection)try{target.setSelectionRange(...selection);}catch{}}
+  for(const [e,top,left] of scroll){e.scrollTop=top;e.scrollLeft=left;}
+}
+
 export function fmtDuration(seconds) {
   const n = Number(seconds);
   if (seconds == null || !Number.isFinite(n)) return "";

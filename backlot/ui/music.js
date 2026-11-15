@@ -1,10 +1,10 @@
 import {el} from '/ui/lib.js';
 export const TEST_ONLY='For the test trailer only until a person at ElevenLabs confirms otherwise in writing.';
-const button=(label,fn)=>el('button',{type:'button',onclick:fn},label);
+const defaultButton=(label,fn)=>el('button',{type:'button',onclick:fn},label);
 export function musicForms(data,draft,helpers){return cueForms(data,draft,helpers,'music');}
 export function effectForms(data,draft,helpers){return cueForms(data,draft,helpers,'effect');}
 
-function cueForms(data,draft,{api,act,url},kind){
+function cueForms(data,draft,{api,act,url,button=defaultButton},kind){
   const effect=kind==='effect',noun=effect?'effect':'music',title=effect?'Sound effects':'Trailer music';
   const keys=['text','seconds',...(effect?['start','shot','loop']:[])],saved=data[effect?'effect_brief':'music_brief'];
   if(!draft.new&&(!draft.loaded||keys.every(k=>draft[k]===draft.saved?.[k]))){

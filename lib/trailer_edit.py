@@ -281,9 +281,13 @@ def _validate_paper(root, paper):
     for shot in paper['shots']:
         if type(shot.get('duration_frames')) is not int or shot['duration_frames'] < 1:
             raise ValueError('Each shot needs a positive whole-frame screen time.')
-        if (not all(isinstance(shot.get(k), str) and shot[k].strip() for k in ('purpose', 'difficulty'))
-                or not isinstance(shot.get('references'), list) or any(not isinstance(x, str) for x in shot['references'])):
-            raise ValueError('Each shot needs its purpose, references and difficulty.')
+        if not isinstance(shot.get('purpose'),str) or not shot['purpose'].strip():
+            raise ValueError('Write a purpose for each shot. This is a required private planning note.')
+        difficulty=shot.get('difficulty','')
+        if not isinstance(difficulty,str):raise ValueError('Use words for the optional difficulty note, or leave it blank.')
+        shot['difficulty']=difficulty if difficulty.strip() else 'Not assessed'
+        if not isinstance(shot.get('references'),list) or any(not isinstance(x,str) for x in shot['references']):
+            raise ValueError('Choose reference pictures for each shot, or leave its reference list empty for now.')
     check = _story_check(root, paper)
     if check['errors']:
         raise ValueError(' '.join(check['errors']))

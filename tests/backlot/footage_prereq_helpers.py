@@ -71,7 +71,9 @@ def complete_footage_prerequisites(page,root,calls,tmp_path):
     simple_sign(page,'Return to footage setup')
     page.get_by_role('button',name='Open footage requests',exact=True).click()
     shot=page.get_by_role('article',name='Shot 1 footage',exact=True)
-    expect(shot.get_by_role('button',name='Create footage request',exact=True)).to_be_enabled(timeout=15000)
+    try:expect(shot.get_by_role('button',name='Create footage request',exact=True)).to_be_enabled(timeout=15000)
+    except AssertionError as exc:
+        raise AssertionError('Footage request stayed unavailable: '+shot.inner_text()) from exc
     with page.expect_response(lambda r:r.url.endswith('/footage/create'),timeout=30000) as created:
         shot.get_by_role('button',name='Create footage request',exact=True).click()
     assert created.value.status==200,created.value.text()

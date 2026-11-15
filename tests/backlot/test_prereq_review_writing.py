@@ -55,7 +55,7 @@ def test_old_window_cannot_adopt_new_revision_by_checking(root,monkeypatch,isola
             first=page.get_by_role('region',name='Trailer paper cut',exact=True)
             second=other.get_by_role('region',name='Trailer paper cut',exact=True)
             latest='A newer hook written in another window.'
-            second.get_by_text('Hook',exact=True).locator('..').locator('textarea').fill(latest)
+            second.get_by_label('Hook',exact=True).fill(latest)
             second.get_by_role('button',name='Save a new version',exact=True).click()
             expect(second.get_by_role('status')).to_contain_text('Saved.')
             current=edit.read_revision(root)
@@ -79,12 +79,12 @@ def test_other_writing_panels_lock_through_their_save(root,monkeypatch,isolated_
             page.goto(url)
             if kind=='paper':
                 panel=page.get_by_role('region',name='Trailer paper cut',exact=True)
-                area=panel.get_by_text('Hook',exact=True).locator('..').locator('textarea')
+                area=panel.get_by_label('Hook',exact=True)
                 area.fill('A gallery waits.');path='**/paper-cut';save='Save a new version'
                 # A complete minimal draft; no story signature is claimed.
                 panel.get_by_role('button',name='Add shot',exact=True).click()
-                panel.get_by_text('Purpose (private plan)',exact=True).locator('..').locator('textarea').fill('An empty gallery.')
-                panel.get_by_text('Difficulty',exact=True).locator('..').locator('input').fill('simple')
+                panel.get_by_label('Purpose (private plan)',exact=True).fill('An empty gallery.')
+                panel.get_by_label('Difficulty (optional planning note)',exact=True).fill('simple')
             else:
                 from tests.lib.test_frontlot_location_source import form
                 panel=page.get_by_role('region',name='Footage prerequisites',exact=True)

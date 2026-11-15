@@ -1,7 +1,7 @@
-import {el,CAPABILITY_TOKEN_KEY,thumbURL} from '/ui/lib.js';
+import {el,CAPABILITY_TOKEN_KEY,thumbURL,actionButton} from '/ui/lib.js';
 import {changeSavedPaperCut} from '/ui/trailer.js';
 let current=null;
-const button=(name,fn)=>el('button',{type:'button',onclick:fn},name);
+const button=actionButton;
 async function api(project,action='',data){
   const r=await fetch(`/api/project/${encodeURIComponent(project)}/footage-setup${action}`,data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify(data)});
   let result;try{result=await r.json();}catch{throw Error('Footage setup could not be read. Try again; no approval has been made.');}
@@ -15,7 +15,7 @@ export function renderFootageSetup(s,onSign,onChange=async()=>{}){
   const controls=el('fieldset',{class:'paper-controls'});
   let snapshot=null,busy=false,loading=false,refreshAgain=false,notice='',raw='',style='\n',mixed=false,file=null,lookDirty=false,lookLoaded=false;
   const refreshWaiters=[];let refreshSerial=0;
-  const act=async fn=>{if(busy)return;busy=true;controls.disabled=true;error.textContent='';notice='';try{const result=await fn();notice=result?.message||'';}catch(e){error.textContent=e.message;}finally{try{await refresh();}finally{busy=false;controls.disabled=false;}}};
+  const act=async fn=>{if(busy)return;busy=true;controls.disabled=true;error.textContent='';notice='';try{const result=await fn();notice=result?.message||'';}catch(e){error.textContent=e.message;}finally{try{await refresh();}finally{busy=false;controls.disabled=false;}}return error.textContent||notice||status.textContent;};
   const group=name=>el('fieldset',{class:'paper-panel'},el('legend',{},name));
   const look=group('Location written in Front Lot'),answers={};
   look.append(el('p',{},'Write twenty to eighty words, no more than six hundred characters, in the exact location description. These are the existing look limits. Supply the required visual answers yourself; nothing is invented or sent to a model.'));

@@ -98,7 +98,7 @@ class AudioEnergy(BaseTool):
     side_effects = []
 
     def get_status(self) -> ToolStatus:
-        if programs.which("ffmpeg"):
+        if programs.available("ffmpeg"):
             return ToolStatus.AVAILABLE
         return ToolStatus.UNAVAILABLE
 

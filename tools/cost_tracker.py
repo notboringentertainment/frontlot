@@ -800,7 +800,8 @@ def retain_download(project_root: Path, reservation_id: str, staging: Path) -> N
         raise ValueError('A retained download must stay in this production’s staging folder.')
     with reservation_lock(root):
         reservation=load_reservations(root)[reservation_id]
-        paths=list(reservation.get('retained_downloads') or [])
+        evidence=reservation.get('retained_downloads')
+        paths=[p for p in evidence if isinstance(p,str)] if isinstance(evidence,list) else []
         relative=path.relative_to(root).as_posix()
         if relative not in paths:
             paths.append(relative)
@@ -815,7 +816,8 @@ def retained_download_paths(project_root: Path, reservation: dict) -> list[Path]
     from lib import pathsafe
     root=Path(project_root).resolve()
     found=[]
-    for value in reservation.get('retained_downloads') or []:
+    evidence=reservation.get('retained_downloads')
+    for value in evidence if isinstance(evidence,list) else []:
         try:
             path=pathsafe.resolve_input(value,root)
             if path.parent==root/pathsafe.STAGING_DIRNAME and path.is_file() and path.stat().st_size:

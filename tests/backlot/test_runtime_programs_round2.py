@@ -62,7 +62,8 @@ def test_composer_availability_uses_discovery(tmp_path,monkeypatch,name):
     from tools.video import video_compose
     safe=tmp_path/'bin';safe.mkdir();exe=safe/name
     exe.write_text('#!/bin/sh\nexit 0\n');exe.chmod(0o700)
-    monkeypatch.setenv('PATH','/usr/bin:/bin:/usr/sbin:/sbin')
+    monkeypatch.setenv('PATH','')
+    monkeypatch.delenv('OPENMONTAGE_'+name.upper(),raising=False)
     monkeypatch.setattr(programs,'STANDARD_DIRS',(str(safe),))
     # The installed composer directory is independent of program discovery.
     assert programs.which(name)==str(exe)

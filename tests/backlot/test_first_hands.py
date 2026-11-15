@@ -46,6 +46,22 @@ def test_account_review_click_survives_focus_refresh(voice_world,monkeypatch,bou
             while figures(root,1)[1] and time.monotonic()<deadline:page.wait_for_timeout(50)
             assert figures(root,1,fresh=True)==pytest.approx([.0038,0,.9962])
             assert len(posts)==1 and not page.errors
+            return_button=page.get_by_role('button',name='Return to audio',exact=True)
+            if return_button.count() and return_button.is_visible():return_button.click()
+            form.get_by_role('button',name='Load account voices',exact=True).click()
+            form.get_by_label('Voice for line 1',exact=True).select_option('invented_voice')
+            form.get_by_label('I have permission to use this voice.').check()
+            form.get_by_role('button',name='Prepare a spending card',exact=True).click()
+            waiting=form.locator('.voice-spend').filter(has=page.get_by_role('heading',name='Waiting for your signature',exact=True))
+            waiting.get_by_role('button',name='Review and sign this request',exact=True).click()
+            page.get_by_role('button',name='Start signing',exact=True).click()
+            page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=15000)
+            expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded.',timeout=15000)
+            page.get_by_role('button',name='Return to audio',exact=True).click()
+            form.get_by_role('button',name='Make this approved take',exact=True).click()
+            expect(form.locator('.voice-take')).to_be_visible(timeout=15000)
+            assert figures(root,1,fresh=True)==pytest.approx([.004,0,.996])
+            assert len(posts)==2 and not page.errors
         finally:browser.close()
 
 def test_refresh_keeps_viewer_focus_and_unsaved_words(voice_world,monkeypatch):
@@ -96,4 +112,159 @@ def test_paper_seconds_required_words_and_open_unsigned_prices(voice_world,monke
             expect(shot).to_contain_text('126 frames')
             expect(shot.get_by_label('Difficulty (optional planning note)',exact=True)).to_have_value('Not assessed')
             expect(page.get_by_role('region',name='Next step')).to_be_visible()
+        finally:browser.close()
+
+
+def test_saved_paper_refreshes_its_audio_without_a_live_feed(voice_world,monkeypatch):
+    root,posts,gets=voice_world
+    with board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+            page.goto(f'{url}/p/{root.name}?static=1#k=invented-browser-proof')
+            paper=page.get_by_role('region',name='Trailer paper cut',exact=True)
+            audio=page.get_by_role('region',name='Trailer audio',exact=True)
+            expect(audio.locator('[data-voice-line="0"]')).to_be_visible()
+            paper.get_by_role('button',name='Add spoken line',exact=True).click()
+            paper.get_by_role('group',name='Line 2',exact=True).get_by_label('Exact wording',exact=True).fill('A lantern glows.')
+            paper.get_by_role('button',name='Save a new version',exact=True).click()
+            expect(paper.get_by_role('status').first).to_contain_text('Saved.')
+            expect(audio.locator('[data-voice-line="1"]')).to_contain_text('A lantern glows.',timeout=7000)
+            assert not posts and not gets and not errors
+        finally:browser.close()
+
+
+def test_audio_snapshot_from_before_paper_save_is_never_displayed(voice_world,monkeypatch):
+    from tests.backlot.test_signing_outcome_browser import wait_for
+    root,posts,gets=voice_world
+    with board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True);held=[]
+        try:
+            page=browser.new_page(viewport={'width':1440,'height':1000})
+            page.goto(f'{url}/p/{root.name}?static=1#k=invented-browser-proof')
+            audio=page.get_by_role('region',name='Trailer audio',exact=True)
+            expect(audio.locator('[data-voice-line="0"]')).to_be_visible()
+            def delay(route):
+                value=route.fetch().json()
+                if not held:value['record_warnings']=['An invented stale snapshot must not be displayed.']
+                held.append((route,value))
+            page.route('**/voice',delay)
+            page.evaluate("id=>import('/ui/voice.js').then(m=>m.renderVoice({project_id:id},()=>{}))",root.name)
+            wait_for(page,lambda:len(held)==1)
+            paper=page.get_by_role('region',name='Trailer paper cut',exact=True)
+            paper.get_by_role('button',name='Add spoken line',exact=True).click()
+            paper.get_by_role('group',name='Line 2',exact=True).get_by_label('Exact wording',exact=True).fill('A lantern glows.')
+            paper.get_by_role('button',name='Save a new version',exact=True).click()
+            expect(paper.get_by_role('button',name='Save a new version',exact=True)).to_be_enabled(timeout=15000)
+            held[0][0].fulfill(json=held[0][1]);wait_for(page,lambda:len(held)>=2)
+            expect(audio).not_to_contain_text('An invented stale snapshot must not be displayed.')
+            for route,value in held[1:]:route.fulfill(json=value)
+            page.unroute('**/voice',delay)
+            expect(audio.locator('[data-voice-line="1"]')).to_contain_text('A lantern glows.')
+            assert not posts and not gets
+        finally:browser.close()
+
+
+def test_results_stay_beside_the_control_that_was_used(voice_world,monkeypatch):
+    root,posts,gets=voice_world
+    with board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=open_page(browser,url,root)
+            paper=page.get_by_role('region',name='Trailer paper cut',exact=True)
+            paper.get_by_role('button',name='Add shot',exact=True).click()
+            save=paper.get_by_role('button',name='Save a new version',exact=True);save.click()
+            expect(save.locator('xpath=following-sibling::*[1]')).to_contain_text('purpose')
+            paper.get_by_role('group',name='Shot 2',exact=True).get_by_label('Purpose (private plan)',exact=True).fill('A quiet closing invitation.')
+            save.click();expect(save.locator('xpath=following-sibling::*[1]')).to_contain_text('Saved.')
+            check=paper.get_by_role('button',name='Check paper cut against approved story',exact=True);check.click()
+            expect(check.locator('xpath=following-sibling::*[1]')).to_contain_text('compared with the approved story')
+            expect(save.locator('xpath=following-sibling::*[1]')).to_contain_text('Saved.')
+            audio=page.get_by_role('region',name='Trailer audio',exact=True)
+            load=audio.get_by_role('button',name='Load account voices',exact=True);load.click()
+            expect(load.locator('xpath=following-sibling::*[1]')).to_contain_text('Account voices loaded')
+            prepare=audio.get_by_role('button',name='Prepare a spending card',exact=True);prepare.click()
+            expect(prepare.locator('xpath=following-sibling::*[1]')).to_contain_text('Choose a voice')
+            assert not posts and gets==[1] and not page.errors
+        finally:browser.close()
+
+
+def test_unsigned_audio_prices_start_open_and_are_the_named_next_step(voice_world,monkeypatch):
+    import yaml,hashlib
+    root,posts,gets=voice_world;path=root/'project.yaml'
+    data=yaml.safe_load(path.read_text());data.pop('audio_price_basis');raw=yaml.safe_dump(data).encode();path.write_bytes(raw)
+    sign(root,'config',{'config_sha256':hashlib.sha256(raw).hexdigest()},'project_config')
+    with board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=open_page(browser,url,root)
+            summary=page.get_by_text('Audio account consent and price ceilings',exact=True)
+            expect(summary.locator('..')).to_have_js_property('open',True)
+            expect(page.get_by_role('region',name='Trailer audio',exact=True).get_by_label('Dollar replacement value per credit',exact=True)).to_have_attribute('required','')
+            expect(page.get_by_role('region',name='Next step',exact=True)).to_contain_text('Audio account consent and price ceilings')
+            summary.click();expect(summary.locator('..')).to_have_js_property('open',False)
+            page.get_by_role('region',name='Next step',exact=True).get_by_role('button',name='Go to this step',exact=True).click()
+            expect(summary.locator('..')).to_have_js_property('open',True)
+            assert page.get_by_label('Dollar replacement value per credit',exact=True).evaluate('(e)=>e===document.activeElement')
+            assert not posts and not gets
+        finally:browser.close()
+
+
+def test_chosen_voice_survives_a_reload_without_preserving_permission(voice_world,monkeypatch):
+    root,posts,gets=voice_world
+    with board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=open_page(browser,url,root);audio=page.get_by_role('region',name='Trailer audio',exact=True)
+            audio.get_by_role('button',name='Load account voices',exact=True).click()
+            choice=audio.get_by_label('Voice for line 1',exact=True);choice.select_option('invented_voice')
+            audio.get_by_label('I have permission to use this voice.').check();page.reload()
+            expect(choice).to_have_value('invented_voice')
+            expect(audio.get_by_label('I have permission to use this voice.')).not_to_be_checked()
+            assert not posts and gets==[1]
+        finally:browser.close()
+
+
+def test_changed_audio_snapshot_preserves_focus_selection_scroll_and_open_panels(voice_world,monkeypatch):
+    from tests.backlot.test_voice_panel_browser import open_prices
+    root,posts,gets=voice_world
+    with board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=open_page(browser,url,root);audio=page.get_by_role('region',name='Trailer audio',exact=True)
+            open_prices(audio)
+            notes=audio.get_by_label('Pronunciation and delivery notes for line 1',exact=True)
+            notes.fill('Keep these unfinished delivery notes.');notes.focus();notes.evaluate('(e)=>e.setSelectionRange(5,10)')
+            scroll=page.locator('#viewer').evaluate('(e)=>e.scrollTop')
+            def changed(route):
+                value=route.fetch().json();value['record_warnings']=['Invented updated account information.'];route.fulfill(json=value)
+            page.route('**/voice',changed)
+            page.evaluate("id=>import('/ui/voice.js').then(m=>m.renderVoice({project_id:id},()=>{}))",root.name)
+            expect(audio).to_contain_text('Invented updated account information.')
+            expect(notes).to_have_value('Keep these unfinished delivery notes.')
+            assert notes.evaluate('(e)=>e===document.activeElement'),'The refresh stole focus from the unfinished note.'
+            assert notes.evaluate('(e)=>[e.selectionStart,e.selectionEnd]')==[5,10]
+            assert abs(page.locator('#viewer').evaluate('(e)=>e.scrollTop')-scroll)<=3
+            expect(audio.get_by_text('Audio account consent and price ceilings',exact=True).locator('..')).to_have_js_property('open',True)
+            assert not posts and not gets and not page.errors
+        finally:
+            page.unroute_all(behavior='ignoreErrors');browser.close()
+
+
+def test_workspace_navigation_survives_focus_refresh_and_stages_are_a_record(voice_world,monkeypatch):
+    root,posts,gets=voice_world
+    with board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=open_page(browser,url,root)
+            workspace=page.get_by_role('button',name='Paper cut workspace',exact=True);workspace.focus()
+            page.evaluate('()=>window.originalWorkspace=document.activeElement')
+            with page.expect_response(url+'/api/project/'+root.name+'/state'):
+                page.evaluate("()=>window.dispatchEvent(new Event('focus'))")
+            page.wait_for_timeout(250)
+            assert workspace.evaluate('(e)=>e===window.originalWorkspace&&e===document.activeElement')
+            stages=page.get_by_role('navigation',name='Stage sign-offs',exact=True)
+            expect(stages.get_by_role('button')).to_have_count(0)
+            expect(stages).not_to_contain_text('Not available yet')
+            assert not posts and not gets and not page.errors
         finally:browser.close()

@@ -96,16 +96,19 @@ def sign_audio(page):
     page.get_by_role('button',name='Return to audio',exact=True).click()
 
 
-def set_prices(page,panel,prefix):
-    panel.get_by_text('Audio account consent and price ceilings',exact=True).click()
+def set_prices(page,panel,prefix,review=None,filled=None):
+    from tests.backlot.test_voice_panel_browser import open_prices
+    open_prices(panel)
     for label,value in [('Dollar replacement value per credit','.0002'),('Highest speech credits per character','1'),
                         ('Highest music credits per minute','1200'),('Highest voice rate multiplier','2'),
                         ('Highest sound-effect credits per second','40'),('Prices expire',(datetime.now()+timedelta(days=2)).strftime('%Y-%m-%dT%H:%M'))]:
         panel.get_by_label(label,exact=True).fill(value)
+    if filled:filled()
     panel.get_by_role('button',name='Prepare price settings for signing',exact=True).click()
     expect(page.get_by_role('heading',name='Review and sign audio',exact=True)).to_be_visible(timeout=20000)
     expect(page.get_by_role('heading',name='Review and sign audio',exact=True).locator('..')).to_contain_text('Whole trailer ceiling: $10.0000')
     shot_picture(page,prefix+'-audio-settings-signing',page.get_by_role('heading',name='Review and sign audio',exact=True))
+    if review:review()
     sign_audio(page)
 
 
@@ -129,18 +132,18 @@ def save_paper_with_controls(page,reference='',purpose='The gallery keeper looks
     paper.get_by_role('button',name='Add spoken line',exact=True).click()
     line=paper.get_by_role('group',name='Line 1',exact=True)
     line.get_by_label('Exact wording',exact=True).fill(LINE)
-    line.get_by_label('Screen time in frames',exact=True).fill('72')
+    line.get_by_label('Screen time in seconds',exact=True).fill('3')
     paper.get_by_role('button',name='Add shot',exact=True).click()
     shot=paper.get_by_role('group',name='Shot 1',exact=True)
     shot.get_by_label('Purpose (private plan)',exact=True).fill(purpose)
-    shot.get_by_label('Screen time in frames',exact=True).fill('120')
+    shot.get_by_label('Screen time in seconds',exact=True).fill('5')
     shot.get_by_label('References, separated by commas',exact=True).fill(reference)
-    shot.get_by_label('Difficulty',exact=True).fill('One simple action.')
+    shot.get_by_label('Difficulty (optional planning note)',exact=True).fill('One simple action.')
     paper.get_by_role('button',name='Add shot',exact=True).click()
     remainder=paper.get_by_role('group',name='Shot 2',exact=True)
     remainder.get_by_label('Purpose (private plan)',exact=True).fill('Leave time for the closing invitation.')
-    remainder.get_by_label('Screen time in frames',exact=True).fill('552')
-    remainder.get_by_label('Difficulty',exact=True).fill('Unfinished placeholder.')
+    remainder.get_by_label('Screen time in seconds',exact=True).fill('23')
+    remainder.get_by_label('Difficulty (optional planning note)',exact=True).fill('Unfinished placeholder.')
     paper.get_by_role('button',name='Save a new version',exact=True).click()
     expect(paper.get_by_role('status').first).to_contain_text('Saved.')
     # Saved words are reported before the awaited board refresh finishes.

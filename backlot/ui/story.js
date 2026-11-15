@@ -1,6 +1,6 @@
-import {el,CAPABILITY_TOKEN_KEY} from '/ui/lib.js';
+import {el,CAPABILITY_TOKEN_KEY,actionButton} from '/ui/lib.js';
 let current=null;
-const button=(name,fn)=>el('button',{type:'button',onclick:fn},name);
+const button=actionButton;
 async function api(project,action='',data){
   const r=await fetch(`/api/project/${encodeURIComponent(project)}/story${action}`,data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify(data)});
   let value;try{value=await r.json();}catch{throw Error('The story could not be read. Try again; your earlier source and signatures are kept.');}
@@ -16,12 +16,12 @@ export function renderStory(s,onSign){
   const status=el('p',{role:'status','aria-live':'polite'}),message=el('p',{role:'alert'}),annotations=el('div',{}),actions=el('div',{});
   const text=el('textarea',{'aria-label':'Exact story text',rows:10,spellcheck:'false'});
   let rawText='',file=null,protectedLines=[],spoilers=[],dirty=false,loading=false,refreshAgain=false,busy=false,snapshot=null,preferredEnding='\n',mixedEdit=false,editEpoch=0;
-  const refreshWaiters=[];let refreshSerial=0;
+  const refreshWaiters=[];let refreshSerial=0,actionKey='';
   const mixedMessage='This source has mixed line endings. Editing it here cannot preserve every original line break. Choose the edited file again, or select all and paste the complete replacement text. This edit has not been saved.';
   const boxText=value=>value.replace(/\r\n|\r/g,'\n');
   const endings=value=>new Set(value.match(/\r\n|\r|\n/g)||[]);
   function setText(value){
-    rawText=value;text.value=value;mixedEdit=false;save.disabled=false;
+    rawText=value;if(text.value!==boxText(value))text.value=value;mixedEdit=false;save.disabled=false;
     const styles=endings(value);preferredEnding=styles.size===1?[...styles][0]:'\n';
   }
   const edited=()=>{
@@ -49,6 +49,7 @@ export function renderStory(s,onSign){
     try{completedMessage=await fn();}catch(e){message.textContent=e.message;}
     finally{try{await refresh();}finally{busy=false;controls.disabled=false;}
       if(typeof completedMessage==='string'&&!message.textContent)message.textContent=completedMessage;}
+    return message.textContent||snapshot?.message||'Story saved for review. Nothing has been approved.';
   };
   const chooser=el('input',{type:'file',accept:'.txt,.md,text/plain,text/markdown','aria-label':'Choose a text file'});
   chooser.onclick=()=>{chooser.value='';};
@@ -83,6 +84,7 @@ export function renderStory(s,onSign){
     }
   }
   function drawActions(){
+    const key=JSON.stringify([snapshot?.gate_id,snapshot?.approved,snapshot?.signed_unapplied]);if(key===actionKey)return;actionKey=key;
     actions.replaceChildren();
     if(snapshot?.gate_id&&!snapshot.approved)actions.append(button('Review and sign this story',()=>act(async()=>{if(mixedEdit)throw Error(mixedMessage);if(dirty)throw Error('Save your changed story for review first.');await onSign(snapshot.gate_id);})));
     if(snapshot?.signed_unapplied)actions.append(button('Apply signed story approval',()=>act(async()=>{await applyStoryApproval(project);})));
@@ -91,7 +93,8 @@ export function renderStory(s,onSign){
     if(loading){refreshAgain=true;return new Promise(resolve=>refreshWaiters.push({after:refreshSerial+1,resolve}));}loading=true;refreshAgain=false;const started=editEpoch,serial=++refreshSerial;
     try{
       const value=await api(project);if(started!==editEpoch){refreshAgain=true;return;}snapshot=value;status.textContent=snapshot.message;
-      if(snapshot.current&&!dirty){setText(snapshot.current.text);file=null;protectedLines=[...snapshot.current.protected];spoilers=[...snapshot.current.spoilers];drawAnnotations();}
+      if(snapshot.current&&!dirty){setText(snapshot.current.text);file=null;
+        if(JSON.stringify([protectedLines,spoilers])!==JSON.stringify([snapshot.current.protected,snapshot.current.spoilers])){protectedLines=[...snapshot.current.protected];spoilers=[...snapshot.current.spoilers];drawAnnotations();}}
       drawActions();
     }catch(e){if(started===editEpoch)message.textContent=e.message;}finally{loading=false;for(let i=refreshWaiters.length-1;i>=0;i--)if(refreshWaiters[i].after<=serial)refreshWaiters.splice(i,1)[0].resolve();if(refreshAgain){refreshAgain=false;queueMicrotask(refresh);}}
   }
