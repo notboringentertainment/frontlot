@@ -1,5 +1,6 @@
 """A whole unheard placement is not a pause; hum is never certified speech."""
 import numpy as np
+import re
 import pytest
 from tests.tools.test_trailer_colour_mix import RATE,write_signal
 from tests.tools.test_colour_mix_review_round2 import encode,track
@@ -26,7 +27,10 @@ def test_hum_is_only_measured_sound_and_gets_an_honest_listening_note(tmp_path):
     bed=write_signal(tmp_path/'bed.wav',.1*np.sin(2*np.pi*211*np.arange(RATE*6)/RATE))
     measured,_,_=encode(tmp_path,[track(voice,'speech',24,96),track(bed,'music')])
     assert any('steady tone or noise' in m and '0:01.000' in m for m in measured['messages'])
-    assert not any(m.startswith(('Speech is clear','The voice is clear','Words can be understood')) or 'sits clearly' in m for m in measured['messages'])
+    # These sentences reach both the file card and the signing screen. Catch
+    # clarity claims anywhere in a sentence, including a listening instruction.
+    assert not any(re.search(r'\bclear\w*\b',m,re.IGNORECASE) or
+                   'words can be understood' in m.lower() for m in measured['messages'])
     assert any('audible sound' in m for m in measured['messages'])
     assert all(r['status']!='clear' for r in measured['voice_checks']+measured['speech_checks'])
 

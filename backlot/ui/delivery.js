@@ -73,7 +73,7 @@ export function renderDelivery(s,onSign){
      body.disabled=false;
      if(first||returningSummary||!busy&&(progress||message.textContent.startsWith('Saved cut loaded.'))){
       progress=false;returningSummary=false;
-      message.textContent=`Saved cut loaded. Rough cut: ${next.rough_status}. ${next.exports.some(e=>e.status==='Approved by you')?'The current final file is approved by you.':'Review the current file and its approvals below.'}`;
+      message.textContent=`Saved cut loaded. Rough cut: ${next.rough_status}. ${next.exports.length?`Current final file: ${next.exports[0].status}.`:'Review the current file and its approvals below.'}`;
      }
     }catch(e){
      if(generation!==readGeneration)return;
