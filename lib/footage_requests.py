@@ -20,6 +20,10 @@ from tools.cost_tracker import reservation_lock, load_reservations, resume_check
 
 MODEL = 'fal-ai/kling-video/o3/pro/reference-to-video'
 _AUTH = contextvars.ContextVar('signed_footage_call', default=None)
+_LOCAL_PROCESSING_FAILED = ('The clip was downloaded, but local processing did not finish. '
+    'Its downloaded bytes were kept. Do not send this request again. Any unresolved '
+    'charge remains held for your signed account review. Check this computer’s free '
+    'disk space and its media tools, then review what is recorded on this shot.')
 FIELDS = {'project_id','request_id','shot_id','brief_revision_id','paper_shot','prompt',
           'references','look_refs','look_material','source_snapshots','provider','model',
           'duration_seconds','aspect_ratio','generate_audio','config_sha256','price_basis_sha256',
@@ -308,6 +312,11 @@ def mark_upload_contact(root,inputs):
     authorization(root,inputs)['external_contact_started']=True
 
 
+def mark_download_received(root,inputs):
+    """Private observation only: never a receipt, usable take or charge release."""
+    authorization(root,inputs)['download_received']=True
+
+
 def cancel_before_contact(root,inputs,tracker):
     """Receipt a proven local failure. Any attempted upload forbids this path."""
     from lib import gates
@@ -545,10 +554,19 @@ def execute(root, identity):
         token = _AUTH.set(auth)
         try:
             from tools.video.kling_reference_video import KlingReferenceVideo
-            result = KlingReferenceVideo()._execute(tool_inputs(root,record))
+            try:
+                result = KlingReferenceVideo()._execute(tool_inputs(root,record))
+            except Exception:
+                # Even the pending-status write can fail on a full disk. Its
+                # earlier reservation still blocks spending; never release it
+                # or lose the known-download message with the later error.
+                if auth.get('download_received'):raise ValueError(_LOCAL_PROCESSING_FAILED) from None
+                raise
             if not result.success:
                 if auth.get('not_submitted_receipt'):
                     raise ValueError('This request was not submitted or charged. Its hold was released and a receipt was saved. Prepare and sign a new request for another attempt.')
+                if auth.get('download_received'):
+                    raise ValueError(_LOCAL_PROCESSING_FAILED)
                 if auth.get('external_contact_started'):
                     raise ValueError('An upload or footage request did not finish. Its outcome is uncertain, so the money is held. Check the service account and sign its outcome before another request.')
                 if auth.get('reservation_id'):

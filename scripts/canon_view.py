@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from lib import programs
 from lib.canon_view import VIEW_DIR, build_view  # noqa: E402
 from lib.checkpoint import PROJECTS_DIR  # noqa: E402
 
@@ -34,7 +35,7 @@ def main() -> int:
     for link, target in plan:
         print(f"  {Path(link).relative_to(VIEW_DIR)}  ->  {target}")
     if a.open and sys.platform == "darwin":
-        subprocess.run(["open", str(root)], check=False)
+        programs.run(["open", str(root)], check=False)
     return 0
 
 

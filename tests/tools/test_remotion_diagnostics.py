@@ -21,7 +21,7 @@ from tools.video.video_compose import VideoCompose  # noqa: E402
 
 @pytest.fixture
 def tool(monkeypatch):
-    monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/npx")
+    monkeypatch.setattr("shutil.which", lambda _,**kw: "/usr/bin/npx")
     return VideoCompose()
 
 

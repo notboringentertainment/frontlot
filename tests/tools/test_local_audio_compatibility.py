@@ -30,7 +30,7 @@ def test_local_piper_has_no_exception_from_the_request_rule(tmp_path,monkeypatch
         from pathlib import Path
         Path(cmd[cmd.index('--output_file')+1]).write_bytes(b'local-audio')
         return SimpleNamespace(returncode=0,stderr='')
-    monkeypatch.setattr('tools.audio.piper_tts.shutil.which',lambda name:'/invented/piper')
+    monkeypatch.setattr('tools.audio.piper_tts.shutil.which',lambda name,**kw:'/invented/piper')
     monkeypatch.setattr('tools.audio.piper_tts.subprocess.run',local)
     result=PiperTTS().execute({'project_dir':str(root),'text':'A quiet gallery.','output_path':str(root/'voice.wav')})
     assert not result.success

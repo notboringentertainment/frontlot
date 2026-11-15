@@ -54,7 +54,14 @@ def test_trailer_selfcheck_keeps_plugin_and_requires_its_tool_evidence(tmp_path)
     assert 'frontlot_run' in cs.selfcheck_prompt(d,a,o,trailer=True)
 
 
-def test_trailer_preflight_executes_plugin_probe_and_does_not_reuse_old_cache(tmp_path,monkeypatch):
+@pytest.fixture
+def local_claude(tmp_path):
+    executable=tmp_path/'invented-claude'
+    executable.write_text('#!/bin/sh\nexit 99\n');executable.chmod(0o700)
+    return str(executable)
+
+
+def test_trailer_preflight_executes_plugin_probe_and_does_not_reuse_old_cache(tmp_path,monkeypatch,local_claude):
     from scripts import claude_session as session
     from tests.backlot.test_claude_settings import stream
     meta=tmp_path/'meta';meta.mkdir();work=tmp_path/'work';work.mkdir()
@@ -80,7 +87,7 @@ def test_trailer_preflight_executes_plugin_probe_and_does_not_reuse_old_cache(tm
     monkeypatch.setattr(session.subprocess,'Popen',Probe)
     import hashlib
     paths['sandbox_ok'].write_text(json.dumps({'version':'fake','settings_sha256':hashlib.sha256(settings.read_bytes()).hexdigest()}))
-    assert session.sandbox_selfcheck('p','/fake','fake',settings,work,{},trailer=True)
+    assert session.sandbox_selfcheck('p',local_claude,'fake',settings,work,{},trailer=True)
     assert len(calls)==1
     assert json.loads(paths['sandbox_ok'].read_text())['frontlot_tool_check']==1
 
@@ -105,7 +112,7 @@ def test_trailer_broker_keeps_operation_route_with_strict_fake_launch(world,tmp_
     assert reply['submit'].startswith('[Front Lot]')
 
 
-def test_every_trailer_start_rechecks_plugin(tmp_path,monkeypatch):
+def test_every_trailer_start_rechecks_plugin(tmp_path,monkeypatch,local_claude):
     from scripts import claude_session as session
     from tests.backlot.test_claude_settings import stream
     meta=tmp_path/'meta';meta.mkdir();work=tmp_path/'work';work.mkdir()
@@ -126,9 +133,9 @@ def test_every_trailer_start_rechecks_plugin(tmp_path,monkeypatch):
                 proof+='\n'+stream((cs.TOOL_NAME,{'check':'frontlot-startup-check'},'Front Lot did not confirm receipt',False))
             return proof,None
     monkeypatch.setattr(session.subprocess,'Popen',Probe)
-    assert session.sandbox_selfcheck('p','/fake','fake',settings,work,{},trailer=True)
+    assert session.sandbox_selfcheck('p',local_claude,'fake',settings,work,{},trailer=True)
     # The second executable represents an updated or missing plugin: no tool result.
-    assert not session.sandbox_selfcheck('p','/fake','fake',settings,work,{},trailer=True)
+    assert not session.sandbox_selfcheck('p',local_claude,'fake',settings,work,{},trailer=True)
     assert len(calls)==2
 
 
