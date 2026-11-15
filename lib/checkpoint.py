@@ -944,7 +944,8 @@ def write_checkpoint(
             if status == "completed":
                 from lib.trailer_contract import require_stage_approval
                 require_stage_approval(pipeline_dir / project_id, pin, stage, artifacts)
-            if stage in {"edit", "compose"}:
+            from lib.trailer_policy import trimmed
+            if stage in {"edit", "compose"} and not (trimmed(pin) and status=='completed'):
                 from lib.trailer_contract import approval_record
                 approval_record(pipeline_dir / project_id, pin, stage, artifacts)
         except ValueError as exc:

@@ -30,6 +30,18 @@ def mount(app,require_writer,safe_root,invalidate):
         data=await body(request,['revision']);root=safe_root(project_id)
         item=await run(delivery.export,root,data['revision']);invalidate(project_id)
         return {'id':item['id'],'stage_message':'Making a file completes no stage. Its signature and any outstanding requirements are shown below.'}
+    @app.post(base+'/colour')
+    async def colour(project_id:str,request:Request):
+        data=await body(request,['revision']);root=safe_root(project_id)
+        gate=await run(delivery.request_colour,root,data['revision'])
+        from lib.cutting_view import render_preview
+        await run(render_preview,root,data['revision'])
+        invalidate(project_id);return {'gate_request_id':gate['request_id']}
+    @app.post(base+'/colour/apply')
+    async def apply_colour(project_id:str,request:Request):
+        await body(request,[]);root=safe_root(project_id)
+        message=await run(delivery.complete_stage,root,'colour_mix');invalidate(project_id)
+        return {'message':message}
     @app.post(base+'/rough/apply')
     async def apply_rough(project_id:str,request:Request):
         await body(request,[]);root=safe_root(project_id)
@@ -37,7 +49,12 @@ def mount(app,require_writer,safe_root,invalidate):
         return {'message':message}
     @app.post(base+'/{identity}/approval')
     async def approval(project_id:str,identity:str,request:Request):
-        await body(request,[]);gate=await run(delivery.request_final,safe_root(project_id),identity)
+        root=safe_root(project_id)
+        from lib.trailer_policy import trimmed
+        if trimmed(delivery._pin(root)):
+            data=await body(request,['story_review']);gate=await run(delivery.request_final,root,identity,data['story_review'])
+        else:
+            await body(request,[]);gate=await run(delivery.request_final,root,identity)
         invalidate(project_id);return {'gate_request_id':gate['request_id']}
     @app.post(base+'/{identity}/apply')
     async def apply(project_id:str,identity:str,request:Request):
@@ -61,8 +78,9 @@ def signing_packet(root,request):
     from lib.pathsafe import sha256_file,resolve_input
     import json
     try:
-        if request['stage']=='edit':
-            record=delivery.rough_record(root)
+        if request['stage'] in ('edit','colour_mix'):
+            stage=request['stage']
+            record=(delivery.rough_record if stage=='edit' else delivery.colour_record)(root)
             revision=record['edit_revision_sha256']
             saved=trailer_edit.read_revision(root)
             from lib.canonical_json import record_sha256
@@ -77,11 +95,12 @@ def signing_packet(root,request):
                 if review.get('comparison')!='after':continue
                 if review.get('edit_revision_sha256')!=revision or review.get('settings_sha256')!=record_sha256(saved['timeline']):raise ValueError(reason)
                 if sha256_file(path)!=review.get('output_sha256'):raise ValueError('The rough preview changed. Prepare playback again.')
-                return {'delivery_stage':'edit','number':saved['revision_number'],'play_url':f'/api/project/{root.name}/cut/play/{path.name}',
+                return {'delivery_stage':stage,'number':saved['revision_number'],'play_url':f'/api/project/{root.name}/cut/play/{path.name}',
                         'messages':['Your signature binds this saved cut. Any changed picture, sound, card or setting needs a fresh review.']}
             raise ValueError(reason)
         item=delivery.read_export(root,request['entity_id'])
         delivery._artifacts(root,request['entity_id'])
-        return {'delivery_stage':'compose','samples':delivery.frame_samples(root,item),'play_url':f'/api/project/{root.name}/delivery/{item["id"]}/play','review':item['final_review'],
+        return {'delivery_stage':'compose','final_story_review':(request.get('approval_record') or {}).get('final_story_review'),
+                'samples':delivery.frame_samples(root,item),'play_url':f'/api/project/{root.name}/delivery/{item["id"]}/play','review':item['final_review'],
                 'messages':item['final_review']['issues_found']}
     except (ValueError,OSError,KeyError) as e:return {'packet_error':True,'error':str(e)}

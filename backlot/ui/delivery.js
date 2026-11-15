@@ -1,6 +1,27 @@
 import {el,CAPABILITY_TOKEN_KEY} from '/ui/lib.js';
 let active=null;
 const reviews=new Map();
+function storyAnswers(questions){
+ const node=el('section',{'aria-label':'Final story comparison',class:'paper-panel'},
+  el('h4',{},'Compare this final file with the signed story'),
+  el('p',{},'Watch and listen to this exact file. Every protected line must be heard word for word; a title or subtitle does not count. These are your findings, separate from the automatic technical checks. Leave a finding unchecked if the cut needs work.'));
+ const controls=[];
+ function check(words){const input=el('input',{type:'checkbox'});controls.push(input);node.append(el('label',{style:'display:block;margin:12px 0'},input,el('span',{style:'white-space:pre-wrap'},words)));return input;}
+ const lines=questions.protected_lines.map(line=>({line,input:check('I heard this exact protected line, word for word: '+line)}));
+ const locks=questions.locks.map(row=>({...row,input:check('This story fact is honoured: '+row.wording)}));
+ const entities=questions.entities.map(subject=>({subject,input:check('This character or place stays consistent with the story: '+subject)}));
+ node.append(el('p',{style:'white-space:pre-wrap'},'Story tone: '+JSON.stringify(questions.tone)));
+ const tone=el('textarea',{'aria-label':'How this final file keeps the story’s tone',rows:'3'});
+ node.append(el('label',{},'In your words, how does this final file keep the story’s tone?',tone));
+ return {node,read(){
+  if(controls.some(input=>!input.checked)||!tone.value.trim())throw Error('Complete the final story comparison after watching and listening. If a protected line is missing or a story finding is uncertain, fix the cut before signing.');
+  return {story_sha256:questions.story_sha256,canon_pass:{status:'pass',unresolved_flags:[],
+   protected_lines:lines.map(row=>({line:row.line,present_verbatim:true,audible:true})),
+   locks:locks.map(row=>({lock_id:row.id,verdict:'honored'})),
+   continuity_spotchecks:entities.map(row=>({subject:row.subject,verdict:'consistent'})),
+   tone:{must_never_feel_like_verdict:tone.value}}};
+ }};
+}
 function boundaryPictures(samples=[],lazy=false){
  const node=el('section',{'aria-label':'Pictures from the final file',class:'paper-panel'},el('h4',{},'Pictures at cuts and cards'),
   el('p',{},'These are pictures from this exact file. Check the story, faces and lettering; the automatic picture check only measures black or unchanged picture.'));
@@ -24,7 +45,7 @@ export function renderDeliverySigning(detail,actions,onReturn){
   video.onended=()=>{held.watched=true;for(const b of controls.querySelectorAll('button.gate-primary'))b.disabled=!held.ready;};
  }
  const stage=detail.request?.stage;
- held.heading.textContent=stage==='edit'?'Review the saved rough cut':stage==='compose'?'Review this exact final file':'Preparing this saved review';
+ held.heading.textContent=stage==='edit'?'Review the saved rough cut':stage==='colour_mix'?'Review the saved colour and sound':stage==='compose'?'Review this exact final file':'Preparing this saved review';
  held.ready=!!packet.play_url&&!packet.packet_error;
  const source=packet.packet_error?'':(packet.play_url??held.video.getAttribute('src')??'');
  if((held.video.getAttribute('src')||'')!==source){
@@ -33,6 +54,13 @@ export function renderDeliverySigning(detail,actions,onReturn){
   held.video.load();
  }
  held.words.replaceChildren(...(packet.messages||[]).map(s=>el('p',{},s)));
+ if(packet.final_story_review){const check=packet.final_story_review.canon_pass;
+  held.words.append(el('h3',{},'Your final story comparison'),
+   el('p',{},'These findings are part of the exact-file signature, separate from the technical verdict.'),
+   ...check.protected_lines.map(row=>el('p',{style:'white-space:pre-wrap'},'You confirm this protected line is heard verbatim: '+row.line)),
+   ...check.locks.map(row=>el('p',{},'Story finding: '+row.verdict)),
+   el('p',{style:'white-space:pre-wrap'},'Your tone finding: '+check.tone.must_never_feel_like_verdict));
+ }
  const sampleKey=JSON.stringify(packet.samples||[]);
  if(sampleKey!==held.sampleKey){held.sampleKey=sampleKey;held.pictures.replaceChildren(boundaryPictures(packet.samples));}
  if(packet.error)held.words.append(el('p',{role:'alert'},packet.error));
@@ -45,6 +73,7 @@ export function renderDelivery(s,onSign){
  if(active?.id===s.project_id){active.refresh();return active.node;}
  const base=`/api/project/${encodeURIComponent(s.project_id)}/delivery`,node=el('section',{class:'paper-editor',role:'region','aria-label':'Trailer delivery'}),message=el('p',{role:'status'},'Checking the saved cut and its signed takes…'),body=el('fieldset',{'aria-label':'Saved cut and final files',disabled:'',style:'border:0;padding:0;margin:0;min-width:0'});
  let data,busy=false,flight=null,pendingRefresh=false,key='',progress=false,returningSummary=false,readGeneration=0,readController=null;
+ const storyForms=new Map();
  async function api(path='',value,signal){const r=await fetch(base+path,value===undefined?{cache:'no-store',signal}:{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify(value)});const v=await r.json();if(!r.ok)throw Error(v.detail||'Reopen the saved delivery controls and try again.');return v;}
  function button(label,fn,disabled=false){return el('button',{type:'button',disabled:disabled?'':null,onclick:async()=>{if(busy)return;busy=true;body.disabled=true;try{await fn();}catch(e){progress=false;message.textContent=e.message;}finally{busy=false;await refresh(true);}}},label);}
  function preparing(words){progress=true;message.textContent=words;}
@@ -90,7 +119,10 @@ export function renderDelivery(s,onSign){
    el('h3',{},'Rough-cut approval'),el('p',{},data.rough_status),
    button('Review and sign the saved rough cut',async()=>{await refresh(true,true);if(!key)throw Error('The saved cut could not be checked. Reopen it and try this review again.');preparing('Preparing the saved rough cut for review locally…');const r=await api('/rough',{revision:data.revision});await onSign(r.gate_request_id);}),
    button('Record the signed rough-cut approval',async()=>{const r=await api('/rough/apply',{});message.textContent=r.message;},data.rough_status!=='Signed by you'),
-   button('Make the final file',async()=>{preparing('Making and measuring the full-size file locally. Nothing is sent or spent…');const r=await api('/export',{revision:data.revision});progress=false;message.textContent='The final file is ready to watch. '+r.stage_message;},data.rough_status!=='Signed by you'));
+   ...(data.colour_status?[el('h3',{},'Colour and sound approval'),el('p',{},data.colour_status),
+    button('Review and sign colour and sound',async()=>{preparing('Preparing the saved colour and sound for review locally…');const r=await api('/colour',{revision:data.revision});await onSign(r.gate_request_id);},data.rough_status!=='Signed by you'),
+    button('Record the signed colour and sound approval',async()=>{const r=await api('/colour/apply',{});message.textContent=r.message;},data.colour_status!=='Signed by you')]:[]),
+   button('Make the final file',async()=>{preparing('Making and measuring the full-size file locally. Nothing is sent or spent…');const r=await api('/export',{revision:data.revision});progress=false;message.textContent='The final file is ready to watch. '+r.stage_message;},data.rough_status!=='Signed by you'||!!data.colour_status&&data.colour_status!=='Signed by you'));
   if(data.outstanding_requirements?.length)body.append(el('section',{class:'paper-panel','aria-label':'Outstanding stage requirements'},
    el('h3',{},'What still prevents a finished stage'),el('p',{},'An unfinished stage is different from a missing control. Your individual signatures remain recorded; they do not substitute for a required stage review.'),
    ...data.outstanding_requirements.map(words=>el('p',{},words))));
@@ -108,7 +140,14 @@ export function renderDelivery(s,onSign){
    figures.append(el('p',{},`Duration: ${review.checks.technical_probe.duration_seconds.toFixed(3)} seconds. File size: ${review.checks.technical_probe.file_size_bytes.toLocaleString()} bytes.`),
     el('p',{},`Overall loudness: ${measured.integrated_lufs??'not measurable'} LUFS; the target is about minus sixteen. Highest playback peak: ${measured.true_peak_dbtp??'not measurable'} dBTP; it must stay below minus one.`),
     el('p',{},`${review.metadata.boundary_samples.length} pictures sampled at cut and card boundaries. Watch them for story, faces and lettering; the automatic checks do not judge those.`));tile.append(figures);
-   tile.append(button('Review and sign final approval',async()=>{preparing('Rechecking the exact final file and its sound…');const r=await api('/'+item.id+'/approval',{});await onSign(r.gate_request_id);},item.status!=='Needs your signature'),
+   let storyForm;
+   if(data.story_questions&&item.status==='Needs your signature'){
+    const identity=item.id+data.story_questions.story_sha256;
+    if(!storyForms.has(identity))storyForms.set(identity,storyAnswers(data.story_questions));
+    storyForm=storyForms.get(identity);tile.append(storyForm.node);
+   }
+   if(data.story_questions&&item.status==='Approved by you')tile.append(el('p',{},'Your final story comparison is recorded with your signature of this exact file, including every protected line heard verbatim.'));
+   tile.append(button('Review and sign final approval',async()=>{const value=storyForm?{story_review:storyForm.read()}:{};preparing('Rechecking the exact final file and its sound…');const r=await api('/'+item.id+'/approval',value);await onSign(r.gate_request_id);},item.status!=='Needs your signature'),
     button('Record the signed final approval',async()=>{const r=await api('/'+item.id+'/apply',{});message.textContent=r.message;},item.status!=='Approved by you'),
     button('Show approved file in Finder',async()=>{const r=await api('/'+item.id+'/reveal',{});message.textContent=r.message+' '+r.path;},item.status!=='Approved by you'));
    if(index===0)body.append(tile);else earlier.append(tile);

@@ -180,7 +180,10 @@ export function renderPaperCut(s,onSign) {
   node.append(save,wholeReviewStatus,button('Review and sign the whole paper cut',async()=>{try{
     if(dirty)throw Error('Save your changed draft as a new version before reviewing the whole paper cut.');
     const result=await request(api+'/review',{revision});await onSign(result.request_id);
-  }catch(error){status.textContent=error.message;}}),button("Check paper cut against approved story",async()=>{try{
+  }catch(error){status.textContent=error.message;}}),state.trimmed_contract?button('Record the signed paper-cut review',async()=>{try{
+    if(dirty)throw Error('Save and sign your changed draft before recording its review.');
+    const result=await request(api+'/apply',{});await refreshFromServer();status.textContent=result.message;
+  }catch(error){status.textContent=error.message;}}):null,button("Check paper cut against approved story",async()=>{try{
     if(dirty)throw Error('Save your changed draft as a new version before comparing it with the approved story.');
     const result=await request(`/api/project/${encodeURIComponent(s.project_id)}/story/check`,{});
     revision=result.paper_cut.edit_revision_sha256;await refreshFromServer();status.textContent=result.message;

@@ -588,7 +588,7 @@ function renderDrawer(s) {
   }
   if (!shown) {
     body.append(el("div", { class: "hint" },
-      s.is_trailer ? (['edit','compose'].includes(st.name)?'Use Delivery workspace to review the saved work, signatures and outstanding requirements.':st.name==='canon_ingest'?'Supply and sign the story in Story workspace.':'This stage is unfinished. Its review requirements and available controls are described above.') : (st.status === "pending" ? "This stage hasn't run yet." : "No canonical artifact found on disk for this stage.")));
+      s.is_trailer ? (['edit','colour_mix','compose'].includes(st.name)?'Use Delivery workspace to review the saved work, signatures and outstanding requirements.':st.name==='canon_ingest'?'Supply and sign the story in Story workspace.':st.name==='script'&&s.trimmed_contract?'Review, sign and record the whole paper cut in Paper cut workspace.':'This stage is unfinished. Its review requirements and available controls are described above.') : (st.status === "pending" ? "This stage hasn't run yet." : "No canonical artifact found on disk for this stage.")));
   }
 
   return el("div", { class: "drawer" },
@@ -1025,7 +1025,7 @@ function renderApprovalReview(s) {
         el("div", { class: "approval-eyebrow" }, "REVIEW GATE"),
         el("h2", {}, `${stageName(s, awaiting)} is ready for your review`),
         el("p", {},
-          s.is_trailer ? "Review the saved material here. Signed approval controls are not available yet. " : "Review the artifact here. ",
+          s.is_trailer ? s.trimmed_contract?"Use Story, Paper cut or Delivery workspace for this saved review and its signature. ":"Review the saved material here. Signed approval controls are not available yet. " : "Review the artifact here. ",
           s.is_trailer ? "" : (hasAuthoredGates(s) ? gatesCTA("GO TO GATES") : "Continue with your agent when the review is complete.")),
       ),
       el("span", { class: "approval-status" }, "PENDING APPROVAL"),
@@ -1035,7 +1035,7 @@ function renderApprovalReview(s) {
     el("div", { class: "approval-artifacts" }, artifacts),
     el("div", { class: "approval-review-foot" },
       el("span", {}, nextStage
-        ? s.is_trailer ? `Next comes ${stageName(s, nextStage)}. Signed approval controls are not available yet.` : `Approval unlocks ${humanize(nextStage.name)}.`
+        ? s.is_trailer ? s.trimmed_contract?`Next comes ${stageName(s,nextStage)}. Its own signed review is required.`:`Next comes ${stageName(s, nextStage)}. Signed approval controls are not available yet.` : `Approval unlocks ${humanize(nextStage.name)}.`
         : "This is the final approval gate."),
       el("button", { type: "button", onclick: () => toggleDrawer(awaiting.name) }, s.is_trailer ? "READ THE SAVED MATERIAL" : "OPEN FULL ARTIFACT"),
     ),
@@ -1829,7 +1829,7 @@ const GATE_WORDS = {
   trailer_card: "Review exact card words",
 };
 const storyGate=row=>row.kind==='artifact_review'&&row.stage==='canon_ingest'&&row.scope==='trailer-stage';
-const gateWords = (kind,row={}) => storyGate({...row,kind}) ? 'Review this story' : kind==='artifact_review'&&row.scope==='trailer-stage' ? row.stage==='edit'?'Sign the rough cut':'Approve the final file' : kind==='config' && row.scope==='audio:project_config' ? 'Review audio prices and permissions' : state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
+const gateWords = (kind,row={}) => storyGate({...row,kind}) ? 'Review this story' : kind==='artifact_review'&&row.scope==='trailer-stage' ? row.stage==='edit'?'Sign the rough cut':row.stage==='colour_mix'?'Sign colour and sound':'Approve the final file' : kind==='config' && row.scope==='audio:project_config' ? 'Review audio prices and permissions' : state?.is_trailer && kind === "pipeline_migration" ? state.trailer_setup_pending?"Start this trailer":"Review the trailer-test contract" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
 
 const SLOT_OF_KIND = {
   look_lock: "look",
@@ -2527,9 +2527,20 @@ function renderGateViewer(s) {
   const stale = !summary || summary.state !== "pending" || gateDetail.state !== "pending";
   const packetError = Boolean(gateDetail.error || (gateDetail.packet && gateDetail.packet.packet_error));
   if(header.kind==='artifact_review'&&header.scope==='trailer-paper')return renderPaperSigning(gateDetail,gateActions(s,summary,stale,packetError),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();refresh();});
+  if(header.kind==='pipeline_migration'&&gateDetail.packet?.trailer_test_contract){
+    const decision=gateDetail.packet.trailer_test_contract;
+    return el('section',{class:'paper-editor',role:'region','aria-label':'Trailer-test contract review'},
+      el('h2',{},s.trailer_setup_pending?'Start this trailer with the trailer-test contract':'Review the trailer-test contract'),
+      el('p',{},'Ben decided: “trim for the trailer test”. This signature selects the contract. It approves no stage, purchase or take.'),
+      gateDetail.packet.trailer_creation?el('p',{},`${gateDetail.packet.trailer_creation.title}. Target length: ${gateDetail.packet.trailer_creation.trailer.target_duration_seconds} seconds. Whole-trailer ceiling: $${gateDetail.packet.trailer_creation.spending_ceiling_usd.toFixed(2)}.`):null,
+      el('h3',{},'The required signed reviews'),...decision.required_reviews.map(w=>el('p',{},w)),
+      el('h3',{},'Whole-stage reviews set aside for this test'),...decision.dropped_whole_stage_reviews.map(w=>el('p',{},w)),
+      el('p',{},'Every protected line must still be heard verbatim. Each purchase, used look and reference, kept take and exact card keeps its own signed protection.'),
+      gateActions(s,summary,stale,packetError),el('button',{type:'button',onclick:()=>{closeSigning();selectedGateId=null;gateDetail=null;trailerWorkbenchChosen=true;render();refresh();}},'Return to the trailer'));
+  }
   if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&header.stage==='canon_ingest')return renderStorySigning(gateDetail,gateActions(s,summary,stale,packetError),()=>{selectedGateId=null;gateDetail=null;trailerWorkbenchChosen=true;closeSigning();render();},stale);
   if(header.kind==='trailer_card')return renderCardSigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;await refreshCutting();render();});
-  if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&['edit','compose'].includes(header.stage))return renderDeliverySigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;const verified=refreshDelivery();render();await verified;});
+  if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&['edit','colour_mix','compose'].includes(header.stage))return renderDeliverySigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;const verified=refreshDelivery();render();await verified;});
   const footageResolution=header.kind==='audio_resolution'&&gateDetail.request?.approval_record?.request?.provider==='fal';
   if((['audio_spend','audio_take','audio_resolution'].includes(header.kind)&&!footageResolution)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError,gateDetail.packet?.budget_warning),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;refreshAudioAfterSigning();render();},stale);
   let frames = gateFrames(gateDetail.packet);
@@ -2979,6 +2990,11 @@ function renderBoard() {
   if (withBin) app.append(renderBin(s, roster));
 
   const viewer = el("main", { class: "viewer", id: "viewer", tabindex: "-1", "aria-label": "Viewer" });
+  if(s.is_trailer&&!s.trailer_damaged&&!s.trailer_setup_pending&&!s.trimmed_contract&&!selectedGateId){
+    const status=el('p',{role:'status'});
+    viewer.append(el('section',{class:'paper-panel'},el('p',{},'Ben decided to trim the trailer contract for this test. Review and sign that change to use the five available reviews. Your saved work is kept.'),
+      el('button',{type:'button',onclick:async()=>{try{const r=await fetch(`/api/project/${encodedProjectId}/trailer-contract/review`,{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:'{}'});const value=await r.json();if(!r.ok)throw Error(value.detail);await refresh();await selectGate(value.request_id);}catch(e){status.textContent=e.message;}}},'Review the trailer-test contract'),status));
+  }
   if(s.is_trailer && !s.trailer_damaged && !selectedGateId)viewer.append(el('nav',{class:'voice-workspace-nav','aria-label':'Trailer workspaces'},
     el('button',{type:'button',onclick:()=>viewer.querySelector('.story-panel')?.scrollIntoView({block:'start'})},'Story workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Trailer paper cut"]')?.scrollIntoView({block:'start'})},'Paper cut workspace'),

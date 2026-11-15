@@ -63,6 +63,17 @@ def outstanding_stage_reviews(root,stage,final_review=None,*,rough_signed=False)
     if pin is None:return ['Trailer creation: review and sign creation under Needs you before continuing.']
     completed=set(get_completed_stages(root.parent,root.name,pin.ref))
     order=get_pipeline_stages(pin.ref)
+    from lib.trailer_policy import trimmed,REVIEW_LABELS
+    if trimmed(pin):
+        instructions={
+            'canon_ingest':'review and sign the exact story in Story workspace.',
+            'script':'review and sign the whole paper cut, then record that signed review in Paper cut workspace.',
+            'edit':'watch and sign this saved rough cut, then record its signed review in Delivery workspace.',
+            'colour_mix':'watch and sign the saved colour and sound, then record that separate signed review in Delivery workspace.',
+        }
+        result=[REVIEW_LABELS[s]+': '+instructions[s] for s in order[:order.index(stage)] if s not in completed]
+        if stage=='compose':result.append('Final story comparison: while watching the exported file in Delivery workspace, confirm the story findings and that every protected line is heard verbatim before signing final approval.')
+        return result
     instructions={
         'canon_ingest':'sign the exact story in Story workspace.',
         'proposal':'the three treatment options and selected treatment still need a whole-stage review. That control is not available yet.',
@@ -194,7 +205,7 @@ def _export_duration(path):
     return float(json.loads(result.stdout)['format']['duration'])
 
 
-def approval_record(root, pin, stage, artifacts):
+def approval_record(root, pin, stage, artifacts, *, final_story_review=None):
     """The existing artifact-review signer must approve this exact record.
 
     The story source and delivery controls use this record and the same
@@ -212,7 +223,7 @@ def approval_record(root, pin, stage, artifacts):
     paper_path = Path(root)/'artifacts'/'edit_decisions.json'
     if paper_path.is_file():
         paper = json.loads(paper_path.read_text())
-        if 'paper_cut' in paper and stage in {'script','scene_plan','assets','edit','compose'}:
+        if 'paper_cut' in paper and stage in {'script','scene_plan','assets','edit','colour_mix','compose'}:
             from lib.trailer_edit import paper_state
             state = paper_state(root)
             if state.get('needs_review') or not state.get('usable_downstream'):
@@ -224,7 +235,7 @@ def approval_record(root, pin, stage, artifacts):
     record['predecessors'] = {s: _file_digest(Path(root)/f'checkpoint_{s}.json')
                               for s in predecessors[:predecessors.index(stage)]
                               if (Path(root)/f'checkpoint_{s}.json').is_file()}
-    if stage in {'edit', 'compose'}:
+    if stage in {'edit', 'colour_mix', 'compose'}:
         saved = json.loads(_local_file(root, 'artifacts/edit_decisions.json').read_text())
         if saved.get('cutting_view') or (saved.get('timeline') or {}).get('picture') or (saved.get('timeline') or {}).get('audio'):
             from lib.cutting_view import validate_cut,editable
@@ -237,7 +248,7 @@ def approval_record(root, pin, stage, artifacts):
         if saved.get('edit_revision_sha256') != digest:
             raise ValueError('The rough-cut fingerprint does not match the saved edit revision.')
         record['edit_revision_sha256'] = digest
-        if stage == 'edit' and artifacts.get('edit_decisions') != saved:
+        if stage in {'edit','colour_mix'} and artifacts.get('edit_decisions') != saved:
             raise ValueError('The rough cut does not match the saved edit revision.')
         if stage == 'compose':
             report, review = artifacts.get('render_report') or {}, artifacts.get('final_review') or {}
@@ -266,6 +277,10 @@ def approval_record(root, pin, stage, artifacts):
             if abs(measured - edit_duration(saved)) > TOLERANCE_SECONDS + 1e-9:
                 raise ValueError('The exported file length does not match the saved edit timeline within one frame.')
             record['export_sha256'] = sha
+            from lib.trailer_policy import trimmed
+            if trimmed(pin):
+                from lib.trailer_final_story import validate
+                record['final_story_review']=validate(root,final_story_review)
     return record
 
 
@@ -292,7 +307,8 @@ def require_stage_approval(root, pin, stage, artifacts):
     response = rows[0].get('user_response')
     if not (response == 'approve' or isinstance(response, dict) and response.get('answer') == 'approved'):
         raise ValueError(SIGNED_REQUIRED)
-    record = approval_record(root, pin, stage, artifacts)
+    record = approval_record(root, pin, stage, artifacts,
+        final_story_review=rows[0].get('record',{}).get('final_story_review') if stage=='compose' else None)
     digest = record_sha256(record)
     if not any(r.get('record') == record and r.get('record_sha256') == digest
                and r.get('artifact_digest') == digest for r in rows):

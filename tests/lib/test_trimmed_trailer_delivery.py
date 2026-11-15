@@ -1,0 +1,95 @@
+"""Distinct rough, colour/mix and exact-file signatures for the trailer test."""
+import copy
+import json
+import pytest
+from tests.lib.test_cutting_signed import signed_cut as original_cut
+from tests.tools.test_signed_footage import film,provider,looks,workspace,sign
+
+
+@pytest.fixture
+def trailer_cut(film,provider,monkeypatch,request):
+    from lib import pipeline_pin,story_ingest,trailer_edit,trailer_paper_review
+    from tests.lib.look_lock_helpers import approve_request
+    root,shot=film
+    path=pipeline_pin.prepare_migration_request(root,root.name,'authored-film','1.7')
+    approve_request(json.loads(path.read_text()),root)
+    story=story_ingest.supply(root,b'The lamp is still lit. Someone is waiting.',protected=['The lamp is still lit.'])
+    approve_request(story['gate'],root)
+    current=trailer_edit.read_revision(root)
+    paper=copy.deepcopy(current['paper_cut'])
+    paper['shots'][0]['purpose']='A gallery keeper waits beside the lamp.'
+    trailer_edit.save_revision(root,paper,current['edit_revision_sha256'])
+    cut=original_cut.__wrapped__((root,shot),provider,monkeypatch,request)
+    saved=trailer_edit.read_revision(root)
+    approve_request(trailer_paper_review.request_review(root,saved['edit_revision_sha256']),root)
+    trailer_paper_review.complete(root)
+    return cut
+
+
+def test_colour_and_mix_needs_its_own_signature_of_the_saved_cut(trailer_cut):
+    from lib import trailer_delivery as delivery,trailer_edit
+    from tests.lib.look_lock_helpers import approve_request
+    root,calls,posts,*_=trailer_cut;saved=trailer_edit.read_revision(root)
+    rough=delivery.request_rough(root,saved['edit_revision_sha256']);approve_request(rough,root)
+    assert delivery.complete_stage(root,'edit')=='Your signed stage approval is recorded.'
+    saved=trailer_edit.read_revision(root)
+    with pytest.raises(ValueError,match='colour and sound'):delivery.require_colour(root)
+    gate=delivery.request_colour(root,saved['edit_revision_sha256']);approve_request(gate,root)
+    assert delivery.complete_stage(root,'colour_mix')=='Your signed stage approval is recorded.'
+    delivery.require_colour(root)
+    from lib.cutting_view import save_cut,editable
+    changed=editable(saved['timeline']);changed['mix']['speech_margin_db']+=1
+    save_cut(root,changed,saved['edit_revision_sha256'])
+    with pytest.raises(ValueError,match='rough|colour|review'):delivery.require_colour(root)
+    assert len(calls['posts'])==3 and len(posts)==1
+
+
+def test_final_story_questions_keep_every_protected_line_and_literal_words(trailer_cut):
+    from lib import trailer_delivery as delivery
+    root,calls,posts,*_=trailer_cut
+    questions=delivery.story_questions(root)
+    assert questions['protected_lines']==['The lamp is still lit.']
+    assert isinstance(questions['locks'],list) and questions['tone']
+    assert len(questions['story_sha256'])==64
+    assert len(calls['posts'])==3 and len(posts)==1
+
+
+def final_answers(questions):
+    return {'story_sha256':questions['story_sha256'],'canon_pass':{
+        'status':'pass','unresolved_flags':[],
+        'protected_lines':[{'line':line,'present_verbatim':True,'audible':True} for line in questions['protected_lines']],
+        'locks':[{'lock_id':row['id'],'verdict':'honored'} for row in questions['locks']],
+        'continuity_spotchecks':[{'subject':name,'verdict':'consistent'} for name in questions['entities']],
+        'tone':{'must_never_feel_like_verdict':'The invented test keeps the supplied story’s waiting mood.'}}}
+
+
+def test_five_real_signatures_finish_the_trimmed_trailer_and_nothing_else(trailer_cut):
+    from lib import trailer_delivery as delivery,trailer_edit,receipts
+    from lib.checkpoint import get_completed_stages
+    from tests.lib.look_lock_helpers import approve_request
+    root,calls,posts,*_=trailer_cut
+    gate=delivery.request_rough(root,trailer_edit.read_revision(root)['edit_revision_sha256']);approve_request(gate,root)
+    assert delivery.complete_stage(root,'edit')=='Your signed stage approval is recorded.'
+    revision=trailer_edit.read_revision(root)['edit_revision_sha256']
+    approve_request(delivery.request_colour(root,revision),root)
+    assert delivery.complete_stage(root,'colour_mix')=='Your signed stage approval is recorded.'
+    item=delivery.export(root,revision)
+    assert item['final_review']['status']=='pass',item['final_review']['issues_found']
+    assert get_completed_stages(root.parent,root.name,'authored-film@1.7')==['canon_ingest','script','edit','colour_mix']
+    before=len(receipts.verified_approvals(root,'artifact_review'))
+    with pytest.raises(ValueError,match='final story comparison'):delivery.request_final(root,item['id'])
+    answers=final_answers(delivery.story_questions(root));missing=copy.deepcopy(answers)
+    missing['canon_pass']['protected_lines'][0]['audible']=False
+    with pytest.raises(ValueError,match='protected line'):delivery.request_final(root,item['id'],missing)
+    assert len(receipts.verified_approvals(root,'artifact_review'))==before
+    gate=delivery.request_final(root,item['id'],answers)
+    assert delivery.final_state(root,item['id'])=='Needs your signature'
+    approve_request(gate,root)
+    assert delivery.final_state(root,item['id'])=='Approved by you'
+    assert delivery.complete_stage(root,'compose',item['id'])=='Your signed stage approval is recorded.'
+    assert get_completed_stages(root.parent,root.name,'authored-film@1.7')==['canon_ingest','script','edit','colour_mix','compose']
+    assert not any((root/f'checkpoint_{stage}.json').exists() for stage in ('proposal','look_lock','headshots','visual_bible','scene_plan','assets'))
+    row=receipts.verified_approvals(root,'artifact_review')[-1]
+    assert row['record']['final_story_review']==answers
+    assert 'canon_pass' not in item['final_review']['checks'], 'A technical report must never claim the writer’s findings.'
+    assert len(calls['posts'])==3 and len(posts)==1

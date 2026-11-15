@@ -25,7 +25,7 @@ def is_trailer(value):
 
 
 def trimmed(value):
-    version=value.get('version') if isinstance(value,dict) else getattr(value,'version',None)
+    version=value.partition('@')[2] if isinstance(value,str) else value.get('version') if isinstance(value,dict) else getattr(value,'version',None)
     return is_trailer(value) and version==CURRENT_VERSION
 
 
@@ -35,3 +35,18 @@ def signed_decision():
             'required_reviews':list(REVIEW_LABELS.values()),
             'every_protected_line_must_be_heard_verbatim':True,
             'individual_purchase_and_media_approvals_remain_required':True}
+
+
+def request_update(root):
+    import json,uuid
+    from pathlib import Path
+    from lib.trailer_contract import signed_trailer_pin,require_contract
+    from lib.pipeline_pin import prepare_migration_request
+    root=Path(root);pin=signed_trailer_pin(root)
+    if pin is None:raise ValueError('Sign this trailer’s creation before reviewing its contract.')
+    if trimmed(pin):raise ValueError('This trailer already uses the signed trailer-test contract.')
+    require_contract(root)
+    path=prepare_migration_request(root,root.name,'authored-film',CURRENT_VERSION,
+        request_id='trailer-test-'+uuid.uuid4().hex,
+        summary='Ben decided: “trim for the trailer test”. Review the five remaining signed reviews and the seven whole-stage reviews being set aside. Every protected line must still be heard verbatim. No stage or spending is approved by this contract signature.')
+    return json.loads(path.read_text())

@@ -13,6 +13,16 @@ def enforce(root,stage,status,artifacts):
         require_approval(root)
         if artifacts!=paper_artifacts(root):raise ValueError('The saved paper-cut records changed. Save and review that version again.')
         return
-    # Closed until each distinct signed review is connected below. A new
-    # manifest must never fall through to bare-flag stage completion.
-    raise ValueError('This trailer-test review needs its verified signed stage record before continuing.')
+    if stage in ('edit','colour_mix'):
+        from lib import trailer_delivery as delivery
+        from lib.trailer_contract import validate_stage_contract,require_contract
+        (delivery.require_rough if stage=='edit' else delivery.require_colour)(root)
+        validate_stage_contract(require_contract(root),'edit',artifacts)
+        return
+    if stage=='compose':
+        from lib import trailer_delivery as delivery
+        identity=artifacts['render_report']['metadata']['delivery_id']
+        if artifacts!=delivery._artifacts(root,identity):
+            raise ValueError('The final stage must use this production’s exact measured export record. Make and review the file in Delivery workspace.')
+        return
+    raise ValueError('Choose one of the five signed trailer-test reviews.')

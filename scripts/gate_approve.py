@@ -608,6 +608,11 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
         f"binds {len(bound)} checkpoint file(s) on disk: " + ", ".join(f"{b['stage']}={b['checkpoint_digest'][:12]}…" for b in bound),
         f"supersedes migration receipt {tip['receipt_id']}" if tip else "first pin for this project",
     )
+    if 'trailer_test_contract' in record:
+        decision=record['trailer_test_contract']
+        evidence=('Ben decided: “trim for the trailer test”. Required reviews: '+', '.join(decision['required_reviews'])+'.',
+                  'Whole-stage reviews set aside: '+', '.join(decision['dropped_whole_stage_reviews'])+'.',
+                  'Every protected line must still be heard verbatim. Individual purchases, used looks and references, take decisions and exact card signatures remain required. This contract signature approves no stage or spending.')+evidence
 
     def pre_commit() -> None:  # re-derived under the consumed token (R3#4)
         try:
@@ -1227,18 +1232,25 @@ def _construct_artifact_review(root: Path, req: dict) -> Constructed:
         artifact={'artifact_type':'trailer_paper_cut','artifact_version':'1.0','artifact_digest':record_sha256(record),'migration_status':'reviewed'}
         return Constructed(record,None,'paper-cut',artifact=artifact,pre_commit_check=recheck_paper,
             evidence=('Approve the beats, exact lines and cards, shot list, timing and displayed story warnings together. This is a paper-cut review only. No stage is finished and nothing is sent or spent.',))
-    if req.get('scope')=='trailer-stage' and req.get('stage') in ('edit','compose'):
+    if req.get('scope')=='trailer-stage' and req.get('stage') in ('edit','colour_mix','compose'):
         from lib import trailer_delivery as delivery
         stage=req.get('stage');identity=_require_entity(req)
-        if stage not in ('edit','compose') or stage=='edit' and identity!='edit':
+        if stage in ('edit','colour_mix') and identity!=stage:
             raise GateHandlerError('Choose the saved rough cut or one final file for this review.')
-        record=delivery.rough_record(root) if stage=='edit' else delivery.final_record(root,identity)
+        def construct_record():
+            if stage=='edit':return delivery.rough_record(root)
+            if stage=='colour_mix':return delivery.colour_record(root)
+            return delivery.final_record(root,identity,(req.get('approval_record') or {}).get('final_story_review'))
+        record=construct_record()
+        if req.get('approval_record')!=record or req.get('record_sha256')!=record_sha256(record):
+            raise GateHandlerError('The saved review changed. Reopen it and prepare a fresh signature.')
         def recheck():
-            current=delivery.rough_record(root) if stage=='edit' else delivery.final_record(root,identity)
+            current=construct_record()
             if current!=record:raise GateHandlerError('The cut or final file changed. Nothing was signed; prepare a fresh review.')
         artifact={'artifact_type':'trailer_stage','artifact_version':'1.0','artifact_digest':record_sha256(record),'migration_status':'reviewed'}
         return Constructed(record,None,identity,artifact=artifact,evidence=(
             'This signature approves the saved rough cut only. Any change needs a new signature.' if stage=='edit' else
+            'This signature approves the saved colour and sound settings only. Any change needs a new signature.' if stage=='colour_mix' else
             'Watch and listen to the complete exported file. This signature binds the exact file, edit version and measured checks. It does not certify rights or replace a separate story review.',
             'Nothing is sent, spent or uploaded.'),pre_commit_check=recheck)
     from lib.canon_enforcement import _version, artifact_review_digest

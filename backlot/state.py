@@ -1547,6 +1547,13 @@ def _render_pipeline_migration(root: Path, req: dict[str, Any]) -> dict[str, Any
     result = {"from_version": req.get("from_version") or (req.get("envelope") or {}).get("from_version")
             or (prior_record or {}).get("version") or (prior_record or {}).get("pipeline_version"),
             "to_version": req.get("pipeline_version") or req.get("to_version") or hint.get("version")}
+    from lib.trailer_policy import CURRENT_VERSION,signed_decision
+    if req.get('entity_id')=='authored-film' and result['to_version']==CURRENT_VERSION:
+        result['trailer_test_contract']=signed_decision()
+        if 'trailer_creation' in hint:
+            from lib.trailer_edit import creation_facts
+            try:result['trailer_creation']=creation_facts(root)
+            except (ValueError,OSError,KeyError):result.update(packet_error=True,error='The trailer name, length or ceiling changed. Reopen creation and review its saved settings.')
     if lookup_error:
         result.update({"packet_error": True, "error": lookup_error})
     return result
@@ -1821,7 +1828,7 @@ def _render_artifact_review(root,req):
     if req.get('scope')=='trailer-paper':
         from lib.trailer_paper_review import packet
         return packet(root,req)
-    if req.get('scope')=='trailer-stage' and req.get('stage') in ('edit','compose'):
+    if req.get('scope')=='trailer-stage' and req.get('stage') in ('edit','colour_mix','compose'):
         from backlot.delivery import signing_packet
         return signing_packet(root,req)
     return _render_text_only(root,req)
@@ -2030,7 +2037,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         for entry in stages:
             labels=REVIEW_LABELS if trimmed(trailer_pin) or trailer_setup_pending and marker.get('pipeline_type')==CURRENT_REF else STAGE_LABELS
             entry["label"] = labels.get(entry["name"], entry["name"])
-            entry["availability_message"] = "" if entry["status"] == "completed" else STAGE_LIMITS.get(entry["name"], "Signed stage approval controls are not available yet.")
+            entry["availability_message"] = "" if entry["status"] == "completed" or trimmed(trailer_pin) else STAGE_LIMITS.get(entry["name"], "Signed stage approval controls are not available yet.")
             if trailer_setup_pending:
                 entry["availability_message"] = trailer_creation['message']
             if trailer_damaged:
@@ -2071,6 +2078,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         **({"trailer": trailer} if trailer else {}),
         **({"is_trailer": True, "trailer_damaged": trailer_damaged} if trailer_pin is not None or trailer_damaged or trailer_setup_pending else {}),
         **({"trailer_setup_pending": True, "trailer_creation": trailer_creation} if trailer_setup_pending else {}),
+        **({'trimmed_contract':trimmed(trailer_pin)} if trailer_pin is not None else {}),
         "style_playbook": marker.get("style_playbook"),
         "created_at": marker.get("created_at"),
         "has_marker": bool(marker),
