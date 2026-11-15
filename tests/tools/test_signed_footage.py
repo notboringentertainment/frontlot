@@ -136,9 +136,10 @@ def test_one_signature_one_clip_and_signed_take_in_timeline(film, provider):
     assert edit['timeline']['picture'][0]['take_id'] == first['take_id']
     assert edit['timeline']['picture'][0]['kind'] == 'footage'
     assert edit['revision_history'][-1]['timeline']['picture'][0]['kind'] == 'placeholder'
-    facts=json.loads((root/'checkpoint_assets.json').read_text())
-    assert facts['status']=='in_progress' and facts['human_approved'] is False
-    assert facts['artifacts']['asset_manifest']['assets'][0]['path']==first['path']
+    facts=json.loads((root/'artifacts/asset_manifest.json').read_text())
+    assert not (root/'checkpoint_assets.json').exists()
+    assert facts['assets'][0]['path']==first['path']
+    assert facts['metadata']['take_records'][0]['take']['take_id']==first['take_id']
 
 
 @pytest.mark.parametrize('field,value', [('prompt','Another action.'),('model','another-model'),
@@ -292,9 +293,9 @@ def test_unsigned_rows_do_not_block_or_borrow_a_signed_take_decision(film,provid
     assert sp.inspect_shot(root,shot)['takes'][0]['standing']=='chosen'
     sp.select(root,shot,take['take_id'],user_note='Apply a real signed choice.')
     assert workspace().require_accepted(root,shot,take['take_id'])['take_id']==take['take_id']
-    facts=json.loads((root/'checkpoint_assets.json').read_text())
-    assert facts['status']=='in_progress' and facts['human_approved'] is False
-    assert facts['artifacts']['asset_manifest']['metadata']['take_records'][0]['take']['take_id']==take['take_id']
+    facts=json.loads((root/'artifacts/asset_manifest.json').read_text())
+    assert not (root/'checkpoint_assets.json').exists()
+    assert facts['metadata']['take_records'][0]['take']['take_id']==take['take_id']
 
 
 def test_signed_decline_is_final_even_after_a_later_signed_accept_record(film,provider):

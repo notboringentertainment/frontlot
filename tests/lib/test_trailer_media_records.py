@@ -27,7 +27,6 @@ def test_signed_keeps_and_declines_update_media_facts_without_stage_approval(fil
     artifact=json.loads((root/'artifacts/asset_manifest.json').read_text())
     assert [r['path'] for r in artifact['assets']]==[picture['path']]
     assert any(r['take_id']==take['id'] and r['state']=='Declined' for r in artifact['metadata']['unusable_takes'])
-    cp=json.loads((root/'checkpoint_assets.json').read_text())
-    assert cp['status']=='in_progress' and cp['human_approved'] is False
+    assert not (root/'checkpoint_assets.json').exists()
     assert not [r for r in receipts.verified_approvals(root,'artifact_review') if r.get('stage')=='assets']
     assert calls==[] and all(len(provider[k])==1 for k in ('posts','uploads','waits','downloads'))

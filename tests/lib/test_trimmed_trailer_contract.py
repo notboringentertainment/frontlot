@@ -114,6 +114,21 @@ def test_a_signed_no_is_not_a_paper_approval(trimmed):
     with pytest.raises(ValueError,match='fresh review'):review.complete(trimmed)
 
 
+def test_outstanding_reviews_check_only_predecessors_and_keep_unsigned_paper_outstanding(trimmed,monkeypatch):
+    from lib import checkpoint,trailer_contract
+    checked_paper(trimmed)
+    reads=[];original=checkpoint.read_checkpoint
+    def counted(*args,**kwargs):reads.append(args[2]);return original(*args,**kwargs)
+    monkeypatch.setattr(checkpoint,'read_checkpoint',counted)
+    assert checkpoint.get_completed_stages(trimmed.parent,trimmed.name,'authored-film@1.7',before_stage='script')==['canon_ingest']
+    assert reads==['canon_ingest']
+    before=trailer_contract.outstanding_stage_reviews(trimmed,'compose')
+    assert any(line.startswith('Final story comparison:') for line in before)
+    after=trailer_contract.outstanding_stage_reviews(trimmed,'compose',final_story_signed=True)
+    assert not any(line.startswith('Final story comparison:') for line in after)
+    assert any(line.startswith('Paper cut:') for line in after), 'A signed file never substitutes for the paper review.'
+
+
 def test_final_story_answers_cannot_invent_a_missing_protected_voice(trimmed):
     from lib.trailer_final_story import questions,validate
     from tests.lib.test_trimmed_trailer_delivery import final_answers

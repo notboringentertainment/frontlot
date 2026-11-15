@@ -56,12 +56,17 @@ STAGE_LIMITS.update({
 })
 
 
-def outstanding_stage_reviews(root,stage,final_review=None,*,rough_signed=False):
-    """Explain the existing pinned contract without waiving its requirements."""
+def outstanding_stage_reviews(root,stage,final_review=None,*,rough_signed=False,final_story_signed=False):
+    """Explain the pinned contract without waiving its requirements.
+
+    final_story_signed is supplied only after verifying the current file's
+    final approval, whose material includes that listening comparison. It
+    changes guidance, never stage completion or signing permission.
+    """
     from lib.checkpoint import get_completed_stages,get_pipeline_stages
     root=Path(root);pin=signed_trailer_pin(root)
     if pin is None:return ['Trailer creation: review and sign creation under Needs you before continuing.']
-    completed=set(get_completed_stages(root.parent,root.name,pin.ref))
+    completed=set(get_completed_stages(root.parent,root.name,pin.ref,before_stage=stage))
     order=get_pipeline_stages(pin.ref)
     from lib.trailer_policy import trimmed,REVIEW_LABELS
     if trimmed(pin):
@@ -72,7 +77,7 @@ def outstanding_stage_reviews(root,stage,final_review=None,*,rough_signed=False)
             'colour_mix':'watch and sign the saved colour and sound, then record that separate signed review in Delivery workspace.',
         }
         result=[REVIEW_LABELS[s]+': '+instructions[s] for s in order[:order.index(stage)] if s not in completed]
-        if stage=='compose':result.append('Final story comparison: while watching the exported file in Delivery workspace, confirm the story findings and that every protected line is heard verbatim before signing final approval.')
+        if stage=='compose' and not final_story_signed:result.append('Final story comparison: while watching the exported file in Delivery workspace, confirm the story findings and that every protected line is heard verbatim before signing final approval.')
         return result
     instructions={
         'canon_ingest':'sign the exact story in Story workspace.',

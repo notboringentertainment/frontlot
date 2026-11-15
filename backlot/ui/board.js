@@ -2540,7 +2540,7 @@ function renderGateViewer(s) {
   if(header.kind==='pipeline_migration'&&gateDetail.packet?.trailer_test_contract){
     const decision=gateDetail.packet.trailer_test_contract;
     return el('section',{id:'gate-detail',class:'paper-editor',role:'region','aria-label':'Trailer-test contract review'},
-      el('h2',{id:'gate-detail-heading'},s.trailer_setup_pending?'Start this trailer with the trailer-test contract':'Review the trailer-test contract'),
+      el('h2',{id:'gate-detail-heading'},s.trailer_setup_pending?'Start this trailer':'Review the trailer-test contract'),
       el('p',{},'Ben decided: “trim for the trailer test”. This signature selects the contract. It approves no stage, purchase or take.'),
       gateDetail.packet.trailer_creation?el('p',{},`${gateDetail.packet.trailer_creation.title}. Target length: ${gateDetail.packet.trailer_creation.trailer.target_duration_seconds} seconds. Whole-trailer ceiling: $${gateDetail.packet.trailer_creation.spending_ceiling_usd.toFixed(2)}.`):null,
       el('h3',{},'The required signed reviews'),...decision.required_reviews.map(w=>el('p',{},w)),

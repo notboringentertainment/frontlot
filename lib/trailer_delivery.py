@@ -12,6 +12,7 @@ from lib.canonical_json import record_sha256
 from lib.pathsafe import resolve_input, validate_output_parent, sha256_file
 
 ROUGH_REQUIRED='Sign the rough cut for this saved version before making the final file.'
+COLOUR_REQUIRED='Review and sign colour and sound in Delivery workspace before making the final file. '
 CHANGED='This file or its cut needs a fresh look. Reopen the saved cut, sign it and make a new final file.'
 SPEECH_NOTES='These timed speech notes are listening warnings. Listen to those passages; you can approve this exact file if the pauses and balance are right to your ear.'
 
@@ -83,7 +84,7 @@ def require_colour(root,revision=None):
         contract.require_stage_approval(root,_pin(root),'colour_mix',{'edit_decisions':saved})
         return saved,timeline
     except (ValueError,OSError,KeyError) as exc:
-        raise ValueError('Review and sign colour and sound in Delivery workspace before making the final file. '+str(exc)) from None
+        raise ValueError(COLOUR_REQUIRED+str(exc)) from None
 
 def colour_state(root,saved,rough_status):
     if rough_status!='Signed by you':
@@ -275,7 +276,11 @@ def read_export(root,identity):
 def _artifacts(root,identity,*,remeasure=False):
     root=Path(root);saved,timeline=require_rough(root)
     from lib.trailer_policy import trimmed
-    if trimmed(_pin(root)):require_colour(root)
+    if trimmed(_pin(root)):
+        # require_rough already checked this exact current cut and its files.
+        # Check the separate colour signature against that same material.
+        try:contract.require_stage_approval(root,_pin(root),'colour_mix',{'edit_decisions':saved})
+        except (ValueError,OSError,KeyError) as exc:raise ValueError(COLOUR_REQUIRED+str(exc)) from None
     return _file_artifacts(root,identity,saved,timeline,remeasure=remeasure)
 
 def _file_artifacts(root,identity,saved,timeline,*,remeasure=False):
@@ -341,7 +346,8 @@ def complete_stage(root,stage,identity=None):
     contract.require_stage_approval(root,_pin(root),stage,artifacts)
     try:write_checkpoint(root.parent,root.name,stage,'completed',artifacts,pipeline_type=_pin(root).ref,human_approved=True)
     except CheckpointValidationError:
-        outstanding=contract.outstanding_stage_reviews(root,stage,artifacts.get('final_review'),rough_signed=stage=='compose')
+        from lib.trailer_policy import trimmed
+        outstanding=contract.outstanding_stage_reviews(root,stage,artifacts.get('final_review'),rough_signed=stage=='compose',final_story_signed=stage=='compose' and trimmed(_pin(root)))
         return 'Your signature is recorded. This stage is unfinished. '+(' '.join(outstanding) if outstanding else 'Its saved stage record could not be verified. Keep the saved work and have that record checked before trying to finish the stage again.')
     return 'Your signed stage approval is recorded.'
 
@@ -365,8 +371,15 @@ def frame_picture(root,identity,frame):
     return path
 
 def reveal(root,identity):
-    if final_state(root,identity)!='Approved by you':raise ValueError('Watch and sign final approval of this exact file before revealing the approved delivery.')
-    path=playback(root,identity)
+    try:
+        artifacts=_artifacts(root,identity)
+        approved=_approval_state(root,'compose',artifacts,'Needs your signature','Approved by you')=='Approved by you'
+    except (ValueError,OSError,KeyError):approved=False
+    if not approved:raise ValueError('Watch and sign final approval of this exact file before revealing the approved delivery.')
+    report=artifacts['render_report'];path=resolve_input(report['outputs'][0]['path'],Path(root))
+    # Approval verification can take time. Hash the real file once more at
+    # the handoff, without repeating the whole cut/signature traversal.
+    if sha256_file(path)!=report['export_sha256']:raise ValueError(CHANGED)
     subprocess.run(['open','-R',str(path)],check=True,timeout=15)
     return {'message':'The approved trailer is saved in this production’s delivery folder and has been shown in Finder.','path':str(path)}
 
@@ -394,4 +407,4 @@ def snapshot(root):
     return {'revision':saved['edit_revision_sha256'],'number':saved['revision_number'],'rough_status':rough,'exports':items,
             'colour_status':colour_state(root,saved,rough) if trimmed(_pin(root)) else None,
             'story_questions':story_questions(root) if trimmed(_pin(root)) else None,
-            'outstanding_requirements':contract.outstanding_stage_reviews(root,'compose',items[0]['review'] if items else None,rough_signed=rough=='Signed by you')}
+            'outstanding_requirements':contract.outstanding_stage_reviews(root,'compose',items[0]['review'] if items else None,rough_signed=rough=='Signed by you',final_story_signed=any(item['status']=='Approved by you' for item in items))}

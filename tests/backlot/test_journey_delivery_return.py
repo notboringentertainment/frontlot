@@ -79,3 +79,34 @@ def test_verified_stage_confirmation_survives_an_older_signing_return(signed_cut
             assert page.evaluate('()=>window.stagePosts')==1
             assert not errors and len(calls['posts'])==3 and len(posts)==1
         finally:browser.close()
+
+
+def test_recorded_review_releases_controls_without_a_duplicate_full_read(signed_cut,monkeypatch):
+    root,calls,posts,*_=signed_cut
+    with board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=browser.new_page();errors=[]
+            page.on('pageerror',lambda error:errors.append(str(error)))
+            page.route(url+'/recorded-review-proof',lambda route:route.fulfill(body='<html><body></body></html>',content_type='text/html'))
+            page.route('https://**/*',lambda route:route.abort())
+            page.goto(url+'/recorded-review-proof')
+            page.evaluate('''async()=>{
+                const module=await import('/ui/delivery.js');window.reads=0;window.stagePosts=0;
+                const state={number:1,revision:'invented-saved-cut',rough_status:'Signed by you',colour_status:'Signed by you',exports:[]};
+                window.fetch=async(url,options)=>{
+                    if(options?.method==='POST'){
+                        if(!url.endsWith('/colour/apply'))throw Error('Unexpected operation');window.stagePosts++;
+                        return new Response(JSON.stringify({message:'Your signed stage approval is recorded.'}));
+                    }
+                    if(++window.reads===1)return new Response(JSON.stringify(state));
+                    return await new Promise(()=>{});
+                };
+                document.body.append(module.renderDelivery({project_id:'invented-recorded-review'},()=>{}));
+            }''')
+            page.get_by_role('button',name='Record the signed colour and sound approval',exact=True).click()
+            expect(page.get_by_role('status')).to_have_text('Your signed stage approval is recorded.')
+            expect(page.get_by_role('button',name='Make the final file',exact=True)).to_be_enabled()
+            assert page.evaluate('()=>[window.reads,window.stagePosts]')==[1,1]
+            assert not errors and len(calls['posts'])==3 and len(posts)==1
+        finally:browser.close()

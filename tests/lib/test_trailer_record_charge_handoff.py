@@ -37,7 +37,6 @@ def test_local_keep_survives_a_held_charge_and_resolution_rebuilds_its_media_fac
     assert nonterminal_reservations(root)==[]
     artifact=json.loads((root/'artifacts/asset_manifest.json').read_text())
     assert [row['path'] for row in artifact['assets']]==[take['path']]
-    cp=json.loads((root/'checkpoint_assets.json').read_text())
-    assert cp['status']=='in_progress' and cp['human_approved'] is False
+    assert not (root/'checkpoint_assets.json').exists()
     assert not voice_panel.send(root,request['request_id'])['success']
     assert len(posts)==1 and len(gets)==1

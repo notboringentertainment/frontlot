@@ -66,6 +66,49 @@ def test_delivery_summary_uses_one_saved_version_for_all_five_reviews(trailer_cu
     assert len(calls['posts'])==3 and len(posts)==1
 
 
+def test_final_file_checks_use_one_current_saved_cut_for_both_signatures(trailer_cut,monkeypatch):
+    from lib import trailer_delivery as delivery,trailer_edit
+    from tests.lib.look_lock_helpers import approve_request
+    root,calls,posts,*_=trailer_cut
+    approve_request(delivery.request_rough(root,trailer_edit.read_revision(root)['edit_revision_sha256']),root)
+    approve_request(delivery.request_colour(root,trailer_edit.read_revision(root)['edit_revision_sha256']),root)
+    reads=[];original=delivery._saved
+    def counted(*args,**kwargs):reads.append(1);return original(*args,**kwargs)
+    monkeypatch.setattr(delivery,'_saved',counted)
+    sentinel={'same_current_material':True}
+    monkeypatch.setattr(delivery,'_file_artifacts',lambda *args,**kwargs:sentinel)
+    assert delivery._artifacts(root,'a'*32) is sentinel
+    assert reads==[1], 'One operation must check one current cut and both genuine signatures, without rebuilding the cut twice.'
+    assert len(calls['posts'])==3 and len(posts)==1
+
+
+@pytest.mark.parametrize('changed_after_approval',[False,True])
+def test_reveal_checks_approved_material_once_and_rechecks_file_bytes_before_finder(tmp_path,monkeypatch,changed_after_approval):
+    import hashlib
+    from lib import trailer_delivery as delivery
+    root=tmp_path/'invented-reveal';root.mkdir();path=root/'trailer.mp4';path.write_bytes(b'invented local bytes')
+    digest=hashlib.sha256(path.read_bytes()).hexdigest()
+    pair={'render_report':{'outputs':[{'path':'trailer.mp4'}],'export_sha256':digest},'final_review':{'status':'pass'}}
+    checked=[];opened=[]
+    def artifacts(*args,**kwargs):
+        checked.append(1)
+        if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:raise ValueError('The final file changed.')
+        return pair
+    def approved(*args,**kwargs):
+        if changed_after_approval:path.write_bytes(b'changed after the signed-material check')
+        return 'Approved by you'
+    monkeypatch.setattr(delivery,'_artifacts',artifacts)
+    monkeypatch.setattr(delivery,'_approval_state',approved)
+    monkeypatch.setattr(delivery.subprocess,'run',lambda args,**kwargs:opened.append(args))
+    if changed_after_approval:
+        with pytest.raises(ValueError,match='changed|fresh look'):delivery.reveal(root,'a'*32)
+        assert opened==[]
+    else:
+        assert 'shown in Finder' in delivery.reveal(root,'a'*32)['message']
+        assert opened==[['open','-R',str(path)]]
+    assert checked==[1], 'Reveal must reuse the exact material it just checked, then hash the real file again.'
+
+
 def final_answers(questions):
     return {'story_sha256':questions['story_sha256'],'canon_pass':{
         'status':'pass','unresolved_flags':[],
@@ -75,7 +118,7 @@ def final_answers(questions):
         'tone':{'must_never_feel_like_verdict':'The invented test keeps the supplied story’s waiting mood.'}}}
 
 
-def test_five_real_signatures_finish_the_trimmed_trailer_and_nothing_else(trailer_cut):
+def test_five_real_signatures_finish_the_trimmed_trailer_and_nothing_else(trailer_cut,monkeypatch):
     from lib import trailer_delivery as delivery,trailer_edit,receipts
     from lib.checkpoint import get_completed_stages
     from tests.lib.look_lock_helpers import approve_request
@@ -114,4 +157,16 @@ def test_five_real_signatures_finish_the_trimmed_trailer_and_nothing_else(traile
     row=receipts.verified_approvals(root,'artifact_review')[-1]
     assert row['record']['final_story_review']==answers
     assert 'canon_pass' not in item['final_review']['checks'], 'A technical report must never claim the writer’s findings.'
+    assert delivery.snapshot(root)['outstanding_requirements']==[]
+    opened=[];original_run=delivery.subprocess.run
+    def local_run(args,*values,**options):
+        if args[:2]==['open','-R']:
+            opened.append(args[2]);return delivery.subprocess.CompletedProcess(args,0)
+        return original_run(args,*values,**options)
+    monkeypatch.setattr(delivery.subprocess,'run',local_run)
+    reads=[];original_artifacts=delivery._artifacts
+    def counted(*args,**kwargs):reads.append(1);return original_artifacts(*args,**kwargs)
+    monkeypatch.setattr(delivery,'_artifacts',counted)
+    assert 'shown in Finder' in delivery.reveal(root,item['id'])['message']
+    assert opened==[str(root/item['render_report']['outputs'][0]['path'])] and reads==[1]
     assert len(calls['posts'])==3 and len(posts)==1

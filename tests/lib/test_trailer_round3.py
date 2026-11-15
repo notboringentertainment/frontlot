@@ -34,10 +34,13 @@ def test_historical_trailer_signature_still_blocks_bare_flag(trailer,monkeypatch
     from lib.receipts import verified_approvals
     old=verified_approvals(trailer,'pipeline_migration')[-1]
     pin_project(trailer,'1.5',supersedes=old['receipt_id'])  # Simulate a previously signed downgrade, bypassing request handling.
-    with pytest.raises(checkpoint.CheckpointValidationError,match="PIPELINE PIN VIOLATION:.*signed pin"):
+    before={p:p.read_bytes() for p in trailer.glob('checkpoint_*.json')}
+    with pytest.raises(checkpoint.CheckpointValidationError,match="approval history can't be verified"):
         checkpoint.write_checkpoint(trailer.parent,'p','canon_ingest','completed',{},human_approved=True)
     from lib.trailer_contract import signed_trailer_pin
-    assert signed_trailer_pin(trailer).version == '1.6'
+    with pytest.raises(ValueError,match="approval history can't be verified"):
+        signed_trailer_pin(trailer)
+    assert {p:p.read_bytes() for p in trailer.glob('checkpoint_*.json')}==before
     from backlot.state import load_board_state
     s=load_board_state(trailer)
     assert s['is_trailer']

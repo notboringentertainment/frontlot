@@ -783,20 +783,19 @@ def write_checkpoint(
             pipeline_type = marker["pipeline_type"]
         if not style_playbook and marker.get("style_playbook"):
             style_playbook = marker["style_playbook"]
-    if isinstance(marker, dict) and marker.get("production_kind") == "trailer":
-        from lib.trailer_contract import signed_trailer_pin
-        if signed_trailer_pin(pipeline_dir / project_id) is None:
-            raise CheckpointValidationError("This trailer setup has not been signed. No stage can begin.")
     _validate_style_playbook(style_playbook)
 
     # The manifest a project runs under is its signed pin (lib.pipeline_pin);
     # ``pipeline_type`` stays the bare name in the checkpoint and the tuple
     # {name, version, manifest_digest} rides alongside it.
     from lib.trailer_contract import signed_trailer_pin
-    trailer_pin = signed_trailer_pin(pipeline_dir / project_id)
+    try:
+        trailer_pin = signed_trailer_pin(pipeline_dir / project_id)
+    except Exception as exc:
+        raise CheckpointValidationError(str(exc)) from exc
     if trailer_pin is None:
         from lib.trailer_contract import checkpoint_trailer_evidence
-        if checkpoint_trailer_evidence(pipeline_dir / project_id):
+        if (isinstance(marker, dict) and marker.get("production_kind") == "trailer") or checkpoint_trailer_evidence(pipeline_dir / project_id):
             raise CheckpointValidationError("This trailer setup has not been signed. No stage can begin.")
     if trailer_pin is not None:
         pipeline_type = trailer_pin.ref
@@ -1140,16 +1139,23 @@ def _project_invalidation(pipeline_dir: Path, project_id: str, checkpoint: dict[
 
 
 def get_completed_stages(
-    pipeline_dir: Path, project_id: str, pipeline_type: str | None = None
+    pipeline_dir: Path, project_id: str, pipeline_type: str | None = None,
+    *, before_stage: str | None = None,
 ) -> list[str]:
     """Return list of stages that have a completed checkpoint.
 
     When pipeline_type is provided, only checks stages defined in that
     pipeline's manifest — preventing false positives from leftover
     checkpoints of a different pipeline type.
+    before_stage limits the read to its predecessors; every returned
+    completion still receives the same signature and invalidation checks.
     """
     ref = _effective_ref(pipeline_dir, project_id, pipeline_type) if pipeline_type else None
     stages_to_check = get_pipeline_stages(ref or pipeline_type)
+    if before_stage is not None:
+        if before_stage not in stages_to_check:
+            raise ValueError("Choose a stage in this production's signed review list.")
+        stages_to_check = stages_to_check[:stages_to_check.index(before_stage)]
     invalidated = invalidated_stages(pipeline_dir, project_id, pipeline_type) if pipeline_type else {}
     completed = []
     for stage in stages_to_check:

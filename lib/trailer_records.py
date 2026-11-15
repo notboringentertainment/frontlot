@@ -1,6 +1,6 @@
 """Canonical facts projected from saved paper and verified media decisions.
 
-These are incomplete stage records, never approvals. The saved paper and
+These are factual records, never approvals. The saved paper and
 signed receipts remain the authority and make interrupted projection replayable.
 """
 import copy
@@ -148,10 +148,9 @@ def sync_media(root):
             kept.append({'take':take,'approval_receipt_id':row['receipt_id']})
         artifact={'version':'1.0','assets':assets,'metadata':{'take_records':kept,'unusable_takes':unusable,
             'signed_settings':_settings(root),'approval':'These are verified take decisions. No media stage is approved.'}}
-        from lib.trailer_contract import signed_trailer_pin
-        from lib.trailer_policy import trimmed
-        if trimmed(signed_trailer_pin(root)):_write_artifact(root,'asset_manifest',artifact)
-        else:_publish(root,'assets','asset_manifest',artifact)
+        # A keep records media facts. It neither starts nor completes a
+        # collection-review stage, including under an earlier signed pin.
+        _write_artifact(root,'asset_manifest',artifact)
 
 
 def after_signature(root,kind):

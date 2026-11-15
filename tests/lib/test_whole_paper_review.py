@@ -25,13 +25,14 @@ def test_whole_paper_signature_is_exact_and_does_not_complete_stages(tmp_path):
     assert receipt['scope']=='trailer-paper' and review.state(root)=='Signed by you'
     from lib.trailer_contract import outstanding_stage_reviews
     remaining=outstanding_stage_reviews(root,'edit')
-    assert any('Lines and title cards: Your whole paper-cut signature is recorded.' in line for line in remaining)
-    assert any('Shot list: Your whole paper-cut signature is recorded.' in line for line in remaining)
+    assert any(line.startswith('Paper cut:') and 'record that signed review' in line for line in remaining)
+    assert not any(line.startswith(('Lines and title cards:','Shot list:')) for line in remaining)
     assert receipts.verified_generation_receipts(root)==[]
     import json
-    for stage in ('script','scene_plan'):
-        cp=json.loads((root/f'checkpoint_{stage}.json').read_text())
-        assert cp['status']=='in_progress' and not cp['human_approved']
+    cp=json.loads((root/'checkpoint_script.json').read_text())
+    assert cp['status']=='in_progress' and not cp['human_approved']
+    assert set(cp['artifacts'])=={'script','scene_plan'}
+    assert not (root/'checkpoint_scene_plan.json').exists()
     # Selecting media or changing the later cut is not a rewrite of this paper.
     edited=copy.deepcopy(saved);edited['local_preview_note']='A local cut was prepared.'
     trailer_edit.save_edit_revision(root,edited,saved['edit_revision_sha256'])
