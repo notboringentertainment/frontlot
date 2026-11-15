@@ -59,6 +59,8 @@ def test_delivery_buttons_are_spaced_and_next_action_follows_the_main_file(voice
                 with page.expect_response(lambda response:response.url==endpoint and response.request.method=='GET'):
                     panel.get_by_role('button',name='Refresh delivery',exact=True).click()
                 expect(panel.get_by_role('status')).to_contain_text('Rough cut: '+rough+'.')
+                if not final:
+                    expect(panel.get_by_role('status')).to_contain_text('Make a final file from the signed saved cut.' if rough=='Signed by you' else 'Review and sign the saved rough cut before making a final file.')
                 for width in (1440,900):
                     page.set_viewport_size({'width':width,'height':1000})
                     a=panel.get_by_role('button',name='Review and sign the saved rough cut',exact=True).bounding_box()
@@ -87,7 +89,7 @@ def test_finder_feedback_keeps_the_plain_sentence_and_omits_the_computer_path(vo
     from lib import trailer_delivery as delivery
     root,posts,gets,served=setup_delivery(voice_world,monkeypatch)
     served['value']=snapshot('Signed by you','Approved by you');revealed=[]
-    words='The approved trailer is saved in this production’s delivery folder and has been shown in Finder.'
+    words='This approved file has been shown in Finder.'
     def reveal(project,identity):
         assert project==root and identity=='invented-final';revealed.append(identity)
         return {'message':words,'path':str(root/'artifacts/delivery/trailer.mp4')}
@@ -103,8 +105,9 @@ def test_finder_feedback_keeps_the_plain_sentence_and_omits_the_computer_path(vo
             page.route('**/*',route);page.goto(f'{url}/p/{root.name}#k=invented-browser-proof')
             panel=page.get_by_role('region',name='Trailer delivery',exact=True)
             panel.get_by_role('button',name='Show approved file in Finder',exact=True).click()
-            expect(panel.get_by_role('note')).to_have_text('The approved trailer has been shown in Finder.')
-            expect(panel.get_by_role('note')).not_to_contain_text(str(root))
+            expect(panel.locator('[data-delivery]').first.get_by_role('note')).to_have_text(words)
+            expect(panel.locator('[data-delivery]').first.get_by_role('note')).not_to_contain_text(str(root))
+            expect(panel.locator(':scope > [role="note"]')).to_be_empty()
             expect(panel.get_by_role('status')).to_contain_text('Current final file: Approved by you.')
             assert revealed==['invented-final'] and posts==[] and gets==[] and outside==[] and not errors
         finally:browser.close()
