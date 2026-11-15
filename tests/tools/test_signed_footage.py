@@ -35,7 +35,14 @@ def film(tmp_path, monkeypatch):
     monkeypatch.setattr('lib.paths.PROJECTS_DIR', tmp_path)
     monkeypatch.setattr('lib.events.PROJECTS_DIR', tmp_path)
     monkeypatch.setenv('FAL_KEY', 'invented-only')
-    root = create_trailer(tmp_path, 'An invented gallery trailer', 4, 50)
+    # These original footage/cutting/delivery contracts exercise the signed
+    # full trailer definition they were written for. New trailer-test cases
+    # explicitly sign the update rather than silently reusing its approvals.
+    import lib.trailer_edit as trailer_module
+    with monkeypatch.context() as pinned:
+        pinned.setattr(trailer_module,'CURRENT_VERSION','1.6')
+        pinned.setattr(trailer_module,'CURRENT_REF','authored-film@1.6')
+        root = create_trailer(tmp_path, 'An invented gallery trailer', 4, 50)
     looks.approve_request(json.loads(next((root/'.gate-requests').glob('*.json')).read_text()), root)
     config = {'version':'1.4', 'budget_usd_cap':50, 'wall_time_minutes':60,
         'cast_cap':{'characters':1,'locations':1},
@@ -129,7 +136,9 @@ def test_one_signature_one_clip_and_signed_take_in_timeline(film, provider):
     assert edit['timeline']['picture'][0]['take_id'] == first['take_id']
     assert edit['timeline']['picture'][0]['kind'] == 'footage'
     assert edit['revision_history'][-1]['timeline']['picture'][0]['kind'] == 'placeholder'
-    assert not (root/'checkpoint_assets.json').exists()
+    facts=json.loads((root/'checkpoint_assets.json').read_text())
+    assert facts['status']=='in_progress' and facts['human_approved'] is False
+    assert facts['artifacts']['asset_manifest']['assets'][0]['path']==first['path']
 
 
 @pytest.mark.parametrize('field,value', [('prompt','Another action.'),('model','another-model'),
@@ -283,7 +292,9 @@ def test_unsigned_rows_do_not_block_or_borrow_a_signed_take_decision(film,provid
     assert sp.inspect_shot(root,shot)['takes'][0]['standing']=='chosen'
     sp.select(root,shot,take['take_id'],user_note='Apply a real signed choice.')
     assert workspace().require_accepted(root,shot,take['take_id'])['take_id']==take['take_id']
-    assert not (root/'checkpoint_assets.json').exists()
+    facts=json.loads((root/'checkpoint_assets.json').read_text())
+    assert facts['status']=='in_progress' and facts['human_approved'] is False
+    assert facts['artifacts']['asset_manifest']['metadata']['take_records'][0]['take']['take_id']==take['take_id']
 
 
 def test_signed_decline_is_final_even_after_a_later_signed_accept_record(film,provider):
@@ -449,7 +460,8 @@ def test_accept_preserves_later_timing_and_marks_downstream_review(film,provider
     assert result['timeline']['sound']==saved['timeline']['sound']
     assert result['timeline']['picture'][0]['source_in_frame']==12
     assert result['timeline']['picture'][0]['source_out_frame']==108
-    assert result['paper_cut_pending'] and 'fresh look' in result['timing_message']
+    assert not result.get('paper_cut_pending')
+    assert result['paper_cut']==saved['paper_cut']
     assert result['revision_history'][-1]['edit_revision_sha256']==saved['edit_revision_sha256']
 
 

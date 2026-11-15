@@ -18,13 +18,14 @@ def test_saving_paper_writes_exact_unapproved_canonical_records(tmp_path,with_wo
         draft['cards']=[{'text':' THIS WINTER ','start_frame':48,'duration_frames':24}]
     before=receipts.verified_approvals(root,'artifact_review')
     saved=trailer_edit.save_revision(root,draft,None)
-    for stage,name in [('script','script'),('scene_plan','scene_plan')]:
+    for stage,name in [('script','script'),('script','scene_plan')]:
         cp=json.loads((root/f'checkpoint_{stage}.json').read_text())
         artifact=cp['artifacts'][name]
         validate_artifact(name,artifact)
         assert artifact==json.loads((root/'artifacts'/f'{name}.json').read_text())
         assert artifact['metadata']['paper_cut']==saved['paper_cut']
         assert cp['status']=='in_progress' and cp['human_approved'] is False
+    assert not (root/'checkpoint_scene_plan.json').exists()
     script=json.loads((root/'artifacts/script.json').read_text())
     assert [r['text'] for r in script['sections']]==[r['text'] for r in draft['lines']+draft['cards']]
     assert [(r['start_seconds'],r['end_seconds']) for r in script['sections']]==[(r['start_frame']/24,(r['start_frame']+r['duration_frames'])/24) for r in draft['lines']+draft['cards']]

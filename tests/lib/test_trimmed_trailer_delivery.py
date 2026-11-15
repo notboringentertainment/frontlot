@@ -67,7 +67,11 @@ def test_five_real_signatures_finish_the_trimmed_trailer_and_nothing_else(traile
     from lib import trailer_delivery as delivery,trailer_edit,receipts
     from lib.checkpoint import get_completed_stages
     from tests.lib.look_lock_helpers import approve_request
-    root,calls,posts,*_=trailer_cut
+    # The smaller cutting fixture deliberately has an uncovered final second
+    # and a pure-tone effect. Use the delivery fixture's full music bed,
+    # distinct noise effect and three genuinely signed cards for this pass.
+    from tests.backlot.test_delivery_browser import delivery_cut
+    root,calls,posts=delivery_cut.__wrapped__(trailer_cut)
     gate=delivery.request_rough(root,trailer_edit.read_revision(root)['edit_revision_sha256']);approve_request(gate,root)
     assert delivery.complete_stage(root,'edit')=='Your signed stage approval is recorded.'
     revision=trailer_edit.read_revision(root)['edit_revision_sha256']

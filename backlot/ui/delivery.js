@@ -8,9 +8,9 @@ function storyAnswers(questions){
  const controls=[];
  function check(words){const input=el('input',{type:'checkbox'});controls.push(input);node.append(el('label',{style:'display:block;margin:12px 0'},input,el('span',{style:'white-space:pre-wrap'},words)));return input;}
  const lines=questions.protected_lines.map(line=>({line,input:check('I heard this exact protected line, word for word: '+line)}));
- const locks=questions.locks.map(row=>({...row,input:check('This story fact is honoured: '+row.wording)}));
+ const locks=questions.locks.map(row=>({...row,input:check((row.spoiler?'This protected spoiler stays out of the trailer: ':'This story fact is honoured: ')+row.wording)}));
  const entities=questions.entities.map(subject=>({subject,input:check('This character or place stays consistent with the story: '+subject)}));
- node.append(el('p',{style:'white-space:pre-wrap'},'Story tone: '+JSON.stringify(questions.tone)));
+ node.append(el('p',{style:'white-space:pre-wrap'},'Story tone: '+Object.values(questions.tone).flat().join('; ')));
  const tone=el('textarea',{'aria-label':'How this final file keeps the story’s tone',rows:'3'});
  node.append(el('label',{},'In your words, how does this final file keep the story’s tone?',tone));
  return {node,read(){
@@ -58,7 +58,8 @@ export function renderDeliverySigning(detail,actions,onReturn){
   held.words.append(el('h3',{},'Your final story comparison'),
    el('p',{},'These findings are part of the exact-file signature, separate from the technical verdict.'),
    ...check.protected_lines.map(row=>el('p',{style:'white-space:pre-wrap'},'You confirm this protected line is heard verbatim: '+row.line)),
-   ...check.locks.map(row=>el('p',{},'Story finding: '+row.verdict)),
+   ...check.locks.map(row=>{const fact=packet.final_story_questions?.locks.find(q=>q.id===row.lock_id);return el('p',{style:'white-space:pre-wrap'},(fact?.spoiler?'You confirm this protected spoiler stays out of the trailer: ':'You confirm this story fact is honoured: ')+(fact?.wording||'Reopen the story comparison to read this finding.'));}),
+   ...check.continuity_spotchecks.map(row=>el('p',{},'You confirm this character or place stays consistent: '+row.subject)),
    el('p',{style:'white-space:pre-wrap'},'Your tone finding: '+check.tone.must_never_feel_like_verdict));
  }
  const sampleKey=JSON.stringify(packet.samples||[]);

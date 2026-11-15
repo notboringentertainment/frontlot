@@ -111,3 +111,19 @@ def test_a_signed_no_is_not_a_paper_approval(trimmed):
         'artifact_type':'trailer_paper_cut','artifact_version':'1.0','artifact_digest':digest,'migration_status':'reviewed'})
     assert review.state(trimmed)=='Needs a fresh look'
     with pytest.raises(ValueError,match='fresh review'):review.complete(trimmed)
+
+
+def test_final_story_answers_cannot_invent_a_missing_protected_voice(trimmed):
+    from lib.trailer_final_story import questions,validate
+    from tests.lib.test_trimmed_trailer_delivery import final_answers
+    checked_paper(trimmed)
+    asked=questions(trimmed)
+    assert asked['protected_lines']==['Keep the light on.']
+    with pytest.raises(ValueError,match='final story comparison'):validate(trimmed,None)
+    answer=final_answers(asked)
+    answer['canon_pass']['protected_lines'][0]['audible']=False
+    with pytest.raises(ValueError,match='heard verbatim'):validate(trimmed,answer)
+    answer=final_answers(asked)
+    with pytest.raises(ValueError,match='no kept spoken take.*Keep the light on'):validate(trimmed,answer)
+    answer['story_sha256']='a'*64
+    with pytest.raises(ValueError,match='story changed'):validate(trimmed,answer)

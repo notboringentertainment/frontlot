@@ -100,7 +100,9 @@ def signing_packet(root,request):
             raise ValueError(reason)
         item=delivery.read_export(root,request['entity_id'])
         delivery._artifacts(root,request['entity_id'])
-        return {'delivery_stage':'compose','final_story_review':(request.get('approval_record') or {}).get('final_story_review'),
+        story_review=(request.get('approval_record') or {}).get('final_story_review')
+        return {'delivery_stage':'compose','final_story_review':story_review,
+                'final_story_questions':delivery.story_questions(root) if story_review else None,
                 'samples':delivery.frame_samples(root,item),'play_url':f'/api/project/{root.name}/delivery/{item["id"]}/play','review':item['final_review'],
                 'messages':item['final_review']['issues_found']}
     except (ValueError,OSError,KeyError) as e:return {'packet_error':True,'error':str(e)}

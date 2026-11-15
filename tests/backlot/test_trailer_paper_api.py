@@ -32,7 +32,8 @@ def test_start_save_auth_and_no_stage_approval(app,tmp_path):
     # Saving now projects the paper into canonical draft records. Neither is
     # a stage approval, and no review receipt is created by this bookkeeping.
     records=[json.loads(path.read_text()) for path in root.glob('checkpoint*')]
-    assert {row['stage'] for row in records}=={'script','scene_plan'}
+    assert {row['stage'] for row in records}=={'script'}
+    assert set(records[0]['artifacts'])=={'script','scene_plan'}
     assert all(row['status']=='in_progress' and row['human_approved'] is False for row in records)
     from lib.receipts import verified_approvals
     assert verified_approvals(root,'artifact_review')==[]

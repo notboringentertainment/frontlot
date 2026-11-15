@@ -20,7 +20,8 @@ def questions(root):
     material(root,canon)
     return {'story_sha256':record_sha256(canon),
             'protected_lines':[row['line'] for row in canon.get('protected_lines',[])],
-            'locks':[{'id':row['id'],'wording':row.get('decision') or row.get('summary') or row['id']} for row in canon.get('locks',[])],
+            'locks':[{'id':row['id'],'wording':row.get('decision') or row.get('summary') or row['id'],
+                      'spoiler':row.get('spoiler') is True} for row in canon.get('locks',[])],
             'entities':sorted(_entity_names(canon)),
             'tone':canon.get('tone') or {'tone_words':['Compare with the exact approved story.']}}
 
