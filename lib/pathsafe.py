@@ -162,18 +162,15 @@ def store_content_addressed(
         asset_id = sha256_file(staging_path)
 
     final_path = objects_dir / f"{asset_id}{ext}"
-    try:
-        if final_path.exists():
-            if sha256_file(final_path) != asset_id:
-                raise PathSafetyError(
-                    f"existing object {final_path} does not match its content hash"
-                )
-        else:
-            atomic_move(source, final_path)
-    finally:
-        for leftover in {source, staging_path}:
-            try:
-                Path(leftover).unlink()
-            except FileNotFoundError:
-                pass
+    if not final_path.exists():
+        atomic_move(source, final_path)
+    if sha256_file(final_path) != asset_id:
+        raise PathSafetyError('The stored object does not match its content hash. Its source was kept.')
+    # Discard only after a verified destination exists. Failure must retain the
+    # original download, even when the normalized copy could not be stored.
+    for leftover in {source, staging_path}:
+        try:
+            Path(leftover).unlink()
+        except FileNotFoundError:
+            pass
     return asset_id, final_path

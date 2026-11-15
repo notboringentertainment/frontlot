@@ -30,6 +30,7 @@ React scene stack in ``remotion-composer/``.
 
 from __future__ import annotations
 
+from lib import programs
 import json
 import math
 import re
@@ -171,7 +172,7 @@ class RemotionCaptionBurn(BaseTool):
 
     def _remotion_available(self) -> bool:
         return (
-            shutil.which("npx") is not None
+            programs.which("npx") is not None
             and self._find_remotion_root() is not None
         )
 

@@ -10,6 +10,7 @@ a stale heartbeat or an exceeded wall-time budget is never reclaimed.
 
 from __future__ import annotations
 
+from lib import programs
 import contextlib
 import fcntl
 import json
@@ -48,7 +49,7 @@ def process_start_time(pid: int) -> Optional[str]:
         except psutil.Error:
             return None
     try:
-        out = subprocess.run(
+        out = programs.run(
             ["ps", "-o", "lstart=", "-p", str(pid)],
             capture_output=True,
             text=True,

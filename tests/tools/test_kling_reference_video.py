@@ -461,7 +461,9 @@ def test_failure_after_acceptance_is_pending_billing(env, stage):
     assert tracker.budget_reserved_usd == pytest.approx(res["reserved_usd"], abs=1e-4)
     assert tracker.budget_remaining_usd == pytest.approx(tracker.budget_total_usd-res["reserved_usd"], abs=1e-4)
     assert not (env / "assets" / "video" / "shot.mp4").exists()
-    assert not (env / ".staging").exists() or not any((env / ".staging").iterdir())
+    staged=list((env / '.staging').glob('*'))
+    if stage=='wait':assert not staged
+    else:assert staged  # Downloaded or partial paid evidence is quarantined.
     with pytest.raises(IndeterminatePaidCallError, match="pending_billing"):
         resume_check(env)
 

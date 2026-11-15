@@ -7,6 +7,7 @@ requires ffmpeg/ffprobe on PATH.
 
 from __future__ import annotations
 
+from lib import programs
 import json
 import shutil
 import subprocess
@@ -34,11 +35,11 @@ def probe_duration(file_path: str | Path) -> float | None:
     Use this from other tools that just need the duration without
     going through the full tool execute() flow.
     """
-    ffprobe = shutil.which("ffprobe")
+    ffprobe = programs.which("ffprobe")
     if not ffprobe:
         return None
     try:
-        result = subprocess.run(
+        result = programs.run(
             [
                 ffprobe,
                 "-v", "quiet",
@@ -101,7 +102,7 @@ class AudioProbe(BaseTool):
     side_effects = []
 
     def get_status(self) -> ToolStatus:
-        if shutil.which("ffprobe"):
+        if programs.which("ffprobe"):
             return ToolStatus.AVAILABLE
         return ToolStatus.UNAVAILABLE
 
@@ -113,14 +114,14 @@ class AudioProbe(BaseTool):
         if not input_path.exists():
             return ToolResult(success=False, error=f"File not found: {input_path}")
 
-        ffprobe = shutil.which("ffprobe")
+        ffprobe = programs.which("ffprobe")
         if not ffprobe:
             return ToolResult(success=False, error="ffprobe not found on PATH")
 
         start = time.time()
 
         try:
-            result = subprocess.run(
+            result = programs.run(
                 [
                     ffprobe,
                     "-v", "quiet",

@@ -1,4 +1,5 @@
 """Saved trailer finish and checks of the actual encoded picture and sound."""
+from lib import programs
 import json,math,subprocess
 from pathlib import Path
 import numpy as np
@@ -56,14 +57,14 @@ def decode_audio(path):
     path=Path(path)
     if path.is_symlink() or not path.is_file():
         raise ValueError('Choose an existing local file from a kept sound take before preparing playback.')
-    result=subprocess.run(['ffmpeg','-v','error','-i',str(path),'-map','0:a:0','-ar','48000','-ac','2','-f','f32le','pipe:1'],capture_output=True,timeout=180)
+    result=programs.run(['ffmpeg','-v','error','-i',str(path),'-map','0:a:0','-ar','48000','-ac','2','-f','f32le','pipe:1'],capture_output=True,timeout=180)
     if result.returncode:raise ValueError('This file has no readable sound. Choose a kept sound take and prepare playback again.')
     data=np.frombuffer(result.stdout,dtype='<f4').reshape(-1,2).copy()
     if not np.isfinite(data).all():raise ValueError('This sound contains invalid samples. Choose another kept take.')
     return data
 
 def loudness_stats(path):
-    result=subprocess.run(['ffmpeg','-hide_banner','-nostats','-i',str(path),'-vn','-af','loudnorm=I=-16:LRA=11:TP=-2:print_format=json','-f','null','-'],capture_output=True,text=True,timeout=180)
+    result=programs.run(['ffmpeg','-hide_banner','-nostats','-i',str(path),'-vn','-af','loudnorm=I=-16:LRA=11:TP=-2:print_format=json','-f','null','-'],capture_output=True,text=True,timeout=180)
     if result.returncode:raise ValueError('The sound could not be measured. Check the kept files and prepare playback again.')
     start=result.stderr.rfind('{');end=result.stderr.rfind('}')
     try:return json.loads(result.stderr[start:end+1])
@@ -169,7 +170,7 @@ def _effect_check(actual,ref,number,start_frame=0,*,nuisance=()):
 
 def review_output(path,refs):
     path=Path(path);stats=loudness_stats(path)
-    probe=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams','-show_format','-of','json',str(path)],timeout=30))
+    probe=json.loads(programs.check_output(['ffprobe','-v','error','-show_streams','-show_format','-of','json',str(path)],timeout=30))
     audio=next((s for s in probe['streams'] if s['codec_type']=='audio'),{})
     n=refs['target_frames']*2000;actual=_fit(decode_audio(path),n)
     speech=_fit(decode_audio(refs['speech_path']),n);bed=_fit(decode_audio(refs['background_path']),n)

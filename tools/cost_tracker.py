@@ -747,6 +747,12 @@ def reserve_paid_call(
     """
     from lib.shot_allowance import resolve
 
+    # This boundary also serves direct callers and probes. No media hold may
+    # precede the local filing check, regardless of which hint supplied its kind.
+    if kind in ('video','audio') or (output_hint or {}).get('kind') in ('video','audio'):
+        from lib.programs import preflight
+        preflight('ffprobe')
+
     guard = resolve(project_root, inputs, kind=kind) if inputs is not None or kind in ('image','video') else None
     with reservation_lock(project_root):
         if guard is not None:
@@ -779,6 +785,44 @@ def reserve_paid_call(
                 'state':'failed','actual_usd':0.0})
             raise
     return reservation_id
+
+
+def retain_download(project_root: Path, reservation_id: str, staging: Path) -> None:
+    """Locate quarantined paid bytes before download; never a generation receipt.
+
+    Registering before the download also covers a crash immediately after the
+    last byte arrives. These paths confer no approval, usability or charge.
+    """
+    from lib import pathsafe
+    root=Path(project_root).resolve()
+    path=pathsafe.resolve_input(staging,root)
+    if path.parent != root/pathsafe.STAGING_DIRNAME:
+        raise ValueError('A retained download must stay in this production’s staging folder.')
+    with reservation_lock(root):
+        reservation=load_reservations(root)[reservation_id]
+        paths=list(reservation.get('retained_downloads') or [])
+        relative=path.relative_to(root).as_posix()
+        if relative not in paths:
+            paths.append(relative)
+            _append_reservation_event(root,{'reservation_id':reservation_id,'retained_downloads':paths})
+
+
+def retained_download_paths(project_root: Path, reservation: dict) -> list[Path]:
+    """Existing, nonempty quarantined downloads, never usable assets.
+
+    Damaged evidence must not take account review down or release its hold.
+    """
+    from lib import pathsafe
+    root=Path(project_root).resolve()
+    found=[]
+    for value in reservation.get('retained_downloads') or []:
+        try:
+            path=pathsafe.resolve_input(value,root)
+            if path.parent==root/pathsafe.STAGING_DIRNAME and path.is_file() and path.stat().st_size:
+                found.append(path)
+        except (pathsafe.PathSafetyError,OSError,TypeError,ValueError):
+            continue
+    return found
 
 
 def attach_request_id(project_root: Path, reservation_id: str, provider_request_id: str) -> None:

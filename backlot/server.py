@@ -8,6 +8,7 @@ the board does not mint approvals or expose a general operation runner.
 
 from __future__ import annotations
 
+from lib import programs
 import asyncio
 import base64
 import json
@@ -753,7 +754,7 @@ def _thumbnail_for(source: Path, width: int) -> Optional[Path]:
         tmp = THUMB_CACHE_DIR / f"{key}.{uuid.uuid4().hex[:8]}.tmp.jpg"
         if is_video:
             import subprocess
-            result = subprocess.run(
+            result = programs.run(
                 ["ffmpeg", "-y", "-loglevel", "error", "-ss", "1.5",
                  "-i", str(source), "-frames:v", "1",
                  "-vf", f"scale={width}:-2", str(tmp)],

@@ -6,6 +6,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+from lib import programs
 
 
 UNREADABLE = "paid-call ledger unreadable"
@@ -68,7 +69,7 @@ def _run(a, req_dir: Path, log: Path, state: dict) -> int:
         except Exception:
             before = None
     with open(log, "wb") as fh:
-        code = subprocess.run(rec["argv"], cwd=a.repo, stdout=fh, stderr=subprocess.STDOUT).returncode
+        code = programs.run(rec["argv"], cwd=a.repo, stdout=fh, stderr=subprocess.STDOUT).returncode
     state["code"] = code
     if rec.get("paid"):
         try:

@@ -30,6 +30,7 @@ the agent to re-ask the user rather than substituting a different engine.
 
 from __future__ import annotations
 
+from lib import programs
 import json
 import hashlib
 import logging
@@ -231,9 +232,7 @@ class VideoCompose(BaseTool):
 
     def _remotion_available(self) -> bool:
         """Check if Remotion rendering is available (requires npx + composer project + node_modules)."""
-        import shutil as _shutil
-
-        if not _shutil.which("npx"):
+        if not programs.which("npx"):
             return False
         composer_dir = Path(__file__).resolve().parent.parent.parent / "remotion-composer"
         if not composer_dir.exists() or not (composer_dir / "package.json").exists():
@@ -246,9 +245,7 @@ class VideoCompose(BaseTool):
 
     def _ffmpeg_available(self) -> bool:
         """Check if the ffmpeg binary is actually resolvable on PATH."""
-        import shutil as _shutil
-
-        return bool(_shutil.which("ffmpeg"))
+        return bool(programs.which("ffmpeg"))
 
     def _hyperframes_available(self) -> bool:
         """Check if HyperFrames rendering is available.
@@ -375,7 +372,7 @@ class VideoCompose(BaseTool):
         needed, keeping the concat segment layout consistent.
         """
         try:
-            out = subprocess.check_output(
+            out = programs.check_output(
                 [
                     "ffprobe", "-v", "error",
                     "-select_streams", "a",
@@ -1111,7 +1108,7 @@ class VideoCompose(BaseTool):
             except (OSError, PermissionError):
                 # Some Windows junctions need rmdir
                 import subprocess as _sp
-                _sp.run(["cmd", "/c", "rmdir", str(staging_dir)], check=True)
+                programs.run(["cmd", "/c", "rmdir", str(staging_dir)], check=True)
 
         staging_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1862,7 +1859,7 @@ class VideoCompose(BaseTool):
         types, and transitions using React-based frame-accurate rendering.
         Accepts edit_decisions (with resolved file paths) or raw composition_data.
         """
-        if not shutil.which("npx"):
+        if not programs.which("npx"):
             return ToolResult(
                 success=False,
                 error="npx not found. Install Node.js to use Remotion rendering.",
@@ -2215,7 +2212,7 @@ class VideoCompose(BaseTool):
                 "ffprobe", "-v", "quiet", "-print_format", "json",
                 "-show_format", "-show_streams", str(output_path),
             ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            proc = programs.run(cmd, capture_output=True, text=True, timeout=30)
             if proc.returncode == 0:
                 probe_data = json.loads(proc.stdout)
                 fmt = probe_data.get("format", {})
@@ -2310,7 +2307,7 @@ class VideoCompose(BaseTool):
                         "-frames:v", "1", "-q:v", "2",
                         str(frame_path),
                     ]
-                    subprocess.run(cmd, capture_output=True, timeout=15)
+                    programs.run(cmd, capture_output=True, timeout=15)
                     if frame_path.exists():
                         frame_paths.append(str(frame_path))
 
@@ -2351,7 +2348,7 @@ class VideoCompose(BaseTool):
                     "ffmpeg", "-i", str(output_path),
                     "-af", "volumedetect", "-f", "null", "-",
                 ]
-                proc = subprocess.run(
+                proc = programs.run(
                     cmd, capture_output=True, text=True, timeout=60
                 )
                 stderr = proc.stderr or ""
@@ -2506,7 +2503,7 @@ class VideoCompose(BaseTool):
                         "-show_streams", "-select_streams", "s",
                         str(output_path),
                     ]
-                    proc = subprocess.run(
+                    proc = programs.run(
                         cmd, capture_output=True, text=True, timeout=15
                     )
                     if proc.returncode == 0:

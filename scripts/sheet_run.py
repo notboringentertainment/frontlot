@@ -34,6 +34,7 @@ from typing import Any, Callable, Optional
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+from lib import programs
 
 from lib.run_common import (  # noqa: E402
     REQUEST_DIRNAME, EXIT_INPUT_CHANGED, Expectations, InputChanged, RunError, gate_command, parse_expectations, read_request, request_id_for,
@@ -433,7 +434,7 @@ def run_sheet(
             pass
         paths = [str(root / "canon" / "visual" / "objects" / f"{r['asset_id']}.png") for r in sheet.values()]
         if open_images and sys.platform == "darwin":
-            subprocess.run(["open", "-a", "Preview", *paths], check=False)
+            programs.run(["open", "-a", "Preview", *paths], check=False)
         _log(out, "Images:\n  " + "\n  ".join(paths))
         res = _pending(root, entity_id, req_id, out, "")
         return {"entity_id": entity_id, "revision": rev, "request_id": req_id, "roles": results, "paths": paths, "command": res["command"]}

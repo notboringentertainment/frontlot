@@ -1,4 +1,5 @@
 """Frame-based cut validation. Never generates media or approves a stage."""
+from lib import programs
 import copy
 import math
 from pathlib import Path
@@ -141,7 +142,7 @@ def render_saved(root,revision,comparison='after',*,resolution=(640,360),directo
     colour_notes=[];untagged=[];layer=None
     for p in timeline['picture']:
         source=resolve_input(p['path'],root)
-        try:probe=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0','-show_streams','-of','json',str(source)],timeout=30))['streams'][0]
+        try:probe=json.loads(programs.check_output(['ffprobe','-v','error','-select_streams','v:0','-show_streams','-of','json',str(source)],timeout=30))['streams'][0]
         except (subprocess.SubprocessError,KeyError,IndexError):raise ValueError('A picture could not be read. Choose another kept take and prepare playback again.') from None
         grade=ColorGrade()._build_filter({'trailer_adjustments':p['colour'] if comparison=='after' else NEUTRAL,'source_colour':probe})
         if probe.get('color_space') not in ('bt709','bt470bg','smpte170m'):
@@ -163,7 +164,7 @@ def render_saved(root,revision,comparison='after',*,resolution=(640,360),directo
     args+=['-filter_complex',';'.join(filters),'-map',f'[{base}]']
     args+=['-map',f'{audio_index}:a','-c:a','aac','-b:a','192k','-ar','48000','-ac','2']
     args+=['-c:v','libx264','-crf','18' if width==1920 else '23','-pix_fmt','yuv420p','-r','24','-colorspace','bt709','-color_primaries','bt709','-color_trc','bt709','-color_range','tv','-t',str(end/24),'-movflags','+faststart',str(target)]
-    try:subprocess.run(args,capture_output=True,check=True,timeout=180)
+    try:programs.run(args,capture_output=True,check=True,timeout=180)
     except subprocess.SubprocessError:raise ValueError('The local picture preview failed. Check the kept picture files and prepare playback again.') from None
     review=review_output(target,mixed.data)
     review.update(edit_revision_sha256=revision,settings_sha256=record_sha256(saved['timeline']),comparison=comparison)
