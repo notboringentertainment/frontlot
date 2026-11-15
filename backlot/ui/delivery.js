@@ -73,14 +73,16 @@ export function renderDeliverySigning(detail,actions,onReturn){
 export function renderDelivery(s,onSign,refreshOnRender=true){
  if(active?.id===s.project_id){if(refreshOnRender)active.refresh();return active.node;}
  const base=`/api/project/${encodeURIComponent(s.project_id)}/delivery`,node=el('section',{class:'paper-editor',role:'region','aria-label':'Trailer delivery'}),message=el('p',{role:'status'},'Checking the saved cut and its signed takes…'),body=el('fieldset',{'aria-label':'Saved cut and final files',disabled:'',style:'border:0;padding:0;margin:0;min-width:0'});
- let data,busy=false,flight=null,pendingRefresh=false,key='',progress=false,returningSummary=false,readGeneration=0,readController=null,returnGeneration=0;
+ let data,busy=false,flight=null,pendingRefresh=false,key='',progress=false,returningSummary=false,readGeneration=0,readController=null,returnGeneration=0,confirmation=null;
  const storyForms=new Map();
  async function api(path='',value,signal){const r=await fetch(base+path,value===undefined?{cache:'no-store',signal}:{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify(value)});const v=await r.json();if(!r.ok)throw Error(v.detail||'Reopen the saved delivery controls and try again.');return v;}
- function button(label,fn,disabled=false){return el('button',{type:'button',disabled:disabled?'':null,onclick:async()=>{if(busy)return;const started=returnGeneration;busy=true;body.disabled=true;try{await fn();}catch(e){progress=false;message.textContent=e.message;}finally{busy=false;if(started===returnGeneration&&node.isConnected)await refresh(true);else body.disabled=returningSummary;}}},label);}
+ function button(label,fn,disabled=false){return el('button',{type:'button',disabled:disabled?'':null,onclick:async()=>{if(busy)return;const started=returnGeneration;confirmation=null;busy=true;body.disabled=true;try{await fn();}catch(e){confirmation=null;progress=false;message.textContent=e.message;}finally{busy=false;if(started===returnGeneration&&node.isConnected)await refresh(true);else body.disabled=returningSummary;}}},label);}
+ function confirmed(words){confirmation=words;progress=false;returningSummary=false;message.textContent=words;}
  function preparing(words){progress=true;message.textContent=words;}
  function refresh(force=false,returning=false){
   if(returning){
    returnGeneration++;
+   confirmation=null;
    returningSummary=true;
    body.disabled=true;message.textContent='Checking the saved cut and its approvals…';
    // Do not let a read begun before the signature hold its return hostage.
@@ -102,14 +104,15 @@ export function renderDelivery(s,onSign,refreshOnRender=true){
      const first=!data,encoded=JSON.stringify(next);
      if(encoded!==key){data=next;key=encoded;draw();}
      body.disabled=busy;
-     if(first||returningSummary||!busy&&(progress||message.textContent.startsWith('Saved cut loaded.'))){
+     if(confirmation){progress=false;returningSummary=false;message.textContent=confirmation;}
+     else if(first||returningSummary||!busy&&(progress||message.textContent.startsWith('Saved cut loaded.'))){
       progress=false;returningSummary=false;
       message.textContent=`Saved cut loaded. Rough cut: ${next.rough_status}. ${next.exports.some(e=>e.status==='Approved by you')?'The current final file is approved by you.':'Review the current file and its approvals below.'}`;
      }
     }catch(e){
      if(generation!==readGeneration)return;
      if(pendingRefresh)continue;
-     progress=false;message.textContent=e.message;key='';body.disabled=true;
+     confirmation=null;progress=false;message.textContent=e.message;key='';body.disabled=true;
      for(const v of node.querySelectorAll('video')){v.pause();v.removeAttribute('src');v.load();}
     }
    }while(pendingRefresh);
@@ -120,10 +123,10 @@ export function renderDelivery(s,onSign,refreshOnRender=true){
   body.append(el('p',{},`Saved version ${data.number}. Delivery uses this saved cut, including its colour, sound and signed cards. Save any editing changes before reviewing it.`),
    el('h3',{},'Rough-cut approval'),el('p',{},data.rough_status),
    button('Review and sign the saved rough cut',async()=>{await refresh(true,true);if(!key)throw Error('The saved cut could not be checked. Reopen it and try this review again.');preparing('Preparing the saved rough cut for review locally…');const r=await api('/rough',{revision:data.revision});await onSign(r.gate_request_id);}),
-   button('Record the signed rough-cut approval',async()=>{const r=await api('/rough/apply',{});message.textContent=r.message;},data.rough_status!=='Signed by you'),
+   button('Record the signed rough-cut approval',async()=>{const r=await api('/rough/apply',{});confirmed(r.message);},data.rough_status!=='Signed by you'),
    ...(data.colour_status?[el('h3',{},'Colour and sound approval'),el('p',{},data.colour_status),
     button('Review and sign colour and sound',async()=>{preparing('Preparing the saved colour and sound for review locally…');const r=await api('/colour',{revision:data.revision});await onSign(r.gate_request_id);},data.rough_status!=='Signed by you'),
-    button('Record the signed colour and sound approval',async()=>{const r=await api('/colour/apply',{});message.textContent=r.message;},data.colour_status!=='Signed by you')]:[]),
+    button('Record the signed colour and sound approval',async()=>{const r=await api('/colour/apply',{});confirmed(r.message);},data.colour_status!=='Signed by you')]:[]),
    button('Make the final file',async()=>{preparing('Making and measuring the full-size file locally. Nothing is sent or spent…');const r=await api('/export',{revision:data.revision});progress=false;message.textContent='The final file is ready to watch. '+r.stage_message;},data.rough_status!=='Signed by you'||!!data.colour_status&&data.colour_status!=='Signed by you'));
   if(data.outstanding_requirements?.length)body.append(el('section',{class:'paper-panel','aria-label':'Outstanding stage requirements'},
    el('h3',{},'What still prevents a finished stage'),el('p',{},'An unfinished stage is different from a missing control. Your individual signatures remain recorded; they do not substitute for a required stage review.'),
@@ -150,13 +153,13 @@ export function renderDelivery(s,onSign,refreshOnRender=true){
    }
    if(data.story_questions&&item.status==='Approved by you')tile.append(el('p',{},'Your final story comparison is recorded with your signature of this exact file, including every protected line heard verbatim.'));
    tile.append(button('Review and sign final approval',async()=>{const value=storyForm?{story_review:storyForm.read()}:{};preparing('Rechecking the exact final file and its sound…');const r=await api('/'+item.id+'/approval',value);await onSign(r.gate_request_id);},item.status!=='Needs your signature'),
-    button('Record the signed final approval',async()=>{const r=await api('/'+item.id+'/apply',{});message.textContent=r.message;},item.status!=='Approved by you'),
+    button('Record the signed final approval',async()=>{const r=await api('/'+item.id+'/apply',{});confirmed(r.message);},item.status!=='Approved by you'),
     button('Show approved file in Finder',async()=>{const r=await api('/'+item.id+'/reveal',{});message.textContent=r.message+' '+r.path;},item.status!=='Approved by you'));
    if(index===0)body.append(tile);else earlier.append(tile);
   }
   if(data.exports.length>1)body.append(earlier);
  }
  node.append(el('h2',{},'Delivery'),el('p',{},'Sign the saved rough cut, make the local final file, watch it, then sign that exact file. Nothing is uploaded. No stage is finished without its own signature and required earlier reviews.'),message,
- el('button',{type:'button',onclick:async()=>{key='';body.disabled=true;await refresh(true);}},'Refresh delivery'),body);
+ el('button',{type:'button',onclick:async()=>{confirmation=null;progress=true;key='';body.disabled=true;await refresh(true);}},'Refresh delivery'),body);
  active={id:s.project_id,node,refresh};refresh();return node;
 }
