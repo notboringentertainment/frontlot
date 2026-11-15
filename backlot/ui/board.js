@@ -3101,7 +3101,7 @@ async function refresh() {
       if(generation!==refreshGeneration)return;
       setFootageState(projectId,footage,{render,refresh,selectGate,lookCard,isRefreshing:()=>refreshController!==null,
         take:(s,shot,take)=>renderTakeTile(s,shot,take,{decidable:true,othersWaiting:0}),
-        returnToShots:()=>{selectedGateId=null;gateDetail=null;closeSigning();}});
+        returnToShots:(paper)=>{if(paper&&state)state.paper_cut=paper;selectedGateId=null;gateDetail=null;closeSigning();}});
     }
     if(paperEpoch!==paperCutEpoch()){queueMicrotask(()=>refresh().catch(console.error));return;}
     const creationJustSigned = state?.trailer_setup_pending && nextState.is_trailer && !nextState.trailer_setup_pending;

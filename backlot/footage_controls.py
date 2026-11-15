@@ -12,6 +12,7 @@ from lib.media_spending import _tracker, request_resolution, resolve_charge, cal
 from lib.pathsafe import resolve_input, sha256_file,PathSafetyError
 from lib.project_config import load_current_verified_project_config, ProjectConfigError
 from lib.run_common import request_paths
+from lib.trailer_edit import paper_state
 from tools.cost_tracker import load_reservations, BudgetExceededError, IndeterminatePaidCallError
 
 
@@ -244,7 +245,7 @@ def install(app,require_writer,safe_project,invalidate):
                 result={'gate':await asyncio.to_thread(prepare_decision,root,body)}
             elif action=='apply':
                 await asyncio.to_thread(footage.apply_decision,root,body.get('shot_id'),body.get('take_id'),body.get('decision'))
-                result={'applied':True}
+                result={'applied':True,'paper_cut':await asyncio.to_thread(paper_state,root)}
             elif action=='resolve':result={'gate':await asyncio.to_thread(request_resolution,root,body.get('reservation_id'),body.get('charged'),body.get('cash'),body.get('credits'),body.get('note'))}
             elif action=='apply-resolution':result=await asyncio.to_thread(apply_signed_resolution,root,body.get('reservation_id'))
             else:
@@ -256,7 +257,6 @@ def install(app,require_writer,safe_project,invalidate):
                 if kind=='footage_spend':result=await dispatch(root,record['request_id'])
                 elif kind=='footage_take':
                     await asyncio.to_thread(footage.apply_decision,root,record['shot_id'],record['take']['take_id'],record['decision'])
-                    from lib.trailer_edit import paper_state
                     result={'applied':True,'paper_cut':await asyncio.to_thread(paper_state,root)}
                 elif kind=='audio_resolution':
                     result=await asyncio.to_thread(apply_signed_resolution,root,record['reservation_id'])
