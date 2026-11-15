@@ -29,6 +29,19 @@ export function startTrailerForm() {
 }
 const kinds=["hook","escalation","reversal","invitation"], names=["Hook","Escalation","Reversal","Final invitation"];
 let editor=null, lastProject=null, wasPending=false;
+let editEpoch=0;
+export const paperCutEpoch=()=>editEpoch;
+export function savedPaperCut(project){
+  if(lastProject!==project||!editor)throw Error('Open the saved paper cut before changing its footage.');
+  return editor.saved();
+}
+export function paperCutChangedHere(project,next){
+  if(lastProject===project&&editor)editor.own(next);
+}
+export async function changeSavedPaperCut(project,fn){
+  savedPaperCut(project);
+  return editor.change(fn);
+}
 function emptyPaper(){return {beats:kinds.map(kind=>({kind,text:""})),lines:[],cards:[],shots:[]};}
 function savedTime(v){return new Date(v.saved_at).toLocaleString() + (v.time_source==="file" ? " (file time)" : "");}
 
@@ -38,6 +51,9 @@ export function renderPaperCut(s) {
   }
   lastProject=s.project_id;wasPending=Boolean(s.trailer_setup_pending);
   const node=el("section",{class:"paper-editor","aria-label":"Trailer paper cut"});
+  const controls=el('fieldset',{class:'paper-controls'});
+  let busy=false;
+  const operation=async fn=>{if(busy)return;busy=true;controls.disabled=true;try{return await fn();}finally{busy=false;controls.disabled=false;}};
   const folder=el("details",{},el("summary",{},"Where this trailer is kept"),el("p",{},`Its folder is called ${s.project_id}. This unique folder name keeps punctuation in your title safe and prevents folder names colliding.`));
   if(s.trailer_setup_pending) {
     node.append(el("h2",{},"Start this trailer"),folder,el("p",{},s.trailer_creation?.message || "This trailer has not been signed."));
@@ -131,7 +147,7 @@ export function renderPaperCut(s) {
     if(value.cuts?.length)box.append(el("p",{},`This version also keeps ${value.cuts.length} rough-cut shots. Their timing is preserved when restoring a paper cut.`));
     return box;
   }
-  async function refreshFromServer(){update(await request(api));}
+  async function refreshFromServer(){const epoch=editEpoch,next=await request(api);if(epoch===editEpoch)update(next);}
   function update(next) {
     if(!next)return;
     state=next;
@@ -147,12 +163,12 @@ export function renderPaperCut(s) {
     if((state.current?.edit_revision_sha256 || null)!==revision) {
       conflict.append(el("p",{},"Another window saved a newer version. Your unsaved draft is still here."),button("Open the latest saved version",()=>{
         details.replaceChildren(showVersion(state.current,"Latest saved version"),button("Use this latest version and keep my unsaved draft",()=>{
-          preserved=structuredClone(draft);draft=structuredClone(state.current?.paper_cut || emptyPaper());revision=state.current?.edit_revision_sha256 || null;dirty=false;draw();update(state);
+          preserved={paper:structuredClone(draft),revision};draft=structuredClone(state.current?.paper_cut || emptyPaper());revision=state.current?.edit_revision_sha256 || null;dirty=false;editEpoch++;draw();update(state);
           status.textContent="Latest saved version loaded. Your unsaved draft is kept below.";
         }));
       }));
     }
-    if(preserved)conflict.append(button("Return to my unsaved draft",()=>{draft=preserved;preserved=null;dirty=true;draw();update(state);status.textContent="Your unsaved draft is back. Saving will make a new version after the latest one.";}));
+    if(preserved)conflict.append(button("Return to my unsaved draft",()=>{draft=preserved.paper;revision=preserved.revision;preserved=null;dirty=true;editEpoch++;draw();update(state);status.textContent="Your unsaved draft is back with its original saved version. Compare it with the latest version before saving; newer work cannot be overwritten silently.";}));
     // Rebuild only story selectors, leaving every typed word mounted in place.
     content.querySelectorAll("select").forEach(select=>{
       const chosen=select.value;select.replaceChildren(el("option",{value:""},"Unassigned in this draft"),...(state.sources||[]).map(x=>el("option",{value:x.value},x.label)));
@@ -161,27 +177,32 @@ export function renderPaperCut(s) {
     history.replaceChildren(el("h3",{},"Saved versions"));
     for(const version of state.history || [])history.append(button(`Open version ${version.number} · ${savedTime(version)}${version.id===state.current?.edit_revision_sha256?" · Current":""}`,async()=>{
       try{const value=await request(`${api}/${version.id}`);
-        details.replaceChildren(showVersion(value,`Saved version ${version.number} · ${savedTime(version)}`),button("Restore this as a new version",async()=>{
+        details.replaceChildren(showVersion(value,`Saved version ${version.number} · ${savedTime(version)}`),button("Restore this as a new version",()=>operation(async()=>{
           try{const result=await request(`${api}/restore`,{revision:version.id,expected_revision:revision});
-            if(dirty)preserved=structuredClone(draft);draft=structuredClone(result.paper_cut || emptyPaper());revision=result.edit_revision_sha256;dirty=false;draw();await refreshFromServer();status.textContent="Restored as a new saved version. Every previous version is kept.";
+            if(dirty)preserved={paper:structuredClone(draft),revision};draft=structuredClone(result.paper_cut || emptyPaper());revision=result.edit_revision_sha256;dirty=false;editEpoch++;draw();await refreshFromServer();status.textContent="Restored as a new saved version. Every previous version is kept.";
           }catch(error){status.textContent=error.message;await refreshFromServer();}
-        }));
+        })));
       }catch(error){status.textContent=error.message;}
     }));
   }
   draw();
-  const save=button("Save a new version",async()=>{save.disabled=true;try{
-    const result=await request(api,{paper:draft,expected_revision:revision});revision=result.edit_revision_sha256;
+  const save=button("Save a new version",()=>operation(async()=>{try{
+    const result=await request(api,{paper:draft,expected_revision:revision});revision=result.edit_revision_sha256;editEpoch++;
     draft.shots.forEach((shot,i)=>{shot.id=result.paper_cut.shots[i].id;});dirty=false;
     status.textContent=`Saved. ${result.timing_message} No stage is approved.`;await refreshFromServer();
-  }catch(error){status.textContent=error.message;try{await refreshFromServer();}catch{ /* Keep the original save failure visible. */ }}finally{save.disabled=false;}});
-  node.append(save,button("Check paper cut against approved story",async()=>{try{
+  }catch(error){status.textContent=error.message;try{await refreshFromServer();}catch{ /* Keep the original save failure visible. */ }}}));
+  node.append(save,button("Check paper cut against approved story",()=>operation(async()=>{try{
     if(dirty)throw Error('Save your changed draft as a new version before comparing it with the approved story.');
-    const result=await request(`/api/project/${encodeURIComponent(s.project_id)}/story/check`,{});
-    revision=result.paper_cut.edit_revision_sha256;await refreshFromServer();status.textContent=result.message;
-  }catch(error){status.textContent=error.message;}}),button("Refresh story checks and saved versions",async()=>{try{await refreshFromServer();status.textContent="Story checks and versions refreshed. Your draft text is kept.";}catch(error){status.textContent=error.message;}}),
+    const result=await request(`/api/project/${encodeURIComponent(s.project_id)}/story/check`,{expected_revision:revision});
+    draft=structuredClone(result.paper_cut.paper_cut);revision=result.paper_cut.edit_revision_sha256;editEpoch++;draw();await refreshFromServer();status.textContent=result.message;
+  }catch(error){status.textContent=error.message;try{await refreshFromServer();}catch{}}})),button("Refresh story checks and saved versions",async()=>{try{await refreshFromServer();status.textContent="Story checks and versions refreshed. Your draft text is kept.";}catch(error){status.textContent=error.message;}}),
     el("p",{},"Previous versions are kept in the order saved. Opening a version does not change your draft. Restoring makes another version."),history,details);
   update(state);
+  controls.append(...node.childNodes);node.append(controls);
   window.addEventListener("beforeunload",e=>{if(dirty){e.preventDefault();e.returnValue="";}});
-  editor={node,refresh:update};return node;
+  editor={node,refresh:update,
+    saved:()=>{if(dirty||busy)throw Error('Save your changed paper cut as a new version before assigning a picture or keeping footage. Your words are still here.');return revision;},
+    own:next=>{if(dirty)throw Error('Your changed paper cut is still here. Save or compare it before loading the footage change.');
+      draft=structuredClone(next.current?.paper_cut||emptyPaper());revision=next.current?.edit_revision_sha256||null;editEpoch++;draw();update(next);},
+    change:fn=>operation(async()=>{const result=await fn(revision);editor.own(result.paper_cut);return result;})};return node;
 }

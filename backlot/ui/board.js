@@ -1,7 +1,9 @@
 // Front Lot film board (the cutting room) — renders BoardState and stays live via SSE.
 
-import { renderPaperCut } from "/ui/trailer.js";
+import { renderPaperCut,paperCutEpoch } from "/ui/trailer.js";
 import {renderStory,renderStorySigning} from '/ui/story.js';
+import {renderFootageSetup,renderPrereqSigning,applyLocationApproval} from '/ui/footage_setup.js';
+import {renderPriceSigning} from '/ui/media_prices.js';
 import {renderVoice,renderAudioSigning,applySignedAccountOutcome} from '/ui/voice.js';
 import {renderCutting,refreshCutting,renderCardSigning} from '/ui/cutting.js';
 import { setFootageState, renderFootageControls, afterFootageSignature, footageDecision } from "/ui/footage.js";
@@ -175,6 +177,8 @@ async function finishSignedRequest(request){
       if(gateSession.signingRequest===request){returnToWorkspace();await refresh();}
     }else if(['footage_spend','footage_take'].includes(request.kind)){
       await afterFootageSignature(request.id,request.kind);
+    }else if(request.kind==='look_lock'&&request.scope?.startsWith('location:')){
+      await applyLocationApproval(projectId,request.id);await refresh();
     }
   })();
   finishingSignatures.set(request.id,work);
@@ -1828,7 +1832,7 @@ const GATE_WORDS = {
   trailer_card: "Review exact card words",
 };
 const storyGate=row=>row.kind==='artifact_review'&&row.stage==='canon_ingest'&&row.scope==='trailer-stage';
-const gateWords = (kind,row={}) => storyGate({...row,kind}) ? 'Review this story' : kind==='config' && row.scope==='audio:project_config' ? 'Review audio prices and permissions' : state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
+const gateWords = (kind,row={}) => storyGate({...row,kind}) ? 'Review this story' : kind==='config' && row.scope==='footage:project_config' ? 'Review footage prices and permissions' : kind==='config' && row.scope==='audio:project_config' ? 'Review audio prices and permissions' : state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
 
 const SLOT_OF_KIND = {
   look_lock: "look",
@@ -2080,7 +2084,7 @@ function renderEntityViewer(s, e) {
   const frames = e.frames.map((f) => ({ path: f.object_rel, label: frameLabel(f), state: "done", alt: `${e.name}, ${frameLabel(f)}` }));
   if (selectedFrame >= frames.length) selectedFrame = 0;
   const nextStep = e.kind === "location"
-    ? (e.slots.look !== "done"
+    ? s.is_trailer ? 'Use Footage setup to review and sign the location look, then import and sign a machine-generated reference picture. Nothing is sent to a service by those steps.' : (e.slots.look !== "done"
       ? "No look is locked yet. Once you promote a look in WriterOS and it's locked here, its pictures come next."
       : "The look is locked. Ask in the Claude box to add your own pictures of this place.")
     : e.slots.look !== "done"
@@ -2092,7 +2096,7 @@ function renderEntityViewer(s, e) {
     el("div", {}, el("b", {}, "Nothing on film yet"), el("p", {}, nextStep)));
 
   const lookText = e.lookSpec && (e.lookSpec.prompt_safe_description || e.lookSpec.description);
-  const source = e.look && e.look.source_ref && typeof e.look.source_ref === "object"
+  const source = e.look?.writer_source_ref ? 'Written in Front Lot' : e.look && e.look.source_ref && typeof e.look.source_ref === "object"
     ? "From WriterOS"
     : e.look ? "From a Story-drive ticket" : null;
 
@@ -2526,6 +2530,9 @@ function renderGateViewer(s) {
   const stale = !summary || summary.state !== "pending" || gateDetail.state !== "pending";
   const packetError = Boolean(gateDetail.error || (gateDetail.packet && gateDetail.packet.packet_error));
   if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&header.stage==='canon_ingest')return renderStorySigning(gateDetail,gateActions(s,summary,stale,packetError),()=>{selectedGateId=null;gateDetail=null;trailerWorkbenchChosen=true;closeSigning();render();},stale);
+  const setupReturn=()=>{returnToWorkspace();render();document.querySelector('.footage-setup')?.scrollIntoView({block:'start'});};
+  if(s.is_trailer&&(header.kind==='reference_import'||header.kind==='look_lock'&&gateDetail.request?.writer_source_ref))return renderPrereqSigning(gateDetail,gateActions(s,summary,stale,packetError),setupReturn,lookCard,s.project_id,stale);
+  if(header.kind==='config'&&header.scope==='footage:project_config')return renderPriceSigning(gateDetail,gateActions(s,summary,stale,packetError),setupReturn,stale);
   if(header.kind==='trailer_card')return renderCardSigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;await refreshCutting();render();});
   const footageResolution=header.kind==='audio_resolution'&&gateDetail.request?.approval_record?.request?.provider==='fal';
   if((['audio_spend','audio_take','audio_resolution'].includes(header.kind)&&!footageResolution)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError,gateDetail.packet?.budget_warning),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;render();},stale);
@@ -2708,7 +2715,7 @@ function renderLog(s, roster) {
         onclick: () => { selectedEntity = key; selectGate(row.request_id); },
       },
         el("span", { class: "what" }, gateWords(row.kind,row)),
-        el("span", { class: "text" }, plain(row.summary) || gateWords(row.kind,row)),
+        el("span", { class: "text" }, s.is_trailer&&row.kind==='reference_import' ? 'Review the copied picture and sign its origin. This buys nothing and permits no upload by itself.' : plain(row.summary) || gateWords(row.kind,row)),
         who ? el("span", { class: "who" }, who) : null));
     }
     if (s.gates && s.gates.error) needs.append(el("div", { class: "alert", role: "alert" }, el("b", {}, "Couldn't read the approvals"), el("span", {}, s.gates.error)));
@@ -2985,6 +2992,7 @@ function renderBoard() {
   const viewer={append:(...nodes)=>wanted.push(...nodes),querySelector:(...args)=>viewerNode.querySelector(...args)};
   if(s.is_trailer && !s.trailer_damaged && !selectedGateId)viewer.append(el('nav',{class:'voice-workspace-nav','aria-label':'Trailer workspaces'},
     el('button',{type:'button',onclick:()=>viewer.querySelector('.story-panel')?.scrollIntoView({block:'start'})},'Story workspace'),
+    el('button',{type:'button',onclick:()=>viewer.querySelector('.footage-setup')?.scrollIntoView({block:'start'})},'Footage setup'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Trailer paper cut"]')?.scrollIntoView({block:'start'})},'Paper cut workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('.voice-lines')?.scrollIntoView({block:'start'})},'Voice workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('#music-compose')?.scrollIntoView({block:'start'})},'Music workspace'),
@@ -2992,6 +3000,7 @@ function renderBoard() {
     el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Cutting view"]')?.scrollIntoView({block:'start'})},'Cutting workspace')));
   const drawer = renderDrawer(s);
   if(s.is_trailer&&!s.trailer_damaged&&!selectedGateId){const story=renderStory(s,async(id)=>{await refresh();await selectGate(id);});if(story)viewer.append(story);}
+  if(s.is_trailer&&!s.trailer_damaged&&!selectedGateId){const setup=renderFootageSetup(s,async(id)=>{await refresh();await selectGate(id);},refresh);if(setup)viewer.append(setup);}
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId && !shot) viewer.append(
     el("button",{type:"button",class:"quiet-btn",onclick:()=>viewer.querySelector('[aria-label="Footage workspace"]')?.scrollIntoView({block:"start"})},"Open footage requests"),renderPaperCut(s));
 
@@ -3079,6 +3088,7 @@ function normalize(s) {
 }
 
 async function refresh() {
+  const paperEpoch=paperCutEpoch();
   const generation = ++refreshGeneration;
   if (refreshController) refreshController.abort();
   const controller = new AbortController();
@@ -3102,6 +3112,7 @@ async function refresh() {
         take:(s,shot,take)=>renderTakeTile(s,shot,take,{decidable:true,othersWaiting:0}),
         returnToShots:()=>{selectedGateId=null;gateDetail=null;closeSigning();}});
     }
+    if(paperEpoch!==paperCutEpoch()){queueMicrotask(()=>refresh().catch(console.error));return;}
     const creationJustSigned = state?.trailer_setup_pending && nextState.is_trailer && !nextState.trailer_setup_pending;
     if(creationJustSigned){selectedGateId=null;gateDetail=null;}
     state = normalize(nextState);

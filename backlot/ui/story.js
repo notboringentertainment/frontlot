@@ -12,9 +12,11 @@ export function renderStory(s,onSign){
   if(s.trailer_setup_pending)return null;
   if(current?.project===s.project_id){current.refresh();return current.node;}
   const project=s.project_id,node=el('section',{class:'story-panel paper-editor','aria-label':'Trailer story'});
+  const controls=el('fieldset',{class:'paper-controls'});
   const status=el('p',{role:'status','aria-live':'polite'}),message=el('p',{role:'alert'}),annotations=el('div',{}),actions=el('div',{});
   const text=el('textarea',{'aria-label':'Exact story text',rows:10,spellcheck:'false'});
-  let rawText='',file=null,protectedLines=[],spoilers=[],dirty=false,loading=false,refreshAgain=false,busy=false,snapshot=null,preferredEnding='\n',mixedEdit=false;
+  let rawText='',file=null,protectedLines=[],spoilers=[],dirty=false,loading=false,refreshAgain=false,busy=false,snapshot=null,preferredEnding='\n',mixedEdit=false,editEpoch=0;
+  const refreshWaiters=[];let refreshSerial=0;
   const mixedMessage='This source has mixed line endings. Editing it here cannot preserve every original line break. Choose the edited file again, or select all and paste the complete replacement text. This edit has not been saved.';
   const boxText=value=>value.replace(/\r\n|\r/g,'\n');
   const endings=value=>new Set(value.match(/\r\n|\r|\n/g)||[]);
@@ -42,7 +44,12 @@ export function renderStory(s,onSign){
     setText(prefix+pasted+suffix);const caret=boxText(prefix+pasted).length;text.setSelectionRange(caret,caret);
     message.textContent='';dirty=true;file=null;
   };
-  const act=async fn=>{if(busy)return;busy=true;message.textContent='';try{await fn();}catch(e){message.textContent=e.message;}finally{busy=false;await refresh();}};
+  const act=async fn=>{
+    if(busy)return;busy=true;editEpoch++;controls.disabled=true;message.textContent='';let completedMessage;
+    try{completedMessage=await fn();}catch(e){message.textContent=e.message;}
+    finally{try{await refresh();}finally{busy=false;controls.disabled=false;}
+      if(typeof completedMessage==='string'&&!message.textContent)message.textContent=completedMessage;}
+  };
   const chooser=el('input',{type:'file',accept:'.txt,.md,text/plain,text/markdown','aria-label':'Choose a text file'});
   chooser.onclick=()=>{chooser.value='';};
   chooser.onchange=()=>act(async()=>{
@@ -52,7 +59,7 @@ export function renderStory(s,onSign){
     let decoded;try{decoded=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);}catch{throw Error('This file is not readable UTF-8 text. Choose a plain text or Markdown file.');}
     let binary='';for(let start=0;start<bytes.length;start+=8192)binary+=String.fromCharCode(...bytes.subarray(start,start+8192));
     file={name:picked.name,base64:btoa(binary)};setText(decoded);dirty=true;
-    message.textContent='File chosen. Its original bytes will be copied; the original file will not be changed. Save it for review.';
+    return 'File chosen. Its original bytes will be copied; the original file will not be changed. Save it for review.';
   });
   function drawAnnotations(){
     annotations.replaceChildren();
@@ -81,12 +88,12 @@ export function renderStory(s,onSign){
     if(snapshot?.signed_unapplied)actions.append(button('Apply signed story approval',()=>act(async()=>{await applyStoryApproval(project);})));
   }
   async function refresh(){
-    if(loading){refreshAgain=true;return;}loading=true;refreshAgain=false;
+    if(loading){refreshAgain=true;return new Promise(resolve=>refreshWaiters.push({after:refreshSerial+1,resolve}));}loading=true;refreshAgain=false;const started=editEpoch,serial=++refreshSerial;
     try{
-      snapshot=await api(project);status.textContent=snapshot.message;
+      const value=await api(project);if(started!==editEpoch){refreshAgain=true;return;}snapshot=value;status.textContent=snapshot.message;
       if(snapshot.current&&!dirty){setText(snapshot.current.text);file=null;protectedLines=[...snapshot.current.protected];spoilers=[...snapshot.current.spoilers];drawAnnotations();}
       drawActions();
-    }catch(e){message.textContent=e.message;}finally{loading=false;if(refreshAgain){refreshAgain=false;queueMicrotask(refresh);}}
+    }catch(e){if(started===editEpoch)message.textContent=e.message;}finally{loading=false;for(let i=refreshWaiters.length-1;i>=0;i--)if(refreshWaiters[i].after<=serial)refreshWaiters.splice(i,1)[0].resolve();if(refreshAgain){refreshAgain=false;queueMicrotask(refresh);}}
   }
   const save=button('Save story for review',()=>act(async()=>{
     if(mixedEdit)throw Error(mixedMessage);
@@ -95,6 +102,8 @@ export function renderStory(s,onSign){
   }));
   node.append(el('h2',{},'Story source and approval'),
     el('p',{},'Paste the story this trailer is drawn from, or choose a plain UTF-8 text or Markdown file, up to 128 kilobytes. Your exact source is kept. Nothing is rewritten, summarised or sent to a service. Saving and comparing approve nothing.'),status,message,
+    el('p',{},'The writing controls pause while a save and its refresh finish, so later typing cannot be replaced by an earlier save.'),controls);
+  controls.append(
     el('label',{},'Exact story text',text),el('label',{},'Choose a text file',chooser),
     el('p',{},'No story facts are inferred. You can explicitly protect exact wording or identify spoiler passages below. Each must occur exactly in your source. The local comparison cannot recognise every rewording.'),
     button('Add protected wording',()=>{protectedLines.push('');dirty=true;drawAnnotations();}),

@@ -9,6 +9,8 @@ MISSING_BASIS = 'No audio price basis has been signed for these settings yet. Th
 
 
 def quote(root,kind,prompt,seconds):
+    from lib.media_settings import require_no_draft
+    require_no_draft(root)
     try:
         config=load_current_verified_project_config(root)
     except ProjectConfigError:

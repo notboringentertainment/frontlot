@@ -1,5 +1,6 @@
 // Focused footage controls. Every write calls the existing signed operations.
 import {el, CAPABILITY_TOKEN_KEY, mediaURL, spendingCard} from "/ui/lib.js";
+import {savedPaperCut,paperCutChangedHere} from '/ui/trailer.js';
 let data=null,project=null,hooks=null,globalError="",observing=false;
 const drafts=new Map(),completed=new Set();
 export async function footageAction(action,body) {
@@ -18,11 +19,13 @@ export async function afterFootageSignature(id,kind) {
   if(!["footage_spend","footage_take","audio_resolution"].includes(kind)||completed.has(id))return;
   try {
     globalError="";
-    await footageAction("signed",{gate_id:id});completed.add(id);
+    const result=await footageAction("signed",{gate_id:id});
+    if(result.paper_cut)paperCutChangedHere(project,result.paper_cut);completed.add(id);
     hooks.returnToShots();await hooks.refresh();
   }catch(error){globalError=error.message;hooks.returnToShots();await hooks.refresh();}
 }
 export async function footageDecision(shot,take,decision) {
+  if(decision==='accept')try{savedPaperCut(project);}catch(error){globalError=error.message;hooks.render();return;}
   const result=await footageAction("decision",{shot_id:shot.id,take_id:take.take_id,decision});
   await hooks.refresh();await hooks.selectGate(result.gate.request_id);
 }
@@ -60,7 +63,7 @@ function shotPanel(s,shot){
   panel.append(el("label",{},el("span",{},"Model"),model),el("p",{},"Only this model has a signed footage operation here. Other models are not built yet."),length.node);
   for(const [index,path] of shot.references.entries()){
     const old=shot.brief?.reference_manifest.find(r=>r.path===path);
-    if(!d.looks[path])d.looks[path]=data.looks.find(l=>l.entity_id===old?.visual_bible_entity_id)?.key||(data.looks.length===1?data.looks[0].key:"");
+    if(!data.looks.some(l=>l.key===d.looks[path]))d.looks[path]=data.looks.find(l=>l.entity_id===old?.visual_bible_entity_id)?.key||(data.looks.length===1?data.looks[0].key:"");
     const choice=el("select",{"aria-label":`Approved look for reference ${index+1}`,onchange:()=>{d.looks[path]=choice.value;hooks.render();}},
       el("option",{value:""},"Choose its approved look"),...data.looks.map(l=>el("option",{value:l.key},l.name)));choice.value=d.looks[path];
     panel.append(el("figure",{},el("img",{src:mediaURL(s.project_id,path),alt:`Reference picture ${index+1}`,style:"max-width:240px;max-height:180px"}),el("figcaption",{},`Reference picture ${index+1}`)),choice);
@@ -75,18 +78,19 @@ function shotPanel(s,shot){
     await hooks.refresh();await hooks.selectGate(result.gate.request_id);
   });
   const activeRequest=shot.requests.some(r=>r.running||(!r.approved&&r.gate_id)||(r.reservation&&["submitting","submitted","pending_billing"].includes(r.reservation.state)));
-  const blocked=()=>d.busy||activeRequest||!d.quote||!data.story_ready||!shot.references.length||shot.references.some(p=>!d.looks[p]);
+  const blocked=()=>d.busy||activeRequest||!d.quote||d.quote.highest_usd>d.quote.remaining_usd||!data.story_ready||!shot.references.length||shot.references.some(p=>!d.looks[p]);
   const requestButton=button(latest?"Create a retake request":"Create footage request",()=>create(latest?.id),blocked());panel.append(requestButton);
   d.updateQuote=()=>{
     price.replaceChildren();
     if(d.quote)price.append(spendingCard({highest_charge:d.quote.highest_usd,highest_cash:d.quote.max_cash_usd,
       highest_credits:d.quote.max_credits_usd,remaining:d.quote.remaining_usd,expiry:new Date(d.quote.price_expires_at*1000).toLocaleString()}));
+    if(d.quote&&d.quote.highest_usd>d.quote.remaining_usd)price.append(el('p',{role:'alert'},'This clip does not fit the remaining production ceiling. Choose an affordable length, resolve held charges, or stop. This form cannot raise the ceiling.'));
     if(d.error)price.append(el("p",{role:"alert"},d.error));
     requestButton.disabled=blocked();
   };
   d.updateQuote();
   if(!shot.references.length)panel.append(el("p",{role:"note"},"Add reference pictures in the paper-cut shot before creating a request."));
-  if(shot.references.length&&!data.looks.length)panel.append(el("p",{role:"note"},"No look is approved yet. Approve its look outside these panels before creating a footage request."));
+  if(shot.references.length&&!data.looks.length)panel.append(el("p",{role:"note"},"No current approved look is available. Open Footage setup to review and sign the location look before creating a footage request."));
   if(data.refusal)panel.append(el("p",{role:"note"},data.refusal));
   for(const req of shot.requests){
     if(!req.approved&&req.gate_id)panel.append(button("Review and sign request",()=>hooks.selectGate(req.gate_id),d.busy));
@@ -127,7 +131,7 @@ function shotPanel(s,shot){
 export function renderFootageControls(s){
   if(!data)return el("p",{},"Loading footage controls…");
   return el("section",{class:"footage-controls","aria-label":"Footage workspace"},el("h2",{},"Footage"),
-    el("p",{},"Supply and sign the story in Story workspace, then check the saved paper cut. Look approval, footage price figures and changing the production ceiling still happen outside these panels; those approval controls are not built here. Every clip and every keep or decline decision needs your signature. Keeping a take completes no stage."),
+    el("p",{},"Supply and sign the story in Story workspace, then check the saved paper cut. Use Footage setup to sign a location look, import a machine-generated reference picture and sign footage price figures. Changing the production ceiling still happens outside these panels. Every clip and every keep or decline decision needs your signature. Keeping a take completes no stage."),
     data.error||globalError?el("p",{role:"alert"},data.error||globalError):null,...(data.shots||[]).map(shot=>shotPanel(s,shot)));
 }
 

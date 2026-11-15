@@ -148,8 +148,10 @@ def test_8_audio_labels_are_true_and_plain(voice_world,monkeypatch,case):
     from lib import audio_workspace as audio
     gate=audio.request_decision(root,take['id'],'accept')
     if case=='prices':
-        import hashlib
-        gate=audio.gate_request(root,'config','project_config',{'config_sha256':hashlib.sha256((root/'project.yaml').read_bytes()).hexdigest()},'Review audio prices.',scope='audio:project_config')
+        from lib import media_settings
+        from lib.project_config import load_current_verified_project_config
+        basis=load_current_verified_project_config(root).data['audio_price_basis']
+        gate=media_settings.prepare_audio(root,{**{key:v['value'] for key,v in basis.items()},'expires_at':min(v['expires_at'] for v in basis.values())})
     with board(root,monkeypatch) as url,sync_playwright() as pw:
         browser=pw.chromium.launch(headless=True)
         try:

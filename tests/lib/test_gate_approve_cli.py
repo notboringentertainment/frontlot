@@ -175,9 +175,10 @@ def test_front_lot_hears_each_question_and_the_outcome(tmp_path, monkeypatch, ca
     _project(tmp_path)
     assert _run(tmp_path, monkeypatch, answers) == 0
     tags = tag_pipe()
-    assert tags[0] == {"ask": "approve"}
+    expected = [{"ask": "approve"}, {"answered": "approve"}]
     if outcome != "left":
-        assert tags[1] == {"ask": "note", "required": False}
+        expected.extend([{"ask": "note", "required": False}, {"answered": "note"}])
+    assert tags[:-1] == expected
     assert tags[-1]["outcome"] == outcome and tags[-1]["message"]
 
 

@@ -956,6 +956,8 @@ def test_qc_override_and_reference_import_follow_raw_receipt_and_hash(gate_world
     imported = load_gate_detail(gate_world["project"], gate_world["rids"]["reference_import"])["packet"]
     assert imported == {
         "origin_class": ORIGIN_IMPORTED_SYNTHETIC,
+        "attestation": "machine-generated, depicts no real person",
+        "origin_tool": "test-origin-tool",
         "visual": {
             "asset_id": gate_world["imported"]["asset_id"],
             "path": f"{STAGING_DIR.as_posix()}/reference-{gate_world['imported']['asset_id']}.png",

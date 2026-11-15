@@ -53,7 +53,7 @@ def take_decisions(root, kind, identity, take, *, identity_key, subject=None, la
         raise ValueError(f'The {label} decision history cannot be verified. Nothing can be used.')
     return records
 
-def gate_request(root,kind,entity,record,summary,*,scope=None,stage='assets'):
+def gate_request(root,kind,entity,record,summary,*,scope=None,stage='assets',metadata=None):
     from lib.run_common import request_paths
     identity='media-'+str(uuid.uuid4())
     directory=Path(root)/'.gate-requests'
@@ -61,7 +61,9 @@ def gate_request(root,kind,entity,record,summary,*,scope=None,stage='assets'):
     directory.mkdir(exist_ok=True)
     request={'request_id':identity,'kind':kind,'entity_id':entity,'approval_record':record,
              'record_sha256':record_sha256(record),'summary':summary,'stage':stage,'status':'pending','project_id':Path(root).name,'scope':scope or 'media:'+entity}
-    with request_paths(root,identity)['pending'].open('x') as f:json.dump(request,f,indent=2)
+    if metadata:request.update(metadata)
+    from lib.state_io import atomic_write_json
+    atomic_write_json(request_paths(root,identity)['pending'],request)
     return request
 
 def reservation_request(root,reservation):
