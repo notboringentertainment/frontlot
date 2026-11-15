@@ -1,4 +1,4 @@
-import copy,json
+import json
 from playwright.sync_api import sync_playwright,expect
 from tests.backlot.test_voice_panel_browser import board,short_signing_folder
 from tests.lib.test_cutting_signed import signed_cut

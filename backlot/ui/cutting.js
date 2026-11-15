@@ -20,6 +20,7 @@ export function renderCutting(s,onSign){
  let data,dirty=false,busy=false;
  let loading=false,lastSnapshot='';
  const reviewNode=el('section',{class:'paper-panel',role:'region','aria-label':'Picture and sound check'});reviewNode.hidden=true;
+ const controls=el('fieldset',{style:'border:0;padding:0;margin:0;min-width:0','aria-label':'Cutting controls'});
  const gapNote=el('p',{'data-gap-note':'',role:'note'});
  const closeGaps=button('Close picture gaps',()=>{if(data.timeline.picture.some(r=>![r.source_in_frame,r.source_out_frame].every(Number.isInteger)||r.source_out_frame<=r.source_in_frame))throw Error('Fix the picture trims before closing gaps. No clip was moved.');let frame=0;for(const row of data.timeline.picture){row.start_frame=frame;frame+=row.source_out_frame-row.source_in_frame;}changed();draw();message.textContent='Picture gaps closed. Sound stays where you placed it; check its ending before saving.';});
  function clearPlayback(){player.pause();player.onloadedmetadata=null;player.removeAttribute('src');player.load();reviewNode.replaceChildren();reviewNode.hidden=true;}
@@ -37,7 +38,7 @@ export function renderCutting(s,onSign){
   box.append(el('label',{},label,input,shown),el('label',{},secondsLabel,seconds));
  }
  async function api(path='',value){const r=await fetch(url+path,value===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify(value)});const v=await r.json();if(!r.ok)throw Error(v.detail||'Reopen the cut and try again.');return v;}
- function button(label,fn){return el('button',{type:'button',onclick:async()=>{if(busy)return;busy=true;try{await fn();}catch(e){message.textContent=e.message;}finally{busy=false;}}},label);}
+ function button(label,fn){return el('button',{type:'button',onclick:async()=>{if(busy)return;busy=true;controls.disabled=true;try{await fn();}catch(e){message.textContent=e.message;}finally{busy=false;controls.disabled=false;}}},label);}
  async function reopen(){data=await api();lastSnapshot=JSON.stringify(data);dirty=false;clearPlayback();draw();message.textContent=`Saved version ${data.number||1} opened. Saving or playing does not approve it.`;}
  async function refresh(){if(loading||dirty||busy||!data)return;loading=true;try{const next=await api(),key=JSON.stringify(next);if(dirty||busy)return;if(key!==lastSnapshot){data=next;lastSnapshot=key;clearPlayback();draw();message.textContent='The saved cut or its take decisions changed. Review any marked clip before saving or playing.';}}catch(e){message.textContent=e.message;}finally{loading=false;}}
  function identification(item){return el('div',{class:'cut-source'},item?.thumbnail?el('img',{src:item.thumbnail,alt:'Picture or waveform from this take',loading:'lazy',style:'width:160px;max-height:90px;object-fit:contain;background:#171716'}):null,el('p',{},item?.label||'Original take is no longer available. Choose a replacement below.'));}
@@ -130,7 +131,8 @@ export function renderCutting(s,onSign){
   body.append(el('section',{class:'paper-panel'},el('h3',{},'Restore an earlier cut'),versions,button('Restore selected cut',async()=>{if(dirty)throw Error('Save or reopen your current cut before restoring another version.');data=await api('/restore',{revision:versions.value,current:data.revision});lastSnapshot=JSON.stringify(data);dirty=false;clearPlayback();draw();message.textContent='Earlier cut restored as a new saved version. Every old version remains. Any unusable take is still marked and cannot play.';})));
   updateGaps();
  }
- node.append(el('h2',{},'Cutting view'),el('p',{},'Build from kept takes. Enter seconds or frames: seconds are rounded to the nearest whole frame and shown back to you. Twenty-four frames make one second. Picture clips cannot overlap; sounds can. Generated music remains for the test trailer only. This is a local rough preview, not an approved or release-ready file.'),message,player,
+ node.append(el('h2',{},'Cutting view'),el('p',{},'Build from kept takes. Enter seconds or frames: seconds are rounded to the nearest whole frame and shown back to you. Twenty-four frames make one second. Picture clips cannot overlap; sounds can. Generated music remains for the test trailer only. This is a local rough preview, not an approved or release-ready file.'),message,controls);
+ controls.append(player,
  button('Reopen saved cut',reopen),button('Save cut',async()=>{message.textContent='Checking the kept takes and saving this cut…';data=await api('',{timeline:data.timeline,revision:data.revision});lastSnapshot=JSON.stringify(data);dirty=false;clearPlayback();draw();message.textContent=`Version ${data.number} saved. Nothing was approved.`;}),
  button('Prepare saved playback',()=>prepare()),button('Compare before colour and mix',()=>prepare('before')),reviewNode,gapNote,closeGaps,body);
  active={id:s.project_id,node,refresh,reopen};reopen().catch(e=>message.textContent=e.message);return node;

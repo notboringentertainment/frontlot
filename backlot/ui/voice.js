@@ -26,13 +26,13 @@ export function refreshAudioAfterSigning(){current?.refresh(true);}
 export function renderVoice(s,onSign){
   if(current?.project===s.project_id){current.refresh();return current.node;}
   const project=s.project_id,url=`/api/project/${encodeURIComponent(project)}/voice`;
-  const node=el('section',{class:'voice-panel paper-editor','aria-label':'Trailer audio'}),message=el('p',{role:'status','aria-live':'polite'}),content=el('div',{});
+  const node=el('section',{class:'voice-panel paper-editor','aria-label':'Trailer audio'}),message=el('p',{role:'status','aria-live':'polite'}),content=el('div',{}),controls=el('fieldset',{'aria-label':'Audio controls',style:'border:0;padding:0;margin:0;min-width:0'});
   const drafts=new Map(),players=new Map(),priceForm={},outcomes=new Map(),musicDraft={},effectDraft={};let voices=[],last='',busy=false,loading=false,pendingRefresh=false,changeGeneration=0,returningFromSigning=false;
-  const act=async fn=>{if(busy)return;busy=true;changeGeneration++;message.textContent='Working…';let refused=false;try{const result=await fn();message.textContent=typeof result==='string'?result:'Saved. Review the request before signing.';}catch(e){message.textContent=e.message;refused=true;}finally{busy=false;last='';await refresh();if(refused)requestAnimationFrame(()=>message.scrollIntoView({block:'center'}));}};
+  const act=async fn=>{if(busy)return;busy=true;controls.disabled=true;changeGeneration++;message.textContent='Working…';let refused=false;try{const result=await fn();message.textContent=typeof result==='string'?result:'Saved. Review the request before signing.';}catch(e){message.textContent=e.message;refused=true;}finally{busy=false;last='';try{await refresh();}finally{controls.disabled=false;}if(refused)requestAnimationFrame(()=>message.scrollIntoView({block:'center'}));}};
   const loadVoices=button('Load account voices',()=>act(async()=>{voices=await api(url+'/catalogue',{});return 'Account voices loaded. Choose a voice for the saved line.';}));
   node.append(el('h2',{},'Voice, music and sound effects'),el('p',{},'Choose a voice for each saved spoken line, request instrumental music or describe an effect for a paper-cut moment. One signature buys one take. Keeping or declining a take needs its own signature; a decline is final.'),
-    loadVoices,
-    el('p',{class:'source'},'Loading voices reads the connected account only. It sends no story and buys no speech.'),message,content);
+    message,controls);
+  controls.append(loadVoices,el('p',{class:'source'},'Loading voices reads the connected account only. It sends no story and buys no speech.'),content);
   function draw(data){
     content.replaceChildren();
     loadVoices.disabled=!data.account.configured;
