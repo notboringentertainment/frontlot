@@ -286,7 +286,7 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
                 from lib import trailer_edit
                 expected_id=tile.get_attribute('data-delivery')
                 expected_revision=trailer_edit.read_revision(root)['edit_revision_sha256']
-                endpoint=url+f'/api/project/{root.name}/delivery';started=[]
+                endpoint=url.split('/p/')[0]+f'/api/project/{root.name}/delivery';started=[]
                 def requested(request):
                     if request.method=='GET' and request.url==endpoint:started.append(request)
                 page.on('request',requested)
