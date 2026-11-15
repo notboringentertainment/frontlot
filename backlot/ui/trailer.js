@@ -207,6 +207,7 @@ export function renderPaperCut(s) {
   editor={node,refresh:update,
     saved:()=>{if(dirty||busy)throw Error('Save your changed paper cut as a new version before assigning a picture or keeping footage. Your words are still here.');return revision;},
     own:next=>{if(dirty)throw Error('Your changed paper cut is still here. Save or compare it before loading the footage change.');
+      if(!next?.current?.paper_cut||!next.current.edit_revision_sha256)throw Error(next?.error||'The changed paper cut could not be read. Your existing draft is still here. Refresh to try again.');
       pageState.paper_cut=next;
       draft=structuredClone(next.current?.paper_cut||emptyPaper());revision=next.current?.edit_revision_sha256||null;editEpoch++;draw();update(next);},
     change:fn=>operation(async()=>{const result=await fn(revision);editor.own(result.paper_cut);return result;})};return node;

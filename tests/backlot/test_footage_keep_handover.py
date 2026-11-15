@@ -331,3 +331,54 @@ def test_redraw_after_recovery_keep_does_not_invent_another_window(film, provide
             assert not page.errors and len(provider['posts']) == 1
         finally:
             close_writer(board, browser)
+
+
+@pytest.mark.parametrize('route', ['normal', 'recovery'])
+def test_unreadable_state_after_keep_preserves_words_and_revision(film, provider, monkeypatch, route):
+    from backlot import footage_controls
+    root, shot = film
+    take = make_take(root, shot, signed=route == 'recovery')
+    error = 'The paper cut could not be read. Earlier versions have been kept. Restore a safe copy before editing.'
+    failed_reads = []
+    with sync_playwright() as playwright:
+        board, browser, page = open_writer(root, monkeypatch, playwright)
+        try:
+            panel = page.get_by_role('article', name='Shot 1 footage', exact=True)
+            cut, hook = hook_field(page)
+            hook.fill(WORDS)
+            save_cut(page, cut)
+            before = current_cut(root)
+            def unreadable_state(project):
+                # Only the separate read after apply fails. The keep and the
+                # board's subsequent reads still use the real saved cut.
+                assert placed_take(project).get('take_id') == take['take_id']
+                failed_reads.append(True)
+                return {'current': None, 'needs_review': True, 'usable_downstream': False, 'error': error}
+            monkeypatch.setattr(footage_controls, 'paper_state', unreadable_state)
+            if route == 'normal':
+                panel.get_by_role('button', name='Keep this take', exact=True).click()
+                page.locator('[aria-label="Footage request details"]').wait_for()
+                sign(page, 'decision')
+            else:
+                panel.get_by_role('button', name='Use signed keep in the cut', exact=True).click()
+            panel.get_by_role('status').filter(has_text='Kept').wait_for(timeout=20000)
+            assert failed_reads
+            expect(page.get_by_role('alert').filter(has_text=error).first).to_be_visible()
+            expect(hook).to_have_value(WORDS)
+            after_keep = current_cut(root)
+            assert after_keep['paper_cut']['beats'][0]['text'] == WORDS
+            assert placed_take(root).get('take_id') == take['take_id']
+            assert signature(root, take['take_id'])
+            # The preserved revision predates the applied keep. Saving must
+            # refuse that stale revision, with the complete words still sent.
+            with page.expect_response(lambda r: r.url.endswith('/paper-cut') and r.request.method == 'POST') as saved:
+                cut.get_by_role('button', name='Save a new version', exact=True).click()
+            assert saved.value.status == 400
+            sent = saved.value.request.post_data_json
+            assert sent['expected_revision'] == before['edit_revision_sha256']
+            assert sent['paper']['beats'][0]['text'] == WORDS
+            assert current_cut(root) == after_keep
+            expect(hook).to_have_value(WORDS)
+            assert not page.errors and len(provider['posts']) == 1
+        finally:
+            close_writer(board, browser)
