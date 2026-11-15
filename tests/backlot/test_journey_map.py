@@ -62,7 +62,10 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
         locations.append({'home':str(home),'signing':str(signing),'metadata':str(metadata),'project':str(root)})
         patch.setattr(server,'_PROJECTS_ROOT_STR',os.path.normcase(str(root.parent.resolve())))
         patch.setattr('backlot.state.PROJECTS_DIR',root.parent)
-        with original_board(root,patch) as address:yield address.replace('?static=1','')
+        with original_board(root,patch) as address:
+            address=address.replace('?static=1','')
+            with (parent/(RUN+f'-board-{len(locations)}.url')).open('x') as handle:handle.write(address)
+            yield address
     monkeypatch.setattr(browser_helpers,'browser_board',live_board)
     calls['reveals']=[]
     original_run=subprocess.run

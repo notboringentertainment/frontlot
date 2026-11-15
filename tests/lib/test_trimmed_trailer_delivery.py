@@ -72,6 +72,8 @@ def test_five_real_signatures_finish_the_trimmed_trailer_and_nothing_else(traile
     # distinct noise effect and three genuinely signed cards for this pass.
     from tests.backlot.test_delivery_browser import delivery_cut
     root,calls,posts=delivery_cut.__wrapped__(trailer_cut)
+    dropped=('proposal','look_lock','headshots','visual_bible','scene_plan','assets')
+    earlier={p:p.read_bytes() for stage in dropped if (p:=root/f'checkpoint_{stage}.json').exists()}
     gate=delivery.request_rough(root,trailer_edit.read_revision(root)['edit_revision_sha256']);approve_request(gate,root)
     assert delivery.complete_stage(root,'edit')=='Your signed stage approval is recorded.'
     revision=trailer_edit.read_revision(root)['edit_revision_sha256']
@@ -92,7 +94,11 @@ def test_five_real_signatures_finish_the_trimmed_trailer_and_nothing_else(traile
     assert delivery.final_state(root,item['id'])=='Approved by you'
     assert delivery.complete_stage(root,'compose',item['id'])=='Your signed stage approval is recorded.'
     assert get_completed_stages(root.parent,root.name,'authored-film@1.7')==['canon_ingest','script','edit','colour_mix','compose']
-    assert not any((root/f'checkpoint_{stage}.json').exists() for stage in ('proposal','look_lock','headshots','visual_bible','scene_plan','assets'))
+    # This fixture deliberately signed an update of an earlier trailer.
+    # Its old records remain on disk; none becomes an approval of this pin.
+    assert all(p.read_bytes()==raw for p,raw in earlier.items())
+    assert not [r for r in receipts.verified_approvals(root,'artifact_review')
+                if r.get('stage') in dropped and r.get('record',{}).get('pipeline',{}).get('version')=='1.7']
     row=receipts.verified_approvals(root,'artifact_review')[-1]
     assert row['record']['final_story_review']==answers
     assert 'canon_pass' not in item['final_review']['checks'], 'A technical report must never claim the writer’s findings.'

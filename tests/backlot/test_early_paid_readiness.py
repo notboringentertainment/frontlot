@@ -149,7 +149,10 @@ def buy_three_audio(page,panel,calls,prefix):
     line.get_by_label('Voice for line 1',exact=True).select_option('invented_voice')
     line.get_by_label('I have permission to use this voice.').check()
     line.get_by_role('button',name='Prepare a spending card',exact=True).click()
-    for kind,maximum in [('speech','$0.0088'),('music','$0.0480'),('effect','$0.0160')]:
+    # The signed fixture prices are one credit per character, a multiplier
+    # ceiling of two and $0.0002 per credit. The joined journey deliberately
+    # quotes its protected line rather than the readiness example's line.
+    for kind,maximum in [('speech',f'${len(LINE)*.0004:.4f}'),('music','$0.0480'),('effect','$0.0160')]:
         if kind!='speech':
             form=panel.locator('#'+kind+'-compose')
             form.get_by_label('Music brief' if kind=='music' else 'Effect description',exact=True).fill(
