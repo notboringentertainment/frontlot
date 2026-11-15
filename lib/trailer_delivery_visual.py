@@ -4,10 +4,10 @@ This detects black and unchanged picture, not faces, story or taste. The
 full-size boundary stills remain the writer's evidence for those judgements.
 """
 import io
-import subprocess
 from pathlib import Path
 import numpy as np
 from PIL import Image
+from lib import programs
 from lib.pathsafe import resolve_input
 from lib.trailer_finishing import time_words
 
@@ -16,7 +16,7 @@ WIDTH,HEIGHT=96,54
 def _decode(path,grade=None):
     filters=f'fps=24,scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2'
     if grade:filters+=','+grade
-    result=subprocess.run(['ffmpeg','-v','error','-i',str(path),'-an','-vf',
+    result=programs.run(['ffmpeg','-v','error','-i',str(path),'-an','-vf',
         filters+',format=gray',
         '-f','rawvideo','pipe:1'],capture_output=True,timeout=180)
     size=WIDTH*HEIGHT
@@ -75,7 +75,7 @@ def review_picture(root,path,timeline,boundaries):
                 colour=shot.get('colour',NEUTRAL);key=(source,tuple(colour[k] for k in sorted(colour)))
                 if key not in sources:
                     import json
-                    probe=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0','-show_streams','-of','json',str(source)],timeout=30))['streams'][0]
+                    probe=json.loads(programs.check_output(['ffprobe','-v','error','-select_streams','v:0','-show_streams','-of','json',str(source)],timeout=30))['streams'][0]
                     grade=ColorGrade()._build_filter({'trailer_adjustments':colour,'source_colour':probe})
                     sources[key]=_decode(source,grade)
                 index=shot['source_in_frame']+frame-shot['start_frame']

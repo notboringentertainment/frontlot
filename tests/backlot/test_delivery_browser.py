@@ -49,7 +49,7 @@ def delivery_journey(delivery_cut,monkeypatch,repeat=1):
         return original_packet(root,request)
     monkeypatch.setattr(adapter,'signing_packet',packet)
     def run(args,*a,**kw):
-        if args[:2]==['open','-R']:revealed.append(args);return subprocess.CompletedProcess(args,0)
+        if Path(args[0]).name=='open' and args[1]=='-R':revealed.append(args);return subprocess.CompletedProcess(args,0)
         return original(args,*a,**kw)
     monkeypatch.setattr(subprocess,'run',run)
     destination=os.environ.get('DELIVERY_CAPTURE')

@@ -22,7 +22,7 @@ def test_summary_follows_main_file_after_actions_without_reopening(signed_cut,mo
     assert d.final_state(root,first['id'])=='Approved by you'
     revealed=[];original=subprocess.run
     def run(args,*a,**kw):
-        if args[:2]==['open','-R']:
+        if Path(args[0]).name=='open' and args[1]=='-R':
             revealed.append(args);return subprocess.CompletedProcess(args,0)
         return original(args,*a,**kw)
     monkeypatch.setattr(subprocess,'run',run)
