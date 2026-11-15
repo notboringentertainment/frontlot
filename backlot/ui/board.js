@@ -447,7 +447,7 @@ function renderMeter(s) {
     el("span", {}, budget != null ? `spent of ${fmtMoney(budget)}` : "spent"));
 }
 
-function stageSub(st) {
+function stageSub(st,trailer) {
   if (st.status === "completed") return st.gated && st.human_approved ? "done, approved by you" : "done";
   if (st.status === "awaiting_human") return `waiting for your approval${st.availability_message ? ". " + st.availability_message : ""}`;
   if (st.availability_message) return st.availability_message;
@@ -461,7 +461,7 @@ function stageSub(st) {
   if (st.status === "in_progress") return "in progress";
   if (st.status === "failed") return st.error ? String(st.error).slice(0, 80) : "failed";
   if (st.status === "completed") return st.gated && st.human_approved ? "done, approved by you" : "done";
-  return "not started";
+  return trailer ? 'stage unfinished' : "not started";
 }
 
 function gatesCTA(label = "See what needs you") {
@@ -477,13 +477,13 @@ function renderBar(s) {
       : st.status === "failed" ? "failed" : "";
     counter.append(el("div", {
       class: `stage ${cls}${selectedStage === st.name ? " selected" : ""}`.trim(),
-      title: `${(st.label || humanize(st.name))}: ${stageSub(st)}${st.undeclared ? " (not part of this pipeline's plan)" : ""}`,
+      title: `${(st.label || humanize(st.name))}: ${stageSub(st,s.is_trailer)}${st.undeclared ? " (not part of this pipeline's plan)" : ""}`,
     },
       el("button", {
         class: "stage-select",
         type: "button",
         "aria-expanded": selectedStage === st.name ? "true" : "false",
-        "aria-label": `${(st.label || humanize(st.name))}: ${stageSub(st)}. Show details`,
+        "aria-label": `${(st.label || humanize(st.name))}: ${stageSub(st,s.is_trailer)}. Show details`,
         onclick: () => toggleDrawer(st.name),
       },
         el("span", { class: "name" }, (st.label || humanize(st.name)),
@@ -588,7 +588,7 @@ function renderDrawer(s) {
   }
   if (!shown) {
     body.append(el("div", { class: "hint" },
-      s.is_trailer ? (st.status === "pending" ? "This step has not started." : "No saved material for this step was found.") : (st.status === "pending" ? "This stage hasn't run yet." : "No canonical artifact found on disk for this stage.")));
+      s.is_trailer ? (['edit','compose'].includes(st.name)?'Use Delivery workspace to review the saved work, signatures and outstanding requirements.':st.name==='canon_ingest'?'Supply and sign the story in Story workspace.':'This stage is unfinished. Its review requirements and available controls are described above.') : (st.status === "pending" ? "This stage hasn't run yet." : "No canonical artifact found on disk for this stage.")));
   }
 
   return el("div", { class: "drawer" },
@@ -654,7 +654,7 @@ function renderScriptCard(s) {
 }
 
 function stageWords(status) {
-  return ({awaiting_human: "Waiting for your approval", in_progress: "In progress", completed: "Approved", failed: "Needs attention", pending: "Not started"})[status] || "Needs attention";
+  return ({awaiting_human: "Waiting for your approval", in_progress: "In progress", completed: "Approved", failed: "Needs attention", pending: "Stage unfinished"})[status] || "Needs attention";
 }
 function stageName(s, stage) { return s.is_trailer ? (stage.label || "Production step") : humanize(stage.name); }
 function artifactWords(s, name) {

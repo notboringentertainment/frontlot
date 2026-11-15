@@ -55,7 +55,7 @@ STAGE_LIMITS.update({
 })
 
 
-def outstanding_stage_reviews(root,stage,final_review=None):
+def outstanding_stage_reviews(root,stage,final_review=None,*,rough_signed=False):
     """Explain the existing pinned contract without waiving its requirements."""
     from lib.checkpoint import get_completed_stages,get_pipeline_stages
     root=Path(root);pin=signed_trailer_pin(root)
@@ -73,6 +73,12 @@ def outstanding_stage_reviews(root,stage,final_review=None):
         'assets':'keep the pictures and sounds in their workspaces. The separate review of the complete media collection is not available yet.',
         'edit':'sign the saved rough cut, then record its stage approval in Delivery workspace after the listed earlier requirements are met.',
     }
+    from lib.trailer_paper_review import state as paper_review_state
+    if paper_review_state(root)=='Signed by you':
+        for name in ('script','scene_plan'):
+            instructions[name]='Your whole paper-cut signature is recorded. This separate stage is unfinished because its stage-completion control is not available yet.'
+    if rough_signed:
+        instructions['edit']='The saved rough cut is signed. Its stage still waits for the earlier requirements; record it in Delivery workspace after those are met.'
     result=[STAGE_LABELS[s]+': '+instructions[s] for s in order[:order.index(stage)] if s not in completed]
     if stage=='compose':
         from lib.canon_enforcement import _check_canon_pass,_load_canon

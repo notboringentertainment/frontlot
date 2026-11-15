@@ -23,6 +23,10 @@ def test_whole_paper_signature_is_exact_and_does_not_complete_stages(tmp_path):
     assert record['story_check']==saved['story_check']
     receipt=approve_request(request,root)
     assert receipt['scope']=='trailer-paper' and review.state(root)=='Signed by you'
+    from lib.trailer_contract import outstanding_stage_reviews
+    remaining=outstanding_stage_reviews(root,'edit')
+    assert any('Lines and title cards: Your whole paper-cut signature is recorded.' in line for line in remaining)
+    assert any('Shot list: Your whole paper-cut signature is recorded.' in line for line in remaining)
     assert receipts.verified_generation_receipts(root)==[]
     import json
     for stage in ('script','scene_plan'):
