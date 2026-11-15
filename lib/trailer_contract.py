@@ -287,6 +287,10 @@ def approval_record(root, pin, stage, artifacts, *, final_story_review=None):
 def require_stage_approval(root, pin, stage, artifacts):
     from lib.receipts import verified_approvals
     from lib.trailer_policy import trimmed
+    required=SIGNED_REQUIRED
+    if trimmed(pin):
+        workspace='Story' if stage=='canon_ingest' else 'Paper cut' if stage=='script' else 'Delivery'
+        required='This stage needs your signed approval. Review and sign it in '+workspace+' workspace first.'
     if trimmed(pin) and stage=='script':
         from lib.trailer_paper_review import require_approval
         from lib.trailer_records import paper_artifacts
@@ -299,14 +303,14 @@ def require_stage_approval(root, pin, stage, artifacts):
             and r.get('artifact_type') == 'trailer_stage' and r.get('artifact_version') == '1.0'
             and r.get('migration_status') == 'reviewed']
     if not rows:
-        raise ValueError(SIGNED_REQUIRED)
+        raise ValueError(required)
     if stage == 'compose' and (artifacts.get('final_review') or {}).get('status') != 'pass':
         raise ValueError('The final review must pass before this trailer can be completed.')
     # Ledger order is authoritative: an older approved revision never revives.
     rows = rows[-1:]
     response = rows[0].get('user_response')
     if not (response == 'approve' or isinstance(response, dict) and response.get('answer') == 'approved'):
-        raise ValueError(SIGNED_REQUIRED)
+        raise ValueError(required)
     record = approval_record(root, pin, stage, artifacts,
         final_story_review=rows[0].get('record',{}).get('final_story_review') if stage=='compose' else None)
     digest = record_sha256(record)

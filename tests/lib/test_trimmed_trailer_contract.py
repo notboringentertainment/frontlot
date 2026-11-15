@@ -59,8 +59,9 @@ def test_creation_signs_the_trimmed_decision_without_approving_a_stage(trimmed):
 @pytest.mark.parametrize('stage',['canon_ingest','script','edit','colour_mix','compose'])
 def test_bare_flag_cannot_finish_any_trimmed_stage(trimmed,stage):
     from lib.checkpoint import write_checkpoint,CheckpointValidationError
-    with pytest.raises(CheckpointValidationError,match='signed approval'):
+    with pytest.raises(CheckpointValidationError,match='signed approval') as refusal:
         write_checkpoint(trimmed.parent,trimmed.name,stage,'completed',{},human_approved=True)
+    assert 'not available yet' not in str(refusal.value), 'The five remaining reviews have real signing controls.'
     assert not list(trimmed.glob('checkpoint_*.json'))
 
 

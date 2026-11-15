@@ -85,10 +85,11 @@ def require_colour(root,revision=None):
     except (ValueError,OSError,KeyError) as exc:
         raise ValueError('Review and sign colour and sound in Delivery workspace before making the final file. '+str(exc)) from None
 
-def colour_state(root):
+def colour_state(root,saved,rough_status):
+    if rough_status!='Signed by you':
+        return 'Needs a fresh look' if _stage_approvals(root,'colour_mix') else 'Waiting for the rough-cut signature'
     try:
-        colour_record(root)
-        return _approval_state(root,'colour_mix',{'edit_decisions':trailer_edit.read_revision(root)},'Needs your signature','Signed by you')
+        return _approval_state(root,'colour_mix',{'edit_decisions':saved},'Needs your signature','Signed by you')
     except (ValueError,OSError,KeyError):return 'Needs a fresh look'
 
 def _stage_approvals(root,stage):
@@ -391,6 +392,6 @@ def snapshot(root):
         except (ValueError,OSError,KeyError):continue
     from lib.trailer_policy import trimmed
     return {'revision':saved['edit_revision_sha256'],'number':saved['revision_number'],'rough_status':rough,'exports':items,
-            'colour_status':colour_state(root) if trimmed(_pin(root)) else None,
+            'colour_status':colour_state(root,saved,rough) if trimmed(_pin(root)) else None,
             'story_questions':story_questions(root) if trimmed(_pin(root)) else None,
             'outstanding_requirements':contract.outstanding_stage_reviews(root,'compose',items[0]['review'] if items else None,rough_signed=rough=='Signed by you')}

@@ -54,6 +54,18 @@ def test_final_story_questions_keep_every_protected_line_and_literal_words(trail
     assert len(calls['posts'])==3 and len(posts)==1
 
 
+def test_delivery_summary_uses_one_saved_version_for_all_five_reviews(trailer_cut,monkeypatch):
+    from lib import trailer_delivery as delivery
+    root,calls,posts,*_=trailer_cut;reads=[];original=delivery._saved
+    def counted(*args,**kwargs):reads.append(1);return original(*args,**kwargs)
+    monkeypatch.setattr(delivery,'_saved',counted)
+    result=delivery.snapshot(root)
+    assert result['rough_status']=='Needs your signature'
+    assert reads==[1], 'A refresh must use one checked saved version, without repeatedly rebuilding it for the new review.'
+    assert result['colour_status']=='Waiting for the rough-cut signature'
+    assert len(calls['posts'])==3 and len(posts)==1
+
+
 def final_answers(questions):
     return {'story_sha256':questions['story_sha256'],'canon_pass':{
         'status':'pass','unresolved_flags':[],
