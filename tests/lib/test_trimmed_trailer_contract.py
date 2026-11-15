@@ -41,6 +41,7 @@ def test_the_signed_full_trailer_definition_is_not_rewritten():
 def trimmed(tmp_path,monkeypatch):
     root=trailer_edit.create_trailer(tmp_path/'projects','Invented signed trailer test',12,10)
     monkeypatch.setenv('OPENMONTAGE_PROJECTS_DIR',str(root.parent))
+    monkeypatch.setattr('lib.paths.PROJECTS_DIR',root.parent)
     request=json.loads(next((root/'.gate-requests').glob('*.json')).read_text())
     approve_request(request,root)
     return root
@@ -70,3 +71,43 @@ def test_trimmed_creation_still_refuses_an_unsigned_project_field(tmp_path):
         'trailer':__import__('lib.trailer_contract',fromlist=['make_contract']).make_contract(12)}))
     with pytest.raises(PipelinePinError,match='signed trailer creation'):
         prepare_migration_request(root,root.name,'authored-film','1.7')
+
+
+def checked_paper(root):
+    from lib import story_ingest
+    result=story_ingest.supply(root,b'A lamp burns. Keep the light on.',protected=['Keep the light on.'])
+    approve_request(result['gate'],root)
+    from tests.lib.test_trailer_edit import paper
+    value=paper();value['shots'][0]['duration_frames']=288
+    value['lines']=[{'text':'Keep the light on.','start_frame':0,'duration_frames':24,'source_ref':'supplied-story'}]
+    return trailer_edit.save_revision(root,value,None)
+
+
+def test_signed_whole_paper_finishes_only_its_own_trimmed_stage(trimmed):
+    from lib import trailer_paper_review as review
+    from lib.checkpoint import get_completed_stages,write_checkpoint,CheckpointValidationError
+    saved=checked_paper(trimmed)
+    assert get_completed_stages(trimmed.parent,trimmed.name,'authored-film@1.7')==['canon_ingest']
+    gate=review.request_review(trimmed,saved['edit_revision_sha256']);approve_request(gate,trimmed)
+    assert review.complete(trimmed)=='Your signed paper-cut review is recorded.'
+    assert get_completed_stages(trimmed.parent,trimmed.name,'authored-film@1.7')==['canon_ingest','script']
+    for stage in ('proposal','look_lock','headshots','visual_bible','scene_plan','assets'):
+        assert not (trimmed/f'checkpoint_{stage}.json').exists()
+    cp=json.loads((trimmed/'checkpoint_script.json').read_text())
+    assert set(cp['artifacts'])=={'script','scene_plan'}
+    changed=json.loads(json.dumps(saved['paper_cut']));changed['beats'][0]['text']='A different opening.'
+    trailer_edit.save_revision(trimmed,changed,saved['edit_revision_sha256'])
+    assert review.state(trimmed)=='Needs a fresh look'
+    with pytest.raises(ValueError,match='fresh|signature'):review.complete(trimmed)
+
+
+def test_a_signed_no_is_not_a_paper_approval(trimmed):
+    from lib import trailer_paper_review as review,gates,receipts
+    from lib.canonical_json import record_sha256
+    checked_paper(trimmed);record=review.material(trimmed);digest=record_sha256(record)
+    with gates.handler_context():
+        token=gates.mint_gate_token(trimmed.name,'script','trailer-paper',digest,user_response='no')
+    receipts.record_human_approval(trimmed,trimmed.name,'script','trailer-paper',record,token,'artifact_review',entity_id='paper-cut',artifact={
+        'artifact_type':'trailer_paper_cut','artifact_version':'1.0','artifact_digest':digest,'migration_status':'reviewed'})
+    assert review.state(trimmed)=='Needs a fresh look'
+    with pytest.raises(ValueError,match='fresh review'):review.complete(trimmed)

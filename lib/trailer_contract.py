@@ -271,6 +271,13 @@ def approval_record(root, pin, stage, artifacts):
 
 def require_stage_approval(root, pin, stage, artifacts):
     from lib.receipts import verified_approvals
+    from lib.trailer_policy import trimmed
+    if trimmed(pin) and stage=='script':
+        from lib.trailer_paper_review import require_approval
+        from lib.trailer_records import paper_artifacts
+        require_approval(root)
+        if artifacts!=paper_artifacts(root):raise ValueError('The paper-cut stage record changed. Reopen and review the saved paper cut.')
+        return
     # Refuse a bare flag before attempting artifact/media reads.
     rows = [r for r in verified_approvals(root, 'artifact_review')
             if r.get('stage') == stage and r.get('scope') == 'trailer-stage'

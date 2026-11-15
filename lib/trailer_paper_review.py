@@ -26,7 +26,10 @@ def material(root):
     for version in [*saved.get('revision_history',[]),saved]:
         content=(version.get('paper_cut'),version.get('inputs'))
         if content!=previous:paper_revision=version['edit_revision_sha256'];previous=content
-    return {'project_id':root.name,'trailer':saved['trailer'],'paper_cut':paper,
+    from lib.trailer_contract import signed_trailer_pin
+    from lib.trailer_policy import trimmed
+    pin=signed_trailer_pin(root)
+    return {**({'pipeline':pin.to_dict()} if trimmed(pin) else {}),'project_id':root.name,'trailer':saved['trailer'],'paper_cut':paper,
             'paper_revision':paper_revision,'story_inputs':inputs,'story_check':check,
             'word_fingerprints':{key:[hashlib.sha256(row['text'].encode('utf-8')).hexdigest() for row in paper[key]]
                                  for key in ('beats','lines','cards')}}
@@ -39,7 +42,39 @@ def state(root):
     try:record=material(root)
     except (ValueError,OSError,KeyError):return 'Needs a fresh look'
     row=rows[-1]
-    return 'Signed by you' if row.get('record')==record else 'Needs a fresh look'
+    return 'Signed by you' if _matches(row,record) else 'Needs a fresh look'
+
+
+def _matches(row,record):
+    digest=record_sha256(record);answer=row.get('user_response')
+    return (row.get('record')==record and row.get('record_sha256')==digest
+            and row.get('artifact_type')=='trailer_paper_cut' and row.get('artifact_version')=='1.0'
+            and row.get('artifact_digest')==digest and row.get('migration_status')=='reviewed'
+            and (answer=='approve' or isinstance(answer,dict) and answer.get('answer')=='approved'))
+
+
+def require_approval(root):
+    rows=[r for r in receipts.verified_approvals(root,'artifact_review')
+          if r.get('scope')=='trailer-paper' and r.get('stage')=='script']
+    if not rows:raise ValueError('The paper cut needs your signed approval. Review it in Paper cut workspace first.')
+    record=material(root)
+    if not _matches(rows[-1],record):
+        raise ValueError('The whole paper cut needs a fresh review and signature.')
+    return record
+
+
+def complete(root):
+    from lib.checkpoint import write_checkpoint
+    from lib.trailer_records import paper_artifacts
+    from lib.trailer_contract import signed_trailer_pin
+    from lib.trailer_policy import trimmed
+    pin=signed_trailer_pin(root)
+    if not trimmed(pin):raise ValueError('Review and sign the trailer-test contract first.')
+    require_approval(root)
+    from lib.trailer_records import sync_paper
+    sync_paper(root)
+    write_checkpoint(Path(root).parent,Path(root).name,'script','completed',paper_artifacts(root),human_approved=True)
+    return 'Your signed paper-cut review is recorded.'
 
 
 def request_review(root,revision):
