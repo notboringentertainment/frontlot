@@ -5,6 +5,9 @@ from lib import trailer_edit,receipts
 from schemas.artifacts import validate_artifact
 from tests.lib.test_trailer_edit import trailer,paper,signed_story,human_terminal
 from tests.lib.look_lock_helpers import approve_request
+from tests.backlot.test_voice_panel import voice_world
+from tests.tools.test_audio_governance import project,sign
+from tests.tools.test_audio_half_transport import priced,http
 
 
 @pytest.mark.parametrize('with_words',[False,True])
@@ -61,3 +64,24 @@ def test_a_failed_record_projection_can_be_replayed_without_changing_the_saved_p
     monkeypatch.setattr(trailer_records,'write_checkpoint',original)
     assert trailer_edit.save_revision(root,paper(),saved['edit_revision_sha256'])==saved
     assert json.loads((root/'checkpoint_script.json').read_text())['status']=='in_progress'
+
+
+def test_paper_records_refer_to_the_signed_settings_while_new_prices_wait(voice_world):
+    from backlot import voice_panel
+    root,posts,gets=voice_world
+    voice_panel.catalogue(root)
+    request=voice_panel.prepare_voice(root,{'line_index':0,'voice':'invented_voice','notes':'','rights_confirmed':True})['request']
+    sign(root,'audio_spend',request,request['request_id'])
+    signed=receipts.verified_approvals(root,'config')[-1]
+    gate=voice_panel.prepare_prices(root,{'dollars_per_credit':.0003,'speech_credits_per_character':1,
+        'music_credits_per_minute':1200,'voice_multiplier_ceiling':2,'expires_at':4102444800})
+    saved=trailer_edit.read_revision(root)
+    assert trailer_edit.save_revision(root,saved['paper_cut'],saved['edit_revision_sha256'])==saved
+    record=json.loads((root/'artifacts/script.json').read_text())
+    assert record['metadata']['signed_settings']=={'config_sha256':signed['record']['config_sha256'],'approval_receipt_id':signed['receipt_id']}
+    assert not voice_panel.send(root,request['request_id'])['success']
+    assert posts==[] and len(gets)==1
+    receipt=approve_request(gate,root)
+    record=json.loads((root/'artifacts/script.json').read_text())
+    assert record['metadata']['signed_settings']['approval_receipt_id']==receipt['receipt_id']
+    assert posts==[] and len(gets)==1

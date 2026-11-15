@@ -18,9 +18,10 @@ from lib.state_io import atomic_write_json
 def _settings(root):
     rows=receipts.verified_approvals(root,'config')
     if not rows:return None
-    from lib.project_config import load_current_verified_project_config
-    config=load_current_verified_project_config(root)
-    return {'config_sha256':config.digest,'approval_receipt_id':rows[-1]['receipt_id']}
+    # A pending settings draft is not a new signature. Derived records refer
+    # to what was actually signed; paid operations still verify the live file.
+    return {'config_sha256':rows[-1]['record']['config_sha256'],
+            'approval_receipt_id':rows[-1]['receipt_id']}
 
 
 def _settings_decision(root,reference):
@@ -93,7 +94,7 @@ def sync_media(root):
     directory=validate_output_parent(root/'artifacts',root)
     with validate_output_parent(directory/'.canonical-records.lock',root).open('a') as stream:
         fcntl.flock(stream,fcntl.LOCK_EX)
-        rows=receipts.chained_rows(root,'approval')
+        rows=receipts.verified_approvals(root,'audio_take')+receipts.verified_approvals(root,'footage_take')
         sources={}
         for row in rows:
             kind=row.get('kind');record=row.get('record') or {};take=record.get('take') or {}
@@ -132,7 +133,17 @@ def after_signature(root,kind):
     """Projection only, after the existing receipt and request have committed."""
     from lib.trailer_contract import signed_trailer_pin
     if signed_trailer_pin(root) is None:return
-    if kind in ('audio_take','footage_take'):sync_media(root)
-    elif kind=='config':
-        sync_paper(root)
-        _settings_decision(Path(root),_settings(root))
+    from lib.checkpoint import CheckpointValidationError
+    from tools.cost_tracker import IndeterminatePaidCallError
+    try:
+        if kind in ('audio_take','footage_take'):sync_media(root)
+        elif kind in ('config','audio_resolution'):
+            sync_paper(root)
+            _settings_decision(Path(root),_settings(root))
+            if kind=='audio_resolution':sync_media(root)
+    except CheckpointValidationError as exc:
+        # The receipt has already committed. A held charge must still stop
+        # checkpoint writes, not turn a signed local decision into a failed
+        # signature. The existing signed account-resolution operation replays
+        # these derived facts after the hold is actually resolved.
+        if not isinstance(exc.__cause__,IndeterminatePaidCallError):raise
