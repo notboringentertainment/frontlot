@@ -82,7 +82,7 @@ def test_empty_library_reaches_a_kept_speech_take_under_icon_path(tmp_path,faile
     with icon_board(tmp_path,failed_filing) as (projects,counter,start,stop),sync_playwright() as pw:
         ready=start(1);browser=pw.chromium.launch(headless=True)
         try:
-            page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+            page=browser.new_page(viewport={'width':int(os.environ.get('FIRST_HANDS_WIDTH','1440')),'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
             page.route('**/*',lambda r:r.continue_() if r.request.url.startswith(ready['url']) else r.abort())
             page.goto(ready['url']+'#k='+ready['token']);page.get_by_text('Start a trailer',exact=True).click()
             title='Invented first hands gallery';page.get_by_label('Trailer name',exact=True).fill(title)
@@ -130,9 +130,13 @@ def test_empty_library_reaches_a_kept_speech_take_under_icon_path(tmp_path,faile
             audio.get_by_role('button',name='Make this approved take',exact=True).click()
             if failed_filing:
                 expect(audio).to_contain_text('Review an unresolved audio charge',timeout=15000)
+                explanation=card.get_by_role('alert')
+                expect(explanation).to_contain_text('could not be filed')
+                expect(explanation).to_be_in_viewport(timeout=15000)
+                capture(page,'08a-filing-failure-at-take')
                 root=next(p for p in projects.iterdir() if (p/'project.json').exists())
                 assert figures(root,10,fresh=True)==pytest.approx([0,.0088,9.9912])
-                capture(page,'08a-held-charge',audio.get_by_label('The account was charged.',exact=True))
+                capture(page,'08a-held-charge',audio.locator('[data-account-review] [role=alert]'))
                 page.reload()
                 audio.get_by_label('The account was charged.',exact=True).check()
                 audio.get_by_label('Actual credit replacement dollars',exact=True).fill('0.0038')

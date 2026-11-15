@@ -175,7 +175,7 @@ let workspaceReturn=null;
 function restoreWorkspacePosition(){
   if(!workspaceReturn||selectedGateId)return;
   const saved=workspaceReturn;
-  requestAnimationFrame(()=>{const viewer=document.getElementById('viewer');if(viewer){viewer.scrollTop=saved.top;saved.control?.isConnected&&saved.control.focus({preventScroll:true});}});
+  requestAnimationFrame(()=>{const viewer=document.getElementById('viewer');if(viewer){if(matchMedia('(max-width: 760px)').matches)window.scrollTo(saved.left,saved.documentTop);else viewer.scrollTop=saved.top;saved.control?.isConnected&&saved.control.focus({preventScroll:true});}});
 }
 function returnToWorkspace(){
   selectedGateId=null;gateDetail=null;trailerWorkbenchChosen=true;closeSigning();
@@ -374,6 +374,7 @@ function resetSignPanel() {
 }
 
 function closeSigning() {
+  const finished=['approved','declined'].includes(gateSession.outcome)?gateSession.outcome:null;
   const socket = gateSession.socket;
   gateSession.socket=null;
   if (socket && socket.readyState === WebSocket.OPEN){
@@ -381,6 +382,7 @@ function closeSigning() {
     socket.close(1000);
   }
   resetSignPanel();
+  if(finished){gateSession.outcome=finished;renderSignPanel();}
   delete terminalShell.dataset.used;
   terminalShell.hidden = true;
   render();
@@ -1471,7 +1473,7 @@ function focusGateDetail(preferHeading = false) {
 }
 
 async function selectGate(requestId, { background = false } = {}) {
-  if(!background&&!selectedGateId){const viewer=document.getElementById('viewer');workspaceReturn={top:viewer?.scrollTop||0,control:document.activeElement};}
+  if(!background&&!selectedGateId){const viewer=document.getElementById('viewer');workspaceReturn={top:viewer?.scrollTop||0,documentTop:window.scrollY,left:window.scrollX,control:document.activeElement};}
   if(!background&&gateSession.requestId!==requestId&&gateSession.outcome)closeSigning();
   if(!background)trailerWorkbenchChosen=false;
   const generation = ++gateSelectionGeneration;

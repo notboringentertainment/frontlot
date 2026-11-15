@@ -19,6 +19,9 @@ const money=v=>`$${Number(v||0).toFixed(4)}`;
 const button=(label,fn)=>el('button',{type:'button',onclick:fn},label);
 const routeFor=kind=>kind==='effect'?'effects':kind==='music'?'music':'voice';
 const moment=b=>`Shot ${b.shot_index+1} · starts at ${b.start_frame/24} seconds · Loop: ${b.loop?'yes':'no'}`;
+const heldExplanation=item=>Array.isArray(item.reservation.retained_downloads)&&item.reservation.retained_downloads.length?
+  'Audio arrived but could not be filed as a take. Its downloaded file has been retained. Money remains held; check your ElevenLabs account and sign the actual account outcome before buying anything else.':
+  'No usable take was filed. The service outcome is unresolved and money remains held. Check your ElevenLabs account and sign the actual account outcome before buying anything else.';
 async function api(url,data){
   const r=await fetch(url,data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify(data)});
   const value=await r.json();if(!r.ok)throw Error(value.detail||'Voice could not be read. Reload the board and try again.');return value;
@@ -63,8 +66,8 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
     if(data.message)content.append(el('p',{role:'alert'},data.message));
     for(const warning of data.record_warnings||[])content.append(el('p',{role:'alert'},warning));
     for(const item of data.unresolved_requests){
-      const id=item.reservation.reservation_id,r=item.request,form=el('section',{class:'paper-panel'},el('h3',{},'Review an unresolved audio charge'),
-        el('p',{role:'alert'},'Paid work is stopped. Check your ElevenLabs account; time passing will not resolve this charge.'),el('blockquote',{},r?.prompt||'The original signed request cannot be verified. Stop and investigate its approval history.'));
+      const id=item.reservation.reservation_id,r=item.request,form=el('section',{class:'paper-panel','data-account-review':id},el('h3',{},'Review an unresolved audio charge'),
+        el('p',{role:'alert'},heldExplanation(item)),el('blockquote',{},r?.prompt||'The original signed request cannot be verified. Stop and investigate its approval history.'));
       const d=outcomes.get(id)||{charged:false,cash:0,credits:0,note:''};outcomes.set(id,d);
       const amounts=[],charged=el('input',{type:'checkbox'});charged.checked=d.charged;charged.onchange=()=>{
         d.charged=charged.checked;
@@ -108,11 +111,13 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
         el('p',{},effect?'The paper-cut moment stays here. Only the description, model, length and loop choice are sent.':music?TEST_ONLY:`Notes kept here, not sent: ${r.binding.performance_notes||'None'}`));
       if(item.source_warning)card.append(el('p',{role:'alert'},item.source_warning));
       const made=data.takes.some(t=>t.approved_request_id===r.request_id);
+      const held=data.unresolved_requests.find(item=>item.request?.request_id===r.request_id);
+      if(held)card.append(el('p',{role:'alert'},heldExplanation(held)),button('Review this held charge',()=>{node.querySelector(`[data-account-review="${held.reservation.reservation_id}"]`)?.scrollIntoView({block:'center',behavior:'instant'});}));
       if(item.recoverable)card.append(el('p',{},'A completed take is recorded in its receipt but is missing here. Recover it without another call or charge.'),
         button('Recover recorded take',()=>act(async()=>{return (await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/recover`,{})).message;}),'request:'+r.request_id+':recover'));
-      else if(item.error)card.append(el('p',{role:'alert'},item.error));
-      else if(!made && item.approved)card.append(button('Make this approved take',()=>act(async()=>{const result=await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/send`,{});if(!result.success)throw Error(result.message);return 'Take ready. Listen, then sign keeping or declining it.';}),'request:'+r.request_id+':send'));
-      else if(!made && item.gate_request_id)card.append(button('Review and sign this request',()=>onSign(item.gate_request_id),'request:'+r.request_id+':sign'));
+      else if(item.error&&!held)card.append(el('p',{role:'alert'},item.error));
+      else if(!made && item.approved&&!held)card.append(button('Make this approved take',async()=>{const message=await act(async()=>{const result=await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/send`,{});if(!result.success)throw Error(result.message);return 'Take ready. Listen, then sign keeping or declining it.';});const target=node.querySelector(`[data-audio-request="${r.request_id}"] [role="alert"]`)||node.querySelector(`[data-take-id]`);target?.scrollIntoView({block:'center',behavior:'instant'});return message;},'request:'+r.request_id+':send'));
+      else if(!made && !held && item.gate_request_id)card.append(button('Review and sign this request',()=>onSign(item.gate_request_id),'request:'+r.request_id+':sign'));
       if(made)card.append(el('p',{},'This signature already made a take. Another take needs another spending card and signature.'));
       requests.append(card);
     }

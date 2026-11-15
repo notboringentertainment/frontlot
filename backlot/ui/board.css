@@ -675,7 +675,7 @@ details.log-more[open] > summary { margin-bottom: 12px; }
 .timing-frames { display: block; margin: 4px 0 10px; }
 .trailer-board .viewer { overflow-anchor: none; scroll-behavior: auto; }
 .trailer-board .stage-select { cursor: default; }
-body:has(> .table) { overflow: hidden; }
+@media (min-width: 761px) { body:has(> .table) { overflow: hidden; } }
 .writer-unavailable:has(> .table) { padding-top: var(--writer-warning-height,76px); }
 .writer-unavailable .table { height: calc(100dvh - var(--writer-warning-height,76px)); }
 .writer-unavailable #bk-conn-banner { display: none; } /* The permission warning also explains stale live updates. */
@@ -943,6 +943,8 @@ body:has(> .table) { overflow: hidden; }
 
 @media (max-width: 760px) {
   html, body { height: auto; }
+  .writer-unavailable .table { height: auto; }
+  .writer-unavailable .bar { top: var(--writer-warning-height,76px); }
   .table, .table.no-bin, .table.no-log {
     display: block; height: auto;
   }
