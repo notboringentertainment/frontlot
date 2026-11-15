@@ -32,6 +32,7 @@ let replay = null;          // {t0, t1, t, playing} — replay mode when non-nul
 let firstPaint = true;
 let selectedGateId = null;
 let trailerWorkbenchChosen = false;
+let deliveryReturnPending = false;
 let gateDetail = null;
 let gateDetailState = "idle";
 let gateDetailError = "";
@@ -1477,6 +1478,15 @@ async function selectGate(requestId, { background = false } = {}) {
   if (!background) focusGateDetail(true);
 }
 
+async function openDeliveryReview(requestId){
+  // Select before updating state, so that update cannot start the unrelated
+  // workspaces that this review is replacing. Finish its verified detail
+  // before handing over to the signing screen.
+  selectedGateId=requestId;gateDetail=null;gateDetailState='loading';render();
+  await refresh();
+  if(gateDetailState!=='ready')await selectGate(requestId);
+}
+
 function visualFigure(s, visual, label, ordinal = null) {
   const name = ordinal == null ? String(label || visual.label || "evidence") : `[${ordinal}]`;
   const description = ordinal == null
@@ -2540,7 +2550,13 @@ function renderGateViewer(s) {
   }
   if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&header.stage==='canon_ingest')return renderStorySigning(gateDetail,gateActions(s,summary,stale,packetError),()=>{selectedGateId=null;gateDetail=null;trailerWorkbenchChosen=true;closeSigning();render();},stale);
   if(header.kind==='trailer_card')return renderCardSigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;await refreshCutting();render();});
-  if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&['edit','colour_mix','compose'].includes(header.stage))return renderDeliverySigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;const verified=refreshDelivery();render();await verified;});
+  if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&['edit','colour_mix','compose'].includes(header.stage))return renderDeliverySigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{
+    closeSigning();gateSession.socket=null;gateSession.inputReady=false;
+    selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;
+    deliveryReturnPending=true;
+    const verified=refreshDelivery();render();
+    try{await verified;}finally{deliveryReturnPending=false;render({deliveryVerified:true});}
+  });
   const footageResolution=header.kind==='audio_resolution'&&gateDetail.request?.approval_record?.request?.provider==='fal';
   if((['audio_spend','audio_take','audio_resolution'].includes(header.kind)&&!footageResolution)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError,gateDetail.packet?.budget_warning),()=>{closeSigning();gateSession.socket=null;gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;refreshAudioAfterSigning();render();},stale);
   let frames = gateFrames(gateDetail.packet);
@@ -2933,19 +2949,19 @@ function tickReplay() {
 // page assembly
 // ---------------------------------------------------------------------------
 
-function render() {
+function render({deliveryVerified=false}={}) {
   if (!state) return;
   // A take note Ben is typing in survives the rebuild with its cursor.
   const typing = document.activeElement && document.activeElement.classList.contains("take-note")
     ? { node: document.activeElement, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
-  renderBoard();
+  renderBoard(deliveryVerified);
   if (typing && typing.node.isConnected) {
     typing.node.focus({ preventScroll: true });
     typing.node.setSelectionRange(typing.start, typing.end);
   }
 }
 
-function renderBoard() {
+function renderBoard(deliveryVerified=false) {
   const s = replay ? stateAt(state, replay.t) : state;
   const authoredGates = hasAuthoredGates(s);
   if (hasAuthoredGates(state) && gateSession.socket && gateSession.requestId) {
@@ -2990,6 +3006,12 @@ function renderBoard() {
   if (withBin) app.append(renderBin(s, roster));
 
   const viewer = el("main", { class: "viewer", id: "viewer", tabindex: "-1", "aria-label": "Viewer" });
+  if(deliveryReturnPending){
+    // Let the current signature's verified response arrive before unrelated
+    // workspaces start their own full reads. No approval result is cached.
+    viewer.append(renderDelivery(s,openDeliveryReview,false));
+    app.append(viewer);return;
+  }
   if(s.is_trailer&&!s.trailer_damaged&&!s.trailer_setup_pending&&!s.trimmed_contract&&!selectedGateId){
     const status=el('p',{role:'status'});
     viewer.append(el('section',{class:'paper-panel'},el('p',{},'Ben decided to trim the trailer contract for this test. Review and sign that change to use the five available reviews. Your saved work is kept.'),
@@ -3010,7 +3032,7 @@ function renderBoard() {
 
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderVoice(s,async(id)=>{await refresh();await selectGate(id);}));
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderCutting(s,async(id)=>{await refresh();await selectGate(id);}));
-  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderDelivery(s,async(id)=>{await refresh();await selectGate(id);}));
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderDelivery(s,openDeliveryReview,!deliveryVerified));
   if (shot) {
     const inner = s.is_trailer ? renderFootageControls(s) : renderShotViewer(s, shot);
     if (drawer) inner.prepend(drawer);
@@ -3104,7 +3126,7 @@ async function refresh() {
         }),
     ]);
     if (generation !== refreshGeneration || controller.signal.aborted) return;
-    if(nextState.is_trailer&&!nextState.trailer_damaged){
+    if(nextState.is_trailer&&!nextState.trailer_damaged&&!selectedGateId&&!deliveryReturnPending){
       let footage;
       try{footage=await getJSON(`/api/project/${encodedProjectId}/footage`,{signal:controller.signal});}
       catch(error){if(error.name==="AbortError")return;footage={error:"The footage panel could not be read. Check the saved story, looks and spending settings, then reopen this board.",shots:[]};}

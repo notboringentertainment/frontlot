@@ -70,16 +70,17 @@ export function renderDeliverySigning(detail,actions,onReturn){
  return held.node;
 }
 
-export function renderDelivery(s,onSign){
- if(active?.id===s.project_id){active.refresh();return active.node;}
+export function renderDelivery(s,onSign,refreshOnRender=true){
+ if(active?.id===s.project_id){if(refreshOnRender)active.refresh();return active.node;}
  const base=`/api/project/${encodeURIComponent(s.project_id)}/delivery`,node=el('section',{class:'paper-editor',role:'region','aria-label':'Trailer delivery'}),message=el('p',{role:'status'},'Checking the saved cut and its signed takes…'),body=el('fieldset',{'aria-label':'Saved cut and final files',disabled:'',style:'border:0;padding:0;margin:0;min-width:0'});
- let data,busy=false,flight=null,pendingRefresh=false,key='',progress=false,returningSummary=false,readGeneration=0,readController=null;
+ let data,busy=false,flight=null,pendingRefresh=false,key='',progress=false,returningSummary=false,readGeneration=0,readController=null,returnGeneration=0;
  const storyForms=new Map();
  async function api(path='',value,signal){const r=await fetch(base+path,value===undefined?{cache:'no-store',signal}:{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify(value)});const v=await r.json();if(!r.ok)throw Error(v.detail||'Reopen the saved delivery controls and try again.');return v;}
- function button(label,fn,disabled=false){return el('button',{type:'button',disabled:disabled?'':null,onclick:async()=>{if(busy)return;busy=true;body.disabled=true;try{await fn();}catch(e){progress=false;message.textContent=e.message;}finally{busy=false;await refresh(true);}}},label);}
+ function button(label,fn,disabled=false){return el('button',{type:'button',disabled:disabled?'':null,onclick:async()=>{if(busy)return;const started=returnGeneration;busy=true;body.disabled=true;try{await fn();}catch(e){progress=false;message.textContent=e.message;}finally{busy=false;if(started===returnGeneration&&node.isConnected)await refresh(true);else body.disabled=returningSummary;}}},label);}
  function preparing(words){progress=true;message.textContent=words;}
  function refresh(force=false,returning=false){
   if(returning){
+   returnGeneration++;
    returningSummary=true;
    body.disabled=true;message.textContent='Checking the saved cut and its approvals…';
    // Do not let a read begun before the signature hold its return hostage.
