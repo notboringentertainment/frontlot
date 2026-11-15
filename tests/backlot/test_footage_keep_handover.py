@@ -290,3 +290,44 @@ def test_a_second_window_save_still_warns_and_preserves_the_first_windows_words(
             assert not page.errors
         finally:
             close_writer(board, browser)
+
+
+@pytest.mark.parametrize('saved_words', [False, True])
+def test_redraw_after_recovery_keep_does_not_invent_another_window(film, provider, monkeypatch, saved_words):
+    root, shot = film
+    take = make_take(root, shot, signed=True)
+    with sync_playwright() as playwright:
+        board, browser, page = open_writer(root, monkeypatch, playwright)
+        try:
+            from tests.backlot.test_signing_outcome_browser import wait_for
+            panel = page.get_by_role('article', name='Shot 1 footage', exact=True)
+            cut, hook = hook_field(page)
+            if saved_words:
+                hook.fill(WORDS)
+                save_cut(page, cut)
+            before_words = hook.input_value()
+            held = []
+            # Keep the board's re-read pending after the signed take is applied.
+            # This makes the brief opportunity for a second action deterministic.
+            page.route('**/state', lambda route: held.append(route))
+            watch(page)
+            panel.get_by_role('button', name='Use signed keep in the cut', exact=True).click()
+            wait_for(page, lambda: bool(held))
+            assert placed_take(root).get('take_id') == take['take_id']
+            assert signature(root, take['take_id'])
+            # Re-picking the existing look redraws the board without changing it.
+            look = panel.get_by_label('Approved look for reference 1', exact=True)
+            look.select_option(look.input_value())
+            assert hook.input_value() == before_words
+            for route in held:
+                route.continue_()
+            page.unroute('**/state')
+            panel.get_by_role('status').filter(has_text='Kept').wait_for(timeout=20000)
+            expect(cut).not_to_contain_text('Another window saved')
+            assert conflict_seen(page) is False
+            save_cut(page, cut)
+            assert current_cut(root)['paper_cut']['beats'][0]['text'] == before_words
+            assert placed_take(root).get('take_id') == take['take_id']
+            assert not page.errors and len(provider['posts']) == 1
+        finally:
+            close_writer(board, browser)
