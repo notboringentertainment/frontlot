@@ -1,4 +1,6 @@
 """Keeping a take must not claim that another window saved the paper cut."""
+import os
+from pathlib import Path
 import pytest
 from playwright.sync_api import sync_playwright, expect
 from tests.backlot.test_early_paid_readiness import start_browser
@@ -38,6 +40,13 @@ def watch(page):
       }).observe(document.documentElement,{subtree:true,childList:true,characterData:true});
       see();
     }''')
+
+
+def capture(page, name):
+    folder = os.environ.get('FRONTLOT_KEEP_ROUND2_PICTURES')
+    if folder:
+        page.get_by_role('heading', name='Story and paper cut', exact=True).evaluate("node=>node.scrollIntoView({block:'start',behavior:'instant'})")
+        page.screenshot(path=str(Path(folder) / (name + '-paper-cut.png')))
 
 
 def conflict_seen(page):
@@ -94,6 +103,9 @@ def open_writer(root, monkeypatch, playwright):
     url = board.__enter__()
     browser, page = start_browser(playwright, url)
     page.goto(url)
+    # Let the initial quote finish before interacting; its response clears
+    # quote errors and can otherwise race the unsaved-words refusal.
+    page.get_by_role('article', name='Shot 1 footage', exact=True).get_by_text('Highest charge:', exact=False).wait_for()
     return board, browser, page
 
 
@@ -130,7 +142,8 @@ def test_normal_keep_with_a_clean_editor_does_not_invent_another_window(film, pr
             close_writer(board, browser)
 
 
-def test_normal_keep_after_saving_words_keeps_those_words(film, provider, monkeypatch):
+@pytest.mark.parametrize('background', [None, False, True], ids=['reloaded', 'same-page', 'delayed-refresh'])
+def test_normal_keep_after_saving_words_keeps_those_words(film, provider, monkeypatch, background):
     root, shot = film
     take = make_take(root, shot)
     with sync_playwright() as playwright:
@@ -138,21 +151,39 @@ def test_normal_keep_after_saving_words_keeps_those_words(film, provider, monkey
         try:
             panel = page.get_by_role('article', name='Shot 1 footage', exact=True)
             cut, hook = hook_field(page)
+            watch(page)
+            held = []
+            if background:
+                from tests.backlot.test_signing_outcome_browser import wait_for
+                def hold_first(route):
+                    if route.request.method == 'GET' and not held:
+                        held.append((route, route.fetch().json()))
+                    else:
+                        route.continue_()
+                page.route('**/paper-cut', hold_first)
+                cut.get_by_role('button', name='Refresh story checks and saved versions', exact=True).click()
+                wait_for(page, lambda: bool(held))
             hook.fill(WORDS)
             save_cut(page, cut)
             assert hook.input_value() == WORDS
             assert current_cut(root)['paper_cut']['beats'][0]['text'] == WORDS
-            page.reload()
-            panel = page.get_by_role('article', name='Shot 1 footage', exact=True)
+            if background:
+                # Return an editor refresh without reloading the page. Return
+                # its pre-save snapshot late to check the existing epoch guard.
+                held[0][0].fulfill(json=held[0][1])
+                expect(cut.get_by_role('status')).to_contain_text('Story checks and versions refreshed')
+            if background is None:
+                page.reload()
+                cut, hook = hook_field(page)
+                watch(page)
             panel.get_by_role('button', name='Keep this take', exact=True).wait_for()
-            cut, hook = hook_field(page)
-            assert hook.input_value() == WORDS
-            watch(page)
             panel.get_by_role('button', name='Keep this take', exact=True).click()
             page.locator('[aria-label="Footage request details"]').wait_for()
             sign(page, 'decision')
             panel.get_by_role('status').filter(has_text='Kept').wait_for(timeout=20000)
             expect(cut).not_to_contain_text('Another window saved')
+            if background is not None:
+                capture(page, 'normal-save-keep-background' if background else 'normal-save-keep')
             assert conflict_seen(page) is False
             assert hook.input_value() == WORDS
             assert current_cut(root)['paper_cut']['beats'][0]['text'] == WORDS
@@ -166,7 +197,8 @@ def test_normal_keep_after_saving_words_keeps_those_words(film, provider, monkey
             close_writer(board, browser)
 
 
-def test_recovery_keep_with_a_clean_editor_does_not_invent_another_window(film, provider, monkeypatch):
+@pytest.mark.parametrize('saved_words', [False, True])
+def test_recovery_keep_with_a_clean_editor_does_not_invent_another_window(film, provider, monkeypatch, saved_words):
     root, shot = film
     take = make_take(root, shot, signed=True)
     with sync_playwright() as playwright:
@@ -174,8 +206,11 @@ def test_recovery_keep_with_a_clean_editor_does_not_invent_another_window(film, 
         try:
             panel = page.get_by_role('article', name='Shot 1 footage', exact=True)
             panel.get_by_role('button', name='Use signed keep in the cut', exact=True).wait_for()
-            cut, _hook = hook_field(page)
+            cut, hook = hook_field(page)
             watch(page)
+            if saved_words:
+                hook.fill(WORDS)
+                save_cut(page, cut)
             panel.get_by_role('button', name='Use signed keep in the cut', exact=True).click()
             panel.get_by_role('status').filter(has_text='Kept').wait_for(timeout=20000)
             expect(cut).not_to_contain_text('Another window saved')
@@ -183,6 +218,10 @@ def test_recovery_keep_with_a_clean_editor_does_not_invent_another_window(film, 
             assert placed_take(root).get('take_id') == take['take_id']
             assert placed_take(root).get('kind') == 'footage'
             assert signature(root, take['take_id'])
+            if saved_words:
+                assert hook.input_value() == WORDS
+                assert current_cut(root)['paper_cut']['beats'][0]['text'] == WORDS
+                capture(page, 'recovery-save-keep')
             save_cut(page, cut)
             assert placed_take(root).get('take_id') == take['take_id']
             assert not page.errors and len(provider['posts']) == 1
@@ -216,5 +255,38 @@ def test_recovery_keep_refuses_unsaved_words_and_leaves_them_in_place(film, prov
             assert placed_take(root).get('kind') != 'footage'
             assert panel.get_by_role('button', name='Use signed keep in the cut', exact=True).is_visible()
             assert not page.errors and len(provider['posts']) == 1
+        finally:
+            close_writer(board, browser)
+
+
+def test_a_second_window_save_still_warns_and_preserves_the_first_windows_words(film, provider, monkeypatch):
+    root, shot = film
+    make_take(root, shot)
+    with sync_playwright() as playwright:
+        board, browser, page = open_writer(root, monkeypatch, playwright)
+        try:
+            cut, hook = hook_field(page)
+            hook.fill(WORDS)
+            save_cut(page, cut)
+            other = browser.new_page()
+            other.route('**/*', lambda r: r.continue_() if r.request.url.startswith(page.url.split('/p/')[0] + '/') else r.abort())
+            other.on('pageerror', lambda error: page.errors.append(str(error)))
+            other.goto(page.url + '#k=invented-browser-writer')
+            other_cut, other_hook = hook_field(other)
+            other_hook.fill('Words saved in the second window.')
+            save_cut(other, other_cut)
+            hook.fill('My first window still has unsaved words.')
+            watch(page)
+            cut.get_by_role('button', name='Refresh story checks and saved versions', exact=True).click()
+            expect(cut).to_contain_text('Another window saved a newer version')
+            assert conflict_seen(page)
+            assert hook.input_value() == 'My first window still has unsaved words.'
+            save = cut.get_by_role('button', name='Save a new version', exact=True)
+            with page.expect_response(lambda r: r.url.endswith('/paper-cut') and r.request.method == 'POST') as refused:
+                save.click()
+            assert refused.value.status == 400
+            assert current_cut(root)['paper_cut']['beats'][0]['text'] == 'Words saved in the second window.'
+            assert hook.input_value() == 'My first window still has unsaved words.'
+            assert not page.errors
         finally:
             close_writer(board, browser)

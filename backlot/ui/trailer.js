@@ -28,7 +28,7 @@ export function startTrailerForm() {
   panel.append(form);return panel;
 }
 const kinds=["hook","escalation","reversal","invitation"], names=["Hook","Escalation","Reversal","Final invitation"];
-let editor=null, lastProject=null, wasPending=false;
+let editor=null, lastProject=null, wasPending=false, pageState=null;
 let editEpoch=0;
 export const paperCutEpoch=()=>editEpoch;
 export function savedPaperCut(project){
@@ -46,6 +46,7 @@ function emptyPaper(){return {beats:kinds.map(kind=>({kind,text:""})),lines:[],c
 function savedTime(v){return new Date(v.saved_at).toLocaleString() + (v.time_source==="file" ? " (file time)" : "");}
 
 export function renderPaperCut(s) {
+  pageState=s;
   if(editor && lastProject===s.project_id && wasPending===Boolean(s.trailer_setup_pending)) {
     editor.refresh(s.paper_cut);return editor.node;
   }
@@ -147,7 +148,7 @@ export function renderPaperCut(s) {
     if(value.cuts?.length)box.append(el("p",{},`This version also keeps ${value.cuts.length} rough-cut shots. Their timing is preserved when restoring a paper cut.`));
     return box;
   }
-  async function refreshFromServer(){const epoch=editEpoch,next=await request(api);if(epoch===editEpoch)update(next);}
+  async function refreshFromServer(){const epoch=editEpoch,next=await request(api);if(epoch===editEpoch){pageState.paper_cut=next;update(next);}}
   function update(next) {
     if(!next)return;
     state=next;
@@ -188,6 +189,9 @@ export function renderPaperCut(s) {
   draw();
   const save=button("Save a new version",()=>operation(async()=>{try{
     const result=await request(api,{paper:draft,expected_revision:revision});revision=result.edit_revision_sha256;editEpoch++;
+    // The editor survives board redraws. Publish this page's own save before
+    // awaiting checks, so a redraw cannot feed its older cut back to the editor.
+    pageState.paper_cut={...state,current:result};
     draft.shots.forEach((shot,i)=>{shot.id=result.paper_cut.shots[i].id;});dirty=false;
     status.textContent=`Saved. ${result.timing_message} No stage is approved.`;await refreshFromServer();
   }catch(error){status.textContent=error.message;try{await refreshFromServer();}catch{ /* Keep the original save failure visible. */ }}}));
