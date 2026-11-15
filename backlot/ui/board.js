@@ -1385,7 +1385,7 @@ function renderNoState(s) {
   if (s.is_trailer && s.trailer_damaged) return el("div", {class:"notice", role:"alert"}, s.trailer_damaged);
   if (s.trailer_setup_pending) return el("div", {class:"notice"}, s.trailer_creation?.message || "This trailer is an unsigned draft.");
   if (s.has_pipeline_state) return null;
-  if (s.is_trailer) return el("div", {class:"notice"}, "This trailer has not started. Signed stage approval controls are not available yet.");
+  if (s.is_trailer) return el("div", {class:"notice"}, s.trimmed_contract ? "Start by supplying and signing your story in Story workspace." : "Review and sign the trailer-test contract above to use Ben’s five available reviews.");
   return el("div", { class: "notice", style: "border-color:#2b2b33;background:var(--surface-2);color:var(--text-3)" },
     el("span", { style: "font-size:15px" }, "◌"),
     el("span", {},
@@ -1401,8 +1401,8 @@ function renderAwaitingNotice(s) {
     
     el("span", {},
       el("b", {}, s.is_trailer ? `${stageName(s, awaiting)} is waiting for your review. ` : `The ${awaiting.name} stage is waiting for your review. `),
-      s.is_trailer && awaiting.approval_error ? `${awaiting.approval_error} ` : "The agent is paused at this gate. ",
-      s.is_trailer ? "Signed stage approval controls are not available yet." : (hasAuthoredGates(s) ? gatesCTA("OPEN GATES TO REVIEW AND SIGN") : "Continue the review with your agent.")));
+      s.is_trailer && awaiting.approval_error ? `${awaiting.approval_error} ` : s.is_trailer ? "This review is unfinished. " : "The agent is paused at this gate. ",
+      s.is_trailer ? s.trimmed_contract ? `Review and sign it in ${awaiting.name==='canon_ingest'?'Story':awaiting.name==='script'?'Paper cut':'Delivery'} workspace.` : "Review and sign the trailer-test contract above to use Ben’s five available reviews." : (hasAuthoredGates(s) ? gatesCTA("OPEN GATES TO REVIEW AND SIGN") : "Continue the review with your agent.")));
 }
 
 // ---------------------------------------------------------------------------
