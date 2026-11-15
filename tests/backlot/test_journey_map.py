@@ -9,6 +9,7 @@ import math
 import os
 import random
 import struct
+import subprocess
 import threading
 import time
 import wave
@@ -22,8 +23,8 @@ from tests.backlot.test_early_paid_readiness import (
 )
 
 
-def _wav(seconds,kind):
-    rate=24000; samples=[]; rng=random.Random(4)
+def _wav(seconds,kind,seed=4):
+    rate=24000; samples=[]; rng=random.Random(seed)
     for n in range(int(seconds*rate)):
         t=n/rate
         value=(rng.uniform(-6000,6000) if kind=='effect' else
@@ -37,6 +38,14 @@ def _wav(seconds,kind):
 
 def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_standins):
     calls=isolated_standins
+    calls['reveals']=[]
+    original_run=subprocess.run
+    def local_run(args,*values,**options):
+        if args[:2]==['open','-R']:
+            assert Path(args[2]).resolve().is_relative_to(root.resolve())
+            calls['reveals'].append(args[2]);return subprocess.CompletedProcess(args,0)
+        return original_run(args,*values,**options)
+    monkeypatch.setattr(subprocess,'run',local_run)
     audio={kind:_wav(length,kind) for kind,length in [('speech',1),('music',12),('effect',2)]}
     def post(url,**kw):
         allowed={'https://api.elevenlabs.io/v1/text-to-speech/invented_voice':'speech',
@@ -47,7 +56,10 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
         class Reply:
             status_code=200
             headers={'character-cost':'1','request-id':'journey-audio-'+str(len(calls['audio_posts']))}
-            content=audio[allowed[url]]
+            # Distinct requested effects get distinct invented recordings.
+            # Reusing identical bytes for a different brief correctly trips
+            # immutable provenance rather than fabricating a second origin.
+            content=_wav(2,'effect',len(calls['audio_posts'])) if allowed[url]=='effect' else audio[allowed[url]]
             def raise_for_status(self):pass
         return Reply()
     monkeypatch.setattr('requests.post',post)
@@ -91,6 +103,15 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
             expect(paper.get_by_role('status').first).to_contain_text('Saved.')
             paper.get_by_role('button',name='Check paper cut against approved story',exact=True).click()
             expect(paper.get_by_role('status').first).to_contain_text('compared')
+            paper.get_by_role('button',name='Review and sign the whole paper cut',exact=True).click()
+            whole=page.get_by_role('region',name='Whole paper-cut review',exact=True)
+            expect(whole).to_contain_text('The gallery is closed.',timeout=30000)
+            note('whole-paper-review',whole)
+            page.get_by_role('button',name='Start signing',exact=True).click()
+            page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=30000)
+            expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=30000)
+            page.get_by_role('button',name='Return to paper cut',exact=True).click()
+            expect(paper.get_by_role('status',name='Whole paper-cut approval',exact=True)).to_have_text('Signed by you',timeout=30000)
             # Adding the labelled reference changes the effect's exact shot
             # binding. Buy a new effect for that revised moment through the
             # same visible controls; never clear the previous take's warning.
@@ -171,15 +192,43 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
             page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=30000)
             expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=60000)
             page.get_by_role('button',name='Return to delivery',exact=True).click()
-            expect(delivery).to_contain_text('Signed by you',timeout=30000);note('rough-signed-stage-incomplete',delivery)
+            expect(delivery).to_contain_text('Signed by you',timeout=30000)
+            delivery.get_by_role('button',name='Record the signed rough-cut approval',exact=True).click()
+            expect(delivery.get_by_role('status').first).to_contain_text('Treatment:',timeout=30000)
+            note('rough-signed-stage-incomplete',delivery)
             delivery.get_by_role('button',name='Make the final file',exact=True).click()
             expect(delivery).to_contain_text('Loudness is on target',timeout=300000)
             note('exported-file',delivery)
+            tile=delivery.locator('[data-delivery]').first
+            player=tile.locator('video');expect(player).to_have_js_property('readyState',4,timeout=30000)
+            player.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=15000)
+            tile.get_by_role('button',name='Review and sign final approval',exact=True).click()
+            review=page.get_by_role('region',name='Delivery review',exact=True)
+            expect(review).to_be_visible(timeout=240000)
+            expect(review.get_by_role('region',name='Pictures from the final file')).to_be_visible()
+            player=review.locator('video');expect(player).to_have_js_property('readyState',4,timeout=30000)
+            player.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=15000)
+            page.get_by_role('button',name='Start signing',exact=True).click()
+            page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=30000)
+            expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=120000)
+            page.get_by_role('button',name='Return to delivery',exact=True).click()
+            expect(tile).to_contain_text('Approved by you',timeout=60000)
+            tile.get_by_role('button',name='Record the signed final approval',exact=True).click()
+            expect(delivery.get_by_role('status').first).to_contain_text('Final story comparison:',timeout=120000)
+            tile.get_by_role('button',name='Show approved file in Finder',exact=True).click()
+            expect(delivery.get_by_role('status').first).to_contain_text('shown in Finder',timeout=30000)
+            note('signed-final-and-reveal',delivery)
+            assert len(calls['reveals'])==1
+            import shutil
+            picture_folder=Path(os.environ['EARLY_TEST_PICTURES'])
+            with Path(calls['reveals'][0]).open('rb') as source,(picture_folder/(RUN+'-final-trailer.mp4')).open('xb') as destination:
+                shutil.copyfileobj(source,destination)
             assert len(calls['audio_posts'])==4 and len(calls['catalogues'])==1
             assert all(len(calls[k])==1 for k in ('uploads','video_posts','waits','downloads'))
             assert not page.errors
             from backlot.state import load_board_state
             evidence['state']=load_board_state(root)
+            assert [stage['name'] for stage in evidence['state']['stages'] if stage['status']=='completed']==['canon_ingest']
             evidence['body']=page.locator('body').inner_text()
             with (parent/(RUN+'-journey-map.json')).open('x') as f:json.dump(evidence,f,default=str,indent=2)
         except Exception:

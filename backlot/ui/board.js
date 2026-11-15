@@ -613,7 +613,7 @@ function scriptSections(script, limit) {
   const nodes = [];
   for (const sec of shown) {
     nodes.push(el("div", { class: "sp-slug" },
-      `${(sec.id || "").toUpperCase()} — ${sec.label || "Section"} `,
+      script.trailer ? `${sec.label || 'Passage'} ` : `${(sec.id || "").toUpperCase()} — ${sec.label || "Section"} `,
       el("span", { class: "tc" }, `${fmtDuration(sec.start_seconds)} – ${fmtDuration(sec.end_seconds)}`)));
     if (sec.text) nodes.push(el("div", { class: "sp-action" }, sec.text));
     if (sec.speaker_directions) nodes.push(el("div", { class: "sp-paren" }, `(${sec.speaker_directions})`));
@@ -1188,7 +1188,7 @@ function sceneCard(s, card) {
   const wrap = el("div", { class: "scene-card", style: `width:${width}px` });
 
   const slate = el("div", { class: "sc-slate" },
-    el("span", { class: "num" }, sceneLabel(card.id)),
+    el("span", { class: "num" }, s.is_trailer ? `Shot ${s.storyboard.scenes.indexOf(card)+1}` : sceneLabel(card.id)),
     card.takes.length > 1 ? el("span", { class: "take" }, `T${card.takes.length}`) : null,
     card.hero_moment ? el("span", { class: "hero" }, icon("star"), "Hero") : null,
     el("span", { class: "dur" }, fmtDuration(dur)),

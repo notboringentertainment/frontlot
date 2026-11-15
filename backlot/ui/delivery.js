@@ -88,7 +88,7 @@ export function renderDelivery(s,onSign){
  function draw(){body.replaceChildren();
   body.append(el('p',{},`Saved version ${data.number}. Delivery uses this saved cut, including its colour, sound and signed cards. Save any editing changes before reviewing it.`),
    el('h3',{},'Rough-cut approval'),el('p',{},data.rough_status),
-   button('Review and sign the saved rough cut',async()=>{preparing('Preparing the saved rough cut for review locally…');const r=await api('/rough',{revision:data.revision});await onSign(r.gate_request_id);}),
+   button('Review and sign the saved rough cut',async()=>{await refresh(true,true);if(body.disabled)throw Error('The saved cut could not be checked. Reopen it and try this review again.');preparing('Preparing the saved rough cut for review locally…');const r=await api('/rough',{revision:data.revision});await onSign(r.gate_request_id);}),
    button('Record the signed rough-cut approval',async()=>{const r=await api('/rough/apply',{});message.textContent=r.message;},data.rough_status!=='Signed by you'),
    button('Make the final file',async()=>{preparing('Making and measuring the full-size file locally. Nothing is sent or spent…');const r=await api('/export',{revision:data.revision});progress=false;message.textContent='The final file is ready to watch. '+r.stage_message;},data.rough_status!=='Signed by you'));
   if(data.outstanding_requirements?.length)body.append(el('section',{class:'paper-panel','aria-label':'Outstanding stage requirements'},
