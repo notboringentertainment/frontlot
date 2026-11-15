@@ -301,8 +301,9 @@ def complete_stage(root,stage,identity=None):
     contract.require_stage_approval(root,_pin(root),stage,artifacts)
     try:write_checkpoint(root.parent,root.name,stage,'completed',artifacts,pipeline_type='authored-film@1.6',human_approved=True)
     except CheckpointValidationError:
-        return 'Your signature is recorded. Earlier stage reviews or the separate story review are still unfinished, so this stage has not been marked finished.'
-    return 'Your signed stage approval is recorded.'
+        signature='Your rough-cut signature is recorded.' if stage=='edit' else 'Your signature is recorded.'
+        return signature+' Earlier stage reviews or the separate story review are still unfinished, so this stage has not been marked finished.'
+    return 'Your rough-cut signature is recorded.' if stage=='edit' else 'Your signed stage approval is recorded.'
 
 def playback(root,identity):
     artifacts=_artifacts(root,identity)

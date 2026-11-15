@@ -29,7 +29,7 @@ def test_hum_is_only_measured_sound_and_gets_an_honest_listening_note(tmp_path):
     assert any('steady tone or noise' in m and '0:01.000' in m for m in measured['messages'])
     # These sentences reach both the file card and the signing screen. Catch
     # clarity claims anywhere in a sentence, including a listening instruction.
-    assert not any(re.search(r'\bclear\w*\b',m,re.IGNORECASE) or
+    assert not any(re.search(r'\bclear\w*\b|intelligib',m,re.IGNORECASE) or
                    'words can be understood' in m.lower() for m in measured['messages'])
     assert any('audible sound' in m for m in measured['messages'])
     assert all(r['status']!='clear' for r in measured['voice_checks']+measured['speech_checks'])

@@ -146,9 +146,9 @@ def delivery_journey(delivery_cut,monkeypatch,repeat=1):
             panel=page.get_by_role('region',name='Trailer delivery')
             expect(panel).to_contain_text('Approved by you',timeout=30000)
             panel.get_by_role('button',name='Record the signed final approval',exact=True).click()
-            expect(panel.get_by_role('status').first).to_contain_text('signature',timeout=120000)
+            expect(panel.get_by_role('note')).to_contain_text('signature',timeout=120000)
             panel.get_by_role('button',name='Show approved file in Finder',exact=True).click()
-            expect(panel.get_by_role('status').first).to_contain_text('shown in Finder',timeout=30000)
+            expect(panel.get_by_role('note')).to_contain_text('shown in Finder',timeout=30000)
             assert len(revealed)==1;capture(page,'approved-file-location',panel)
             for journey in range(1,repeat):
                 # Every repeat starts with the same saved cut and uses the
@@ -184,7 +184,7 @@ def delivery_journey(delivery_cut,monkeypatch,repeat=1):
                 with page.expect_response(lambda r:r.url.endswith('/reveal') and r.request.method=='POST',timeout=60000) as located:
                     current.get_by_role('button',name='Show approved file in Finder',exact=True).click()
                 assert located.value.ok
-                expect(panel.get_by_role('status').first).to_contain_text('shown in Finder',timeout=5000)
+                expect(panel.get_by_role('note')).to_contain_text('shown in Finder',timeout=5000)
                 assert len(revealed)==journey+1
                 assert d.snapshot(root)['exports'][0]['status']=='Approved by you'
                 print(f'Completed local Delivery journey {journey+1} of {repeat}.',flush=True)

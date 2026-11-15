@@ -222,7 +222,7 @@ def review_output(path,refs):
         messages.append('Lower the other sounds or choose a clearer voice take, then listen again.')
     elif checks and voices and all(row['status']=='audible' for row in voices):
         minimum=min(p['margin_db'] for p in checks if p['margin_db'] is not None)
-        messages.append(f'The voice takes contain audible sound above the other sounds in the measured passages. The lowest measured margin is {minimum:.1f} decibels. Listen to every word of this line in the finished file.')
+        messages.append(f'The voice takes contain audible sound above the other sounds in the measured passages. The lowest measured margin is {minimum:.1f} decibels. Listen to every spoken word in the finished file.')
     for interval in silences:messages.append(f'Silence from {time_words(interval["start_frame"])} to {time_words(interval["end_frame"])}. Check that this pause is deliberate; add or move a kept sound if it is not.')
     for effect in effects:
         number=effect['number'];expected=time_words(effect['expected_frame'])

@@ -43,14 +43,13 @@ export function renderDeliverySigning(detail,actions,onReturn){
 
 export function renderDelivery(s,onSign){
  if(active?.id===s.project_id){active.refresh();return active.node;}
- const base=`/api/project/${encodeURIComponent(s.project_id)}/delivery`,node=el('section',{class:'paper-editor',role:'region','aria-label':'Trailer delivery'}),message=el('p',{role:'status'},'Checking the saved cut and its signed takes…'),body=el('fieldset',{'aria-label':'Saved cut and final files',disabled:'',style:'border:0;padding:0;margin:0;min-width:0'});
- let data,busy=false,flight=null,pendingRefresh=false,key='',progress=false,returningSummary=false,readGeneration=0,readController=null;
+ const base=`/api/project/${encodeURIComponent(s.project_id)}/delivery`,node=el('section',{class:'paper-editor',role:'region','aria-label':'Trailer delivery'}),message=el('p',{role:'status'},'Checking the saved cut and its signed takes…'),notice=el('p',{role:'note','aria-live':'polite'}),body=el('fieldset',{'aria-label':'Saved cut and final files',disabled:'',style:'border:0;padding:0;margin:0;min-width:0'});
+ let data,busy=false,flight=null,pendingRefresh=false,key='',progress=false,readGeneration=0,readController=null;
  async function api(path='',value,signal){const r=await fetch(base+path,value===undefined?{cache:'no-store',signal}:{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify(value)});const v=await r.json();if(!r.ok)throw Error(v.detail||'Reopen the saved delivery controls and try again.');return v;}
- function button(label,fn,disabled=false){return el('button',{type:'button',disabled:disabled?'':null,onclick:async()=>{if(busy)return;busy=true;try{await fn();}catch(e){progress=false;message.textContent=e.message;}finally{busy=false;await refresh(true);}}},label);}
- function preparing(words){progress=true;message.textContent=words;}
+ function button(label,fn,disabled=false){return el('button',{type:'button',disabled:disabled?'':null,onclick:async()=>{if(busy)return;busy=true;try{await fn();}catch(e){progress=false;notice.textContent=e.message;}finally{busy=false;await refresh(true);}}},label);}
+ function preparing(words){progress=true;notice.textContent=words;}
  function refresh(force=false,returning=false){
   if(returning){
-   returningSummary=true;
    body.disabled=true;message.textContent='Checking the saved cut and its approvals…';
    // Do not let a read begun before the signature hold its return hostage.
    // The generation check also rejects transports that deliver after abort.
@@ -68,17 +67,17 @@ export function renderDelivery(s,onSign){
      // A signing return may arrive while an older read is waiting. Discard
      // that answer and fulfil every waiter only after the queued read lands.
      if(pendingRefresh)continue;
-     const first=!data,encoded=JSON.stringify(next);
-     if(encoded!==key){data=next;key=encoded;draw();}
+     const encoded=JSON.stringify(next);
+     if(encoded!==key){data=next;key=encoded;notice.textContent='';draw();}
      body.disabled=false;
-     if(first||returningSummary||!busy&&(progress||message.textContent.startsWith('Saved cut loaded.'))){
-      progress=false;returningSummary=false;
-      message.textContent=`Saved cut loaded. Rough cut: ${next.rough_status}. ${next.exports.length?`Current final file: ${next.exports[0].status}.`:'Review the current file and its approvals below.'}`;
-     }
+     // Every accepted snapshot describes the same first export as the main
+     // card, regardless of which action or refresh brought us here.
+     message.textContent=`Saved cut loaded. Rough cut: ${next.rough_status}. ${next.exports.length?`Current final file: ${next.exports[0].status}.`:'Review the current file and its approvals below.'}`;
+     if(!busy&&progress){progress=false;notice.textContent='';}
     }catch(e){
      if(generation!==readGeneration)return;
      if(pendingRefresh)continue;
-     progress=false;message.textContent=e.message;key='';body.disabled=true;
+     progress=false;notice.textContent=e.message;message.textContent='The saved cut and its approvals could not be checked. Refresh delivery to verify them.';key='';body.disabled=true;
      for(const v of node.querySelectorAll('video')){v.pause();v.removeAttribute('src');v.load();}
     }
    }while(pendingRefresh);
@@ -89,7 +88,7 @@ export function renderDelivery(s,onSign){
   body.append(el('p',{},`Saved version ${data.number}. Delivery uses this saved cut, including its colour, sound and signed cards. Save any editing changes before reviewing it.`),
    el('h3',{},'Rough-cut approval'),el('p',{},data.rough_status),
    button('Review and sign the saved rough cut',async()=>{preparing('Preparing the saved rough cut for review locally…');const r=await api('/rough',{revision:data.revision});await onSign(r.gate_request_id);}),
-   button('Make the final file',async()=>{preparing('Making and measuring the full-size file locally. Nothing is sent or spent…');const r=await api('/export',{revision:data.revision});progress=false;message.textContent='The final file is ready to watch. '+r.stage_message;},data.rough_status!=='Signed by you'));
+   button('Make the final file',async()=>{preparing('Making and measuring the full-size file locally. Nothing is sent or spent…');const r=await api('/export',{revision:data.revision});progress=false;notice.textContent='The final file is ready to watch. '+r.stage_message;},data.rough_status!=='Signed by you'));
   const earlier=el('details',{},el('summary',{},'Earlier exports'));
   for(const [index,item] of data.exports.entries()){
    const review=item.review,usable=['Needs your signature','Approved by you','Final file needs changes'].includes(item.status);
@@ -105,13 +104,13 @@ export function renderDelivery(s,onSign){
     el('p',{},`Overall loudness: ${measured.integrated_lufs??'not measurable'} LUFS; the target is about minus sixteen. Highest playback peak: ${measured.true_peak_dbtp??'not measurable'} dBTP; it must stay below minus one.`),
     el('p',{},`${review.metadata.boundary_samples.length} pictures sampled at cut and card boundaries. Watch them for story, faces and lettering; the automatic checks do not judge those.`));tile.append(figures);
    tile.append(button('Review and sign final approval',async()=>{preparing('Rechecking the exact final file and its sound…');const r=await api('/'+item.id+'/approval',{});await onSign(r.gate_request_id);},item.status!=='Needs your signature'),
-    button('Record the signed final approval',async()=>{const r=await api('/'+item.id+'/apply',{});message.textContent=r.message;},item.status!=='Approved by you'),
-    button('Show approved file in Finder',async()=>{const r=await api('/'+item.id+'/reveal',{});message.textContent=r.message+' '+r.path;},item.status!=='Approved by you'));
+    button('Record the signed final approval',async()=>{const r=await api('/'+item.id+'/apply',{});notice.textContent=r.message;},item.status!=='Approved by you'),
+    button('Show approved file in Finder',async()=>{const r=await api('/'+item.id+'/reveal',{});notice.textContent=r.message+' '+r.path;},item.status!=='Approved by you'));
    if(index===0)body.append(tile);else earlier.append(tile);
   }
   if(data.exports.length>1)body.append(earlier);
  }
  node.append(el('h2',{},'Delivery'),el('p',{},'Sign the saved rough cut, make the local final file, watch it, then sign that exact file. Nothing is uploaded. No stage is finished without its own signature and required earlier reviews.'),message,
- button('Refresh delivery',async()=>{key='';await refresh(true);}),body);
+ button('Refresh delivery',async()=>{key='';await refresh(true);}),notice,body);
  active={id:s.project_id,node,refresh};refresh();return node;
 }

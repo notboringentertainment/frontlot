@@ -63,7 +63,7 @@ export function renderCutting(s,onSign){
  function draw(){body.replaceChildren();
   data.timeline.mix ||= {speech_margin_db:12};
   const mix=el('section',{class:'paper-panel'},el('h3',{},'Speech first'),el('p',{},'Music and effects are lowered together while words are spoken. You can still change each sound’s own level and fades. The local mix aims for ordinary stereo trailer loudness; every prepared file is measured.'));
-  slider(mix,'Space below speech',data.timeline.mix.speech_margin_db,6,24,1,v=>data.timeline.mix.speech_margin_db=v,v=>`Other sounds sit about ${v} decibels below speech. Listen to every word of this line in the finished file.`);body.append(mix);
+  slider(mix,'Space below speech',data.timeline.mix.speech_margin_db,6,24,1,v=>data.timeline.mix.speech_margin_db=v,v=>`Other sounds sit about ${v} decibels below speech. Listen to every spoken word when you play the cut.`);body.append(mix);
   for(const kind of ['picture','audio']){
    const catalog=kind==='picture'?data.pictures:data.sounds,section=el('section',{class:'paper-panel'},el('h3',{},kind==='picture'?'Picture order and trims':'Layered sound'));
    const select=el('select',{'aria-label':kind==='picture'?'Kept picture take':'Kept sound take'});
