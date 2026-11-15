@@ -141,7 +141,8 @@ def snapshot(root):
         settings_error=SIGN_PRICES_FIRST
     account=account_status()
     from lib.media_settings import pending,PAUSED
-    if pending(root):settings_error=PAUSED
+    price_drafts=pending(root)
+    if price_drafts:settings_error=PAUSED
     from tools.cost_tracker import CostTracker
     tracker=CostTracker(budget_total_usd=ceiling,reserve_pct=0,cost_log_path=root/'cost_log.json')
     state=audio.state(root)
@@ -173,6 +174,7 @@ def snapshot(root):
         if not made:
             try:audio.check_price(root,record)
             except Exception:error='This request needs fresh review. Check the paper cut and signed price settings, then prepare another request.'
+            if price_drafts:error=PAUSED
             if record['max_cash_usd']+record['max_credits_usd']>tracker.budget_remaining_usd:
                 error='Not enough remains under the production ceiling. Resolve held charges or stop; this request cannot be approved.'
             if record['request_id'] in used:error='This signature has already been used. If no take was recovered, prepare a new spending card; it cannot buy another call.'
@@ -200,7 +202,7 @@ def snapshot(root):
             'paper_review_message':('The saved paper cut is marked for review. Open Cutting workspace, review and save the cut, then return here to check this take again.' if (paper.get('current') or {}).get('paper_cut_pending') else None),
             'music_brief':music_brief,
             'effect_brief':effect_brief,'shots':(paper.get('current') or {}).get('paper_cut',{}).get('shots',[]),
-            'account':account,'price_basis':basis,'price_config_sha256':config_sha,'price_settings_signed':basis is not None,
+            'account':account,'price_basis':basis,'price_config_sha256':config_sha,'price_settings_signed':basis is not None,'purchases_paused':bool(price_drafts),
             'protected_lines':paper.get('protected_lines',[]),'usable':paper.get('usable_downstream',False),
             'message':settings_error or (None if paper.get('usable_downstream') else 'Review the approved story and save a checked paper cut before requesting audio.'),
             'record_warnings':state['record_warnings'],

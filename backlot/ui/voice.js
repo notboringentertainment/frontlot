@@ -71,7 +71,7 @@ export function renderVoice(s,onSign){
       voices.forEach(v=>select.append(el('option',{value:v.id},v.name)));select.value=d.voice;select.onchange=()=>{d.voice=select.value;d.rights=false;rights.checked=false;};
       const notes=el('textarea',{'aria-label':`Pronunciation and delivery notes for line ${index+1}`,maxlength:2000});notes.value=d.notes;notes.oninput=()=>d.notes=notes.value;
       const rights=el('input',{type:'checkbox'});rights.checked=d.rights;rights.onchange=()=>d.rights=rights.checked;
-      const prepare=button('Prepare a spending card',()=>act(async()=>{await api(url+'/prepare',{line_index:index,voice:d.voice,notes:d.notes,rights_confirmed:d.rights});}));prepare.disabled=!data.usable||!data.account.configured||!data.price_settings_signed;
+      const prepare=button('Prepare a spending card',()=>act(async()=>{await api(url+'/prepare',{line_index:index,voice:d.voice,notes:d.notes,rights_confirmed:d.rights});}));prepare.disabled=!data.usable||!data.account.configured||!data.price_settings_signed||data.purchases_paused;
       if(data.line_source_warnings?.[index])box.append(el('p',{role:'alert'},data.line_source_warnings[index]));
       box.append(el('label',{},'Account voice',select),el('label',{},'Pronunciation and delivery notes',notes),
         el('p',{class:'source'},'These notes stay with the signed take for your review. This speech model does not receive direction notes. The story material sent is the saved line’s exact wording; model and voice choices are sent too.'),

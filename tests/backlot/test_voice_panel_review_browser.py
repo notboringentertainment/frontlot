@@ -4,6 +4,30 @@ from tests.backlot.test_voice_panel_browser import board,short_signing_folder,si
 from tests.backlot.test_voice_panel import voice_world,options
 from tests.tools.test_audio_governance import project,sign
 from tests.tools.test_audio_half_transport import priced,http
+from tests.backlot.test_effect_panel import effect_world,brief as effect_brief
+
+def test_unsigned_price_values_stay_visible_and_pause_all_three_purchase_buttons(effect_world,monkeypatch):
+    from backlot import music_panel
+    from tests.backlot.test_music_panel import brief as music_brief
+    root,posts,gets=effect_world
+    music_panel.save_brief(root,music_brief());music_panel.save_effect(root,effect_brief())
+    with board(root,monkeypatch) as url,sync_playwright() as pw:
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+            page.goto(f'{url}/p/{root.name}#k=invented-browser-proof')
+            panel=page.get_by_role('region',name='Trailer audio',exact=True)
+            names=('Prepare a spending card','Prepare music spending card','Prepare effect spending card')
+            for name in names:expect(panel.get_by_role('button',name=name,exact=True)).to_be_enabled()
+            open_prices(panel);field=panel.get_by_label('Dollar replacement value per credit',exact=True);field.fill('.0003')
+            panel.get_by_role('button',name='Prepare price settings for signing',exact=True).click()
+            page.get_by_role('button',name='Return to audio',exact=True).click()
+            expect(panel).to_contain_text('All purchases are paused')
+            open_prices(panel)
+            assert float(field.input_value())==.0003,'The unsigned price was silently replaced by the earlier signed figure.'
+            for name in names:expect(panel.get_by_role('button',name=name,exact=True)).to_be_disabled()
+            assert not posts and not gets and not errors
+        finally:browser.close()
 
 def test_signed_price_values_survive_reload_and_restore_has_a_true_answer(voice_world,monkeypatch):
     root,posts,gets=voice_world

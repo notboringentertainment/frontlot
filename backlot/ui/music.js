@@ -40,7 +40,7 @@ function cueForms(data,draft,{api,act,url},kind){
   const prepare=button(`Prepare ${noun} spending card`,()=>act(async()=>{
     if(!clean())throw Error(`Save the current ${noun} brief and timing before preparing its spending card.`);
     await api(url+'/prepare',{brief_id:draft.briefId});
-  }));prepare.disabled=!data.usable||!data.account.configured||!data.price_settings_signed;compose.append(prepare);
+  }));prepare.disabled=!data.usable||!data.account.configured||!data.price_settings_signed||data.purchases_paused;compose.append(prepare);
   if(effect&&!data.price_basis?.effect_credits_per_second)compose.append(el('p',{role:'alert'},'Sign a sound-effect credits-per-second ceiling in the audio price settings first.'));
   if(effect)compose.append(button('Start a separate sound effect',()=>act(async()=>{
     Object.assign(draft,{loaded:true,new:true,briefId:null,text:'',seconds:'',start:0,shot:0,loop:false,saved:{}});
