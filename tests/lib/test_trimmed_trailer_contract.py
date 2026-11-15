@@ -127,3 +127,23 @@ def test_final_story_answers_cannot_invent_a_missing_protected_voice(trimmed):
     with pytest.raises(ValueError,match='no kept spoken take.*Keep the light on'):validate(trimmed,answer)
     answer['story_sha256']='a'*64
     with pytest.raises(ValueError,match='story changed'):validate(trimmed,answer)
+
+
+def test_repeated_review_reads_reuse_the_checked_definition_but_still_check_its_bytes(trimmed,monkeypatch,tmp_path):
+    from lib import pipeline_loader,trailer_contract,trailer_records
+    checked_paper(trimmed)
+    pin=trailer_contract.signed_trailer_pin(trimmed)
+    artifacts=trailer_records.paper_artifacts(trimmed)
+    original=pipeline_loader.load_pipeline;loads=[]
+    def counted(*args,**kwargs):loads.append(1);return original(*args,**kwargs)
+    pipeline_loader._load_pipeline_cached.cache_clear()
+    monkeypatch.setattr(pipeline_loader,'load_pipeline',counted)
+    records=[trailer_contract.approval_record(trimmed,pin,'script',artifacts) for _ in range(5)]
+    assert all(record==records[0] for record in records)
+    assert len(loads)<=1, 'Polling a saved review must not reparse and revalidate the immutable definition each time.'
+    replacement=tmp_path/'changed-definition.yaml';replacement.write_bytes((Path(__file__).resolve().parents[2]/'pipeline_defs/authored-film@1.7.yaml').read_bytes()+b'\n# changed bytes\n')
+    original_path=pipeline_loader.manifest_path
+    monkeypatch.setattr(pipeline_loader,'manifest_path',lambda ref,defs_dir=None:replacement if ref=='authored-film@1.7' else original_path(ref,defs_dir))
+    from lib.pipeline_pin import PipelinePinError
+    with pytest.raises(PipelinePinError,match='changed manifest needs a new human-approved migration receipt'):
+        trailer_contract.signed_trailer_pin(trimmed)

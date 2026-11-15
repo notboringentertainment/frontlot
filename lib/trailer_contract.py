@@ -230,8 +230,8 @@ def approval_record(root, pin, stage, artifacts, *, final_story_review=None):
                 raise ValueError('The paper cut needs a fresh look and must be checked against the approved story before this stage can use it.')
             record['paper_cut_revision'] = paper['edit_revision_sha256']
     # A changed earlier checkpoint invalidates this approval as well.
-    from lib.pipeline_loader import get_stage_order, load_pipeline
-    predecessors = get_stage_order(load_pipeline(pin.ref))
+    from lib.pipeline_loader import get_stage_order, load_pipeline_readonly
+    predecessors = get_stage_order(load_pipeline_readonly(pin.ref))
     record['predecessors'] = {s: _file_digest(Path(root)/f'checkpoint_{s}.json')
                               for s in predecessors[:predecessors.index(stage)]
                               if (Path(root)/f'checkpoint_{s}.json').is_file()}
