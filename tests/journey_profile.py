@@ -35,6 +35,7 @@ def retained_journey(monkeypatch):
 
 def test_read_saved_invented_journey(monkeypatch):
     root,calls=retained_journey(monkeypatch)
+    parent=Path(os.environ['TMPDIR']).resolve().parent
     from lib import cutting_view,trailer_edit
     from lib.trailer_contract import signed_trailer_pin
     assert signed_trailer_pin(root) is not None
@@ -46,6 +47,41 @@ def test_read_saved_invented_journey(monkeypatch):
         print(label);pstats.Stats(profile).sort_stats('cumulative').print_stats(18)
         if label=='delivery':print({key:result[key] for key in ('rough_status','colour_status')})
     assert calls==[]
+
+
+def test_record_colour_on_retained_invented_journey(monkeypatch):
+    import time
+    from playwright.sync_api import sync_playwright,expect
+    from tests.backlot.test_footage_controls_browser import browser_board
+    from backlot import server,state
+    root,calls=retained_journey(monkeypatch)
+    monkeypatch.setattr(server,'_PROJECTS_ROOT_STR',os.path.normcase(str(root.parent.resolve())))
+    monkeypatch.setattr(state,'PROJECTS_DIR',root.parent)
+    with browser_board(root,monkeypatch) as address,sync_playwright() as pw:
+        address=address.replace('?static=1','');origin=address.split('/p/')[0]
+        endpoint=origin+f'/api/project/{root.name}/delivery'
+        browser=pw.chromium.launch(headless=True)
+        try:
+            page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];events=[]
+            page.on('pageerror',lambda error:errors.append(str(error)))
+            page.on('request',lambda request:events.append({'kind':'request','url':request.url,'method':request.method,'at':time.monotonic()}))
+            page.on('response',lambda response:events.append({'kind':'response','url':response.url,'status':response.status,'at':time.monotonic()}))
+            page.route('**/*',lambda route:route.continue_() if route.request.url.startswith(origin+'/') else route.abort())
+            with page.expect_response(lambda response:response.url==endpoint,timeout=90000) as opened:
+                page.goto(address)
+            assert opened.value.ok,opened.value.text()
+            panel=page.get_by_role('region',name='Trailer delivery',exact=True)
+            control=panel.get_by_role('button',name='Record the signed colour and sound approval',exact=True)
+            expect(control).to_be_enabled(timeout=5000)
+            began=time.monotonic()
+            with page.expect_response(lambda response:response.url==endpoint+'/colour/apply' and response.request.method=='POST',timeout=90000) as applied:
+                control.click()
+            response=applied.value;assert response.ok,response.text()
+            assert response.json()['message']=='Your signed stage approval is recorded.'
+            print(json.dumps({'record_seconds':time.monotonic()-began,'events':events}),flush=True)
+            expect(panel.get_by_role('status').first).to_have_text(response.json()['message'],timeout=5000)
+            assert not errors and calls==[]
+        finally:browser.close()
 
 
 def test_reopen_saved_invented_journey_in_the_real_board(monkeypatch):

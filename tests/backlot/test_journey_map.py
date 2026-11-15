@@ -109,6 +109,25 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
         elif name=='exported-file':target=panel.locator('[data-delivery] video').first
         elif name in ('rough-signed-stage-incomplete','signed-final-and-reveal'):target=panel.get_by_role('status').first
         shot_picture(page,'journey-'+name,target)
+    def record_stage(panel,label,path):
+        # The operation rechecks actual files and the complete signature
+        # history before writing. Measure that response separately from the
+        # screen update: an old confirmation is not evidence of this action.
+        endpoint=url.split('/p/')[0]+f'/api/project/{root.name}/delivery'+path
+        posts=[];began=time.monotonic()
+        def requested(request):
+            if request.url==endpoint and request.method=='POST':posts.append(request)
+        page.on('request',requested)
+        try:
+            with page.expect_response(lambda response:response.url==endpoint and response.request in posts,timeout=90000) as applied:
+                panel.get_by_role('button',name=label,exact=True).click()
+            response=applied.value
+            assert response.ok,response.text()
+            assert response.json()['message']=='Your signed stage approval is recorded.'
+            expect(panel.get_by_role('status').first).to_have_text(response.json()['message'],timeout=5000)
+            assert len(posts)==1
+            evidence.setdefault('recording_seconds',{})[path]=time.monotonic()-began
+        finally:page.remove_listener('request',requested)
     # No earlier stage or story approval is invented here. Creation, story,
     # price approval, all sound purchases and keep decisions used the screens.
     from tests.lib import look_lock_helpers as looks
@@ -237,8 +256,7 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
             expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=60000)
             page.get_by_role('button',name='Return to delivery',exact=True).click()
             expect(delivery).to_contain_text('Signed by you',timeout=30000)
-            delivery.get_by_role('button',name='Record the signed rough-cut approval',exact=True).click()
-            expect(delivery.get_by_role('status').first).to_contain_text('Your signed stage approval is recorded.',timeout=30000)
+            record_stage(delivery,'Record the signed rough-cut approval','/rough/apply')
             note('rough-signed-stage-recorded',delivery)
             if reload_points:page.reload()
             delivery.get_by_role('button',name='Review and sign colour and sound',exact=True).click()
@@ -250,8 +268,7 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
             page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=30000)
             expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=60000)
             page.get_by_role('button',name='Return to delivery',exact=True).click()
-            delivery.get_by_role('button',name='Record the signed colour and sound approval',exact=True).click()
-            expect(delivery.get_by_role('status').first).to_contain_text('Your signed stage approval is recorded.',timeout=30000)
+            record_stage(delivery,'Record the signed colour and sound approval','/colour/apply')
             note('colour-and-sound-signed',delivery)
             delivery.get_by_role('button',name='Make the final file',exact=True).click()
             expect(delivery).to_contain_text('Loudness is on target',timeout=300000)
@@ -276,8 +293,7 @@ def test_existing_screens_map_a_fresh_trailer(tmp_path,monkeypatch,isolated_stan
             expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=120000)
             page.get_by_role('button',name='Return to delivery',exact=True).click()
             expect(tile).to_contain_text('Approved by you',timeout=60000)
-            tile.get_by_role('button',name='Record the signed final approval',exact=True).click()
-            expect(delivery.get_by_role('status').first).to_contain_text('Your signed stage approval is recorded.',timeout=120000)
+            record_stage(delivery,'Record the signed final approval','/'+tile.get_attribute('data-delivery')+'/apply')
             if reload_points:
                 # Check reopening from its fresh verified answer, as with a
                 # signing return. File/receipt verification has its own bound;

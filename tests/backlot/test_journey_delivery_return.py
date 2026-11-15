@@ -94,6 +94,7 @@ def test_verified_stage_confirmation_survives_an_older_signing_return(signed_cut
             }''')
             page.get_by_role('button',name='Record the signed colour and sound approval',exact=True).click()
             page.wait_for_function('()=>!!window.releaseStage')
+            expect(page.get_by_role('status')).to_have_text('Recording your signed review…')
             page.evaluate('()=>{window.returned=window.deliveryModule.refreshDelivery();}')
             page.wait_for_function('()=>!!window.releaseSummary')
             page.evaluate('()=>window.releaseStage()')
