@@ -21,7 +21,8 @@ def test_footage_then_audio_signing_shows_and_keeps_both_sets(root,monkeypatch,i
             audio=page.get_by_role('region',name='Trailer audio',exact=True)
             # Hold the ordinary helper at the signing card so both sets can
             # be read before this second signature is given.
-            audio.get_by_text('Audio account consent and price ceilings',exact=True).click()
+            from tests.backlot.test_voice_panel_browser import open_prices
+            open_prices(audio)
             for label,value in [('Dollar replacement value per credit','.0002'),('Highest speech credits per character','1'),('Highest music credits per minute','1200'),('Highest voice rate multiplier','2'),('Highest sound-effect credits per second','40'),('Prices expire','2099-01-01T12:00')]:audio.get_by_label(label,exact=True).fill(value)
             audio.get_by_role('button',name='Prepare price settings for signing',exact=True).click()
             review=page.get_by_role('heading',name='Review and sign audio',exact=True).locator('..')
