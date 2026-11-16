@@ -668,7 +668,7 @@
               },
               "angles": {
                 "type": "array",
-                "minItems": 2,
+                "minItems": 0,
                 "maxItems": 3,
                 "items": {
                   "$ref": "#/$defs/image_ref"

@@ -1,0 +1,570 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-07T22:06:03+00:00",
+  "title": "Design System: Front Lot",
+  "extensions": {
+    "colorMeta": {
+      "enamel": {
+        "role": "neutral",
+        "displayName": "Machine Enamel",
+        "canonical": "#3a403a",
+        "tonalRamp": [
+          "#080d08",
+          "#212721",
+          "#3e443e",
+          "#5d635d",
+          "#7e847e",
+          "#a0a7a0",
+          "#c4cbc4",
+          "#e9f1e9"
+        ]
+      },
+      "enamel-2": {
+        "role": "neutral",
+        "displayName": "Raised Enamel",
+        "canonical": "#434a43",
+        "tonalRamp": [
+          "#070d08",
+          "#212721",
+          "#3d443d",
+          "#5c645c",
+          "#7d857d",
+          "#a0a89f",
+          "#c3ccc3",
+          "#e9f1e9"
+        ]
+      },
+      "enamel-3": {
+        "role": "neutral",
+        "displayName": "Worn Enamel",
+        "canonical": "#4d554c",
+        "tonalRamp": [
+          "#070d07",
+          "#20271f",
+          "#3d453c",
+          "#5c645b",
+          "#7d857b",
+          "#9fa89e",
+          "#c3ccc2",
+          "#e8f2e7"
+        ]
+      },
+      "seam": {
+        "role": "neutral",
+        "displayName": "Seam",
+        "canonical": "#5a6358",
+        "tonalRamp": [
+          "#070d06",
+          "#20281e",
+          "#3c453a",
+          "#5b6459",
+          "#7c867a",
+          "#9ea89c",
+          "#c2cdc0",
+          "#e8f2e5"
+        ]
+      },
+      "seam-soft": {
+        "role": "neutral",
+        "displayName": "Soft Seam",
+        "canonical": "#485047",
+        "tonalRamp": [
+          "#070d07",
+          "#20271f",
+          "#3d453c",
+          "#5c645b",
+          "#7c857b",
+          "#9fa89e",
+          "#c3ccc2",
+          "#e8f2e7"
+        ]
+      },
+      "surround": {
+        "role": "neutral",
+        "displayName": "Viewer Surround",
+        "canonical": "#2f2f2e",
+        "tonalRamp": [
+          "#0b0b0a",
+          "#252524",
+          "#424241",
+          "#616160",
+          "#828281",
+          "#a5a5a4",
+          "#c9c9c8",
+          "#eeeeed"
+        ]
+      },
+      "glass": {
+        "role": "neutral",
+        "displayName": "Viewer Glass",
+        "canonical": "#1d1d1c",
+        "tonalRamp": [
+          "#0b0b0a",
+          "#252524",
+          "#424241",
+          "#616160",
+          "#828281",
+          "#a5a5a4",
+          "#c9c9c8",
+          "#eeeeed"
+        ]
+      },
+      "glass-edge": {
+        "role": "neutral",
+        "displayName": "Glass Edge",
+        "canonical": "#3c3c3a",
+        "tonalRamp": [
+          "#0b0b0a",
+          "#252523",
+          "#424240",
+          "#61615f",
+          "#828280",
+          "#a5a5a3",
+          "#c9c9c7",
+          "#efefec"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Grease-Pencil Ink",
+        "canonical": "#efece4",
+        "tonalRamp": [
+          "#0d0b06",
+          "#27251f",
+          "#44423b",
+          "#64615a",
+          "#85827b",
+          "#a8a59d",
+          "#ccc9c1",
+          "#f1eee6"
+        ]
+      },
+      "ink-2": {
+        "role": "neutral",
+        "displayName": "Faded Ink",
+        "canonical": "#c4c3b8",
+        "tonalRamp": [
+          "#0c0b05",
+          "#26251d",
+          "#434239",
+          "#636258",
+          "#848379",
+          "#a7a69b",
+          "#cbcabf",
+          "#f0efe4"
+        ]
+      },
+      "ink-3": {
+        "role": "neutral",
+        "displayName": "Engraving Ink",
+        "canonical": "#b8bdb0",
+        "tonalRamp": [
+          "#090d05",
+          "#23271d",
+          "#404439",
+          "#5f6358",
+          "#808478",
+          "#a2a79a",
+          "#c6cbbe",
+          "#ecf1e3"
+        ]
+      },
+      "ink-on-glass-3": {
+        "role": "neutral",
+        "displayName": "Glass Engraving Ink",
+        "canonical": "#aeaea6",
+        "tonalRamp": [
+          "#0c0c06",
+          "#26251f",
+          "#42423c",
+          "#62625a",
+          "#83837b",
+          "#a6a69e",
+          "#cacac1",
+          "#efefe7"
+        ]
+      },
+      "tape-green": {
+        "role": "secondary",
+        "displayName": "Signed Leader Green",
+        "canonical": "#74b46c",
+        "tonalRamp": [
+          "#001400",
+          "#003100",
+          "#0f5007",
+          "#34712d",
+          "#56944e",
+          "#78b870",
+          "#9cdd94",
+          "#c1ffb8"
+        ]
+      },
+      "tape-green-ink": {
+        "role": "secondary",
+        "displayName": "Green Tape Ink",
+        "canonical": "#10200e",
+        "tonalRamp": [
+          "#020f02",
+          "#1a2a17",
+          "#364834",
+          "#556752",
+          "#758972",
+          "#97ac95",
+          "#bbd0b8",
+          "#e0f6dd"
+        ]
+      },
+      "tape-red": {
+        "role": "secondary",
+        "displayName": "Declined Leader Red",
+        "canonical": "#d65d4e",
+        "tonalRamp": [
+          "#2d0000",
+          "#510000",
+          "#752018",
+          "#9a4237",
+          "#c06457",
+          "#e68779",
+          "#ffab9b",
+          "#ffd0c0"
+        ]
+      },
+      "tape-red-ink": {
+        "role": "secondary",
+        "displayName": "Red Tape Ink",
+        "canonical": "#2a0b07",
+        "tonalRamp": [
+          "#1d0201",
+          "#3b1a15",
+          "#5b3731",
+          "#7d564f",
+          "#a0776f",
+          "#c49991",
+          "#eabdb5",
+          "#ffe2da"
+        ]
+      },
+      "tape-white": {
+        "role": "secondary",
+        "displayName": "Running Leader White",
+        "canonical": "#e6e3d8",
+        "tonalRamp": [
+          "#0d0b05",
+          "#27251d",
+          "#444239",
+          "#646158",
+          "#858278",
+          "#a8a59b",
+          "#ccc9be",
+          "#f2efe3"
+        ]
+      },
+      "tape-white-ink": {
+        "role": "secondary",
+        "displayName": "White Tape Ink",
+        "canonical": "#22211d",
+        "tonalRamp": [
+          "#0c0b08",
+          "#262521",
+          "#43423e",
+          "#62615c",
+          "#84827d",
+          "#a6a5a0",
+          "#cac9c4",
+          "#f0eee9"
+        ]
+      },
+      "grease": {
+        "role": "primary",
+        "displayName": "Yellow Grease Pencil",
+        "canonical": "#f1cb3c",
+        "tonalRamp": [
+          "#1c0400",
+          "#391f00",
+          "#583e00",
+          "#785e00",
+          "#9b8011",
+          "#bea341",
+          "#e4c768",
+          "#ffed8d"
+        ]
+      },
+      "grease-ink": {
+        "role": "primary",
+        "displayName": "Grease Ink",
+        "canonical": "#241f08",
+        "tonalRamp": [
+          "#100b00",
+          "#2a250e",
+          "#47422b",
+          "#676249",
+          "#888369",
+          "#aba68b",
+          "#d0caae",
+          "#f5efd3"
+        ]
+      },
+      "script-paper": {
+        "role": "neutral",
+        "displayName": "Script Paper",
+        "canonical": "#f1eee5",
+        "tonalRamp": [
+          "#0d0b06",
+          "#27251e",
+          "#44423b",
+          "#646159",
+          "#85827a",
+          "#a8a59c",
+          "#ccc9c0",
+          "#f1eee5"
+        ]
+      },
+      "script-ink-2": {
+        "role": "neutral",
+        "displayName": "Script Margin Ink",
+        "canonical": "#6c695e",
+        "tonalRamp": [
+          "#0d0b04",
+          "#28251c",
+          "#454238",
+          "#646156",
+          "#858277",
+          "#a8a599",
+          "#cdc9bd",
+          "#f2efe2"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display Plate",
+        "purpose": "The viewer's subject name; library featured title at 52px."
+      },
+      "headline": {
+        "displayName": "Title Plate",
+        "purpose": "Film title in the machine bar; approval review heading at 30px."
+      },
+      "title": {
+        "displayName": "Section Plate",
+        "purpose": "Viewer section titles, library card titles (24px), drawer heads (20px)."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "All sentence text; 14px in log and notes."
+      },
+      "label": {
+        "displayName": "Engraved Label",
+        "purpose": "Plate labels, stage names, tapes, captions; always uppercase and tracked."
+      },
+      "screenplay": {
+        "displayName": "Screenplay",
+        "purpose": "Only inside the script page insert."
+      }
+    },
+    "shadows": [
+      {
+        "name": "hairline-edge",
+        "value": "inset 0 0 0 1px var(--seam)",
+        "purpose": "Default edge on enamel; use var(--glass-edge) on glass."
+      },
+      {
+        "name": "screen-drop",
+        "value": "0 0 0 1px var(--glass-edge), 0 24px 60px -30px rgba(0,0,0,.9)",
+        "purpose": "The main viewer screen."
+      },
+      {
+        "name": "paper-drop",
+        "value": "0 24px 50px -28px rgba(0,0,0,.9)",
+        "purpose": "Screenplay page insert."
+      },
+      {
+        "name": "card-drop",
+        "value": "inset 0 0 0 1px var(--seam), 0 18px 40px -26px rgba(0,0,0,.8)",
+        "purpose": "Library cards at rest."
+      },
+      {
+        "name": "card-drop-hover",
+        "value": "inset 0 0 0 1px var(--ink-3), 0 26px 50px -26px rgba(0,0,0,.9)",
+        "purpose": "Library card hover, with a 3px lift."
+      },
+      {
+        "name": "bar-ledge",
+        "value": "0 1px 0 rgba(255,255,255,.04) inset, 0 6px 18px -10px rgba(0,0,0,.6)",
+        "purpose": "Machine bar over the table."
+      },
+      {
+        "name": "sunken-well",
+        "value": "0 1px 0 rgba(255,255,255,.05), inset 0 1px 3px rgba(0,0,0,.7)",
+        "purpose": "Stage counter."
+      },
+      {
+        "name": "key-cap",
+        "value": "0 1px 0 rgba(255,255,255,.35) inset, 0 6px 14px -8px rgba(0,0,0,.7)",
+        "purpose": "Yellow signing button."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease",
+        "value": "cubic-bezier(.16, 1, .3, 1)",
+        "purpose": "Default for lifts and hover transitions (0.2 to 0.35s)."
+      },
+      {
+        "name": "register",
+        "value": "0.42s cubic-bezier(.2, .9, .25, 1); translateY(-7%) brightness(.55) -> translateY(.8%) at 55% -> rest",
+        "purpose": "Signature sprocket pull when a frame threads into the viewer."
+      },
+      {
+        "name": "shimmer",
+        "value": "1.4s linear infinite",
+        "purpose": "Generating thumbnail placeholder."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "animation and transition: none",
+        "purpose": "All motion off under prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "narrow-table",
+        "value": "1280px"
+      },
+      {
+        "name": "bin-strip",
+        "value": "1060px"
+      },
+      {
+        "name": "single-column",
+        "value": "760px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Sign Button",
+      "kind": "button",
+      "refersTo": "button-sign",
+      "description": "The yellow key; only where Ben signs or spends.",
+      "html": "<button class=\"ds-btn-sign\">Sign this look</button> <button class=\"ds-btn-sign\" disabled>Sign this look</button>",
+      "css": ":host{--enamel:#3a403a;--enamel-2:#434a43;--enamel-3:#4d554c;--seam:#5a6358;--seam-soft:#485047;--surround:#2f2f2e;--glass:#1d1d1c;--glass-edge:#3c3c3a;--ink:#efece4;--ink-2:#c4c3b8;--ink-3:#b8bdb0;--ink-on-glass-3:#aeaea6;--tape-green:#74b46c;--tape-red:#d65d4e;--tape-white:#e6e3d8;--grease:#f1cb3c;--grease-ink:#241f08;--focus:#efece4;--plate:\"Barlow Condensed\",\"Avenir Next Condensed\",\"Arial Narrow\",sans-serif;--sans:-apple-system,BlinkMacSystemFont,\"SF Pro Text\",\"Helvetica Neue\",system-ui,sans-serif;--ease:cubic-bezier(.16,1,.3,1);} .ds-btn-sign{font:700 17px/1 var(--plate);letter-spacing:.1em;text-transform:uppercase;padding:15px 26px 14px;border-radius:3px;cursor:pointer;color:var(--grease-ink);background:var(--grease);border:0;box-shadow:0 1px 0 rgba(255,255,255,.35) inset,0 6px 14px -8px rgba(0,0,0,.7);transition:transform .2s var(--ease),filter .2s;} .ds-btn-sign:hover{filter:brightness(1.06);transform:translateY(-1px);} .ds-btn-sign:focus-visible{outline:2px solid var(--focus);outline-offset:2px;} .ds-btn-sign:disabled{cursor:not-allowed;background:var(--enamel-2);color:var(--ink-3);box-shadow:inset 0 0 0 1px var(--seam);transform:none;filter:none;}"
+    },
+    {
+      "name": "Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "Secondary actions on the table (copy, show all).",
+      "html": "<button class=\"ds-btn-quiet\">Show all 33</button>",
+      "css": ":host{--enamel:#3a403a;--enamel-2:#434a43;--enamel-3:#4d554c;--seam:#5a6358;--seam-soft:#485047;--surround:#2f2f2e;--glass:#1d1d1c;--glass-edge:#3c3c3a;--ink:#efece4;--ink-2:#c4c3b8;--ink-3:#b8bdb0;--ink-on-glass-3:#aeaea6;--tape-green:#74b46c;--tape-red:#d65d4e;--tape-white:#e6e3d8;--grease:#f1cb3c;--grease-ink:#241f08;--focus:#efece4;--plate:\"Barlow Condensed\",\"Avenir Next Condensed\",\"Arial Narrow\",sans-serif;--sans:-apple-system,BlinkMacSystemFont,\"SF Pro Text\",\"Helvetica Neue\",system-ui,sans-serif;--ease:cubic-bezier(.16,1,.3,1);} .ds-btn-quiet{padding:8px 12px;border-radius:2px;cursor:pointer;background:var(--enamel-2);border:0;box-shadow:inset 0 0 0 1px var(--seam);color:var(--ink-2);font:13px/1.5 var(--sans);} .ds-btn-quiet:hover{color:var(--ink);background:var(--enamel-3);} .ds-btn-quiet:focus-visible{outline:2px solid var(--focus);outline-offset:2px;}"
+    },
+    {
+      "name": "Leader Tapes",
+      "kind": "chip",
+      "refersTo": "tape-done",
+      "description": "The four state colours as chips.",
+      "html": "<span class=\"ds-tape\">Sheet</span> <span class=\"ds-tape done\">Look</span> <span class=\"ds-tape waiting\">Headshot</span> <span class=\"ds-tape declined\">Declined</span> <span class=\"ds-tape running\">Running</span>",
+      "css": ":host{--enamel:#3a403a;--enamel-2:#434a43;--enamel-3:#4d554c;--seam:#5a6358;--seam-soft:#485047;--surround:#2f2f2e;--glass:#1d1d1c;--glass-edge:#3c3c3a;--ink:#efece4;--ink-2:#c4c3b8;--ink-3:#b8bdb0;--ink-on-glass-3:#aeaea6;--tape-green:#74b46c;--tape-red:#d65d4e;--tape-white:#e6e3d8;--grease:#f1cb3c;--grease-ink:#241f08;--focus:#efece4;--plate:\"Barlow Condensed\",\"Avenir Next Condensed\",\"Arial Narrow\",sans-serif;--sans:-apple-system,BlinkMacSystemFont,\"SF Pro Text\",\"Helvetica Neue\",system-ui,sans-serif;--ease:cubic-bezier(.16,1,.3,1);} .ds-tape{display:inline-flex;align-items:center;font:600 12.5px/1 var(--plate);letter-spacing:.1em;text-transform:uppercase;padding:6px 9px 5px;border-radius:2px;color:var(--ink-2);box-shadow:inset 0 0 0 1px var(--glass-edge);background:var(--surround);} .ds-tape.done{background:var(--tape-green);color:#10200e;box-shadow:none;} .ds-tape.waiting{background:var(--grease);color:var(--grease-ink);box-shadow:none;} .ds-tape.declined{background:var(--tape-red);color:#2a0b07;box-shadow:none;} .ds-tape.running{background:var(--tape-white);color:#22211d;box-shadow:none;}"
+    },
+    {
+      "name": "Machine Bar",
+      "kind": "nav",
+      "refersTo": "",
+      "description": "Maker plate, film title plate, stage counter, spend meter.",
+      "html": "<header class=\"ds-bar\"><span class=\"ds-maker\">Front Lot</span><span class=\"ds-title\">Film title</span><div class=\"ds-counter\"><button class=\"ds-stage done\"><span>Script</span><i></i></button><button class=\"ds-stage await\"><span>Look lock</span><i></i></button><button class=\"ds-stage\"><span>Edit</span><i></i></button></div><div class=\"ds-meter\"><b>$7.26</b><span>spent</span></div></header>",
+      "css": ":host{--enamel:#3a403a;--enamel-2:#434a43;--enamel-3:#4d554c;--seam:#5a6358;--seam-soft:#485047;--surround:#2f2f2e;--glass:#1d1d1c;--glass-edge:#3c3c3a;--ink:#efece4;--ink-2:#c4c3b8;--ink-3:#b8bdb0;--ink-on-glass-3:#aeaea6;--tape-green:#74b46c;--tape-red:#d65d4e;--tape-white:#e6e3d8;--grease:#f1cb3c;--grease-ink:#241f08;--focus:#efece4;--plate:\"Barlow Condensed\",\"Avenir Next Condensed\",\"Arial Narrow\",sans-serif;--sans:-apple-system,BlinkMacSystemFont,\"SF Pro Text\",\"Helvetica Neue\",system-ui,sans-serif;--ease:cubic-bezier(.16,1,.3,1);} .ds-bar{display:flex;align-items:center;gap:22px;height:64px;padding:0 20px 0 18px;background:var(--enamel-2);border-bottom:1px solid var(--seam);color:var(--ink);font:15px/1.5 var(--sans);} .ds-maker{font:700 17px/1 var(--plate);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-2);} .ds-title{padding-left:22px;border-left:1px solid var(--seam);font:700 26px/1 var(--plate);letter-spacing:.02em;text-transform:uppercase;} .ds-counter{display:flex;gap:2px;margin-left:auto;background:var(--glass);padding:3px;border-radius:4px;box-shadow:0 1px 0 rgba(255,255,255,.05),inset 0 1px 3px rgba(0,0,0,.7);} .ds-stage{display:flex;flex-direction:column;gap:3px;min-width:64px;padding:5px 8px 6px;border:0;border-radius:2px;background:transparent;cursor:pointer;text-align:left;color:var(--ink-3);font:600 12px/1 var(--plate);letter-spacing:.08em;text-transform:uppercase;} .ds-stage i{height:3px;border-radius:2px;background:var(--seam-soft);} .ds-stage.done{color:var(--ink-2);} .ds-stage.done i{background:var(--tape-green);} .ds-stage.await{color:var(--ink);} .ds-stage.await i{background:var(--grease);} .ds-stage:hover{background:var(--enamel);color:var(--ink-2);} .ds-stage:focus-visible{outline:2px solid var(--focus);outline-offset:2px;} .ds-meter{display:flex;flex-direction:column;align-items:flex-end;gap:2px;} .ds-meter b{font:700 22px/1 var(--plate);} .ds-meter span{font-size:12px;color:var(--ink-2);}"
+    },
+    {
+      "name": "Trim Bin Clip",
+      "kind": "custom",
+      "refersTo": "clip",
+      "description": "Roster row: face, name, three slot tabs (look, headshot, sheet).",
+      "html": "<div class=\"ds-bin\"><button class=\"ds-clip\" aria-current=\"true\"><span class=\"ds-face\">A</span><span class=\"ds-name\">Character name</span><span class=\"ds-slots\"><i class=\"done\"></i><i class=\"waiting\"></i><i></i></span></button><button class=\"ds-clip\"><span class=\"ds-face\">B</span><span class=\"ds-name\">Another name</span><span class=\"ds-slots\"><i></i><i></i><i></i></span></button></div>",
+      "css": ":host{--enamel:#3a403a;--enamel-2:#434a43;--enamel-3:#4d554c;--seam:#5a6358;--seam-soft:#485047;--surround:#2f2f2e;--glass:#1d1d1c;--glass-edge:#3c3c3a;--ink:#efece4;--ink-2:#c4c3b8;--ink-3:#b8bdb0;--ink-on-glass-3:#aeaea6;--tape-green:#74b46c;--tape-red:#d65d4e;--tape-white:#e6e3d8;--grease:#f1cb3c;--grease-ink:#241f08;--focus:#efece4;--plate:\"Barlow Condensed\",\"Avenir Next Condensed\",\"Arial Narrow\",sans-serif;--sans:-apple-system,BlinkMacSystemFont,\"SF Pro Text\",\"Helvetica Neue\",system-ui,sans-serif;--ease:cubic-bezier(.16,1,.3,1);} .ds-bin{background:var(--enamel);width:252px;padding:10px 0;} .ds-clip{display:grid;grid-template-columns:44px minmax(0,1fr);gap:3px 12px;align-items:center;width:100%;padding:9px 18px 9px 14px;border:0;background:none;text-align:left;cursor:pointer;color:var(--ink-2);font:15px/1.5 var(--sans);} .ds-clip:hover{background:var(--enamel-2);} .ds-clip[aria-current=\"true\"]{background:var(--enamel-3);color:var(--ink);} .ds-clip:focus-visible{outline:2px solid var(--focus);outline-offset:2px;} .ds-face{grid-row:span 2;width:44px;height:44px;border-radius:2px;background:var(--glass);box-shadow:inset 0 0 0 1px var(--glass-edge);display:grid;place-items:center;font:700 18px/1 var(--plate);color:var(--ink-3);} .ds-name{font-weight:600;font-size:14px;line-height:1.25;} .ds-slots{display:flex;gap:4px;} .ds-slots i{height:6px;flex:1;max-width:34px;border-radius:1px;box-shadow:inset 0 0 0 1px var(--seam);} .ds-slots i.done{background:var(--tape-green);box-shadow:none;} .ds-slots i.waiting{background:var(--grease);box-shadow:none;}"
+    },
+    {
+      "name": "Needs-You Card",
+      "kind": "card",
+      "refersTo": "need-card",
+      "description": "A decision waiting on Ben, at the top of the log column.",
+      "html": "<button class=\"ds-need\"><span class=\"ds-text\">Approve the character sheet for this character.</span><span class=\"ds-who\">Asked 2 hours ago</span></button>",
+      "css": ":host{--enamel:#3a403a;--enamel-2:#434a43;--enamel-3:#4d554c;--seam:#5a6358;--seam-soft:#485047;--surround:#2f2f2e;--glass:#1d1d1c;--glass-edge:#3c3c3a;--ink:#efece4;--ink-2:#c4c3b8;--ink-3:#b8bdb0;--ink-on-glass-3:#aeaea6;--tape-green:#74b46c;--tape-red:#d65d4e;--tape-white:#e6e3d8;--grease:#f1cb3c;--grease-ink:#241f08;--focus:#efece4;--plate:\"Barlow Condensed\",\"Avenir Next Condensed\",\"Arial Narrow\",sans-serif;--sans:-apple-system,BlinkMacSystemFont,\"SF Pro Text\",\"Helvetica Neue\",system-ui,sans-serif;--ease:cubic-bezier(.16,1,.3,1);} .ds-need{display:block;width:340px;text-align:left;cursor:pointer;border:0;border-radius:3px;padding:14px 16px 15px;background:var(--enamel-2);box-shadow:inset 0 0 0 1px var(--seam);position:relative;font:15px/1.5 var(--sans);} .ds-need::before{content:\"\";position:absolute;left:16px;right:16px;top:0;height:3px;background:var(--grease);border-radius:0 0 2px 2px;} .ds-need:hover{background:var(--enamel-3);} .ds-need:focus-visible{outline:2px solid var(--focus);outline-offset:2px;} .ds-text{display:block;margin-top:4px;font-size:14.5px;line-height:1.4;color:var(--ink);} .ds-who{display:block;margin-top:6px;font-size:13px;color:var(--ink-2);}"
+    },
+    {
+      "name": "Viewer Screen and Frame Strip",
+      "kind": "custom",
+      "refersTo": "screen",
+      "description": "The picture on neutral glass, with leader-tabbed frames beneath.",
+      "html": "<div class=\"ds-viewer\"><div class=\"ds-screen\"><span class=\"ds-frame-label\">Headshot</span></div><div class=\"ds-strip\"><button class=\"ds-frame done\" aria-current=\"true\"><span class=\"ds-pic\"><i></i></span><span class=\"ds-cap\">Headshot</span></button><button class=\"ds-frame waiting\"><span class=\"ds-pic\"><i></i></span><span class=\"ds-cap\">Turnaround</span></button></div></div>",
+      "css": ":host{--enamel:#3a403a;--enamel-2:#434a43;--enamel-3:#4d554c;--seam:#5a6358;--seam-soft:#485047;--surround:#2f2f2e;--glass:#1d1d1c;--glass-edge:#3c3c3a;--ink:#efece4;--ink-2:#c4c3b8;--ink-3:#b8bdb0;--ink-on-glass-3:#aeaea6;--tape-green:#74b46c;--tape-red:#d65d4e;--tape-white:#e6e3d8;--grease:#f1cb3c;--grease-ink:#241f08;--focus:#efece4;--plate:\"Barlow Condensed\",\"Avenir Next Condensed\",\"Arial Narrow\",sans-serif;--sans:-apple-system,BlinkMacSystemFont,\"SF Pro Text\",\"Helvetica Neue\",system-ui,sans-serif;--ease:cubic-bezier(.16,1,.3,1);} .ds-viewer{background:var(--surround);padding:26px;} .ds-screen{position:relative;height:240px;background:var(--glass);border-radius:4px;box-shadow:0 0 0 1px var(--glass-edge),0 24px 60px -30px rgba(0,0,0,.9);} .ds-frame-label{position:absolute;left:14px;bottom:12px;font:600 13px/1 var(--plate);letter-spacing:.12em;text-transform:uppercase;color:var(--ink);background:rgba(23,23,22,.78);padding:6px 9px 5px;border-radius:2px;} .ds-strip{display:flex;gap:10px;margin-top:14px;padding:10px 2px 12px;border-top:1px dashed var(--glass-edge);} .ds-frame{width:168px;padding:0;border:0;background:none;cursor:pointer;text-align:left;color:var(--ink-2);} .ds-pic{position:relative;display:block;height:112px;border-radius:2px;background:var(--glass);box-shadow:inset 0 0 0 1px var(--glass-edge);transition:transform .3s var(--ease),box-shadow .3s var(--ease);} .ds-pic i{position:absolute;left:0;top:0;bottom:0;width:5px;} .ds-frame.done i{background:var(--tape-green);} .ds-frame.waiting i{background:var(--grease);} .ds-frame:hover .ds-pic{transform:translateY(-2px);} .ds-frame[aria-current=\"true\"] .ds-pic{box-shadow:0 0 0 2px var(--ink);} .ds-frame[aria-current=\"true\"] .ds-cap{color:var(--ink);} .ds-frame:focus-visible{outline:2px solid var(--focus);outline-offset:2px;} .ds-cap{display:block;margin-top:7px;font:600 13px/1.2 var(--plate);letter-spacing:.08em;text-transform:uppercase;}"
+    },
+    {
+      "name": "Library Card",
+      "kind": "card",
+      "refersTo": "library-card",
+      "description": "A film in the vault: poster on glass, plate title, meta, stage mini-rail.",
+      "html": "<a class=\"ds-lib\" href=\"#\"><span class=\"ds-poster\">Nothing on film yet</span><span class=\"ds-body\"><b>Film title</b><span class=\"ds-meta\">6 scenes · 8d ago</span><span class=\"ds-rail\"><i class=\"d\"></i><i class=\"d\"></i><i class=\"a\"></i><i></i><i></i></span></span></a>",
+      "css": ":host{--enamel:#3a403a;--enamel-2:#434a43;--enamel-3:#4d554c;--seam:#5a6358;--seam-soft:#485047;--surround:#2f2f2e;--glass:#1d1d1c;--glass-edge:#3c3c3a;--ink:#efece4;--ink-2:#c4c3b8;--ink-3:#b8bdb0;--ink-on-glass-3:#aeaea6;--tape-green:#74b46c;--tape-red:#d65d4e;--tape-white:#e6e3d8;--grease:#f1cb3c;--grease-ink:#241f08;--focus:#efece4;--plate:\"Barlow Condensed\",\"Avenir Next Condensed\",\"Arial Narrow\",sans-serif;--sans:-apple-system,BlinkMacSystemFont,\"SF Pro Text\",\"Helvetica Neue\",system-ui,sans-serif;--ease:cubic-bezier(.16,1,.3,1);} .ds-lib{display:block;width:320px;text-decoration:none;color:var(--ink);background:var(--enamel-2);border-radius:4px;overflow:hidden;box-shadow:inset 0 0 0 1px var(--seam),0 18px 40px -26px rgba(0,0,0,.8);transition:transform .35s var(--ease),box-shadow .35s var(--ease);font:15px/1.5 var(--sans);} .ds-lib:hover{transform:translateY(-3px);box-shadow:inset 0 0 0 1px var(--ink-3),0 26px 50px -26px rgba(0,0,0,.9);} .ds-lib:focus-visible{outline:2px solid var(--focus);outline-offset:2px;} .ds-poster{display:grid;place-items:center;aspect-ratio:16/9;background:var(--glass);font:600 14px/1 var(--plate);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);} .ds-body{display:block;padding:14px 16px 16px;} .ds-body b{display:block;margin-bottom:6px;font:700 24px/1.05 var(--plate);letter-spacing:.02em;text-transform:uppercase;} .ds-meta{display:block;font-size:13px;color:var(--ink-2);} .ds-rail{display:flex;gap:3px;margin-top:14px;} .ds-rail i{flex:1;height:4px;border-radius:1px;background:var(--seam-soft);} .ds-rail i.d{background:var(--tape-green);} .ds-rail i.a{background:var(--tape-white);}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Cutting Room",
+    "overview": "Front Lot is a flatbed editing table, not a dashboard. One table runs the full window: a machine bar across the top, the trim bin on the left, a large viewer in the middle, and the log on the right. The picture being judged is the main thing on screen. Everything else is machine enamel, viewer glass, and grease pencil, and stays dim so the picture holds the colour.\n\nThe world is built from three materials. The table is grey-green machine enamel, stepped in three tones. The viewer is neutral, dim glass, so colour judgement stays honest over long sittings. The marks are warm off-white grease-pencil ink. State is spoken only in leader-tape colours (green signed, red declined, white in progress), and yellow grease pencil is held back for one meaning: this needs you now. Labels are engraved plates set in a condensed face. Reading text uses the system workhorse sans. Hashes, IDs and monospace stay out of the main view.\n\nDensity is calm. Hierarchy comes from scale: one big title plate and one big picture per screen, small engraved labels around them. Signing and spending are kept apart from the rest by space and by the yellow.",
+    "keyCharacteristics": [
+      "Three-column table (bin, viewer, log) under a 64px machine bar; the viewer takes all remaining width.",
+      "Neutral glass behind every image; enamel is never placed directly behind a picture.",
+      "Four leader-tape state colours, and yellow means only \"needs you\".",
+      "Condensed, uppercase, tracked plate labels; sans for anything you read as a sentence.",
+      "Edges are drawn as 1px inset hairlines, not borders; drop shadows are deep, soft and rare.",
+      "Small radii throughout (1 to 4px): machined, not friendly."
+    ],
+    "rules": [
+      {
+        "name": "The Reserved Yellow Rule",
+        "body": "Grease yellow means \"this needs you now\" and nothing else. If something does not need Ben's decision, it does not get yellow, however important it is.",
+        "section": "colors"
+      },
+      {
+        "name": "The Leader Tape Rule",
+        "body": "State has four colours: green signed, red declined, white running, yellow waiting. A new state maps onto one of these or stays neutral seam grey. No blues, purples or extra hues for status.",
+        "section": "colors"
+      },
+      {
+        "name": "The Honest Glass Rule",
+        "body": "Pictures sit on neutral glass (glass or surround), never on the green enamel, so the enamel cast never skews colour judgement.",
+        "section": "colors"
+      },
+      {
+        "name": "The Engraved Plate Rule",
+        "body": "Barlow Condensed is always uppercase and tracked (0.02em at display sizes, 0.08 to 0.14em at label sizes). Sentences are never set in it.",
+        "section": "typography"
+      },
+      {
+        "name": "The No Machine Lines Rule",
+        "body": "Monospace never appears in the main view. Raw packet text and commands appear only inside a collapsed \"more\" disclosure or a drawer, set in the system mono on glass.",
+        "section": "typography"
+      },
+      {
+        "name": "The Hairline Not Border Rule",
+        "body": "Draw edges as inset 1px hairlines in seam (on enamel) or glass-edge (on glass). Drop shadows are soft, negatively spread, and kept for the screen, paper, cards and the signing key.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** put every picture, thumbnail and preview on glass (glass) or the surround (surround), with a glass-edge hairline.",
+      "**Do** say state only with the four leader-tape colours, as fills, ticks, leaders or marks, each with its paired dark ink for text.",
+      "**Do** set names and labels in Barlow Condensed, uppercase and tracked; set sentences in the system sans at 14 to 15px.",
+      "**Do** give each screen one dominant thing: the viewer's subject and its picture, or the library's featured film.",
+      "**Do** keep signing and spending apart, behind 40px of space and a rule, with the yellow key as the only control there.",
+      "**Do** honour reduced motion: all animation and transitions switch off."
+    ],
+    "donts": [
+      "**Don't** use grease yellow for anything except \"needs you now\".",
+      "**Don't** add status hues beyond green, red, white and yellow.",
+      "**Don't** show hashes, IDs or monospace machine output in the main view; keep them inside a collapsed disclosure or drawer.",
+      "**Don't** set sentence text in the condensed plate face, or plate labels in sentence case.",
+      "**Don't** build the board as a grid of equal dark panels with tiny mono labels.",
+      "**Don't** place pictures directly on the green enamel.",
+      "**Don't** pair engraving ink (ink-3) with raised enamel (enamel-2) for small text; it measures 4.36:1. Use ink-2 there."
+    ]
+  }
+}

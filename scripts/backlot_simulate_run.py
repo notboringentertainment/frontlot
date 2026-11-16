@@ -69,6 +69,8 @@ def main() -> int:
     wait = 0.3 if args.fast else 2.5
     pid = args.project
     pdir = PROJECTS_DIR / pid
+    from lib.trailer_contract import refuse_demo_overwrite
+    refuse_demo_overwrite(pdir)
     if pdir.exists():
         shutil.rmtree(pdir)
 

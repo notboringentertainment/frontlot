@@ -25,6 +25,14 @@ def _fsync_dir(directory: Path) -> None:
 def atomic_write_bytes(path: Path | str, data: bytes) -> None:
     """Write ``data`` to ``path`` via a unique temp file in the same directory + os.replace."""
     path = Path(path)
+    if path.name == 'edit_decisions.json' and path.parent.name == 'artifacts':
+        root = path.parent.parent
+        marker = root / 'project.json'
+        if marker.is_file() and json.loads(marker.read_text()).get('production_kind') == 'trailer':
+            from lib.trailer_edit import save_edit_revision
+            value = json.loads(data)
+            save_edit_revision(root, value)
+            return
     parent = path.parent
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
     tmp = Path(tmp_name)

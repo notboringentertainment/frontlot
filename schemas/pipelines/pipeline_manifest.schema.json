@@ -119,7 +119,7 @@
     },
     "validation_profile": {
       "type": "string",
-      "enum": ["authored-canon"],
+      "enum": ["authored-canon", "trailer-test"],
       "description": "Opt-in runtime validation profile enforced by lib/checkpoint.py beyond generic artifact contracts. 'authored-canon' adds canon-fidelity enforcement (blocking questions, canon evidence, canon pass, render verification)."
     },
     "default_checkpoint_policy": {

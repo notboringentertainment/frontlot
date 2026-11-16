@@ -95,6 +95,7 @@ def recover_output(project_root: Path, reservation: dict[str, Any], *, api_key: 
     """
     from lib import pathsafe
     from lib.receipts import find_generation
+    from tools.cost_tracker import retain_download
     from lib.state_io import atomic_move
     from tools.video import _shared
 
@@ -115,18 +116,13 @@ def recover_output(project_root: Path, reservation: dict[str, Any], *, api_key: 
             return recovered
         data = _shared.fal_queue_wait(model_id, request_id, api_key=api_key, deadline_s=60.0, poll_s=1.0)
         staging = pathsafe.staging_file(project_root, ".mp4")
-        try:
-            _shared.fal_download(
-                data["video"]["url"], staging, max_bytes=VIDEO_MAX_BYTES,
-                allowed_mime_prefixes=("video/", "application/octet-stream"),
-            )
-            _shared.verify_video_file(staging, require_audio=bool(hint.get("generate_audio", False)))
-            atomic_move(staging, output_path)
-        finally:
-            try:
-                staging.unlink()
-            except FileNotFoundError:
-                pass
+        retain_download(project_root,reservation['reservation_id'],staging)
+        _shared.fal_download(
+            data["video"]["url"], staging, max_bytes=VIDEO_MAX_BYTES,
+            allowed_mime_prefixes=("video/", "application/octet-stream"),
+        )
+        _shared.verify_video_file(staging, require_audio=bool(hint.get("generate_audio", False)))
+        atomic_move(staging, output_path)
         _record_receipt(project_root, reservation, pathsafe.sha256_file(output_path))
         recovered.append(str(output_path))
     elif kind == "image" and hint.get("objects_dir"):
@@ -137,14 +133,9 @@ def recover_output(project_root: Path, reservation: dict[str, Any], *, api_key: 
         data = _shared.fal_queue_wait(model_id, request_id, api_key=api_key, deadline_s=60.0, poll_s=1.0)
         for item in data.get("images") or []:
             staging = pathsafe.staging_file(project_root, ".img")
-            try:
-                _shared.fal_download(item["url"], staging, max_bytes=IMAGE_MAX_BYTES, allowed_mime_prefixes=("image/",))
-                asset_id, final_path = pathsafe.store_content_addressed(staging, objects_dir, ".png")
-            finally:
-                try:
-                    staging.unlink()
-                except FileNotFoundError:
-                    pass
+            retain_download(project_root,reservation['reservation_id'],staging)
+            _shared.fal_download(item["url"], staging, max_bytes=IMAGE_MAX_BYTES, allowed_mime_prefixes=("image/",))
+            asset_id, final_path = pathsafe.store_content_addressed(staging, objects_dir, ".png")
             _record_receipt(project_root, reservation, asset_id)
             recovered.append(str(final_path))
     return recovered
@@ -262,6 +253,20 @@ def reconcile_project(project_root: Path, *, api_key: str | None, out=None) -> d
         return summary
     for r in pending:
         rid = r["reservation_id"]
+        from tools.cost_tracker import retained_download_paths
+        for retained in retained_download_paths(project_root,r):
+            print(f'Paid downloaded bytes were kept, unfiled and unapproved: {retained.relative_to(project_root)}',file=out)
+        if (r.get('output_hint') or {}).get('footage_request_id'):
+            summary['manual'].append(rid)
+            print('This footage charge needs Ben’s signed account review. Its reservation remains in place. '
+                  'Nothing was sent or submitted again.',file=out)
+            continue
+        if r.get("tool") == "elevenlabs_audio":
+            summary["manual"].append(rid)
+            print("ElevenLabs audio still needs billing or download review. "
+                  "Its reservation remains in place. Nothing was sent to another service. "
+                  "Do not submit it again.", file=out)
+            continue
         if not r.get("provider_request_id"):
             summary["manual"].append(rid)
             print(
@@ -321,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
     if not project_root.is_dir():
         print(f"error: no project {args.project!r} under {paths.PROJECTS_DIR}", file=sys.stderr)
         return 2
-    api_key = os.environ.get("FAL_KEY") or os.environ.get("FAL_AI_API_KEY")
+    api_key = os.environ.get("FAL_KEY",'').strip() or os.environ.get("FAL_AI_API_KEY",'').strip()
     try:
         summary = reconcile_project(project_root, api_key=api_key)
     except Exception as exc:  # noqa: BLE001

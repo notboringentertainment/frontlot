@@ -36,11 +36,12 @@ def _tracker(project, budget=1.0):
 CALL = dict(tool="image_gen", endpoint="fal-ai/example/edit", normalized_inputs_hash="ab" * 32)
 
 
-def test_cap_exceeded_writes_no_reservation(project):
+def test_cap_exceeded_closes_the_intent_without_charge(project):
     tracker = _tracker(project, budget=0.10)
     with pytest.raises(BudgetExceededError):
         reserve_paid_call(tracker, project, reserved_usd=0.50, **CALL)
-    assert not ct.reservations_path(project).exists()
+    reservation, = load_reservations(project).values()
+    assert reservation['state']=='failed' and reservation['actual_usd']==0
     assert tracker.budget_reserved_usd == 0.0
     resume_check(project)  # nothing indeterminate
 

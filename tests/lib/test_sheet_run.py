@@ -320,3 +320,78 @@ def test_generator_without_hook_records_no_attempt(world):
     with pytest.raises(sheet_run.SheetRunError, match="did not run the pre-submit hook"):
         sheet_run.run_sheet(w["project"], CHAR, palette=PALETTE, generate=rogue, judge_adapter=FakeAdapter(_all("turnaround")))
     assert qr.rows_of_kind(w["project"], "attempt_started") == []
+
+
+def _frozen_sheet(world, exp, gen):
+    judge = SeqJudge({"turnaround": [_all("turnaround")], "expressions": [_all("expressions")]})
+    return sheet_run.run_sheet(world["project"], CHAR, palette=PALETTE, generate=gen, judge_adapter=judge,
+                               out=io.StringIO(), expectations=exp)
+
+
+def test_changed_visual_bible_refuses_before_any_generation(world):
+    from lib.run_common import Expectations, InputChanged
+    cp = world["project"] / "checkpoint_visual_bible.json"
+    gen = FakeGen()
+    with pytest.raises(InputChanged, match="changed after it was approved"):
+        _frozen_sheet(world, Expectations({cp.resolve(): "0" * 64}), gen)
+    assert gen.n == 0
+
+
+@pytest.mark.parametrize("kind", ["look", "config", "headshot"])
+def test_changed_authority_refuses_sheet_before_any_generation(world, kind):
+    from lib.run_common import Expectations, InputChanged
+    gen = FakeGen()
+    with pytest.raises(InputChanged):
+        _frozen_sheet(world, Expectations(values={kind: "0" * 64}), gen)
+    assert gen.n == 0
+
+
+def test_visual_bible_changed_after_lease_entry_is_refused_before_generation(world, monkeypatch):
+    from lib.run_common import ABSENT, Expectations, InputChanged
+    import tools.cost_tracker as ct
+    cp = world["project"] / "checkpoint_visual_bible.json"
+    digest = hashlib.sha256(cp.read_bytes()).hexdigest() if cp.is_file() else ABSENT
+    real = ct.resume_check
+
+    def edit_then_resume(root):
+        cp.write_text(json.dumps({"metadata": {"run_state": {}}}))
+        return real(root)
+    monkeypatch.setattr(ct, "resume_check", edit_then_resume)
+    gen = FakeGen()
+    with pytest.raises(InputChanged, match="changed after it was approved"):
+        _frozen_sheet(world, Expectations({cp: digest}), gen)
+    assert gen.n == 0
+
+
+def test_symlinked_visual_bible_is_refused(world):
+    from lib.run_common import ABSENT, Expectations, InputChanged
+    cp = world["project"] / "checkpoint_visual_bible.json"
+    if cp.exists():
+        cp.unlink()
+    other = world["project"] / "elsewhere.json"; other.write_text("{}")
+    cp.symlink_to(other)
+    gen = FakeGen()
+    with pytest.raises(InputChanged):
+        _frozen_sheet(world, Expectations({cp: ABSENT}), gen)
+    assert gen.n == 0
+
+
+def test_frozen_path_the_sheet_run_never_reads_is_refused(world):
+    from lib.run_common import Expectations, InputChanged
+    stray = world["project"] / "not-an-input.json"; stray.write_text("{}")
+    gen = FakeGen()
+    with pytest.raises(InputChanged, match="never checked"):
+        _frozen_sheet(world, Expectations({stray: hashlib.sha256(b"{}").hexdigest()}), gen)
+    assert gen.n == 0
+
+
+def test_cli_refuses_empty_expectation_and_uses_its_own_exit_code(world, monkeypatch, capsys):
+    from lib.run_common import EXIT_INPUT_CHANGED
+    monkeypatch.setattr(sheet_run, "resolve_project_root", lambda _p: world["project"])
+    with pytest.raises(SystemExit) as e:
+        sheet_run.main(["--project", "p", "--entity", CHAR, "--expect-headshot", ""])
+    assert e.value.code == 2
+    rc = sheet_run.main(["--project", "p", "--entity", CHAR, "--expect-config-sha", "0" * 64])
+    err = capsys.readouterr().err
+    assert rc == EXIT_INPUT_CHANGED
+    assert "changed after it was approved; nothing was spent" in err and "Traceback" not in err

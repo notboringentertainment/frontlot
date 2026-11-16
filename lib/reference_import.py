@@ -294,6 +294,34 @@ def synthetic_import_receipt(
             if receipt_id is not None and r.get("receipt_id") != receipt_id:
                 continue
             match = r
+    if match is None:
+        match = location_set_receipt(project_dir, pixel_hash, project_id=project_id, entity_id=entity_id,
+                                     receipt_id=receipt_id)
+    return match
+
+
+def location_set_receipt(
+    project_dir: Path | str, pixel_hash: str, *, project_id: Optional[str] = None, entity_id: Optional[str] = None,
+    receipt_id: Optional[str] = None,
+) -> Optional[dict]:
+    """G10: the verified ``location`` set receipt in which the writer signed
+    the fixed likeness promise for ``pixel_hash`` (envelope attestation_text
+    + staged_pictures, checked at signing by ``receipts._validate_location_set``).
+    It attests that picture exactly as a per-picture reference_import would."""
+    from lib.receipts import verified_approvals
+
+    match = None
+    for r in verified_approvals(project_dir, "location", project_id=project_id):
+        # signed envelope fields sit at the top level of the receipt (lib.receipts.record_human_approval)
+        if r.get("attestation_text") != SYNTHETIC_ATTESTATION:
+            continue
+        if pixel_hash not in {p.get("pixel_hash") for p in r.get("staged_pictures") or [] if isinstance(p, dict)}:
+            continue
+        if entity_id is not None and (r.get("record") or {}).get("id") != entity_id:
+            continue
+        if receipt_id is not None and r.get("receipt_id") != receipt_id:
+            continue
+        match = r
     return match
 
 

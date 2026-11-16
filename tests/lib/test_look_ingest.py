@@ -246,6 +246,21 @@ class TestTicketConfinement:
         with pytest.raises(LookIngestError, match="matches 0 resolved"):
             parse_look_ticket(open_, wayfinder_root=tmp_path)
 
+    def test_an_edited_decision_is_a_heads_up_not_a_block(self, tmp_path):
+        """Ben, 2026-10-11: a decision edited after the look was settled no longer
+        blocks the look; the signing screen tells him what moved and he judges."""
+        blocker = write_ticket(tmp_path, location_look(), ticket_id="wf-22222222", name="world.md")
+        settled = [{"id": "wf-22222222", "path": "wayfinder/resolved/world.md",
+                    "content_sha256": hashlib.sha256(blocker.read_bytes()).hexdigest()}]
+        path = write_ticket(tmp_path, character_look(depends_on=settled), blocked_by=["wf-22222222"])
+        assert parse_look_ticket(path, wayfinder_root=tmp_path).changed_since == ()
+        blocker.write_text(blocker.read_text() + "\n**Amended 2099-01-02** (later edit): something else moved.\n")
+        look = parse_look_ticket(path, wayfinder_root=tmp_path)
+        assert len(look.changed_since) == 1 and "amended 2099-01-02" in look.changed_since[0]
+        assert look.payload["depends_on"][0]["content_sha256"] == hashlib.sha256(blocker.read_bytes()).hexdigest()
+        req = json.loads(look_lock_request(tmp_path / "proj", "p", look).read_text())
+        assert "Heads up:" in req["summary"] and "decline if a change matters" in req["summary"]
+
     def test_wayfinder_root_comes_from_project_yaml(self, tmp_path, project_dir):
         from lib.look_ingest import wayfinder_root_for
 

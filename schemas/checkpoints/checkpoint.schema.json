@@ -149,7 +149,7 @@
                 "const": "authored-film"
               },
               "version": {
-                "const": "1.2"
+                "not": {"enum": ["1.0", "1.1"]}
               }
             },
             "required": [

@@ -2,11 +2,13 @@
 
 ``scripts/gate_sign.py`` owns the PTY, child, project lease and interprocess
 lock.  This module gives Backlot a disposable authenticated attachment to that
-broker.  Closing a relay never writes to or signals the signer.
+broker. A disconnected relay can reattach. Explicit cancellation asks the
+broker to stop its own signer only while it is waiting for a human answer.
 """
 
 from __future__ import annotations
 
+from lib import programs
 import asyncio
 import errno
 import json
@@ -18,6 +20,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
+from starlette.websockets import WebSocketDisconnect
 
 if TYPE_CHECKING:
     from fastapi import FastAPI, WebSocket
@@ -627,13 +630,13 @@ async def _attach(project: str, request_id: str) -> tuple[asyncio.StreamReader, 
         }))
         await writer.drain()
         return reader, writer, hello
-    except CleanEOF as exc:
+    except (CleanEOF,asyncio.TimeoutError) as exc:
         writer.close()
         try:
             await writer.wait_closed()
         except (ConnectionError, OSError):
             pass
-        raise BrokerUnavailable("broker closed before HELLO") from exc
+        raise BrokerUnavailable("signing broker is not ready for HELLO") from exc
     except ProtocolError:
         await _best_effort_bye(writer, "protocol")
         writer.close()
@@ -655,7 +658,7 @@ def _spawn_broker(registry: TTYRegistry, project_dir: Path, request_id: str) -> 
     from lib.run_common import gate_invocation
 
     invocation = gate_invocation(project_dir, request_id)
-    process = subprocess.Popen(
+    process = programs.Popen(
         [*invocation["argv"], "--broker"],
         cwd=invocation["cwd"],
         stdin=subprocess.DEVNULL,
@@ -685,7 +688,9 @@ async def _connect_or_spawn(
     except BrokerUnavailable:
         process = _spawn_broker(registry, project_dir, request_id)
 
-    deadline = time.monotonic() + 5.0
+    # The broker may spend ten seconds obtaining its login PATH after binding
+    # its socket. Keep waiting for a verified HELLO, never forward input early.
+    deadline = time.monotonic() + 15.0
     last_identity_error: Optional[IdentityMismatch] = None
     losing_lease_race = False
     saw_matching_session = False
@@ -761,6 +766,9 @@ async def _websocket_input(
                 control = json.loads(text)
             except (TypeError, ValueError):
                 continue
+            if isinstance(control,dict) and control.get('type')=='cancel':
+                await queue.put(('cancel',None))
+                continue
             if not isinstance(control, dict) or control.get("type") != "resize":
                 continue
             dimensions = valid_resize(control)
@@ -773,20 +781,23 @@ async def _websocket_input(
 async def _page_to_broker(
     incoming: asyncio.Queue[tuple[str, Any]],
     writer: asyncio.StreamWriter,
-) -> None:
+) -> str:
     while True:
         kind, payload = await incoming.get()
         if kind == "disconnect":
-            return
+            return 'page_closed'
         if kind == "protocol":
             raise ProtocolError("oversized websocket input")
-        if kind == "input":
-            writer.write(encode_frame(IN, payload))
-        elif kind == "resize":
-            writer.write(encode_json_frame(RESIZE, payload))
-        else:
-            continue
-        await writer.drain()
+        try:
+            if kind == "input":writer.write(encode_frame(IN, payload))
+            elif kind == "resize":writer.write(encode_json_frame(RESIZE, payload))
+            elif kind == 'cancel':writer.write(encode_json_frame(BYE,{'reason':'abandoned'}))
+            else:continue
+            await writer.drain()
+        except (ConnectionError,OSError):
+            # A resize can meet the signer's exit while its final approval is
+            # still waiting on the read side. Never discard that final output.
+            return 'broker_closed'
 
 
 async def _broker_to_page_queue(
@@ -798,7 +809,8 @@ async def _broker_to_page_queue(
     while True:
         try:
             frame_type, payload = await read_frame(reader)
-        except CleanEOF:
+        except (CleanEOF,ConnectionError,OSError):
+            await outgoing.join()
             return
         if frame_type == OUT:
             size = len(payload)
@@ -849,13 +861,16 @@ async def _relay(
     outgoing: asyncio.Queue[tuple[str, Any, int]] = asyncio.Queue()
     space_available = asyncio.Condition()
     pending = [0]
+    page_writer=asyncio.create_task(_page_to_broker(incoming, writer))
     tasks = {
-        asyncio.create_task(_page_to_broker(incoming, writer)),
+        page_writer,
         asyncio.create_task(_broker_to_page_queue(reader, outgoing, space_available, pending)),
         asyncio.create_task(_page_sender(websocket, outgoing, space_available, pending)),
     }
     try:
         done, waiting = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        if page_writer in done and page_writer.exception() is None and page_writer.result()=='broker_closed':
+            done,waiting=await asyncio.wait(tasks-{page_writer},return_when=asyncio.FIRST_COMPLETED)
         for task in done:
             exception = task.exception()
             if exception is not None:
@@ -925,7 +940,7 @@ async def _tty_websocket(websocket: WebSocket, project_id: str, request_id: str)
             _log(f"tty refused project={project_id} request={request_id} reason=unknown-project")
             return
         try:
-            _request_precondition(project_dir, project_id, request_id)
+            pending_request = _request_precondition(project_dir, project_id, request_id)
         except FileNotFoundError:
             await _close(websocket, 4404, "gate request not found")
             _log(f"tty refused project={project_id} request={request_id} reason=request-not-found")
@@ -972,7 +987,12 @@ async def _tty_websocket(websocket: WebSocket, project_id: str, request_id: str)
 
         # This deliberately runs synchronously while the detached broker owns
         # the project lease.  No input event is enabled or buffered yet.
-        refreshed = server_module.load_gate_detail(project_dir, request_id)
+        # The signer has now started and may briefly hold the purchase lock
+        # while constructing this question. Its own admission checks remain
+        # authoritative; that hold is not evidence of another paid call.
+        from lib.spending_requests import signing_packet
+        with signing_packet(footage=pending_request.get('kind')=='footage_spend'):
+            refreshed = server_module.load_gate_detail(project_dir, request_id)
         if refreshed.get("state") != "pending" or refreshed.get("error") == "invalid governed project or request":
             await _close(websocket, 4400, "gate request changed before signing")
             _log(f"tty refused project={project_id} request={request_id} reason=refresh-invalid")
@@ -991,8 +1011,9 @@ async def _tty_websocket(websocket: WebSocket, project_id: str, request_id: str)
         input_ready.set()
         _log(f"tty opened project={project_id} request={request_id} session={hello.get('session_id')}")
         await _relay(websocket, broker_reader, writer, incoming)
+        await _close(websocket,1000,'signing connection ended')
         _log(f"tty closed project={project_id} request={request_id} reason=relay-ended")
-    except (ConnectionError, OSError):
+    except (ConnectionError, OSError, WebSocketDisconnect):
         _log(f"tty closed project={project_id} request={request_id} reason=disconnected")
     except ProtocolError:
         await _close(websocket, 1002, "terminal protocol error")
@@ -1001,6 +1022,7 @@ async def _tty_websocket(websocket: WebSocket, project_id: str, request_id: str)
         page_reader.cancel()
         await asyncio.gather(page_reader, return_exceptions=True)
         if writer is not None:
+            if not input_ready.is_set():await _best_effort_bye(writer,'abandoned')
             writer.close()
             try:
                 await writer.wait_closed()

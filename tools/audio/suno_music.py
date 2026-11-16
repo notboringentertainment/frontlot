@@ -201,6 +201,8 @@ class SunoMusic(BaseTool):
 
     def _submit(self, inputs: dict[str, Any], api_key: str) -> str:
         """Submit a generation request and return the taskId."""
+        from tools.audio._legacy_guard import require_legacy_audio
+        require_legacy_audio(inputs)
         import requests
 
         custom_mode = inputs.get("custom_mode", False)
@@ -275,6 +277,8 @@ class SunoMusic(BaseTool):
         )
 
     def _download(self, audio_url: str, inputs: dict[str, Any], api_key: str) -> Path:
+        from tools.audio._legacy_guard import require_legacy_audio
+        require_legacy_audio(inputs)
         """Download the audio file to the output path."""
         import requests
 
