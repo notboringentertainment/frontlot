@@ -110,7 +110,7 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
     content.append(...effectForms(data,effectDraft,{api,act,button,url:`/api/project/${encodeURIComponent(project)}/effects`}));
     const requests=el('section',{class:'paper-panel'},el('h3',{},'Audio spending cards'));
     for(const item of [...data.requests].reverse()){
-      const r=item.record,music=r.kind==='music',effect=r.kind==='effect',route=routeFor(r.kind),card=el('article',{class:'voice-spend paper-panel','data-kind':r.kind,'data-audio-request':r.request_id},el('h4',{},item.approved?'Signed request':'Waiting for your signature'),
+      const r=item.record,music=r.kind==='music',effect=r.kind==='effect',route=routeFor(r.kind),card=el('article',{class:'voice-spend paper-panel','data-kind':r.kind,'data-audio-request':r.request_id},el('h4',{},item.approved?'Signed request':!item.gate_request_id?'Unsigned request set aside':item.signing_refusal?'Needs a fresh spending card':'Waiting for your signature'),
         el('p',{},`ElevenLabs · ${r.model} · ${effect?'sound effect':music?'instrumental':r.binding.voice_label||r.voice}`),el('blockquote',{},r.prompt),el('p',{},effect?`Effect: ${r.duration_seconds} seconds. ${moment(r.binding)}`:music?`Instrumental cue: ${r.duration_seconds} seconds requested.`:`Line slot: ${r.duration_seconds} seconds. The service determines the take’s actual length; listen before keeping it.`),
         el('p',{},`Highest new cash: ${money(r.max_cash_usd)} · highest credit replacement value: ${money(r.max_credits_usd)}`),
         el('p',{},`Price expires ${new Date(r.price_expires_at*1000).toLocaleString()}`),
@@ -121,6 +121,8 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
       if(held)card.append(el('div',{'data-held-audio-notice':r.request_id},el('p',{role:'alert'},heldExplanation(held)),button('Review this held charge',()=>{document.querySelector(`[data-account-review="${held.reservation.reservation_id}"]`)?.scrollIntoView({block:'center',behavior:'instant'});})));
       if(item.recoverable)card.append(el('p',{},'A completed take is recorded in its receipt but is missing here. Recover it without another call or charge.'),
         button('Recover recorded take',()=>act(async()=>{return (await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/recover`,{})).message;}),'request:'+r.request_id+':recover'));
+      else if(item.signing_refusal&&!held)card.append(el('p',{role:'alert'},item.signing_refusal),
+        item.replaceable?button('Prepare a fresh spending card',()=>act(async()=>{const result=await api(`/api/project/${encodeURIComponent(project)}/voice/${r.request_id}/replace`,{});return result.message;}),'request:'+r.request_id+':replace'):null);
       else if(item.error&&!held)card.append(el('p',{role:'alert'},item.error));
       else if(!made && item.approved&&!held)card.append(button('Make this approved take',async()=>{revealingRequest=r.request_id;const message=await act(async()=>{const result=await api(`/api/project/${encodeURIComponent(project)}/${route}/${r.request_id}/send`,{});if(!result.success)throw Error(result.message);revealingRequest=null;return 'Take ready. Listen, then sign keeping or declining it.';});await new Promise(requestAnimationFrame);revealResult();return message;},'request:'+r.request_id+':send'));
       else if(!made && !held && item.gate_request_id)card.append(button('Review and sign this request',()=>onSign(item.gate_request_id),'request:'+r.request_id+':sign'));

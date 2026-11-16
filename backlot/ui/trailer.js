@@ -242,7 +242,7 @@ export function renderPaperSigning(detail,actions,onReturn){
     box.append(el('h3',{},'Shot list'));let frame=0;
     r.paper_cut.shots.forEach((row,i)=>{box.append(el('h4',{},`Shot ${i+1}`),exact(row.purpose),
       el('p',{},`Starts at frame ${frame} (${(frame/24).toFixed(3)} seconds); lasts ${row.duration_frames} frames (${(row.duration_frames/24).toFixed(3)} seconds).`),
-      el('p',{},`References: ${row.references.join(', ')||'None yet'}. Difficulty: ${row.difficulty}`));frame+=row.duration_frames;});
+      el('p',{},`References: ${row.references.map((_,n)=>`Reference picture ${n+1}`).join(', ')||'None yet'}. Difficulty: ${row.difficulty}`));frame+=row.duration_frames;});
     box.append(el('h3',{},'Story comparison'),el('p',{},r.story_check.message),
       ...[...r.story_check.errors,...r.story_check.warnings].map(w=>el('p',{role:'note'},w)));
   }

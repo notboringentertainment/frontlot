@@ -1,6 +1,7 @@
 // Focused footage controls. Every write calls the existing signed operations.
 import {el, CAPABILITY_TOKEN_KEY, mediaURL, spendingCard,keepEditorPosition,actionButton} from "/ui/lib.js";
 import {savedPaperCut,paperCutChangedHere} from '/ui/trailer.js';
+import {setFootageProgress} from '/ui/next_step.js';
 let data=null,project=null,hooks=null,globalError="",observing=false,readRetries=0;
 const drafts=new Map(),completed=new Set();
 const feedback=new Map();
@@ -17,6 +18,7 @@ export function setFootageState(id,next,callbacks) {
   if(next?.error){if(!data?.error)readRetries=3;}else readRetries=0;
   if(data?.remaining_usd!==next?.remaining_usd||JSON.stringify(data?.quote_context)!==JSON.stringify(next?.quote_context))for(const d of drafts.values()){d.quote=null;d.quoteStarted=false;d.quoteVersion=(d.quoteVersion||0)+1;}
   project=id;data=next;hooks=callbacks;
+  setFootageProgress(id,next);
 }
 export async function afterFootageSignature(id,kind) {
   if(!["footage_spend","footage_take","audio_resolution"].includes(kind)||completed.has(id))return;
@@ -99,7 +101,10 @@ function shotPanel(s,shot){
   if(shot.references.length&&!data.looks.length)panel.append(el("p",{role:"note"},"No current approved look is available. Open Footage setup to review and sign the location look before creating a footage request."));
   if(data.refusal)panel.append(el("p",{role:"note"},data.refusal));
   for(const req of shot.requests){
-    if(!req.approved&&req.gate_id)panel.append(button("Review and sign request",()=>hooks.selectGate(req.gate_id),d.busy,req.id+':sign'));
+    if(req.signing_refusal)panel.append(el('p',{role:'alert'},req.signing_refusal),
+      button('Set aside unsigned request',()=>perform(d,()=>footageAction('set-aside',{request_id:req.id})),d.busy,req.id+':aside'),
+      el('p',{},'Then use Create a retake request for a fresh spending card. Setting this aside sends, spends and approves nothing.'));
+    else if(!req.approved&&req.gate_id)panel.append(button("Review and sign request",()=>hooks.selectGate(req.gate_id),d.busy,req.id+':sign'));
     if(req.approved&&!req.running&&!req.signed_outcome&&(!req.reservation||(req.reservation.state==="completed"&&!shot.takes.some(t=>t.reservation_id===req.reservation.reservation_id))))panel.append(button("Make signed clip",()=>perform(d,()=>footageAction("dispatch",{request_id:req.id})),d.busy,req.id+':make'));
     if(req.signed_outcome&&req.reservation&&["completed","failed"].includes(req.reservation.state))panel.append(el("p",{},"Your signed account outcome is recorded. It settles the money and cannot make a clip. Create a retake request and sign it separately for another clip."));
     if(req.running)panel.append(el("p",{role:"status"},"Generating this one clip. Keep this board open to watch it arrive; no retry will be made."));
@@ -137,6 +142,7 @@ function shotPanel(s,shot){
 }
 export function renderFootageControls(s){
   if(!data)return el("p",{},"Loading footage controls…");
+  setFootageProgress(s.project_id,data);
   const key=()=>JSON.stringify([project,data,globalError,readRetries,hooks.takeFeedback?.(),[...drafts].map(([id,d])=>[id,d.looks,d.busy])]);
   if(controlsNode&&controlsKey===key())return controlsNode;
   controlsNode??=el("section",{class:"footage-controls","aria-label":"Footage workspace"});
@@ -157,10 +163,10 @@ function observationFailed(){
 // Polling only observes. It never starts or retries a request.
 setInterval(async()=>{
   if(!project||!hooks||document.hidden||hooks.isRefreshing()||observing)return;
-  // Disk events already refresh idle boards. Poll only a dispatched job;
-  // merely reading a second window must not create a refresh feedback loop.
+  // Observe waiting cards too: a sound purchase can change their ceiling.
+  // These reads never replay a live call or submit anything.
   const retrying=!!data?.error;
-  if(!(data?.shots||[]).some(shot=>shot.requests.some(request=>request.running))&&!(retrying&&readRetries>0))return;
+  if(!(data?.shots||[]).some(shot=>shot.requests.some(request=>request.running||!request.approved&&request.gate_id))&&!(retrying&&readRetries>0))return;
   if(retrying)readRetries--;
   observing=true;
   try{

@@ -1653,7 +1653,7 @@ function websocketCloseMessage(code, reason) {
   if (code === 4409 && /identity mismatch/i.test(reason || "")) return ["Wrong request", "The open signing program belongs to a different request.", "error"];
   if (code === 4409) return ["Already signing", "Another signing session is open for this film. Finish or close it first.", "warn"];
   if (code === 4423) return ["Production running", "A production run is working on this film. Signing opens when it stops.", "warn"];
-  if (code === 4422) return ["Evidence missing", "The signing program is open, but typing stays off until every picture can be shown.", "error"];
+  if (code === 4422) return ["Request cannot be signed", gateDetail?.packet?.error || "This request cannot be verified. Reopen its review before signing.", "error"];
   if (code === 4400) return ["Request changed", "This request changed before signing could start. Look again, then retry.", "warn"];
   if (code === 4403) return ["Refused", "Front Lot refused this window. Open it again from its icon.", "error"];
   if (code === 4404) return ["Request gone", "This film or request is no longer there.", "error"];
@@ -1748,7 +1748,7 @@ async function startSigning(requestId, retry=null) {
       setTerminalStatus(
         packetError ? "Evidence missing" : changed ? "Pictures changed" : "Pictures checked",
         packetError
-          ? "Some evidence can't be shown, so typing stays off. The signing program is still open."
+          ? gateDetail.packet?.error || gateDetail.error || "Some evidence can't be shown, so typing stays off. The signing program is still open."
           : changed
           ? "The pictures changed since you opened this. Look at them again in the viewer before you answer."
           : "Pictures re-checked. Opening the signing program…",
@@ -2527,7 +2527,7 @@ function gateActions(s, summary, stale, packetError, budgetWarning = null) {
   else if (lease.held && !matchingOpen) blocker = `A production run is working on this film right now${lease.started ? ` (since ${fmtGateTime(lease.started)})` : ""}. Signing opens when it stops.`;
   else if (stale) blocker = "This is already decided. What you see is the record.";
   else if (budgetWarning) blocker = "Signing waits until this request fits under the production ceiling.";
-  else if (packetError) blocker = "Signing is off until every picture in this request can be shown.";
+  else if (packetError) blocker = gateDetail?.packet?.error || gateDetail?.error || "This request cannot be verified. Reopen its review before signing.";
   else if (reconnectable) blocker = "A signing session for this is still open. Reconnect to pick up where you left off.";
   else if (socketOpen) blocker = "Answer the questions in the signing panel.";
 
@@ -2705,6 +2705,7 @@ function renderGateViewer(s) {
     lookSpec ? null : renderFrameStrip(s, frames, "Request"),
     evidence,
     lookSpec ? null : gateActions(s, summary, stale, packetError),
+    footageGate ? el('button',{type:'button',onclick:()=>{returnToWorkspace();render();}},'Return to footage') : null,
     more);
 }
 
@@ -2790,10 +2791,10 @@ function renderLog(s, roster) {
         type: "button",
         "data-request-id": row.request_id,
         "aria-current": selectedGateId === row.request_id ? "true" : null,
-        "aria-label": ["footage_spend","footage_take","trailer_card"].includes(row.kind) || row.kind==='artifact_review'&&row.scope==='trailer-stage' || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind,row)}` : `Inspect ${row.kind} gate ${row.request_id}`,
+        "aria-label": row.purchase_label ? `Review: ${row.purchase_label}` : ["footage_spend","footage_take","trailer_card"].includes(row.kind) || row.kind==='artifact_review'&&row.scope==='trailer-stage' || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind,row)}` : `Inspect ${row.kind} gate ${row.request_id}`,
         onclick: () => { selectedEntity = key; selectGate(row.request_id); },
       },
-        el("span", { class: "what" }, gateWords(row.kind,row)),
+        el("span", { class: "what" }, row.purchase_label || gateWords(row.kind,row)),
         el("span", { class: "text" }, s.is_trailer&&row.kind==='reference_import' ? 'Review the copied picture and sign its origin. This buys nothing and permits no upload by itself.' : plain(row.summary) || gateWords(row.kind,row)),
         who ? el("span", { class: "who" }, who) : null));
     }

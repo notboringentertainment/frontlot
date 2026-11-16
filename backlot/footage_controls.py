@@ -17,6 +17,7 @@ from tools.cost_tracker import load_reservations, BudgetExceededError, Indetermi
 
 def plain_refusal(exc):
     from lib.media_spending import PaidCallBusy
+    if 'reported footage charge exceeds' in str(exc):return 'The service reported a charge above the signed maximum. Paid work is stopped. Check the service account, then sign and apply its account outcome.'
     if isinstance(exc,PaidCallBusy):return 'A sound or footage operation is still running. Wait for it to finish before changing or reviewing this request.'
     if isinstance(exc,IndeterminatePaidCallError):return 'A charge is unresolved. Check the service account, then use the account-review controls to sign its outcome before another request.'
     if isinstance(exc,BudgetExceededError):return 'This clip does not fit the remaining production ceiling. Choose an affordable length, resolve any held charges, or stop. This form cannot raise the ceiling.'
@@ -169,8 +170,12 @@ def inspect(root,jobs):
             if reservation:
                 try:outcome=signed_resolution(root,reservation['reservation_id'])
                 except (ValueError,OSError,KeyError,receipts.ReceiptChainError) as exc:outcome_error=plain_refusal(exc)
+            from lib.spending_requests import signing_refusal
+            refusal=signing_refusal(root,gate) if gate and not approved else None
+            settled=outcome and reservation and reservation['state'] in ('completed','failed')
             requests.append({'id':rid,'gate_id':gate['request_id'] if gate else None,'approved':approved,
-                             'running':job.get('running',False),'error':job.get('error'),
+                             'running':job.get('running',False),'error':None if settled else job.get('error'),
+                             'signing_refusal':refusal,
                              'reservation':reservation,'record':record,'signed_outcome':outcome,'outcome_error':outcome_error})
         status='Nothing yet'
         if any(t['waiting'] for t in takes):status='Take waiting for your decision'
@@ -178,6 +183,7 @@ def inspect(root,jobs):
         elif any(t['status']=='Needs a fresh look' for t in takes):status='Needs a fresh look'
         elif takes:status='Take waiting for your decision' if any(t['waiting'] for t in takes) else 'Ask for a retake'
         if any(not r['approved'] and r['gate_id'] for r in requests):status='Waiting on your signature'
+        if any(r['signing_refusal'] for r in requests):status='Prepare a fresh spending card'
         if any(r['running'] for r in requests):status='Generating'
         if any(r['reservation'] and r['reservation']['state'] in ('submitting','submitted','pending_billing') and not r['running'] for r in requests):
             status='Charge needs your review'
@@ -234,7 +240,7 @@ def install(app,require_writer,safe_project,invalidate):
         fields={'quote':{'shot_id','model','duration_seconds'},'create':{'shot_id','model','duration_seconds','looks','retake_of'},
                 'dispatch':{'request_id'},'decision':{'shot_id','take_id','decision'},'signed':{'gate_id'},
                 'apply':{'shot_id','take_id','decision'},'resolve':{'reservation_id','charged','cash','credits','note'},
-                'apply-resolution':{'reservation_id'}}
+                'apply-resolution':{'reservation_id'},'set-aside':{'request_id'}}
         try:
             footage.require_trailer(root)
             body=await request.json()
@@ -246,6 +252,9 @@ def install(app,require_writer,safe_project,invalidate):
                     raise ValueError('Save this shot in the paper cut before requesting footage.')
                 return bounded_quote(root,body.get('model'),body.get('duration_seconds'))
             if action=='create':result=await asyncio.to_thread(create,root,body)
+            elif action=='set-aside':
+                from lib.spending_requests import set_aside
+                result=await asyncio.to_thread(set_aside,root,'footage_spend',body.get('request_id'))
             elif action=='dispatch':result=await dispatch(root,body.get('request_id'))
             elif action=='decision':
                 result={'gate':await asyncio.to_thread(prepare_decision,root,body)}

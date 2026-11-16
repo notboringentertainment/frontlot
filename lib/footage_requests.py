@@ -237,9 +237,14 @@ def approval_material(root, record):
     with call_lock(root):return _approval_material(root,record)
 
 
-def _approval_material(root, record):
+def _approval_material(root, record, *, observation=False):
     config = check_current(root, record)
-    resume_check(root)
+    if observation:
+        # A board read must never replay the live owner's recovery journal.
+        from tools.cost_tracker import nonterminal_reservations,IndeterminatePaidCallError
+        pending=nonterminal_reservations(root)
+        if pending:raise IndeterminatePaidCallError(pending)
+    else:resume_check(root)
     remaining = _tracker(root,config).budget_remaining_usd
     if remaining != record['remaining_usd']:
         raise ValueError('The remaining ceiling changed. Prepare an updated footage request before signing.')
@@ -354,6 +359,7 @@ def actual_charge(inputs, data):
     cash = _money(data.get('cash_usd')) if reported else auth['record']['max_cash_usd']
     credits = _money(data.get('credits_usd')) if reported else auth['record']['max_credits_usd']
     if cash > auth['record']['max_cash_usd'] or credits > auth['record']['max_credits_usd']:
+        auth['reported_overcharge']=True
         raise ValueError('The reported footage charge exceeds its signed bound. Billing needs signed review.')
     auth['charge']={'cash_usd':cash,'credits_usd':credits,
         'footage_charge_basis':'service_report' if reported else 'signed_maximum',
@@ -565,6 +571,8 @@ def execute(root, identity):
                 if auth.get('download_received'):raise ValueError(_LOCAL_PROCESSING_FAILED) from None
                 raise
             if not result.success:
+                if auth.get('reported_overcharge'):
+                    raise ValueError('The service reported a charge above the signed maximum. The money is held. Check the service account, then sign and apply its account outcome.')
                 if auth.get('not_submitted_receipt'):
                     raise ValueError('This request was not submitted or charged. Its hold was released and a receipt was saved. Prepare and sign a new request for another attempt.')
                 if auth.get('download_received'):
