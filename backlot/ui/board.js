@@ -111,6 +111,7 @@ function makeGateSession() {
     note: null,         // a note Ben typed before answering; sent when the signer asks for it
     textTimer: null,
     signingRequest: null,
+    signingRecord: null, // evidence read for this signing session, not the selected card
     refreshedPacketError: true,
   };
 
@@ -270,14 +271,14 @@ function askView(ask) {
   if (ask.ask === "approve" || ask.ask === "sign_choice") {
     const note = noteBox("Add a note (optional)");
     const keep = () => { gateSession.note = note.value; };
-    const request=gateDetail?.packet?.record;
+    const request=gateSession.signingRecord;
     const named=gateSession.signingRequest?.kind==='audio_spend'&&request?.prompt&&Number.isFinite(request.max_cash_usd)&&Number.isFinite(request.max_credits_usd);
     const wording=named?`Approve one ${request.kind==='effect'?'sound effect':request.kind} take for “${request.prompt.length>160?request.prompt.slice(0,160)+'…':request.prompt}”? Highest charge $${(request.max_cash_usd+request.max_credits_usd).toFixed(4)} ($${request.max_cash_usd.toFixed(4)} cash and $${request.max_credits_usd.toFixed(4)} replacement value of credits).`:"Approve this?";
     return [
       el("p", { class: "sign-question" }, ask.ask === "approve" ? wording : "Sign the one you picked?"),
       note,
       choiceRow(
-        answerButton(gateDetail?.request?.kind==="footage_spend" ? "Sign and make this clip" : gateDetail?.request?.kind==="footage_take" ? "Sign this decision" : ask.ask === "approve" ? "Approve and sign" : "Sign", "y", { primary: true, before: keep }),
+        answerButton(gateSession.signingRequest?.kind==="footage_spend" ? "Sign and make this clip" : gateSession.signingRequest?.kind==="footage_take" ? "Sign this decision" : ask.ask === "approve" ? "Approve and sign" : "Sign", "y", { primary: true, before: keep }),
         answerButton(ask.ask === "approve" ? "Decline" : "Go back", "n", { before: keep }),
         answerButton("Not now", "q"),
       ),
@@ -1692,6 +1693,7 @@ async function startSigning(requestId, retry=null) {
   gateSession.socket = socket;
   gateSession.requestId = requestId;
   gateSession.signingRequest=signingRequest;
+  gateSession.signingRecord=null;
   gateSession.refreshedPacketError=true;
   gateSession.inputReady = false;
   gateSession.receivedRefresh = false;
@@ -1735,6 +1737,11 @@ async function startSigning(requestId, retry=null) {
       const packetError = Boolean(
         gateDetail.packet_error || gateDetail.error || gateDetail.packet?.packet_error,
       );
+      const record=message.packet.packet?.record;
+      gateSession.signingRecord=!packetError&&message.packet.request_id===requestId
+        &&message.packet.request?.request_id===requestId&&message.packet.request?.kind===signingRequest.kind
+        &&record?.request_id===signingRequest.entity&&record?.project_id===projectId
+        ?Object.freeze({...record}):null;
       gateSession.refreshedPacketError=packetError;
       setTerminalStatus(
         packetError ? "Evidence missing" : changed ? "Pictures changed" : "Pictures checked",
