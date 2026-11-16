@@ -159,7 +159,7 @@ export function renderPaperCut(s,onSaved=async()=>{},onSign=async()=>{}) {
   function update(next) {
     if(!next)return;
     state=next;
-    wholeReviewStatus.textContent=state.whole_review_status||'Needs your signature';
+    wholeReviewStatus.textContent=state.trimmed_contract?(state.whole_review_status||'Needs your signature'):'Whole-paper review is optional under this production’s signed contract; it does not finish a stage.';
     if(recordReview)recordReview.disabled=dirty||state.whole_review_status!=='Signed by you';
     updateRowWarnings();
     if(Number.isInteger(state.target_frames)){targetFrames=state.target_frames;updateTiming();}
@@ -207,7 +207,7 @@ export function renderPaperCut(s,onSaved=async()=>{},onSign=async()=>{}) {
   }catch(error){status.textContent=error.message;}}),state.trimmed_contract?(recordReview=button('Record the signed paper-cut review',async()=>{try{
     if(dirty)throw Error('Save and sign your changed draft before recording its review.');
     const result=await request(api+'/apply',{});await refreshFromServer();status.textContent=result.message;
-  }catch(error){status.textContent=error.message;}})):null,button("Check paper cut against approved story",()=>operation(async()=>{try{
+  }catch(error){status.textContent=error.message;}})):'',button("Check paper cut against approved story",()=>operation(async()=>{try{
     if(dirty)throw Error('Save your changed draft as a new version before comparing it with the approved story.');
     const result=await request(`/api/project/${encodeURIComponent(s.project_id)}/story/check`,{expected_revision:revision});
     draft=structuredClone(result.paper_cut.paper_cut);revision=result.paper_cut.edit_revision_sha256;editEpoch++;draw();await refreshFromServer();await onSaved(state);status.textContent=result.message;return status.textContent;
