@@ -390,6 +390,9 @@ def _paper_value(root, paper, old, inputs):
     if any(not isinstance(x, str) or not x for x in ids) or len(set(ids)) != len(ids):
         raise ValueError('Each shot must keep its own identity. Open the latest saved version and try again.')
     contract = require_contract(root)
+    if old and all(old.get(key)==value for key,value in (
+            ('paper_cut',paper),('inputs',inputs),('story_check',check),('trailer',contract))):
+        return copy.deepcopy(old)
     picture = []
     start = 0
     for shot in paper['shots']:
@@ -464,6 +467,7 @@ def restore_revision(root, revision, expected_revision):
         elif 'paper_cut' in source:
             source_inputs=old['inputs'] if old and inputs_match(root,old.get('inputs')) else inputs
             value = _paper_value(root, source['paper_cut'], old, source_inputs)
+            if value==old:return old
         else:
             value = copy.deepcopy(source)
         value['restored_from'] = revision

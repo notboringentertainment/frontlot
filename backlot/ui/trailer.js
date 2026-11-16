@@ -188,8 +188,8 @@ export function renderPaperCut(s,onSaved=async()=>{},onSign=async()=>{}) {
     for(const version of state.history || [])history.append(button(`Open version ${version.number} · ${savedTime(version)}${version.id===state.current?.edit_revision_sha256?" · Current":""}`,async()=>{
       try{const value=await request(`${api}/${version.id}`);
         details.replaceChildren(showVersion(value,`Saved version ${version.number} · ${savedTime(version)}`),button("Restore this as a new version",()=>operation(async()=>{
-          try{const result=await request(`${api}/restore`,{revision:version.id,expected_revision:revision});
-            if(dirty)preserved={paper:structuredClone(draft),revision};draft=structuredClone(result.paper_cut || emptyPaper());revision=result.edit_revision_sha256;dirty=false;editEpoch++;draw();await refreshFromServer();await onSaved(state);status.textContent="Restored as a new saved version. Every previous version is kept.";
+          try{const previous=revision,result=await request(`${api}/restore`,{revision:version.id,expected_revision:revision});
+            if(dirty)preserved={paper:structuredClone(draft),revision};draft=structuredClone(result.paper_cut || emptyPaper());revision=result.edit_revision_sha256;dirty=false;editEpoch++;draw();await refreshFromServer();await onSaved(state);status.textContent=result.edit_revision_sha256===previous?"The saved paper is unchanged. The current cut and its existing review status are kept.":"Restored as a new saved version. Every previous version is kept.";
           }catch(error){status.textContent=error.message;await refreshFromServer();}
         })));
       }catch(error){status.textContent=error.message;}
@@ -212,7 +212,7 @@ export function renderPaperCut(s,onSaved=async()=>{},onSign=async()=>{}) {
     const result=await request(`/api/project/${encodeURIComponent(s.project_id)}/story/check`,{expected_revision:revision});
     draft=structuredClone(result.paper_cut.paper_cut);revision=result.paper_cut.edit_revision_sha256;editEpoch++;draw();await refreshFromServer();await onSaved(state);status.textContent=result.message;return status.textContent;
   }catch(error){status.textContent=error.message;try{await refreshFromServer();}catch{}return status.textContent;}})),button("Refresh story checks and saved versions",async()=>{try{await refreshFromServer();status.textContent="Story checks and versions refreshed. Your draft text is kept.";}catch(error){status.textContent=error.message;}return status.textContent;}),
-    el("p",{},"Previous versions are kept in the order saved. Opening a version does not change your draft. Restoring makes another version."),history,details);
+    el("p",{},"Previous versions are kept in the order saved. Opening a version does not change your draft. Restoring paper alone makes no change when it already matches. Other restores make another version."),history,details);
   update(state);
   controls.append(...node.childNodes);node.append(controls);
   window.addEventListener("beforeunload",e=>{if(dirty){e.preventDefault();e.returnValue="";}});
@@ -237,7 +237,7 @@ export function renderPaperSigning(detail,actions,onReturn){
       if(!r.paper_cut[key].length)box.append(el('p',{},'None in this saved paper cut.'));
       r.paper_cut[key].forEach((row,i)=>box.append(el('h4',{},`${key==='lines'?'Line':'Card'} ${i+1}`),exact(row.text),
         el('p',{},`Starts at frame ${row.start_frame} (${(row.start_frame/24).toFixed(3)} seconds); lasts ${row.duration_frames} frames (${(row.duration_frames/24).toFixed(3)} seconds).`),
-        el('p',{},`Story material: ${(packet.sources||[]).find(s=>s.value===row.source_ref)?.label||'Unassigned in this draft'}`)));
+        el('p',{},`Story material: ${(packet.sources||[]).find(s=>s.value===row.source_ref)?.label||((packet.protected_lines||[]).includes(row.text)?'Protected wording from the approved story':'Unassigned in this draft')}`)));
     }
     box.append(el('h3',{},'Shot list'));let frame=0;
     r.paper_cut.shots.forEach((row,i)=>{box.append(el('h4',{},`Shot ${i+1}`),exact(row.purpose),
