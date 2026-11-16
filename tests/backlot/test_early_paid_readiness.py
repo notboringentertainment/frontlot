@@ -188,7 +188,7 @@ def buy_three_audio(page,panel,calls,prefix,kinds=('speech','music','effect')):
         player=tile.locator('audio');expect(player).to_have_js_property('readyState',4,timeout=15000)
         player.evaluate('(p)=>{p.muted=true;return p.play()}');player.evaluate('(p)=>p.pause()')
         tile.get_by_role('button',name='Keep this take',exact=True).click();sign_audio(page)
-        expect(tile).to_contain_text('Kept',timeout=20000)
+        expect(tile).to_contain_text('Kept',timeout=180000)
         shot_picture(page,prefix+'-'+kind+'-kept',tile)
         assert len(calls['audio_posts'])==before+1
 

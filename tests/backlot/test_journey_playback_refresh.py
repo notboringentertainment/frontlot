@@ -38,7 +38,11 @@ def test_board_rebuild_keeps_only_the_same_intentionally_playing_file(signed_cut
                 for _ in range(4):
                     with page.expect_response(lambda r:r.url.endswith('/state')):
                         page.evaluate('()=>window.dispatchEvent(new Event("focus"))')
-            else:page.get_by_role('navigation',name='Production stages',exact=True).get_by_role('button',name=re.compile('^Final assembly:')).click()
+            else:
+                # The trailer rail is a progress record, not navigation.
+                # Returning to the window exercises the actual live rebuild.
+                with page.expect_response(lambda r:r.url.endswith('/state')):
+                    page.evaluate('()=>window.dispatchEvent(new Event("focus"))')
             if intent.startswith('playing'):
                 assert video.get_attribute('src')==source
                 try:page.wait_for_function('(v)=>v.ended',arg=video.element_handle(),timeout=15000)

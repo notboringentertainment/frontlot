@@ -1,4 +1,8 @@
-"""Empty library to separately signed speech and footage, on the icon PATH."""
+"""Empty library through four purchases and five reviews on the icon PATH.
+
+Every production step uses a visible board control and the real signer.
+Only service replies and the Finder reveal are counted local stand-ins.
+"""
 import json,os,subprocess,time
 from pathlib import Path
 from tests.backlot.test_journey_map import _wav
@@ -169,7 +173,7 @@ def test_full_visible_journey(tmp_path,monkeypatch,isolated_standins):
             expect(delivery).to_contain_text('Signed by you',timeout=180000)
             record_stage(delivery,'Record the signed rough-cut approval','/rough/apply')
             note('rough-signed-stage-recorded',delivery)
-            if reload_points:page.reload()
+            page.reload()
             delivery.get_by_role('button',name='Review and sign colour and sound',exact=True).click()
             review=page.get_by_role('region',name='Delivery review',exact=True)
             expect(review.get_by_role('heading',name='Review the saved colour and sound',exact=True)).to_be_visible(timeout=240000)
@@ -189,7 +193,7 @@ def test_full_visible_journey(tmp_path,monkeypatch,isolated_standins):
             player.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=60000)
             comparison=tile.get_by_role('region',name='Final story comparison',exact=True)
             tile.get_by_role('button',name='Review and sign final approval',exact=True).click()
-            expect(delivery.get_by_role('status').first).to_contain_text('Complete the final story comparison')
+            expect(tile.get_by_role('note')).to_contain_text('Complete the final story comparison')
             for checkbox in comparison.get_by_role('checkbox').all():checkbox.check()
             comparison.get_by_label('How this final file keeps the story’s tone',exact=True).fill('This invented test keeps the gallery waiting, without showing the protected spoiler.')
             note('final-story-listening-comparison',comparison)

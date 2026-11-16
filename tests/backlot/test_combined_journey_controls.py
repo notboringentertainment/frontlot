@@ -19,6 +19,7 @@ def test_kept_clip_offers_no_second_decision(film,provider,monkeypatch):
             expect(card.get_by_role('status').filter(has_text='Kept')).to_be_visible(timeout=30000)
             expect(card.get_by_role('button',name='Keep this take',exact=True)).to_have_count(0)
             expect(card.get_by_role('button',name='Decline this take',exact=True)).to_have_count(0)
+            expect(page.get_by_label('Footage workspace',exact=True)).not_to_contain_text('nullnullnull')
             expect(page.locator('header.bar .status')).not_to_have_text('Working')
             expect(page.locator('body')).not_to_contain_text('Tabs read look, headshot')
             assert len(provider['posts'])==1 and not errors

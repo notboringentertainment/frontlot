@@ -42,9 +42,11 @@ def test_delivery_return_checks_itself_before_refreshing_other_workspaces(signed
             page.route('**/*',lambda route:route.continue_() if route.request.url.startswith(url+'/') else route.abort())
             page.goto(f'{url}/p/{root.name}#k=invented-browser-proof')
             panel=page.get_by_role('region',name='Trailer delivery',exact=True)
-            panel.get_by_role('button',name='Review and sign the saved rough cut',exact=True).click(timeout=30000)
+            with page.expect_response(lambda r:'/gate/' in r.url and r.request.method=='GET',timeout=180000) as prepared:
+                panel.get_by_role('button',name='Review and sign the saved rough cut',exact=True).click(timeout=30000)
+            assert prepared.value.ok,prepared.value.text()
             review=page.get_by_role('region',name='Delivery review',exact=True)
-            expect(review).to_be_visible(timeout=30000)
+            expect(review).to_be_visible(timeout=5000)
             base=url+f'/api/project/{root.name}'
             page.route(base+'/delivery',lambda route:held.append(route))
             def capture(request):

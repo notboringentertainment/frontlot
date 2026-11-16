@@ -140,11 +140,11 @@ export function renderFootageControls(s){
   const key=()=>JSON.stringify([project,data,globalError,readRetries,hooks.takeFeedback?.(),[...drafts].map(([id,d])=>[id,d.looks,d.busy])]);
   if(controlsNode&&controlsKey===key())return controlsNode;
   controlsNode??=el("section",{class:"footage-controls","aria-label":"Footage workspace"});
-  keepEditorPosition(controlsNode,()=>controlsNode.replaceChildren(el("h2",{},"Footage"),
+  keepEditorPosition(controlsNode,()=>controlsNode.replaceChildren(...[el("h2",{},"Footage"),
     el("p",{},"Supply and sign the story in Story workspace, then check the saved paper cut. Use Footage setup to sign a location look, import a machine-generated reference picture and sign footage price figures. Changing the production ceiling still happens outside these panels. Every clip and every keep or decline decision needs your signature. Keeping a take completes no stage."),
     data.error||globalError?el("p",{role:"alert"},data.error||globalError):null,
     data.error?el('p',{role:'status'},readRetries>0?'Trying up to three more reads. Nothing will be sent or bought.':'Automatic reads have stopped. Use Try reading footage again to retry; no purchase will be repeated.'):null,
-    data.error?button("Try reading footage again",()=>{readRetries=3;hooks.refresh();}):null,...(data.shots||[]).map(shot=>shotPanel(s,shot))));
+    data.error?button("Try reading footage again",()=>{readRetries=3;hooks.refresh();}):null,...(data.shots||[]).map(shot=>shotPanel(s,shot))].filter(child=>child!=null)));
   controlsKey=key();return controlsNode;
 }
 

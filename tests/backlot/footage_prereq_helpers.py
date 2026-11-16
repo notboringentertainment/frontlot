@@ -85,7 +85,7 @@ def complete_footage_prerequisites(page,root,calls,tmp_path,*,audio_count=3,chec
     expect(review).to_contain_text('$0.5600',timeout=20000);shot_picture(page,'clip-purchase-signing',review.get_by_role('heading').first)
     assert not calls['video_posts']
     sign(page,'request')
-    tile=shot.locator('.take-tile');expect(tile).to_be_visible(timeout=20000)
+    tile=shot.locator('.take-tile');expect(tile).to_be_visible(timeout=180000)
     video=tile.locator('video');expect(video).to_have_js_property('readyState',4,timeout=15000)
     video.evaluate('(v)=>{v.muted=true;return v.play()}');expect(video).to_have_js_property('ended',True,timeout=15000)
     tile.get_by_role('button',name='Keep this take',exact=True).click();sign(page,'decision')

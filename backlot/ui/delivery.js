@@ -202,7 +202,7 @@ export function renderDelivery(s,onSign,refreshOnRender=true){
    if(data.story_questions&&item.status==='Approved by you')tile.append(el('p',{},'Your final story comparison is recorded with your signature of this exact file, including every protected line heard verbatim.'));
    tile.append(el('div',{class:'delivery-actions'},
     action('Review and sign final approval',async()=>{const value=storyForm?{story_review:storyForm.read()}:{};feedback.textContent=prefix+'Rechecking this final file and its sound…';const r=await api('/'+item.id+'/approval',value);try{await onSign(r.gate_request_id);}finally{feedback.textContent='';}},item.status!=='Needs your signature'||!!data.colour_status&&(!done('edit')||!done('colour_mix')),true,index===0,feedback),
-    action('Record the signed final approval',async()=>{const r=await api('/'+item.id+'/apply',{});feedback.textContent=prefix+r.message;message.textContent=r.message;},item.status!=='Approved by you',true,index===0,feedback),
+    action('Record the signed final approval',async()=>{const r=await api('/'+item.id+'/apply',{});feedback.textContent=prefix+r.message;if(index===0)message.textContent=r.message;},item.status!=='Approved by you',true,index===0,feedback),
     action('Show approved file in Finder',async()=>{const r=await api('/'+item.id+'/reveal',{});feedback.textContent=prefix+r.message;message.textContent='The approved trailer has been shown in Finder.';},item.status!=='Approved by you',true,index===0,feedback)),feedback);
    if(index===0)body.append(tile);else earlier.append(tile);
   }
