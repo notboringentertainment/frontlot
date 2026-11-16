@@ -76,6 +76,8 @@ def _read(root, identity):
 
 
 def quote(root, model, seconds):
+    from lib.media_settings import require_no_draft
+    require_no_draft(root)
     try:config = load_current_verified_project_config(root)
     except ProjectConfigError:
         raise ValueError('Valid signed footage price figures are missing from the current settings. Sign figures for this service and model before approval.') from None
@@ -118,7 +120,7 @@ def _paper_snapshot(root):
     except (ValueError,OSError,KeyError,TypeError):checked = False
     # Pending downstream timing still needs review in the cutting view. A new
     # footage signature reviews this exact shot; it does not clear that flag.
-    if not checked or value.get('inputs')!=edit._inputs(Path(root)):
+    if not checked or not edit.inputs_match(Path(root),value.get('inputs')):
         raise ValueError('The paper cut needs a current signed story and a fresh story comparison before footage can be approved.')
     return value
 
@@ -235,9 +237,14 @@ def approval_material(root, record):
     with call_lock(root):return _approval_material(root,record)
 
 
-def _approval_material(root, record):
+def _approval_material(root, record, *, observation=False):
     config = check_current(root, record)
-    resume_check(root)
+    if observation:
+        # A board read must never replay the live owner's recovery journal.
+        from tools.cost_tracker import nonterminal_reservations,IndeterminatePaidCallError
+        pending=nonterminal_reservations(root)
+        if pending:raise IndeterminatePaidCallError(pending)
+    else:resume_check(root)
     remaining = _tracker(root,config).budget_remaining_usd
     if remaining != record['remaining_usd']:
         raise ValueError('The remaining ceiling changed. Prepare an updated footage request before signing.')
@@ -352,6 +359,7 @@ def actual_charge(inputs, data):
     cash = _money(data.get('cash_usd')) if reported else auth['record']['max_cash_usd']
     credits = _money(data.get('credits_usd')) if reported else auth['record']['max_credits_usd']
     if cash > auth['record']['max_cash_usd'] or credits > auth['record']['max_credits_usd']:
+        auth['reported_overcharge']=True
         raise ValueError('The reported footage charge exceeds its signed bound. Billing needs signed review.')
     auth['charge']={'cash_usd':cash,'credits_usd':credits,
         'footage_charge_basis':'service_report' if reported else 'signed_maximum',
@@ -429,6 +437,7 @@ def request_decision(root, shot_id, take_id, decision):
 
 
 def take_state(root, shot_id, take_id):
+    from tools.video._shared import VideoVerificationError
     take = _take(root,shot_id,take_id)
     try:valid = take_decisions(root,'footage_take',take_id,take,identity_key='take_id',subject={'shot_id':shot_id})
     except (receipts.ReceiptChainError,ValueError):return 'Needs a fresh look'
@@ -438,12 +447,16 @@ def take_state(root, shot_id, take_id):
     try:
         record = _provenance(root,take);_sources(root,record)
         if hashlib.sha256((Path(root)/take['path']).read_bytes()).hexdigest()!=take['sha256']:return 'Needs a fresh look'
+    except VideoVerificationError:
+        return 'Cannot check this take. ffprobe could not verify the kept clip. Check that ffprobe is installed and working, then refresh. The clip and your signatures are still saved.'
     except (ValueError,OSError,TypeError,KeyError):return 'Needs a fresh look'
     return 'Accepted'
 
 
 def require_accepted(root, shot_id, take_id):
-    if take_state(root,shot_id,take_id) != 'Accepted':raise ValueError('Only an accepted, unchanged footage take can enter the cut.')
+    state=take_state(root,shot_id,take_id)
+    if state.startswith('Cannot check this take.'):raise ValueError(state)
+    if state != 'Accepted':raise ValueError('Only an accepted, unchanged footage take can enter the cut.')
     return _take(root,shot_id,take_id)
 
 
@@ -492,7 +505,8 @@ def preview_availability(root,value):
         try:
             validate_cut_sources(root,{'timeline':{'picture':[picture]}})
             result[picture['id']]='Accepted footage available'
-        except (ValueError,OSError,TypeError,KeyError):result[picture.get('id')]='Needs a fresh look — placeholder'
+        except (ValueError,OSError,TypeError,KeyError) as exc:
+            result[picture.get('id')]=(str(exc) if str(exc).startswith('Cannot check this take.') else 'Needs a fresh look')+' — placeholder'
     return result
 
 
@@ -527,8 +541,8 @@ def _apply_decision(root, shot_id, take_id, decision):
                 for k in ('take_id','shot_id','path','asset_id','source_in_frame','source_out_frame','source_timebase_fps'):picture.pop(k,None)
                 picture.update(kind='placeholder',label='Unfinished placeholder')
         if value == old:return old
-        value.update(unfinished=True,paper_cut_pending=True,
-            timing_message='The footage choice changed. Existing timing and sound were kept; downstream work needs a fresh look. The earlier choice remains in saved versions.')
+        value.update(unfinished=True,
+            timing_message='The footage choice changed. Reopen the cutting view to use it. The paper cut and sound choices are unchanged; earlier choices remain in saved versions.')
         return edit._commit(Path(root),value,old)
 
 
@@ -563,6 +577,8 @@ def execute(root, identity):
                 if auth.get('download_received'):raise ValueError(_LOCAL_PROCESSING_FAILED) from None
                 raise
             if not result.success:
+                if auth.get('reported_overcharge'):
+                    raise ValueError('The service reported a charge above the signed maximum. The money is held. Check the service account, then sign and apply its account outcome.')
                 if auth.get('not_submitted_receipt'):
                     raise ValueError('This request was not submitted or charged. Its hold was released and a receipt was saved. Prepare and sign a new request for another attempt.')
                 if auth.get('download_received'):

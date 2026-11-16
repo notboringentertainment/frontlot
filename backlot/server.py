@@ -13,6 +13,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import secrets
 import stat
 import threading
@@ -252,6 +253,14 @@ def _project_of_change(path_str: str) -> Optional[str]:
     parts = rel.replace("\\", "/").split("/")
     if _IGNORE_PARTS.intersection(parts):
         return None
+    # An exclusive Delivery check can write many sound stems while a signer
+    # is working. Those private writes are not a new saved result: refreshing
+    # the entire board for each one can starve the signing-return read.
+    # Published movies, samples, records and receipts remain observable.
+    if (len(parts)>=5 and parts[1:3]==['artifacts','deliveries']
+        and re.fullmatch('[a-f0-9]{32}',parts[3])
+        and (parts[4]=='work' or re.fullmatch('check-[a-f0-9]{32}',parts[4]))):
+        return None
     return parts[0]
 
 
@@ -453,10 +462,18 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
         if request.headers.get("origin") not in {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}:
             raise HTTPException(403, "This action must come from Front Lot.")
         if not expected or not given or not secrets.compare_digest(expected, given):
-            raise HTTPException(401, "Reload Front Lot from its app icon before saving.")
+            raise HTTPException(401, "Copy your unfinished words first. Then open Front Lot from its app icon and reopen this production before saving.")
+
+    @app.get('/api/writer-status')
+    async def writer_status(request:Request):
+        expected=app.state.capability_token
+        given=request.headers.get('x-frontlot-capability')
+        return {'writer':bool(expected and given and secrets.compare_digest(expected,given))}
 
     from backlot.story_panel import mount as mount_story
     mount_story(app,require_writer,_safe_project_dir,_invalidate_summary)
+    from backlot.footage_prereqs import mount as mount_footage_setup
+    mount_footage_setup(app,require_writer,_safe_project_dir,_invalidate_summary)
     from backlot.voice_panel import mount as mount_voice
     mount_voice(app,require_writer,_safe_project_dir,_invalidate_summary)
     from backlot.music_panel import mount as mount_music
@@ -464,6 +481,8 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
     mount_music(app,require_writer,_safe_project_dir,_invalidate_summary,kind='effect')
     from backlot.cutting import mount as mount_cutting
     mount_cutting(app,require_writer,_safe_project_dir,_invalidate_summary)
+    from backlot.delivery import mount as mount_delivery
+    mount_delivery(app,require_writer,_safe_project_dir,_invalidate_summary)
     from backlot.footage_controls import install as install_footage_controls
     install_footage_controls(app,require_writer,_safe_project_dir,_invalidate_summary)
 
@@ -492,6 +511,18 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
         except (ValueError, OSError) as exc:
             raise HTTPException(400, str(exc) if isinstance(exc, ValueError) else "The signing request could not be made. Please try again.") from None
 
+    @app.post("/api/project/{project_id}/trailer-contract/review")
+    async def review_trailer_contract(project_id: str, request: Request):
+        require_writer(request)
+        from lib.trailer_policy import request_update
+        try:
+            if await request.json()!={}:raise ValueError('Reopen the trailer-test contract and try again.')
+            result=await asyncio.to_thread(request_update,_safe_project_dir(project_id))
+            _invalidate_summary(project_id)
+            return result
+        except (ValueError,OSError,KeyError,TypeError) as exc:
+            raise HTTPException(400,str(exc) if isinstance(exc,ValueError) else 'The trailer contract could not be prepared. Keep the production and try again.') from None
+
     @app.post("/api/project/{project_id}/paper-cut/restore")
     async def restore_paper(project_id: str, request: Request):
         require_writer(request)
@@ -516,6 +547,30 @@ def create_app(*, port: Optional[int] = None, capability_token: Optional[str] = 
         except (ValueError, TypeError, KeyError, AttributeError, OSError) as exc:
             message = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else "The save did not finish. Your previous version is safe. Check the panel and try again."
             raise HTTPException(400, message) from None
+
+    @app.post("/api/project/{project_id}/paper-cut/review")
+    async def review_paper(project_id: str, request: Request):
+        require_writer(request)
+        from lib.trailer_paper_review import request_review
+        try:
+            body=await request.json()
+            result=await asyncio.to_thread(request_review,_safe_project_dir(project_id),body.get('revision'))
+            _invalidate_summary(project_id)
+            return result
+        except (ValueError,OSError,KeyError,TypeError) as exc:
+            raise HTTPException(400,str(exc) if isinstance(exc,ValueError) else 'The paper-cut review could not be prepared. Reopen the saved version and try again.') from None
+
+    @app.post("/api/project/{project_id}/paper-cut/apply")
+    async def complete_paper_review(project_id: str, request: Request):
+        require_writer(request)
+        from lib.trailer_paper_review import complete
+        try:
+            if await request.json()!={}:raise ValueError('Reopen the saved paper-cut review and try again.')
+            message=await asyncio.to_thread(complete,_safe_project_dir(project_id))
+            _invalidate_summary(project_id)
+            return {'message':message}
+        except (ValueError,OSError,KeyError,TypeError) as exc:
+            raise HTTPException(400,str(exc) if isinstance(exc,ValueError) else 'The signed paper-cut review could not be recorded. Keep the saved work and try again.') from None
 
     @app.get("/api/project/{project_id}/paper-cut")
     async def paper_status(project_id: str):

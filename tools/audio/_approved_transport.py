@@ -38,7 +38,7 @@ def _execute_locked(inputs,kind):
         def submit(payload,reservation):
             nonlocal contacted
             import requests
-            key=os.environ.get('ELEVENLABS_API_KEY')
+            key=os.environ.get('ELEVENLABS_API_KEY','').strip()
             if not key:raise ValueError('Connect your ElevenLabs account before submitting audio.')
             if kind=='speech':
                 url='https://api.elevenlabs.io/v1/text-to-speech/'+payload['voice']

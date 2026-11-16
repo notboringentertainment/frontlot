@@ -54,7 +54,7 @@ def drawing_text(text):
         result.append(drawn.replace('\u00a0',' '));i=end
     return ''.join(result)
 
-def card_png(card):
+def card_png(card,*,resolution=(640,360)):
     """Reuse the title tool's literal PIL renderer, with no model or fallback font."""
     from PIL import Image,ImageFont
     from tools.graphics.title_card import TitleCard
@@ -66,27 +66,34 @@ def card_png(card):
     text=drawing_text(text)
     size=card.get('font_size')
     if type(size) is not int or not 12<=size<=72:raise ValueError('Choose a whole-number letter size from twelve to seventy-two pixels.')
+    if resolution not in ((640,360),(1920,1080)):raise ValueError('Choose the trailer preview or full-size delivery profile.')
+    width,height=resolution;scale=width//640
     path=_font(card);font=ImageFont.truetype(str(path),size)
     missing=bytes(font.getmask('\U0010ffff'))
     unsupported=next((c for c in text if c not in ' \n' and bytes(font.getmask(c))==missing),None)
     if unsupported:
         name=unicodedata.name(unsupported,'unrecognised character').lower()
         raise ValueError(f'This font cannot show the letter or symbol “{unsupported}” ({name}). Choose another licensed face or change that character yourself; nothing was substituted.')
-    params={'text':text,'font_size':size,'color':'#FFFFFF','width':640,'height':360,'alignment':'center','line_spacing':8}
+    params={'text':text,'font_size':size*scale,'color':'#FFFFFF','width':width,'height':height,'alignment':'center','line_spacing':8*scale}
     png=TitleCard()._render(params,path)
     # Check both layout bounds and pixels: a clipped glyph cannot hide beyond
     # the canvas and fool the alpha bounding box.
     from PIL import ImageDraw
-    draw=ImageDraw.Draw(Image.new('RGBA',(640,360)))
-    bounds=draw.multiline_textbbox((320,180),text,font=font,anchor='mm',align='center',spacing=8)
-    if bounds[0]<64 or bounds[1]<36 or bounds[2]>576 or bounds[3]>324:
-        raise ValueError('This text leaves the safe margins. Add your own line breaks or choose a smaller letter size; nothing was shortened.')
+    # Both surfaces use the same literal layout. Reject at preview time too
+    # when final-size font hinting would cross the shared safe margins.
+    for factor in (1,3):
+        draw=ImageDraw.Draw(Image.new('RGBA',(640*factor,360*factor)))
+        bounds=draw.multiline_textbbox((320*factor,180*factor),text,font=ImageFont.truetype(str(path),size*factor),anchor='mm',align='center',spacing=8*factor)
+        if bounds[0]<64*factor or bounds[1]<36*factor or bounds[2]>576*factor or bounds[3]>324*factor:
+            raise ValueError('This text leaves the safe margins. Add your own line breaks or choose a smaller letter size; nothing was shortened.')
     return png
 
 def _record(root,card):
     exact=copy.deepcopy(card)
     exact['text_utf8_sha256']=hashlib.sha256(card['text'].encode('utf-8')).hexdigest()
-    return {'project_id':Path(root).name,'card':exact,'story_inputs':trailer_edit._inputs(Path(root))}
+    saved=trailer_edit.read_revision(root)
+    inputs=saved['inputs'] if saved and trailer_edit.inputs_match(Path(root),saved.get('inputs')) else trailer_edit._inputs(Path(root))
+    return {'project_id':Path(root).name,'card':exact,'story_inputs':inputs}
 
 def status(root,card):
     rows=receipts.verified_approvals(root,'trailer_card',entity_id=card['id'])
@@ -135,7 +142,7 @@ def approval_record(root,identity):
     except ValueError:
         raise ValueError('This trailer’s creation record cannot be verified. Restore its signed record before reviewing cards.') from None
     saved=trailer_edit.read_revision(root)
-    if not saved or saved.get('inputs')!=trailer_edit._inputs(Path(root)):
+    if not saved or not trailer_edit.inputs_match(Path(root),saved.get('inputs')):
         raise ValueError('The story or trailer settings changed. Review the paper cut before signing this card.')
     timeline=saved['timeline'];end=max(x['start_frame']+x['duration_frames'] for x in timeline['picture'])
     rows=validate_cards(root,timeline.get('cards',[]),end,require_approval=False)
@@ -151,6 +158,7 @@ def request_approval(root,identity):
 def renderer_configuration():
     """Inspect installed local tools without launching or downloading them."""
     import os,shutil
+    programs.require('node')
     modules=Path(os.environ.get('FRONTLOT_REMOTION_MODULES',REPO_ROOT/'remotion-composer'/'node_modules'))
     browser=os.environ.get('FRONTLOT_REMOTION_BROWSER')
     if not browser:
@@ -158,16 +166,25 @@ def renderer_configuration():
         cache=Path(os.environ.get('PLAYWRIGHT_BROWSERS_PATH',Path.home()/'Library/Caches/ms-playwright'))
         candidates+=sorted(cache.glob('chromium-*/chrome-mac-*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'))
         browser=next((str(p) for p in candidates if p.is_file()),None)
-    if not programs.which('node') or not (modules/'@remotion'/'renderer').is_dir() or not browser or not Path(browser).is_file():
+    if not all((modules/'@remotion'/name).is_dir() for name in ('renderer','bundler')) or not browser or not programs.which(browser):
         raise ValueError('Local title playback needs the installed Remotion tools and browser. Nothing was sent or spent; restore the local renderer before preparing playback.')
     return modules,browser
 
-def render_layer(root,cards,end,directory):
+def renderer_preflight():
+    """Check the installed title program before any composition work starts."""
+    import subprocess
+    configuration=renderer_configuration()
+    try:programs.run(['node','--version'],capture_output=True,check=True,timeout=10)
+    except (OSError,subprocess.SubprocessError):
+        raise ValueError('The local title program could not run. Ask the person who starts Front Lot to repair the installed Node program and restart the board. The saved cut is unchanged.') from None
+    return configuration
+
+def render_layer(root,cards,end,directory,*,resolution=(640,360)):
     """Remotion places literal title-tool PNGs; never downloads a runtime."""
     import base64,json,subprocess,uuid
-    modules,browser=renderer_configuration()
+    modules,browser=renderer_preflight()
     job=directory/('titles-'+uuid.uuid4().hex);job.mkdir()
-    props={'end':end,'cards':[{**row,'image':'data:image/png;base64,'+base64.b64encode(card_png(row)).decode()} for row in cards]}
+    props={'end':end,'width':resolution[0],'height':resolution[1],'cards':[{**row,'image':'data:image/png;base64,'+base64.b64encode(card_png(row,resolution=resolution)).decode()} for row in cards]}
     request=job/'props.json'
     with request.open('x') as f:json.dump(props,f,ensure_ascii=False)
     output=job/'cards.mov'

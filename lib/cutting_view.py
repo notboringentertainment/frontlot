@@ -3,11 +3,13 @@ from lib import programs
 import copy
 import math
 from pathlib import Path
-from lib import trailer_edit,footage_requests,audio_workspace
+from lib import trailer_edit,footage_requests,audio_workspace,receipts
 from lib.pathsafe import resolve_input,sha256_file
 
 def source_problem(medium,number,state):
     label=f'{"Picture" if medium=="picture" else "Sound"} {number}'
+    if isinstance(state,str) and state.startswith('Cannot check this take.'):
+        return label+' cannot be checked. '+state.removeprefix('Cannot check this take.').strip()
     if state=='Declined':reason='This take was declined. Replace or remove this clip.'
     elif state=='Needs a fresh look':reason='This take needs a fresh look. Review a new kept take, or remove this clip.'
     elif medium=='audio':reason='Choose a kept voice, music or sound effect. A picture take cannot be used as sound.'
@@ -29,6 +31,7 @@ def _frame(value,label):
     if type(value) is not int or value<0:raise ValueError(label+' must use non-negative whole frames.')
     return value
 
+@receipts.verified_read
 def validate_cut(root,timeline,*,verify_files=False,release=False,require_card_approval=True):
     if not isinstance(timeline,dict) or not {'fps','picture','audio'}<=set(timeline) or set(timeline)-{'fps','picture','audio','cards','mix'} or type(timeline['fps']) is not int or timeline['fps']!=24:
         raise ValueError('Save picture and sound together at twenty-four frames per second.')
@@ -91,6 +94,7 @@ def editable(timeline,*,display=False):
         result['cards']=[{k:r[k] for k in CARD_FIELDS} for r in timeline['cards']]
     return result
 
+@receipts.verified_read
 def save_cut(root,timeline,expected_revision):
     root=Path(root)
     # Audio freshness reads the current paper cut under its own edit lock.
@@ -102,12 +106,25 @@ def save_cut(root,timeline,expected_revision):
         if old is None:raise ValueError('Save a checked paper cut before cutting takes.')
         inputs=trailer_edit._inputs(root)
         check=trailer_edit._story_check(root,old['paper_cut'])
-        if check['status']!='checked' or old.get('inputs')!=inputs:raise ValueError('Review the story and save a current checked paper cut before cutting takes.')
+        if check['status']!='checked' or not trailer_edit.inputs_match(root,old.get('inputs')):raise ValueError('Review the story and save a current checked paper cut before cutting takes.')
+        if old.get('cutting_view') and not old.get('paper_cut_pending') and old['timeline']==validated:
+            return old
         value=copy.deepcopy(old);value['timeline']=validated
         value.update(paper_cut_pending=False,unfinished=True,cutting_view=True)
         return trailer_edit._commit(root,value,old,inputs)
 
 def render_preview(root,revision,comparison='after'):
+    return render_saved(root,revision,comparison)[0]
+
+def preflight_render(timeline):
+    """Check installed local programs before starting picture or sound work."""
+    programs.preflight('ffmpeg','ffprobe')
+    if timeline.get('cards'):
+        from lib.trailer_titles import renderer_preflight
+        renderer_preflight()
+
+@receipts.verified_read
+def render_saved(root,revision,comparison='after',*,resolution=(640,360),directory=None):
     import subprocess,uuid,json
     from lib.trailer_finishing import review_output,NEUTRAL
     from lib.pathsafe import validate_output_parent
@@ -115,13 +132,17 @@ def render_preview(root,revision,comparison='after'):
     from tools.enhancement.color_grade import ColorGrade
     from tools.audio.audio_mixer import AudioMixer
     if comparison not in ('before','after'):raise ValueError('Choose before or after, then prepare the saved cut again.')
+    if resolution not in ((640,360),(1920,1080)):raise ValueError('Choose the trailer preview or full-size delivery profile.')
+    width,height=resolution
+    preview_work=directory is None
     root=Path(root);saved=trailer_edit.read_revision(root)
     if not saved or saved['edit_revision_sha256']!=revision:raise ValueError('The saved cut changed. Reopen it before making a preview.')
     timeline=validate_cut(root,editable(saved['timeline']),verify_files=True)
     if comparison=='after' and 'mix' not in saved['timeline']:
         raise ValueError('Save the colour and sound settings first, then prepare balanced playback.')
+    preflight_render(timeline)
     end=max(p['start_frame']+p['duration_frames'] for p in timeline['picture'])
-    directory=root/'artifacts'/'cut-previews'
+    directory=Path(directory) if directory is not None else root/'artifacts'/'cut-previews'
     validate_output_parent(directory,root);directory.mkdir(exist_ok=True)
     target=validate_output_parent(directory/(revision+'-'+uuid.uuid4().hex+'.mp4'),root)
     mixfile=target.with_suffix('.wav')
@@ -131,7 +152,7 @@ def render_preview(root,revision,comparison='after'):
     except subprocess.SubprocessError:
         raise ValueError('The local sound mix failed. Check the kept files and trims, then prepare playback again.') from None
     if not mixed.success:raise ValueError('The local sound mix failed. Check the kept sounds, then prepare playback again.')
-    args=['ffmpeg','-v','error','-n','-filter_complex_threads','1','-f','lavfi','-i',f'color=c=black:s=640x360:r=24:d={end/24}']
+    args=['ffmpeg','-v','error','-n','-filter_complex_threads','1','-f','lavfi','-i',f'color=c=black:s={width}x{height}:r=24:d={end/24}']
     filters=[];base='0:v';index=1
     colour_notes=[];untagged=[];layer=None
     for p in timeline['picture']:
@@ -142,14 +163,14 @@ def render_preview(root,revision,comparison='after'):
         if probe.get('color_space') not in ('bt709','bt470bg','smpte170m'):
             untagged.append(index)
         args+=['-i',str(source)]
-        filters.append(f'[{index}:v]fps=24,trim=start_frame={p["source_in_frame"]}:end_frame={p["source_out_frame"]},setpts=PTS-STARTPTS+{p["start_frame"]}/24/TB,scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,setsar=1[v{index}]')
+        filters.append(f'[{index}:v]fps=24,trim=start_frame={p["source_in_frame"]}:end_frame={p["source_out_frame"]},setpts=PTS-STARTPTS+{p["start_frame"]}/24/TB,scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v{index}]')
         filters[-1]=filters[-1].replace(f'[v{index}]',f',{grade}[v{index}]')
         filters.append(f'[{base}][v{index}]overlay=eof_action=pass:enable=\'gte(t,{p["start_frame"]/24})*lt(t,{(p["start_frame"]+p["duration_frames"])/24})\'[p{index}]')
         base=f'p{index}';index+=1
     audio_index=index;args+=['-i',str(mixfile)];index+=1
     if timeline['cards']:
         from lib.trailer_titles import render_layer
-        layer=render_layer(root,timeline['cards'],end,directory)
+        layer=render_layer(root,timeline['cards'],end,directory,resolution=resolution)
         args+=['-i',str(layer)]
         filters.append(f'[{base}][{index}:v]overlay=eof_action=pass:format=auto[titled]')
         base='titled'
@@ -157,7 +178,7 @@ def render_preview(root,revision,comparison='after'):
     base='finished'
     args+=['-filter_complex',';'.join(filters),'-map',f'[{base}]']
     args+=['-map',f'{audio_index}:a','-c:a','aac','-b:a','192k','-ar','48000','-ac','2']
-    args+=['-c:v','libx264','-pix_fmt','yuv420p','-r','24','-colorspace','bt709','-color_primaries','bt709','-color_trc','bt709','-color_range','tv','-t',str(end/24),'-movflags','+faststart',str(target)]
+    args+=['-c:v','libx264','-crf','18' if width==1920 else '23','-pix_fmt','yuv420p','-r','24','-colorspace','bt709','-color_primaries','bt709','-color_trc','bt709','-color_range','tv','-t',str(end/24),'-movflags','+faststart',str(target)]
     try:programs.run(args,capture_output=True,check=True,timeout=180)
     except subprocess.SubprocessError:raise ValueError('The local picture preview failed. Check the kept picture files and prepare playback again.') from None
     review=review_output(target,mixed.data)
@@ -168,12 +189,14 @@ def render_preview(root,revision,comparison='after'):
     review['messages']+=colour_notes
     with target.with_suffix('.review.json').open('x') as file:json.dump(review,file,allow_nan=False,indent=2)
     if comparison=='after' and review['true_peak_dbtp'] is not None and review['true_peak_dbtp']>-1:
-        from lib.cut_preview_files import finish_preview
-        finish_preview(root,target,mixfile,mixed.data,layer,rejected=True)
+        if preview_work:
+            from lib.cut_preview_files import finish_preview
+            finish_preview(root,target,mixfile,mixed.data,layer,rejected=True)
         raise ValueError('The balanced preview still peaks above the ceiling. Lower the loud sounds, save and prepare playback again.')
     current=trailer_edit.read_revision(root)
     if current['edit_revision_sha256']!=revision:raise ValueError('The cut changed while preparing playback. Make a new preview.')
     validate_cut(root,editable(current['timeline']),verify_files=True)
-    from lib.cut_preview_files import finish_preview
-    finish_preview(root,target,mixfile,mixed.data,layer)
-    return target
+    if preview_work:
+        from lib.cut_preview_files import finish_preview
+        finish_preview(root,target,mixfile,mixed.data,layer)
+    return target,review,mixed.data

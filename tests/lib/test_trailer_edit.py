@@ -29,7 +29,7 @@ def test_creation_is_signed_without_spending_or_stage_approval(tmp_path):
     from lib.trailer_contract import signed_trailer_pin
     from backlot.state import load_board_state
     root = trailer(tmp_path)
-    assert signed_trailer_pin(root).version == '1.6'
+    assert signed_trailer_pin(root).version == '1.7'
     s = load_board_state(root)
     assert s['is_trailer'] and not s.get('trailer_setup_pending')
     assert all(not x['human_approved'] and x['status'] != 'completed' for x in s['stages'])
@@ -51,7 +51,9 @@ def test_timing_history_and_staleness(tmp_path):
     b=save_revision(root,p,a['edit_revision_sha256'])
     assert read_revision(root,a['edit_revision_sha256']) == a
     assert b['timing_message'] == 'The sequence is 24 frames short of the target.'
-    (root/'checkpoint_script.json').write_text('{"changed":true}')
+    # Script is a derived record of this paper. Changing an upstream treatment
+    # still invalidates the paper; its own projection cannot invalidate itself.
+    (root/'checkpoint_proposal.json').write_text('{"changed":true}')
     assert paper_state(root)['needs_review']
 
 
@@ -139,5 +141,8 @@ def test_placeholder_has_no_generation_or_checkpoint_side_effects(tmp_path):
     root=trailer(tmp_path)
     before=list(root.glob('checkpoint*'))
     save_revision(root,paper(),None)
-    assert list(root.glob('checkpoint*'))==before
+    assert not before
+    assert {p.name for p in root.glob('checkpoint*')}=={'checkpoint_script.json'}
+    assert set(json.loads((root/'checkpoint_script.json').read_text())['artifacts'])=={'script','scene_plan'}
+    assert all(json.loads(p.read_text())['status']=='in_progress' and not json.loads(p.read_text())['human_approved'] for p in root.glob('checkpoint*'))
     assert verified_generation_receipts(root)==[]

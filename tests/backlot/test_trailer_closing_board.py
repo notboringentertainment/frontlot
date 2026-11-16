@@ -84,7 +84,9 @@ def test_existing_trailer_gate_view_and_signing_are_reachable(closing_board,kind
     page.get_by_role('button',name='Start signing',exact=True).wait_for()
     assert page.get_by_role('button',name='Start signing',exact=True).is_visible()
     assert page.get_by_role('button',name='Start signing',exact=True).is_enabled()
-    assert 'Not available yet' in page.locator('.counter').inner_text()
+    counter=page.get_by_role('navigation',name='Stage sign-offs',exact=True)
+    assert 'Unfinished' in counter.inner_text() and 'Waiting for your signature' in counter.inner_text()
+    assert counter.get_by_role('button').count()==0
     assert not errors
 
 

@@ -20,11 +20,8 @@ def capture(page,name,target=None):
 
 @pytest.fixture(autouse=True)
 def short_signing_folder(monkeypatch,_isolated_gates_dir):
-    import tempfile
-    # Keep the Unix socket below macOS's path limit even under the named
-    # isolated parent required for a full run. It stays inside TMPDIR.
-    folder=tempfile.mkdtemp(prefix='v-',dir=tempfile.gettempdir())
-    monkeypatch.setenv('OPENMONTAGE_GATES_DIR',folder)
+    from tests.backlot.isolation_helpers import signing_directory
+    monkeypatch.setenv('OPENMONTAGE_GATES_DIR',str(signing_directory('v')))
     monkeypatch.setenv('FRONTLOT_CLAUDE','/nonexistent/frontlot-no-assistant')
 
 @contextmanager
@@ -105,6 +102,7 @@ def test_writer_voice_controls_sign_play_keep_decline_and_retake(voice_world,mon
             expect(page.locator('#gate-sign-panel').get_by_text('Your approval is recorded. You can close this.',exact=True)).to_be_visible(timeout=20000)
             page.get_by_role('button',name='Return to audio',exact=True).click()
             panel=page.get_by_role('region',name='Trailer audio');expect(panel.locator('.voice-take')).to_contain_text('Kept',timeout=15000)
+            expect(panel.get_by_role('status')).to_contain_text('Audio loaded. Kept: 1.',timeout=15000)
             capture(page,'kept-take',panel.locator('.voice-take'))
             from lib import trailer_edit
             saved=trailer_edit.read_revision(root);draft=saved['paper_cut'];draft['lines'][0]['text']='A lantern glows.'
@@ -117,6 +115,7 @@ def test_writer_voice_controls_sign_play_keep_decline_and_retake(voice_world,mon
             expect(page.locator('#gate-sign-panel').get_by_text('Your approval is recorded. You can close this.',exact=True)).to_be_visible(timeout=20000)
             page.get_by_role('button',name='Return to audio',exact=True).click()
             panel=page.get_by_role('region',name='Trailer audio');expect(panel.locator('.voice-take')).to_contain_text('Declined',timeout=15000)
+            expect(panel.get_by_role('status')).to_contain_text('Audio loaded. Kept: 0.',timeout=15000)
             capture(page,'declined-take',panel.locator('.voice-take'))
             expect(panel.get_by_role('button',name='Keep this take',exact=True)).to_have_count(0)
             panel.get_by_role('button',name='Ask for another take',exact=True).click()
@@ -152,12 +151,12 @@ def test_price_controls_restore_and_sign_without_commands(voice_world,monkeypatc
             open_prices(panel)
             for label,value in [('Dollar replacement value per credit','.0002'),('Highest speech credits per character','1'),('Highest music credits per minute','1200'),('Highest voice rate multiplier','2'),('Prices expire','2099-12-31T23:00')]:panel.get_by_label(label,exact=True).fill(value)
             panel.get_by_role('button',name='Prepare price settings for signing',exact=True).click()
-            expect(page.get_by_text('Account consent and maximum audio prices',exact=True)).to_be_visible()
-            capture(page,'price-settings-signature',page.get_by_text('Account consent and maximum audio prices',exact=True))
+            expect(page.get_by_text('One production ceiling, both sets of prices',exact=True)).to_be_visible()
+            capture(page,'price-settings-signature',page.get_by_text('One production ceiling, both sets of prices',exact=True))
             page.get_by_role('button',name='Return to audio',exact=True).click()
             open_prices(panel)
-            panel.get_by_role('button',name='Discard draft and restore signed settings',exact=True).click()
-            expect(panel.get_by_role('status')).to_contain_text('unsigned draft was discarded')
+            panel.get_by_role('button',name='Discard unsigned price draft',exact=True).click()
+            expect(panel.get_by_role('status')).to_contain_text('unsigned price draft was discarded')
             open_prices(panel)
             panel.get_by_role('button',name='Prepare price settings for signing',exact=True).click()
             sign_and_return(page)

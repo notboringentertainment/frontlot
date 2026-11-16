@@ -8,6 +8,7 @@ from pathlib import Path
 
 import jsonschema
 from lib.canonical_json import record_sha256
+from lib.trailer_policy import is_trailer
 
 SCHEMA = Path(__file__).resolve().parents[1] / 'schemas/trailer_contract.schema.json'
 FPS = 24
@@ -43,15 +44,66 @@ STAGE_LABELS = {
     'canon_ingest': 'Story', 'proposal': 'Treatment', 'look_lock': 'Looks',
     'headshots': 'Cast portraits', 'visual_bible': 'Visual references',
     'script': 'Lines and title cards', 'scene_plan': 'Shot list',
-    'assets': 'Footage and sound', 'edit': 'Rough cut', 'compose': 'Final assembly',
+    'assets': 'Footage and sound', 'edit': 'Rough cut', 'colour_mix':'Colour and sound', 'compose': 'Final assembly',
 }
 STAGE_LIMITS = {name: 'Signed stage approval controls are not available yet.' for name in STAGE_LABELS if name!='canon_ingest'}
 STAGE_LIMITS.update({
     'canon_ingest': '',
-    'assets': 'The complete trailer footage, sound and signed stage approval controls are not available yet.',
-    'edit': 'Playable rough-cut editing and signed approval controls are not available yet.',
-    'compose': 'Trailer finishing, export and signed exact-file approval controls are not available yet.',
+    'script': 'Review the whole paper cut in Paper cut workspace. The separate stage-completion control is not available yet.',
+    'scene_plan': 'Review the shot list with the whole paper cut in Paper cut workspace. The separate stage-completion control is not available yet.',
+    'assets': 'Individual purchases and take decisions work in the footage and sound workspaces. The whole-stage review is not available yet.',
+    'edit': '',
+    'compose': '',
 })
+
+
+def outstanding_stage_reviews(root,stage,final_review=None,*,rough_signed=False,final_story_signed=False):
+    """Explain the pinned contract without waiving its requirements.
+
+    final_story_signed is supplied only after verifying the current file's
+    final approval, whose material includes that listening comparison. It
+    changes guidance, never stage completion or signing permission.
+    """
+    from lib.checkpoint import get_completed_stages,get_pipeline_stages
+    root=Path(root);pin=signed_trailer_pin(root)
+    if pin is None:return ['Trailer creation: review and sign creation under Needs you before continuing.']
+    completed=set(get_completed_stages(root.parent,root.name,pin.ref,before_stage=stage))
+    order=get_pipeline_stages(pin.ref)
+    from lib.trailer_policy import trimmed,REVIEW_LABELS
+    if trimmed(pin):
+        instructions={
+            'canon_ingest':'review and sign the exact story in Story workspace.',
+            'script':'review and sign the whole paper cut, then record that signed review in Paper cut workspace.',
+            'edit':'watch and sign this saved rough cut, then record its signed review in Delivery workspace.',
+            'colour_mix':'watch and sign the saved colour and sound, then record that separate signed review in Delivery workspace.',
+        }
+        result=[REVIEW_LABELS[s]+': '+instructions[s] for s in order[:order.index(stage)] if s not in completed]
+        if stage=='compose' and not final_story_signed:result.append('Final story comparison: while watching the exported file in Delivery workspace, confirm the story findings and that every protected line is heard verbatim before signing final approval.')
+        return result
+    instructions={
+        'canon_ingest':'sign the exact story in Story workspace.',
+        'proposal':'the three treatment options and selected treatment still need a whole-stage review. That control is not available yet.',
+        'look_lock':'the declared cast’s complete looks still need a whole-stage review. Individual look signatures do not finish this stage; its complete-stage control is not available yet.',
+        'headshots':'portraits for every declared character still need their required selections and whole-stage review. The complete-stage control is not available yet.',
+        'visual_bible':'the complete reference collection and approved poster still need a whole-stage review. That control is not available yet.',
+        'script':'review and sign the complete paper cut in Paper cut workspace. The film-style stage-completion control is not available yet.',
+        'scene_plan':'review the timed shot list with the whole paper cut in Paper cut workspace. The film-style stage-completion control is not available yet.',
+        'assets':'keep the pictures and sounds in their workspaces. The separate review of the complete media collection is not available yet.',
+        'edit':'sign the saved rough cut, then record its stage approval in Delivery workspace after the listed earlier requirements are met.',
+    }
+    from lib.trailer_paper_review import state as paper_review_state
+    if paper_review_state(root)=='Signed by you':
+        for name in ('script','scene_plan'):
+            instructions[name]='Your whole paper-cut signature is recorded. This separate stage is unfinished because its stage-completion control is not available yet.'
+    if rough_signed:
+        instructions['edit']='The saved rough cut is signed. Its stage still waits for the earlier requirements; record it in Delivery workspace after those are met.'
+    result=[STAGE_LABELS[s]+': '+instructions[s] for s in order[:order.index(stage)] if s not in completed]
+    if stage=='compose':
+        from lib.canon_enforcement import _check_canon_pass,_load_canon
+        try:_check_canon_pass(final_review or {},_load_canon(root.parent,root.name,{}) or {},True)
+        except ValueError:
+            result.append('Final story comparison: the signed story’s facts, protected lines, tone and continuity still need their required findings. The final story comparison has no control yet.')
+    return result
 
 
 def _duration(value, target):
@@ -80,6 +132,8 @@ def _frame_times(value, target):
 
 
 def edit_duration(edit):
+    if edit.get('cutting_view'):
+        return max((r['start_frame']+r['duration_frames'] for r in edit['timeline']['picture']),default=0)/FPS
     return sum((cut['out_seconds'] - cut['in_seconds']) / cut.get('speed', 1)
                for cut in edit.get('cuts', []) if cut.get('layer', 'primary') == 'primary')
 
@@ -157,11 +211,22 @@ def _export_duration(path):
     return float(json.loads(result.stdout)['format']['duration'])
 
 
-def approval_record(root, pin, stage, artifacts):
+def require_recorded_predecessors(root,pin,stage):
+    from lib.trailer_policy import trimmed,REVIEW_LABELS
+    if not trimmed(pin):return
+    from lib.checkpoint import get_completed_stages,get_pipeline_stages
+    order=get_pipeline_stages(pin.ref);prior=order[:order.index(stage)]
+    completed=set(get_completed_stages(Path(root).parent,Path(root).name,pin.ref,before_stage=stage))
+    for name in prior:
+        if name not in completed:
+            workspace='Story' if name=='canon_ingest' else 'Paper cut' if name=='script' else 'Delivery'
+            raise ValueError('Review, sign and record '+REVIEW_LABELS[name]+' in '+workspace+' workspace before continuing.')
+
+def approval_record(root, pin, stage, artifacts, *, final_story_review=None):
     """The existing artifact-review signer must approve this exact record.
 
-    The story source has a board signing surface using this record and the
-    existing gate machinery. Other stage controls remain separate work.
+    The story source and delivery controls use this record and the same
+    gate-side construction and signing machinery as other governed approvals.
     """
     contract = require_contract(root)
     if stage=='canon_ingest':
@@ -175,19 +240,19 @@ def approval_record(root, pin, stage, artifacts):
     paper_path = Path(root)/'artifacts'/'edit_decisions.json'
     if paper_path.is_file():
         paper = json.loads(paper_path.read_text())
-        if 'paper_cut' in paper and stage in {'script','scene_plan','assets','edit','compose'}:
+        if 'paper_cut' in paper and stage in {'script','scene_plan','assets','edit','colour_mix','compose'}:
             from lib.trailer_edit import paper_state
             state = paper_state(root)
             if state.get('needs_review') or not state.get('usable_downstream'):
                 raise ValueError('The paper cut needs a fresh look and must be checked against the approved story before this stage can use it.')
             record['paper_cut_revision'] = paper['edit_revision_sha256']
     # A changed earlier checkpoint invalidates this approval as well.
-    from lib.pipeline_loader import get_stage_order, load_pipeline
-    predecessors = get_stage_order(load_pipeline(pin.ref))
+    from lib.pipeline_loader import get_stage_order, load_pipeline_readonly
+    predecessors = get_stage_order(load_pipeline_readonly(pin.ref))
     record['predecessors'] = {s: _file_digest(Path(root)/f'checkpoint_{s}.json')
                               for s in predecessors[:predecessors.index(stage)]
                               if (Path(root)/f'checkpoint_{s}.json').is_file()}
-    if stage in {'edit', 'compose'}:
+    if stage in {'edit', 'colour_mix', 'compose'}:
         saved = json.loads(_local_file(root, 'artifacts/edit_decisions.json').read_text())
         if saved.get('cutting_view') or (saved.get('timeline') or {}).get('picture') or (saved.get('timeline') or {}).get('audio'):
             from lib.cutting_view import validate_cut,editable
@@ -200,7 +265,7 @@ def approval_record(root, pin, stage, artifacts):
         if saved.get('edit_revision_sha256') != digest:
             raise ValueError('The rough-cut fingerprint does not match the saved edit revision.')
         record['edit_revision_sha256'] = digest
-        if stage == 'edit' and artifacts.get('edit_decisions') != saved:
+        if stage in {'edit','colour_mix'} and artifacts.get('edit_decisions') != saved:
             raise ValueError('The rough cut does not match the saved edit revision.')
         if stage == 'compose':
             report, review = artifacts.get('render_report') or {}, artifacts.get('final_review') or {}
@@ -229,26 +294,42 @@ def approval_record(root, pin, stage, artifacts):
             if abs(measured - edit_duration(saved)) > TOLERANCE_SECONDS + 1e-9:
                 raise ValueError('The exported file length does not match the saved edit timeline within one frame.')
             record['export_sha256'] = sha
+            from lib.trailer_policy import trimmed
+            if trimmed(pin):
+                from lib.trailer_final_story import validate
+                record['final_story_review']=validate(root,final_story_review)
     return record
 
 
 def require_stage_approval(root, pin, stage, artifacts):
     from lib.receipts import verified_approvals
+    from lib.trailer_policy import trimmed
+    required=SIGNED_REQUIRED
+    if trimmed(pin):
+        workspace='Story' if stage=='canon_ingest' else 'Paper cut' if stage=='script' else 'Delivery'
+        required='This stage needs your signed approval. Review and sign it in '+workspace+' workspace first.'
+    if trimmed(pin) and stage=='script':
+        from lib.trailer_paper_review import require_approval
+        from lib.trailer_records import paper_artifacts
+        require_approval(root)
+        if artifacts!=paper_artifacts(root):raise ValueError('The paper-cut stage record changed. Reopen and review the saved paper cut.')
+        return
     # Refuse a bare flag before attempting artifact/media reads.
     rows = [r for r in verified_approvals(root, 'artifact_review')
             if r.get('stage') == stage and r.get('scope') == 'trailer-stage'
             and r.get('artifact_type') == 'trailer_stage' and r.get('artifact_version') == '1.0'
             and r.get('migration_status') == 'reviewed']
     if not rows:
-        raise ValueError(SIGNED_REQUIRED)
+        raise ValueError(required)
     if stage == 'compose' and (artifacts.get('final_review') or {}).get('status') != 'pass':
         raise ValueError('The final review must pass before this trailer can be completed.')
     # Ledger order is authoritative: an older approved revision never revives.
     rows = rows[-1:]
     response = rows[0].get('user_response')
     if not (response == 'approve' or isinstance(response, dict) and response.get('answer') == 'approved'):
-        raise ValueError(SIGNED_REQUIRED)
-    record = approval_record(root, pin, stage, artifacts)
+        raise ValueError(required)
+    record = approval_record(root, pin, stage, artifacts,
+        final_story_review=rows[0].get('record',{}).get('final_story_review') if stage=='compose' else None)
     digest = record_sha256(record)
     if not any(r.get('record') == record and r.get('record_sha256') == digest
                and r.get('artifact_digest') == digest for r in rows):
@@ -256,7 +337,7 @@ def require_stage_approval(root, pin, stage, artifacts):
 
 
 def project_checkpoint(root, pin, cp):
-    if pin.name != 'authored-film' or pin.version != '1.6' or cp.get('status') != 'completed':
+    if not is_trailer(pin) or cp.get('status') != 'completed':
         return cp
     try:
         if cp.get('human_approved') is not True or cp.get('pipeline') != pin.to_dict() or cp.get('pipeline_type') not in {'authored-film', pin.ref} or cp.get('project_id') != Path(root).name:
@@ -272,19 +353,19 @@ def project_checkpoint(root, pin, cp):
 def signed_trailer_pin(root):
     """Discover the trailer from the signer-owned chain even if marker text was edited."""
     from lib.receipts import verified_approvals
-    from lib.pipeline_pin import PinnedPipeline, pinned_pipeline
+    from lib.pipeline_pin import pinned_pipeline
     from lib.pipeline_loader import manifest_digest
     rows = verified_approvals(root, 'pipeline_migration')
-    if any(r.get('kind') == 'pipeline_migration' and r.get('record', {}).get('pipeline_name') == 'authored-film'
-           and r.get('record', {}).get('version') == '1.6' for r in rows):
+    if any(is_trailer({'name':r.get('record',{}).get('pipeline_name'),'version':r.get('record',{}).get('version')}) for r in rows):
         # Verify the complete migration supersession chain, including a historical downgrade.
-        pinned_pipeline(root, 'authored-film')
-        row = next(r for r in rows if r.get('record', {}).get('pipeline_name') == 'authored-film'
-                   and r.get('record', {}).get('version') == '1.6')
-        record = row['record']
-        if record.get('manifest_digest') != manifest_digest('authored-film@1.6'):
+        pin=pinned_pipeline(root, 'authored-film')
+        if not is_trailer(pin):
             raise ValueError(HISTORY_DAMAGED)
-        return PinnedPipeline('authored-film', '1.6', record['manifest_digest'], row['receipt_id'])
+        for row in rows:
+            record=row['record']
+            if is_trailer({'name':record.get('pipeline_name'),'version':record.get('version')}) and record.get('manifest_digest')!=manifest_digest('authored-film@'+record['version']):
+                raise ValueError(HISTORY_DAMAGED)
+        return pin
     return None
 
 
@@ -297,8 +378,7 @@ def checkpoint_trailer_evidence(root):
             continue
         if not isinstance(checkpoint,dict):continue
         pipeline=checkpoint.get('pipeline')
-        if pipeline=='authored-film@1.6':return True
-        if isinstance(pipeline,dict) and pipeline.get('name')=='authored-film' and pipeline.get('version')=='1.6':return True
+        if is_trailer(pipeline):return True
     return False
 
 

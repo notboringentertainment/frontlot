@@ -85,7 +85,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from lib.canonical_json import record_sha256  # noqa: E402
 from lib import gates  # noqa: E402
 from lib.paths import PROJECTS_DIR  # noqa: E402
-from lib.receipts import APPROVAL_KINDS, ReceiptError, exact_approval, record_human_approval, verified_approvals  # noqa: E402
+from lib.receipts import APPROVAL_KINDS, ReceiptError, exact_approval, record_human_approval, verified_approvals, verified_read  # noqa: E402
 from lib.state_io import atomic_move, atomic_write_json  # noqa: E402
 
 REQUEST_DIRNAME = ".gate-requests"
@@ -120,7 +120,11 @@ def _tell_app(**event: Any) -> None:
 
 def _ask(kind: str, text: str, **extra: Any) -> str:
     _tell_app(ask=kind, **extra)
-    return input(text)
+    answer=input(text)
+    # Only the signer knows that a complete answer was consumed. A terminal
+    # frame can already contain the answer to the following note question.
+    _tell_app(answered=kind)
+    return answer
 
 
 def _done(outcome: str, line: str) -> None:
@@ -369,6 +373,10 @@ def _verify_image_ref(root: Path, ref: Any, label: str) -> str:
 
 
 def _construct_look_lock(root: Path, req: dict) -> Constructed:
+    if req.get('writer_source_ref') is not None:
+        from lib.frontlot_location_source import signing_material
+        try:return Constructed(**signing_material(root,req))
+        except ValueError as exc:raise GateHandlerError(str(exc)) from None
     from lib.look_ingest import (
         LookIngestError,
         active_look_for,
@@ -587,7 +595,8 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
         facts = creation_facts(root) if creation else None
     except (ValueError, KeyError, TypeError, OSError) as exc:
         raise GateHandlerError("The trailer name, length or spending ceiling is missing or invalid. Repair those settings before signing.") from exc
-    if creation and (version != "1.6" or pipeline_name != "authored-film" or facts != hint["trailer_creation"]):
+    from lib.trailer_policy import is_trailer
+    if creation and (not is_trailer({'name':pipeline_name,'version':version}) or facts != hint["trailer_creation"]):
         raise GateHandlerError("The trailer settings changed. Start signing again after reviewing them.")
     bound = checkpoint_digests_on_disk(root)
     try:
@@ -607,6 +616,11 @@ def _construct_pipeline_migration(root: Path, req: dict) -> Constructed:
         f"binds {len(bound)} checkpoint file(s) on disk: " + ", ".join(f"{b['stage']}={b['checkpoint_digest'][:12]}…" for b in bound),
         f"supersedes migration receipt {tip['receipt_id']}" if tip else "first pin for this project",
     )
+    if 'trailer_test_contract' in record:
+        decision=record['trailer_test_contract']
+        evidence=('Ben decided: “trim for the trailer test”. Required reviews: '+', '.join(decision['required_reviews'])+'.',
+                  'Whole-stage reviews set aside: '+', '.join(decision['dropped_whole_stage_reviews'])+'.',
+                  'Every protected line must still be heard verbatim. Individual purchases, used looks and references, take decisions and exact card signatures remain required. This contract signature approves no stage or spending.')+evidence
 
     def pre_commit() -> None:  # re-derived under the consumed token (R3#4)
         try:
@@ -682,12 +696,15 @@ def _construct_config(root: Path, req: dict) -> Constructed:
     from lib.project_config import ProjectConfigError, read_project_config
 
     try:
-        data, digest = read_project_config(root)
-    except ProjectConfigError as exc:
+        if req.get('scope') in {'audio:project_config','footage:project_config'}:
+            from lib.media_settings import draft_material
+            data,digest,_=draft_material(root,req)
+        else:data, digest = read_project_config(root)
+    except (ProjectConfigError,ValueError) as exc:
         raise GateHandlerError(str(exc)) from exc
     record = config_approval_record(digest)
-    if req.get('scope')=='audio:project_config' and req.get('approval_record')!=record:
-        raise GateHandlerError('The audio price settings changed. Prepare a new price-settings request before signing.')
+    if req.get('scope') in {'audio:project_config','footage:project_config'} and req.get('approval_record')!=record:
+        raise GateHandlerError('The price settings changed. Prepare a new price-settings request before signing.')
     entity_id = req.get("entity_id") or "project_config"
     evidence = (
         f"project.yaml sha256 {digest}",
@@ -697,7 +714,12 @@ def _construct_config(root: Path, req: dict) -> Constructed:
     if "audio_price_basis" in data:
         evidence += ("Audio prices you are signing (values, date set and expiry): " + json.dumps(data["audio_price_basis"], sort_keys=True),
                      "These are your approved maximum rates, not a provider quote. Expired rates refuse audio approval.")
-    return Constructed(record, None, str(entity_id), evidence=evidence)
+    if 'footage_price_basis' in data:evidence += ('Footage prices you are signing: '+json.dumps(data['footage_price_basis'],sort_keys=True),)
+    def recheck():
+        from lib.media_settings import draft_material
+        if draft_material(root,req)[1]!=digest:raise GateHandlerError('The price draft changed. Prepare it again before signing.')
+    return Constructed(record, None, str(entity_id), evidence=evidence,
+        pre_commit_check=recheck if req.get('scope') in {'audio:project_config','footage:project_config'} else None)
 
 
 def _construct_storyboard_batch(root: Path, req: dict) -> Constructed:
@@ -1217,16 +1239,56 @@ def _construct_poster(root: Path, req: dict) -> Constructed:
 
 
 def _construct_artifact_review(root: Path, req: dict) -> Constructed:
+    if req.get('scope')=='trailer-paper':
+        from lib.trailer_paper_review import signing_material,CHANGED
+        try:record=signing_material(root,req)
+        except (ValueError,OSError,KeyError) as exc:raise GateHandlerError(str(exc)) from None
+        def recheck_paper():
+            if signing_material(root,req)!=record:raise GateHandlerError(CHANGED)
+        artifact={'artifact_type':'trailer_paper_cut','artifact_version':'1.0','artifact_digest':record_sha256(record),'migration_status':'reviewed'}
+        return Constructed(record,None,'paper-cut',artifact=artifact,pre_commit_check=recheck_paper,
+            evidence=('Approve the beats, exact lines and cards, shot list, timing and displayed story warnings together. This is a paper-cut review only. No stage is finished and nothing is sent or spent.',))
+    if req.get('scope')=='trailer-stage' and req.get('stage') in ('edit','colour_mix','compose'):
+        from lib import trailer_delivery as delivery
+        stage=req.get('stage');identity=_require_entity(req)
+        if stage in ('edit','colour_mix') and identity!=stage:
+            raise GateHandlerError('Choose the saved rough cut or one final file for this review.')
+        def construct_record():
+            if stage=='edit':return delivery.rough_record(root)
+            if stage=='colour_mix':return delivery.colour_record(root)
+            return delivery.final_record(root,identity,(req.get('approval_record') or {}).get('final_story_review'))
+        record=construct_record()
+        if req.get('approval_record')!=record or req.get('record_sha256')!=record_sha256(record):
+            raise GateHandlerError('The saved review changed. Reopen it and prepare a fresh signature.')
+        def recheck():
+            current=construct_record()
+            if current!=record:raise GateHandlerError('The cut or final file changed. Nothing was signed; prepare a fresh review.')
+        artifact={'artifact_type':'trailer_stage','artifact_version':'1.0','artifact_digest':record_sha256(record),'migration_status':'reviewed'}
+        return Constructed(record,None,identity,artifact=artifact,evidence=(
+            'This signature approves the saved rough cut only. Any change needs a new signature.' if stage=='edit' else
+            'This signature approves the saved colour and sound settings only. Any change needs a new signature.' if stage=='colour_mix' else
+            'Watch and listen to the complete exported file. This signature binds the exact file, edit version and measured checks. It does not certify rights or replace a separate story review.',
+            'Nothing is sent, spent or uploaded.'),pre_commit_check=recheck)
     from lib.canon_enforcement import _version, artifact_review_digest
 
     if req.get('scope')=='trailer-stage' and req.get('stage')=='canon_ingest':
-        from lib.story_ingest import material,UNREADABLE
+        from lib.story_ingest import material,story_json,UNREADABLE
         from lib.pathsafe import PathSafetyError
-        from lib.trailer_contract import approval_record,signed_trailer_pin
+        from lib.trailer_contract import approval_record,signed_trailer_pin,require_stage_approval
+        def checkpoint_now():
+            from lib.checkpoint import validate_checkpoint
+            checkpoint=story_json(root,'checkpoint_canon_ingest.json')
+            try:validate_checkpoint(checkpoint)
+            except ValueError:raise GateHandlerError(UNREADABLE) from None
+            if checkpoint.get('project_id')!=req['project_id'] or checkpoint.get('stage')!='canon_ingest' or checkpoint.get('status') not in ('awaiting_human','completed'):
+                raise ValueError(UNREADABLE)
+            if checkpoint['status']=='completed':
+                require_stage_approval(root,signed_trailer_pin(root),'canon_ingest',checkpoint['artifacts'])
+            return checkpoint
         try:
             _pending_request_path(req,root)
-            _,checkpoint=_load_pending_checkpoint(root,req,'canon_ingest')
-            material(root,checkpoint['artifacts']['canon_packet'])
+            checkpoint=checkpoint_now()
+            source=material(root,checkpoint['artifacts']['canon_packet'])
             record=approval_record(root,signed_trailer_pin(root),'canon_ingest',checkpoint['artifacts'])
             if req.get('approval_record')!=record:
                 raise ValueError('The story changed. Review its exact text and sign the new version.')
@@ -1236,14 +1298,16 @@ def _construct_artifact_review(root: Path, req: dict) -> Constructed:
         def current():
             try:
                 _pending_request_path(req,root)
-                _,latest=_load_pending_checkpoint(root,req,'canon_ingest')
+                latest=checkpoint_now()
                 material(root,latest['artifacts']['canon_packet'])
                 unchanged=approval_record(root,signed_trailer_pin(root),'canon_ingest',latest['artifacts'])==record
             except (PathSafetyError,OSError,ValueError,KeyError,TypeError,GateHandlerError):raise GateHandlerError(UNREADABLE) from None
             if not unchanged:
                 raise GateHandlerError('The story changed while signing. Review its exact text and sign the new version.')
         return Constructed(record,None,None,artifact=artifact,pre_commit_check=current,
-            evidence=('Approve this exact story source and its explicit protected passages only. No purchase or later stage is approved.',))
+            evidence=('Approve this exact story source and its explicit protected passages only. No purchase or later stage is approved.',
+                source['line_endings'],'Exact story text:',source['text'],
+                'Protected wording:',*source['protected'],'Spoiler passages:',*source['spoilers']))
 
     hint = req.get("artifact") or {}
     name = hint.get("artifact_type")
@@ -1813,6 +1877,7 @@ CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
 assert set(CONSTRUCTORS) == set(APPROVAL_KINDS), "every approval kind needs a gate-side constructor"
 
 
+@verified_read
 def construct(root: Path, req: dict, *, selection: Optional[int] = None) -> Constructed:
     """Build and cross-check the record for ``req``: the constructed record
     and envelope must equal the request's hints when those are present."""
@@ -1820,6 +1885,18 @@ def construct(root: Path, req: dict, *, selection: Optional[int] = None) -> Cons
     if kind not in CONSTRUCTORS:
         raise GateHandlerError(f"unknown kind {kind!r}")
     built = CONSTRUCTORS[kind](root, req, selection) if kind in SELECTION_KINDS else CONSTRUCTORS[kind](root, req)
+    if kind=='look_lock' and str(req.get('scope','')).startswith('location:'):
+        from lib.trailer_contract import signed_trailer_pin
+        if signed_trailer_pin(root) is not None:
+            from lib.frontlot_location_source import require_slot
+            try:require_slot(root,built.entity_id)
+            except ValueError as exc:raise GateHandlerError(str(exc)) from None
+            original_check=built.pre_commit_check
+            def location_recheck():
+                require_slot(root,built.entity_id)
+                if original_check:original_check()
+            from dataclasses import replace
+            built=replace(built,pre_commit_check=location_recheck)
     hint = req.get("approval_record")
     if hint is not None and hint != built.record:
         raise GateHandlerError(
@@ -1920,7 +1997,8 @@ def _decline_request(req: dict, root: Path, note: str | None) -> None:
     if req["kind"] in SELECTION_KINDS and not note:
         raise GateHandlerError("reject-all needs a note (it is logged for the regeneration round)")
     _pending_request_path(req, root)  # grammar + existence before any lock file is touched
-    with gates.receipt_lock(str(req["project_id"]), "approval"):
+    from lib.media_settings import decision_lock
+    with decision_lock(root,req),gates.receipt_lock(str(req["project_id"]), "approval"):
         req_path, current = _reload_pending(req, root)
         current["declined_note"] = note
         atomic_write_json(req_path, current)
@@ -1947,6 +2025,9 @@ def _complete_done(req_path: Path, root: Path, current: dict, receipt_id: str) -
     done = root / REQUEST_DIRNAME / "done"
     done.mkdir(parents=True, exist_ok=True)
     atomic_move(req_path, _confined(done / req_path.name, root))
+    if current.get('kind') in ('audio_take','footage_take','config'):
+        from lib.trailer_records import after_signature
+        after_signature(root,current['kind'])
 
 
 def _decide(
@@ -1982,7 +2063,8 @@ def _decide(
         raise GateHandlerError(f"unknown kind {kind!r}")
     _pending_request_path(req, root)  # grammar + existence before any lock file is touched
 
-    with gates.receipt_lock(str(req["project_id"]), "approval"):
+    from lib.media_settings import decision_lock,apply_signed,SCOPES
+    with decision_lock(root,req),gates.receipt_lock(str(req["project_id"]), "approval"):
         req_path, current = _reload_pending(req, root)
         is_batch_override = kind == "qc_override" and bool(current.get("batch"))
         try:
@@ -2023,12 +2105,22 @@ def _decide(
             if kind=='artifact_review' and current.get('scope')=='trailer-stage' and current.get('stage')=='canon_ingest':
                 from lib.story_ingest import complete
                 complete(root)
+            if kind=='config' and current.get('scope') in SCOPES:apply_signed(root,current)
             _complete_done(req_path, root, current, receipt["receipt_id"])
             return receipt
 
         matches = _matching_receipts(root, kind, built.entity_id, built.digest, bound)
         receipt: Optional[dict] = None
-        if kind == "sheet":
+        if kind=='artifact_review' and current.get('scope')=='trailer-stage' and current.get('stage')=='canon_ingest' and matches:
+            from lib.trailer_contract import require_stage_approval,signed_trailer_pin
+            from lib.story_ingest import story_json
+            checkpoint=story_json(root,'checkpoint_canon_ingest.json')
+            try:require_stage_approval(root,signed_trailer_pin(root),'canon_ingest',checkpoint['artifacts'])
+            except ValueError:pass
+            else:receipt=matches[-1]
+        elif kind=='config' and current.get('scope') in SCOPES and len(matches)==1:
+            receipt=matches[0]
+        elif kind == "sheet":
             # Tuple recovery (crash after commit, before the rewrite) exists
             # only for sheets, and only while the bound digest still
             # revalidates against the current checkpoint (construct did that).
@@ -2094,6 +2186,12 @@ def _decide(
         if kind=='artifact_review' and current.get('scope')=='trailer-stage' and current.get('stage')=='canon_ingest':
             from lib.story_ingest import complete
             complete(root)
+        if kind=='config' and current.get('scope') in SCOPES:apply_signed(root,current)
+        if kind=='look_lock' and str(current.get('scope','')).startswith('location:'):
+            from lib.trailer_contract import signed_trailer_pin
+            if signed_trailer_pin(root) is not None:
+                from lib.frontlot_location_source import apply
+                apply(root,current['request_id'])
         _complete_done(req_path, root, current, receipt["receipt_id"])
         return receipt
 
@@ -2136,6 +2234,16 @@ def main(argv: list[str] | None = None) -> int:
                 show_constructed(construct(root, req))
                 print("dry-run: record constructed and verified; nothing signed.")
             return 0
+        if req.get('kind')=='artifact_review' and req.get('scope')=='trailer-stage' and req.get('stage')=='canon_ingest':
+            from lib.trailer_contract import require_stage_approval,signed_trailer_pin
+            from lib.story_ingest import story_json
+            checkpoint=story_json(root,'checkpoint_canon_ingest.json')
+            try:require_stage_approval(root,signed_trailer_pin(root),'canon_ingest',checkpoint['artifacts'])
+            except ValueError:pass
+            else:
+                with gates.handler_context():receipt=_decide(req,root,shown=construct(root,req),note=None)
+                _done('approved',f"Your existing story signature was applied and filed — receipt {receipt['receipt_id']}")
+                return 0
         selection: int | None = None
         shown: Optional[Constructed] = None
         approved = False

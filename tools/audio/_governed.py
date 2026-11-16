@@ -20,7 +20,7 @@ from lib.project_config import load_current_verified_project_config
 from lib.receipts import find_approval, stage_generation_wal, complete_generation
 from lib.state_io import append_jsonl
 from tools.cost_tracker import (reservation_lock, reserve_paid_call,
-    attach_request_id, reconcile_paid_call, resume_check, load_reservations)
+    attach_request_id, reconcile_paid_call, resume_check, load_reservations, retain_download)
 
 from lib.media_spending import _root, _tracker, _money, call_lock, check_quote
 
@@ -181,6 +181,7 @@ def _execute_locked(root,record, *, submit,download,validate_download=None):
         from lib.pathsafe import staging_file, validate_output_parent
         output = validate_output_parent(output, root)
         staging = staging_file(root, '.audio')
+        retain_download(root,reservation,staging)
         with staging.open('wb') as stream:
             stream.write(data)
             stream.flush()

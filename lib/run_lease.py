@@ -55,7 +55,7 @@ def process_start_time(pid: int) -> Optional[str]:
             text=True,
             check=False,
         )
-    except OSError:
+    except (OSError,ValueError):
         return None
     text = out.stdout.strip()
     return text or None

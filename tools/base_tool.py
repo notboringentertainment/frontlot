@@ -520,7 +520,7 @@ class BaseTool(ABC):
             if dep.startswith(("cmd:", "binary:")):
                 prefix = "cmd:" if dep.startswith("cmd:") else "binary:"
                 cmd_name = dep[len(prefix):]
-                if programs.which(cmd_name) is None:
+                if not programs.available(cmd_name):
                     raise DependencyError(
                         f"Command {cmd_name!r} not found. {self.install_instructions}"
                     )

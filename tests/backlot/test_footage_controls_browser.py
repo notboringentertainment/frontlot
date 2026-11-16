@@ -3,7 +3,7 @@ import json,os,socket,threading,time,tempfile
 from contextlib import contextmanager
 from pathlib import Path
 import pytest
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright,expect
 from tests.tools.test_signed_footage import film as original_film,provider
 
 
@@ -11,7 +11,8 @@ from tests.tools.test_signed_footage import film as original_film,provider
 def film(tmp_path,monkeypatch):
     # Unix signing sockets need a short pathname on macOS. Both locations and
     # the fallback home remain temporary and are checked before the board.
-    short=Path(tempfile.mkdtemp(prefix='fc-',dir=os.environ.get('OPENMONTAGE_HOME') or '/tmp'))
+    from tests.backlot.isolation_helpers import signing_directory
+    short=signing_directory('f')
     home=short/'h';home.mkdir();gates=short/'g';gates.mkdir()
     monkeypatch.setenv('HOME',str(home))
     monkeypatch.setenv('OPENMONTAGE_GATES_DIR',str(gates))
@@ -109,6 +110,7 @@ def test_writer_complete_request_keep_decline_and_retake(film,provider,monkeypat
             sign(page,'request')
             panel.get_by_role('status').filter(has_text='Generating').first.wait_for(timeout=30000)
             assert waiting.wait(timeout=10)
+            expect(page.get_by_label('Next step',exact=True)).to_contain_text('A clip is being made')
             picture(page,'generating',tmp_path)
             arrive.set()
             panel.get_by_text('Take waiting for your decision',exact=True).wait_for(timeout=30000)
@@ -123,12 +125,11 @@ def test_writer_complete_request_keep_decline_and_retake(film,provider,monkeypat
             picture(page,'keep-signing',tmp_path)
             sign(page,'decision')
             panel.get_by_role('status').filter(has_text='Kept').wait_for(timeout=20000)
+            paper=page.get_by_role('region',name='Trailer paper cut',exact=True)
+            assert 'Another window saved' not in paper.inner_text()
             picture(page,'kept',tmp_path)
-            panel.get_by_role('button',name='Decline this take',exact=True).first.click()
-            sign(page,'decision')
-            panel.get_by_text('Declined. This decision is final',exact=False).wait_for(timeout=20000)
-            assert panel.get_by_role('button',name='Keep this take',exact=True).first.is_disabled()
-            picture(page,'declined',tmp_path)
+            assert panel.get_by_role('button',name='Keep this take',exact=True).count()==0
+            assert panel.get_by_role('button',name='Decline this take',exact=True).count()==0
             panel.get_by_role('button',name='Create a retake request',exact=True).click()
             page.locator('[aria-label="Footage request details"]').wait_for()
             picture(page,'retake-signature',tmp_path)
@@ -136,6 +137,11 @@ def test_writer_complete_request_keep_decline_and_retake(film,provider,monkeypat
             sign(page,'request')
             panel.get_by_text('Take waiting for your decision',exact=True).wait_for(timeout=30000)
             assert len(provider['posts'])==2
+            panel.get_by_role('button',name='Decline this take',exact=True).click()
+            sign(page,'decision')
+            panel.get_by_text('Declined. This decision is final',exact=False).wait_for(timeout=20000)
+            assert panel.get_by_role('button',name='Keep this take',exact=True).count()==0
+            picture(page,'declined',tmp_path)
             assert not (root/'checkpoint_assets.json').exists()
             assert not errors
             page.close()
@@ -176,8 +182,9 @@ def test_missing_material_controls_explain_the_next_step(film,provider,monkeypat
             try:create.wait_for(timeout=15000)
             except Exception:pytest.fail('Missing control: '+str(errors)+' '+page.locator('#viewer').inner_text())
             assert create.is_disabled()
-            text={'story':'current signed story','looks':'No look is approved yet','pictures':'Add reference pictures','prices':'No footage price figures have been signed'}[missing]
+            text={'story':'current signed story','looks':'No current approved look is available','pictures':'Add reference pictures','prices':'No footage price figures have been signed'}[missing]
             panel.get_by_text(text,exact=False).wait_for()
+            if missing=='looks':panel.get_by_text('Open Footage setup',exact=False).wait_for()
             picture(page,'missing-'+missing,tmp_path)
             assert not errors and not provider['posts'] and not provider['uploads']
         finally:browser.close()

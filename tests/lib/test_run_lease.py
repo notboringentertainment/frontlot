@@ -150,6 +150,7 @@ def test_process_start_time_psutil_branch(monkeypatch):
 
 def test_process_start_time_ps_branch(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", None)  # makes `import psutil` raise ImportError
+    monkeypatch.setattr(run_lease.programs,'which',lambda name,**kw:'/invented/bin/ps')
     calls = []
 
     def fake_run(cmd, **kw):
@@ -169,5 +170,6 @@ def test_process_start_time_ps_branch(monkeypatch):
     assert run_lease.process_start_time(42) is None
 
 
-def test_process_start_time_real_for_self():
+def test_process_start_time_real_for_self(monkeypatch):
+    monkeypatch.delenv('OPENMONTAGE_PS',raising=False)
     assert run_lease.process_start_time(os.getpid())

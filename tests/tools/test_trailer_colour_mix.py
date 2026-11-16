@@ -38,7 +38,7 @@ def test_real_encoded_mix_is_speech_first_stereo_and_on_target(signals):
     assert abs(report['integrated_lufs']+16)<=1
     assert report['true_peak_dbtp']<=-1
     assert report['channels']==2 and report['sample_rate']==48000
-    assert report['speech_checks'] and all(x['status']=='clear' and x['margin_db']>=11 for x in report['speech_checks'])
+    assert report['speech_checks'] and all(x['status']=='audible' and x['margin_db']>=11 for x in report['speech_checks'])
     assert report['effect_checks'][0]['status']=='on_time'
     assert abs(report['effect_checks'][0]['observed_frame']-report['effect_checks'][0]['expected_frame'])<=1
     # Independent spectral measurement of the encoded result, not the stems.
@@ -67,7 +67,7 @@ def test_silence_and_wrong_effect_time_are_measured_in_the_result(signals):
     # The final bytes lose the words and put a recognizable effect later.
     subprocess.run(['ffmpeg','-v','error','-n','-i',str(target),'-i',signals[1][2],'-filter_complex','[1:a]adelay=500|500[a]','-map','0:v','-map','[a]','-c:v','copy','-c:a','aac','-t','6',str(bad)],check=True)
     report=review_output(bad,refs)
-    assert any(x['status']!='clear' for x in report['speech_checks'])
+    assert any(x['status']!='audible' for x in report['speech_checks'])
     assert report['silences'] and any('Silence' in s for s in report['messages'])
     assert report['effect_checks'][0]['status']=='wrong_time'
 

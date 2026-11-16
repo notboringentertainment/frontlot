@@ -12,13 +12,19 @@
       "items": {
         "type": "object",
         "required": ["entity_kind", "entity_id", "look_spec", "look_hash", "receipt_id"],
-        "oneOf": [{ "required": ["source_ticket_ref"] }, { "required": ["source_ref"] }],
+        "oneOf": [{ "required": ["source_ticket_ref"] }, { "required": ["source_ref"] }, {"required":["writer_source_ref"],"properties":{"entity_kind":{"const":"location"}}}],
         "properties": {
           "entity_kind": { "type": "string", "enum": ["character", "location"] },
           "entity_id": { "type": "string", "pattern": "^[a-z0-9-]+$", "minLength": 1 },
           "look_spec": { "type": "object" },
           "look_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
           "receipt_id": { "type": "string", "minLength": 1 },
+          "writer_source_ref": {
+            "description":"Exact location writing supplied in Front Lot for this production; not a ticket or promotion.",
+            "type":"object","required":["project_id","path","sha256"],
+            "properties":{"project_id":{"type":"string","minLength":1},"path":{"type":"string","pattern":"^\\.frontlot-location-looks/[a-f0-9]{64}\\.json$"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}},
+            "additionalProperties":false
+          },
           "source_ticket_ref": {
             "oneOf": [
               {

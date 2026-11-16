@@ -153,9 +153,8 @@ class MusicLibrary(BaseTool):
     @staticmethod
     def _probe_duration(path: Path) -> Optional[float]:
         """Best-effort track duration via ffprobe; None if unavailable."""
-        if programs.which("ffprobe") is None:
-            return None
         try:
+            if programs.which("ffprobe") is None:return None
             out = programs.run(
                 [
                     "ffprobe",

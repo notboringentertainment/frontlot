@@ -35,10 +35,9 @@ def probe_duration(file_path: str | Path) -> float | None:
     Use this from other tools that just need the duration without
     going through the full tool execute() flow.
     """
-    ffprobe = programs.which("ffprobe")
-    if not ffprobe:
-        return None
     try:
+        ffprobe = programs.which("ffprobe")
+        if not ffprobe:return None
         result = programs.run(
             [
                 ffprobe,
@@ -102,7 +101,7 @@ class AudioProbe(BaseTool):
     side_effects = []
 
     def get_status(self) -> ToolStatus:
-        if programs.which("ffprobe"):
+        if programs.available("ffprobe"):
             return ToolStatus.AVAILABLE
         return ToolStatus.UNAVAILABLE
 

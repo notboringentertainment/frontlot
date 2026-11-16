@@ -240,15 +240,19 @@ def test_a_separate_effect_does_not_change_a_kept_take(effect_world):
     assert separate['brief_id']!=r['binding']['brief_id'] and audio.require_accepted(root,t['id'])['id']==t['id']
     assert len(posts)==1 and gets==[]
 
-def test_effect_rate_requires_the_existing_config_signature(effect_world):
+def test_effect_rate_requires_the_existing_config_signature(effect_world,monkeypatch):
     from backlot import voice_panel as voice,music_panel as cues
     from lib.project_config import load_current_verified_project_config
     from backlot.state import _render_config
     root,posts,gets=effect_world
+    before=(root/'project.yaml').read_bytes()
     gate=voice.prepare_prices(root,dict(dollars_per_credit=.0002,speech_credits_per_character=1,music_credits_per_minute=1200,voice_multiplier_ceiling=2,effect_credits_per_second=40,expires_at=4102444800))
     assert _render_config(root,gate)['audio_price_summary']['effect_second_dollars']==.008
-    with pytest.raises(RuntimeError):load_current_verified_project_config(root)
-    sign(root,'config',gate['approval_record'],'project_config')
+    assert (root/'project.yaml').read_bytes()==before and load_current_verified_project_config(root)
+    with pytest.raises(ValueError,match='paused'):prepare(root)
+    from tests.lib.look_lock_helpers import approve_request
+    monkeypatch.setattr('scripts.gate_approve.require_tty',lambda:None)
+    approve_request(gate,root)
     assert prepare(root)['max_credits_usd']==.016
     assert posts==[] and gets==[]
 

@@ -7,6 +7,7 @@ built-in profile presets and external .cube LUT files.
 from __future__ import annotations
 
 import time
+from lib import programs
 from pathlib import Path
 from typing import Any
 
@@ -135,6 +136,11 @@ class ColorGrade(BaseTool):
         input_path = Path(inputs["input_path"])
         if not input_path.exists():
             return ToolResult(success=False, error=f"Input not found: {input_path}")
+
+        try:
+            programs.preflight('ffmpeg')
+        except ValueError as error:
+            return ToolResult(success=False, error=str(error))
 
         output_path = Path(
             inputs.get("output_path", str(input_path.with_stem(f"{input_path.stem}_graded")))
