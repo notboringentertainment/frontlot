@@ -152,13 +152,14 @@ def save_paper_with_controls(page,reference='',purpose='The gallery keeper looks
     return paper
 
 
-def buy_three_audio(page,panel,calls,prefix):
+def buy_three_audio(page,panel,calls,prefix,kinds=('speech','music','effect')):
     panel.get_by_role('button',name='Load account voices',exact=True).click()
     line=panel.locator('[data-voice-line="0"]')
     line.get_by_label('Voice for line 1',exact=True).select_option('invented_voice')
     line.get_by_label('I have permission to use this voice.').check()
     line.get_by_role('button',name='Prepare a spending card',exact=True).click()
     for kind,maximum in [('speech','$0.0088'),('music','$0.0480'),('effect','$0.0160')]:
+        if kind not in kinds:continue
         if kind!='speech':
             form=panel.locator('#'+kind+'-compose')
             form.get_by_label('Music brief' if kind=='music' else 'Effect description',exact=True).fill(

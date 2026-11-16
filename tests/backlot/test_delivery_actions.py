@@ -40,7 +40,7 @@ def test_delivery_buttons_are_spaced_and_next_action_follows_the_main_file(voice
     cases=[('Needs your signature',None,'Review and sign the saved rough cut'),
            ('Signed by you',None,'Make the final file'),
            ('Signed by you','Needs your signature','Review and sign final approval'),
-           ('Signed by you','Approved by you','Show approved file in Finder'),
+           ('Signed by you','Approved by you','Record the signed final approval'),
            ('Needs a fresh look','Needs a fresh look','Review and sign the saved rough cut')]
     with board(root,monkeypatch) as url,sync_playwright() as pw:
         browser=pw.chromium.launch(headless=True)

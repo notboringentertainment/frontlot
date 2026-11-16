@@ -22,7 +22,7 @@ def test_earlier_approved_file_keeps_record_and_finder_feedback_on_its_card(sign
     assert d.final_state(root,second['id'])=='Needs your signature'
     revealed=[];original=subprocess.run
     def run(args,*a,**kw):
-        if args[:2]==['open','-R']:
+        if Path(args[0]).name=='open' and args[1]=='-R':
             revealed.append(args);return subprocess.CompletedProcess(args,0)
         return original(args,*a,**kw)
     monkeypatch.setattr(subprocess,'run',run)
@@ -41,7 +41,7 @@ def test_earlier_approved_file_keeps_record_and_finder_feedback_on_its_card(sign
             endpoint=url+f'/api/project/{root.name}/delivery';failures=[]
             for action,suffix,words in [
                 ('Record the signed final approval','apply','Your final-file signature for this file is recorded.'),
-                ('Show approved file in Finder','reveal','This approved file has been shown in Finder.')]:
+                ('Show approved file in Finder','reveal','The approved trailer is saved in this production’s delivery folder and has been shown in Finder.')]:
                 with page.expect_response(lambda r:r.url==endpoint and r.request.method=='GET',timeout=60000) as refreshed:
                     with page.expect_response(lambda r:r.url==endpoint+'/'+first['id']+'/'+suffix and r.request.method=='POST',timeout=60000) as result:
                         older.get_by_role('button',name=action,exact=True).click()

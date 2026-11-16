@@ -6,11 +6,15 @@ const reviews=new Map();
 let deliveryPress=null;
 const pendingPaints=new Map();
 document.addEventListener('pointerdown',event=>{
- if(event.button===0&&event.isPrimary&&event.target.closest?.('[aria-label="Trailer delivery"], [aria-label="Delivery review"]'))deliveryPress={id:event.pointerId};
+ if(event.button===0&&event.isPrimary&&event.target.closest?.('[aria-label="Trailer delivery"], [aria-label="Delivery review"]')){
+  clearTimeout(deliveryPress?.timer);const press={id:event.pointerId};deliveryPress=press;
+  press.timer=setTimeout(()=>{if(deliveryPress===press)releaseDeliveryPress({pointerId:press.id});},2000);
+ }
 },true);
 function releaseDeliveryPress(event){
  const ending=deliveryPress;
  if(!ending||event?.pointerId!==undefined&&event.pointerId!==ending.id)return;
+ clearTimeout(ending.timer);
  // The click follows pointerup. A microtask here would paint too early.
  setTimeout(()=>{
   if(deliveryPress!==ending)return;
@@ -118,7 +122,7 @@ export function renderDelivery(s,onSign){
   return flight;
  }
  function draw(){body.replaceChildren();
-  const current=data.exports[0],next=data.rough_status!=='Signed by you'?'Review and sign the saved rough cut':current?.status==='Needs your signature'?'Review and sign final approval':current?.status==='Approved by you'?'Show approved file in Finder':'Make the final file';
+  const current=data.exports[0],next=data.rough_status!=='Signed by you'?'Review and sign the saved rough cut':current?.status==='Needs your signature'?'Review and sign final approval':current?.status==='Approved by you'?(current.approval_recorded?'Show approved file in Finder':'Record the signed final approval'):'Make the final file';
   const action=(label,fn,disabled=false,main=true,feedback=notice)=>button(label,fn,disabled,feedback,main&&label===next);
   body.append(el('p',{},`Saved version ${data.number}. Delivery uses this saved cut, including its colour, sound and signed cards. Save any editing changes before reviewing it.`),
    el('p',{'aria-label':'Next delivery step'},'Next: '+next+'.'),

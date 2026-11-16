@@ -3,6 +3,7 @@ from playwright.sync_api import expect
 from tests.backlot.test_early_paid_readiness import shot_picture
 from tests.backlot.test_footage_controls_browser import sign
 from tests.lib.test_frontlot_location_source import TEXT
+from datetime import datetime,timedelta
 
 def simple_sign(page,back):
     page.get_by_role('button',name='Start signing',exact=True).click()
@@ -10,7 +11,7 @@ def simple_sign(page,back):
     expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded.',timeout=20000)
     page.get_by_role('button',name=back,exact=True).click()
 
-def complete_footage_prerequisites(page,root,calls,tmp_path):
+def complete_footage_prerequisites(page,root,calls,tmp_path,*,audio_count=3,check_changed=True):
     from PIL import Image
     original=tmp_path/'Invented machine gallery.png';Image.new('RGB',(1024,576),(49,67,83)).save(original);raw=original.read_bytes()
     page.get_by_role('button',name='Footage setup',exact=True).click()
@@ -34,7 +35,7 @@ def complete_footage_prerequisites(page,root,calls,tmp_path):
     assert review.locator('.exact-location').text_content()==TEXT
     expect(page.get_by_role('button',name='Start signing',exact=True)).to_be_enabled(timeout=20000)
     shot_picture(page,'location-signing',review.get_by_role('heading').first)
-    assert not calls['video_posts'] and len(calls['audio_posts'])==3
+    assert not calls['video_posts'] and len(calls['audio_posts'])==audio_count
     simple_sign(page,'Return to footage setup')
     expect(setup.get_by_role('status').first).to_contain_text('signed',timeout=15000)
     picture=setup.get_by_role('group',name='Machine-generated reference picture',exact=True)
@@ -60,7 +61,7 @@ def complete_footage_prerequisites(page,root,calls,tmp_path):
     page.get_by_role('button',name='Footage setup',exact=True).click()
     price=setup.get_by_role('group',name='Fal footage prices and permissions',exact=True)
     assert price.get_by_label('Highest cash dollars per second',exact=True).input_value()==''
-    for label,value in [('Highest cash dollars per second','0.112'),('Highest credit replacement dollars per second','0'),('Footage prices expire','2099-01-01T12:00')]:price.get_by_label(label,exact=True).fill(value)
+    for label,value in [('Highest cash dollars per second','0.112'),('Highest credit replacement dollars per second','0'),('Footage prices expire',(datetime.now()+timedelta(days=2)).strftime('%Y-%m-%dT%H:%M'))]:price.get_by_label(label,exact=True).fill(value)
     price.get_by_label('Allow separately approved prompts to be sent to Fal.').check()
     price.get_by_label('Allow separately approved reference pictures to be sent to Fal.').check()
     price.get_by_role('button',name='Prepare footage price settings for signing',exact=True).click()
@@ -94,6 +95,8 @@ def complete_footage_prerequisites(page,root,calls,tmp_path):
     saved=trailer_edit.read_revision(root)
     assert saved['timeline']['picture'][0]['kind']=='footage' and saved['timeline']['picture'][1]['kind']=='placeholder'
     assert original.read_bytes()==raw and not page.errors
+    assert len(calls['audio_posts'])==audio_count
+    if not check_changed:return
     page.get_by_role('button',name='Footage setup',exact=True).click()
     look=setup.get_by_role('group',name='Location written in Front Lot',exact=True)
     look.get_by_label('Exact location description',exact=True).fill(TEXT+' The doorway now stays dark.')
@@ -101,4 +104,4 @@ def complete_footage_prerequisites(page,root,calls,tmp_path):
     page.get_by_role('button',name='Return to footage setup',exact=True).click()
     expect(shot).to_contain_text('Needs a fresh look',timeout=20000)
     shot_picture(page,'changed-look-needs-review',shot)
-    assert len(calls['video_posts'])==1 and len(calls['audio_posts'])==3 and not page.errors
+    assert len(calls['video_posts'])==1 and len(calls['audio_posts'])==audio_count and not page.errors

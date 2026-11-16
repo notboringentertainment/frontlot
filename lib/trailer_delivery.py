@@ -17,6 +17,7 @@ SPEECH_NOTES='These timed speech notes are listening warnings. Listen to those p
 def _saved(root,revision=None):
     from lib.footage_requests import require_trailer
     root=Path(root);require_trailer(root)
+    programs.preflight('ffprobe')
     saved=trailer_edit.read_revision(root)
     if not saved or not saved.get('cutting_view'):raise ValueError('Save a cut made from kept pictures and sounds first.')
     if revision is not None and saved['edit_revision_sha256']!=revision:raise ValueError('The saved cut changed. Reopen it before reviewing or exporting.')
@@ -168,6 +169,7 @@ def _measure(root,path,saved,timeline,refs):
     return probe,measured
 
 def export(root,revision):
+    programs.preflight('ffmpeg','ffprobe')
     root=Path(root);saved,timeline=require_rough(root,revision)
     cut.preflight_render(timeline)
     if __import__('shutil').disk_usage(root).free<60*1024**3:raise ValueError('There is less than sixty gigabytes free. Make room on this disk before exporting; the saved cut is safe.')
@@ -332,6 +334,9 @@ def reveal(root,identity):
 
 def snapshot(root):
     root=Path(root);saved,timeline=_saved(root);items=[]
+    from lib.checkpoint import read_checkpoint
+    try:recorded=read_checkpoint(root.parent,root.name,'compose')
+    except (ValueError,OSError):recorded=None
     rough=_approval_state(root,'edit',{'edit_decisions':saved},'Needs your signature','Signed by you')
     final_rows=_stage_approvals(root,'compose')
     for marker in sorted(_directory(root).glob('*/complete.json'),key=lambda p:p.stat().st_mtime,reverse=True):
@@ -348,6 +353,7 @@ def snapshot(root):
                     pending='Needs your signature' if artifacts['final_review']['status']=='pass' else 'Final file needs changes'
                     status=_approval_state(root,'compose',artifacts,pending,'Approved by you')
                 except (ValueError,OSError,KeyError):pass
-            items.append({'id':item['id'],'status':status,'review':item['final_review'],'samples':frame_samples(root,item),'path':item['render_report']['outputs'][0]['path']})
+            approval_recorded=bool(status=='Approved by you' and recorded and recorded.get('status')=='completed' and recorded.get('artifacts')==pair)
+            items.append({'id':item['id'],'status':status,'approval_recorded':approval_recorded,'review':item['final_review'],'samples':frame_samples(root,item),'path':item['render_report']['outputs'][0]['path']})
         except (ValueError,OSError,KeyError):continue
     return {'revision':saved['edit_revision_sha256'],'number':saved['revision_number'],'rough_status':rough,'exports':items}

@@ -45,9 +45,9 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
   for(const event of ['input','pointerdown','wheel','touchmove'])document.addEventListener(event,cancelReveal,{capture:true,passive:true});
   document.addEventListener('keydown',event=>{if(['Tab','PageDown','PageUp','Home','End','ArrowDown','ArrowUp',' '].includes(event.key))cancelReveal();},true);
   document.addEventListener('frontlot:signature-recorded',()=>{signatureEpoch++;message.textContent='';feedback.clear();node.querySelectorAll('.action-feedback').forEach(note=>note.remove());});
-  let pressed=false,deferredData=null;
-  node.addEventListener('pointerdown',()=>{pressed=true;},true);
-  const released=()=>setTimeout(()=>{pressed=false;if(deferredData){const data=deferredData;deferredData=null;draw(data);}},0);
+  let pressed=false,deferredData=null,pressTimer=null;
+  node.addEventListener('pointerdown',()=>{pressed=true;clearTimeout(pressTimer);pressTimer=setTimeout(released,2000);},true);
+  const released=()=>{clearTimeout(pressTimer);setTimeout(()=>{pressed=false;if(deferredData){const data=deferredData;deferredData=null;draw(data);}},0);};
   window.addEventListener('pointerup',released);window.addEventListener('pointercancel',released);
   const button=(label,fn,key=label)=>actionButton(label,fn,{feedback,key});
   const progress=()=>{if(lastData)setAudioProgress(project,{...lastData,catalogue_loaded:catalogueLoaded,choices:[...drafts].map(([index,d])=>({index,voice:d.voice,rights:d.rights}))});};

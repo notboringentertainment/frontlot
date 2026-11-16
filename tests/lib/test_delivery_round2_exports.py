@@ -1,5 +1,6 @@
 """Every final file owns its approval; a later signature retires the earlier one."""
 import pytest
+from pathlib import Path
 from tests.backlot.test_delivery_browser import delivery_cut
 from tests.lib.test_cutting_signed import signed_cut
 from tests.tools.test_signed_footage import film,provider,looks,workspace,sign
@@ -26,7 +27,7 @@ def test_an_approved_export_does_not_lock_out_the_next_file(delivery_cut,monkeyp
     with monkeypatch.context() as patch:
         original=d.programs.run
         def run(args,*a,**kw):
-            if args[:2]==['open','-R']:reveals.append(args);return None
+            if Path(args[0]).name=='open' and args[1]=='-R':reveals.append(args);return None
             return original(args,*a,**kw)
         patch.setattr(d.programs,'run',run)
         with pytest.raises(ValueError,match='Watch and sign final approval'):d.reveal(root,second['id'])
