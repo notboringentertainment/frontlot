@@ -110,6 +110,13 @@ def save_cut(root,timeline,expected_revision):
 def render_preview(root,revision,comparison='after'):
     return render_saved(root,revision,comparison)[0]
 
+def preflight_render(timeline):
+    """Check installed local programs before starting picture or sound work."""
+    programs.preflight('ffmpeg','ffprobe')
+    if timeline.get('cards'):
+        from lib.trailer_titles import renderer_preflight
+        renderer_preflight()
+
 def render_saved(root,revision,comparison='after',*,resolution=(640,360),directory=None):
     import subprocess,uuid,json
     from lib.trailer_finishing import review_output,NEUTRAL
@@ -126,6 +133,7 @@ def render_saved(root,revision,comparison='after',*,resolution=(640,360),directo
     timeline=validate_cut(root,editable(saved['timeline']),verify_files=True)
     if comparison=='after' and 'mix' not in saved['timeline']:
         raise ValueError('Save the colour and sound settings first, then prepare balanced playback.')
+    preflight_render(timeline)
     end=max(p['start_frame']+p['duration_frames'] for p in timeline['picture'])
     directory=Path(directory) if directory is not None else root/'artifacts'/'cut-previews'
     validate_output_parent(directory,root);directory.mkdir(exist_ok=True)

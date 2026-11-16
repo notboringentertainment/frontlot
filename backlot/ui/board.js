@@ -7,7 +7,7 @@ import {renderFootageSetup,renderPrereqSigning,applyLocationApproval} from '/ui/
 import {renderPriceSigning} from '/ui/media_prices.js';
 import {renderVoice,refreshVoice,renderAudioSigning,applySignedAccountOutcome} from '/ui/voice.js';
 import {renderCutting,refreshCutting,renderCardSigning} from '/ui/cutting.js';
-import {renderDelivery,renderDeliverySigning,refreshDelivery} from '/ui/delivery.js';
+import {renderDelivery,renderDeliverySigning,refreshDelivery,deferDeliveryPaint} from '/ui/delivery.js';
 import { setFootageState, renderFootageControls, afterFootageSignature, footageDecision } from "/ui/footage.js";
 import { mountSession } from "/ui/session.js";
 import {
@@ -2966,6 +2966,7 @@ function tickReplay() {
 
 function render() {
   if (!state) return;
+  if (deferDeliveryPaint('board', render)) return;
   // A take note Ben is typing in survives the rebuild with its cursor.
   const typing = document.activeElement && document.activeElement.classList.contains("take-note")
     ? { node: document.activeElement, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;

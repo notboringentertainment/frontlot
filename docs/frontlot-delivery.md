@@ -16,6 +16,10 @@ The existing artifact-review gate signs rough-cut and final records. The signer 
 
 The existing signed generation receipt also seals the local render record. This is evidence of what the local renderer produced, not the writer's approval. It prevents an edited report from relabelling an old movie as a newly signed cut. Final signing still independently measures the actual movie; neither receipt substitutes for that check or for the writer's signature.
 
+Before preparing playback or exporting, Front Lot checks that the installed local picture and sound programs can run. A cut with cards also needs the installed title renderer and browser. Opening Front Lot from its app icon uses the same program finder as a terminal launch. If a needed program is missing, the message names it and asks for its installation to be repaired before trying again. No export work starts, and the saved cut remains intact.
+
+Title rendering, picture colour adjustment and the trailer sound mixer also check their local programs when called separately. A background refresh waits until a Delivery press has become a click before replacing its controls. It then applies only the current verified response. This preserves the writer's action without relaxing the server's signature or exact-file checks.
+
 ## For the tools
 
 Native implementation only; no subagents. The source is item ten and the shared boundaries in the approved housekeeping plan. The branch is trailer/10-delivery, from colour head d425e9a. All parents and later fixes use merge commits. The temporary parent is /private/tmp/fl-delivery-run-20261113-a; the explicitly permitted short signing fixture uses /tmp.

@@ -1,6 +1,31 @@
 import {el,CAPABILITY_TOKEN_KEY} from '/ui/lib.js';
 let active=null;
 const reviews=new Map();
+// A background paint must not detach the control between press and click.
+// Keep only the latest paint; its caller still verifies the current record.
+let deliveryPress=null;
+const pendingPaints=new Map();
+document.addEventListener('pointerdown',event=>{
+ if(event.button===0&&event.isPrimary&&event.target.closest?.('[aria-label="Trailer delivery"], [aria-label="Delivery review"]'))deliveryPress={id:event.pointerId};
+},true);
+function releaseDeliveryPress(event){
+ const ending=deliveryPress;
+ if(!ending||event?.pointerId!==undefined&&event.pointerId!==ending.id)return;
+ // The click follows pointerup. A microtask here would paint too early.
+ setTimeout(()=>{
+  if(deliveryPress!==ending)return;
+  deliveryPress=null;const paints=[...pendingPaints.values()];pendingPaints.clear();
+  for(const paint of paints)paint();
+ },0);
+}
+document.addEventListener('pointerup',releaseDeliveryPress,true);
+document.addEventListener('pointercancel',releaseDeliveryPress,true);
+window.addEventListener('blur',()=>releaseDeliveryPress());
+document.addEventListener('visibilitychange',()=>{if(document.hidden)releaseDeliveryPress();});
+export function deferDeliveryPaint(key,paint){
+ if(!deliveryPress)return false;
+ pendingPaints.set(key,paint);return true;
+}
 function boundaryPictures(samples=[],lazy=false){
  const node=el('section',{'aria-label':'Pictures from the final file',class:'paper-panel'},el('h4',{},'Pictures at cuts and cards'),
   el('p',{},'These are pictures from this exact file. Check the story, faces and lettering; the automatic picture check only measures black or unchanged picture.'));
@@ -50,6 +75,15 @@ export function renderDelivery(s,onSign){
  function button(label,fn,disabled=false,feedback=notice,primary=false){return el('button',{type:'button',disabled:disabled?'':null,...(primary?{class:'gate-primary','aria-current':'step'}:{}),onclick:async()=>{if(busy)return;busy=true;try{await fn();}catch(e){progress=false;feedback.textContent=(feedback.dataset.earlier==='true'?'This is an earlier file. ':'')+e.message;}finally{busy=false;await refresh(true,false,true);}}},label);}
  function preparing(words){progress=true;notice.textContent=words;}
  function clearFeedback(){for(const held of fileFeedback.values())held.node.textContent='';}
+ function acceptSnapshot(next,generation,preserveFeedback){
+  if(generation!==readGeneration)return;
+  if(!busy&&!preserveFeedback)clearFeedback();
+  const encoded=JSON.stringify(next);
+  if(encoded!==key){data=next;key=encoded;notice.textContent='';draw();}
+  body.disabled=false;
+  message.textContent=`Saved cut loaded. Rough cut: ${next.rough_status}. ${next.exports.length?`Current final file: ${next.exports[0].status}.`:next.rough_status==='Signed by you'?'Make a final file from the signed saved cut.':'Review and sign the saved rough cut before making a final file.'}`;
+  if(!busy&&progress){progress=false;notice.textContent='';}
+ }
  function refresh(force=false,returning=false,preserveFeedback=false){
   if(returning){
    clearFeedback();
@@ -70,14 +104,9 @@ export function renderDelivery(s,onSign){
      // A signing return may arrive while an older read is waiting. Discard
      // that answer and fulfil every waiter only after the queued read lands.
      if(pendingRefresh)continue;
-     if(!busy&&!preserveFeedback)clearFeedback();
-     const encoded=JSON.stringify(next);
-     if(encoded!==key){data=next;key=encoded;notice.textContent='';draw();}
-     body.disabled=false;
      // Every accepted snapshot describes the same first export as the main
      // card, regardless of which action or refresh brought us here.
-     message.textContent=`Saved cut loaded. Rough cut: ${next.rough_status}. ${next.exports.length?`Current final file: ${next.exports[0].status}.`:next.rough_status==='Signed by you'?'Make a final file from the signed saved cut.':'Review and sign the saved rough cut before making a final file.'}`;
-     if(!busy&&progress){progress=false;notice.textContent='';}
+     if(!deferDeliveryPaint('delivery-summary',()=>acceptSnapshot(next,generation,preserveFeedback)))acceptSnapshot(next,generation,preserveFeedback);
     }catch(e){
      if(generation!==readGeneration)return;
      if(pendingRefresh)continue;

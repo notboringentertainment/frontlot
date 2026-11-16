@@ -42,6 +42,7 @@ def mix_timeline(tool,inputs):
             raise ValueError('Set a sound level between minus sixty and plus six decibels.')
     # Validate every control before any decoder or output starts. Check the
     # selected source only: an unused damaged ending is not part of this cut.
+    programs.preflight('ffmpeg')
     warnings=[];effects=[];source_failures=[]
     for i,t in enumerate(tracks,1):
         samples=decode_audio(t.get('path',''))

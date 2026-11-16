@@ -24,11 +24,11 @@ def test_an_approved_export_does_not_lock_out_the_next_file(delivery_cut,monkeyp
     assert d.playback(root,second['id']).is_file()
     reveals=[]
     with monkeypatch.context() as patch:
-        original=d.subprocess.run
+        original=d.programs.run
         def run(args,*a,**kw):
             if args[:2]==['open','-R']:reveals.append(args);return None
             return original(args,*a,**kw)
-        patch.setattr(d.subprocess,'run',run)
+        patch.setattr(d.programs,'run',run)
         with pytest.raises(ValueError,match='Watch and sign final approval'):d.reveal(root,second['id'])
     assert reveals==[]
     looks.approve_request(d.request_final(root,second['id']),root)

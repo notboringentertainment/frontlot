@@ -3,11 +3,10 @@ import copy
 import json
 import os
 import re
-import subprocess
 import uuid
 from pathlib import Path
 
-from lib import cutting_view as cut, trailer_edit, trailer_contract as contract, receipts
+from lib import cutting_view as cut, trailer_edit, trailer_contract as contract, receipts, programs
 from lib.canonical_json import record_sha256
 from lib.pathsafe import resolve_input, validate_output_parent, sha256_file
 
@@ -118,7 +117,7 @@ def render_final(root,revision,directory):
     return cut.render_saved(root,revision,resolution=(1920,1080),directory=directory)
 
 def _probe(path,frames):
-    value=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams','-show_format','-of','json',str(path)],timeout=30))
+    value=json.loads(programs.check_output(['ffprobe','-v','error','-show_streams','-show_format','-of','json',str(path)],timeout=30))
     video=next((s for s in value['streams'] if s['codec_type']=='video'),{})
     audio=next((s for s in value['streams'] if s['codec_type']=='audio'),{})
     duration=float(value['format']['duration'])
@@ -145,7 +144,7 @@ def _samples(root,path,timeline,directory):
     rows=[]
     for frame in _boundaries(timeline):
         target=directory/f'frame-{frame}.png'
-        subprocess.run(['ffmpeg','-v','error','-n','-i',str(path),'-vf',f'select=eq(n\\,{frame})','-frames:v','1',str(target)],capture_output=True,check=True,timeout=60)
+        programs.run(['ffmpeg','-v','error','-n','-i',str(path),'-vf',f'select=eq(n\\,{frame})','-frames:v','1',str(target)],capture_output=True,check=True,timeout=60)
         with Image.open(target) as image:
             if image.size!=(1920,1080):raise ValueError('A boundary picture could not be read at full size. Make the final file again.')
         rows.append({'frame':frame,'seconds':frame/24,'path':str(target.relative_to(root)),'sha256':sha256_file(target)})
@@ -170,6 +169,7 @@ def _measure(root,path,saved,timeline,refs):
 
 def export(root,revision):
     root=Path(root);saved,timeline=require_rough(root,revision)
+    cut.preflight_render(timeline)
     if __import__('shutil').disk_usage(root).free<60*1024**3:raise ValueError('There is less than sixty gigabytes free. Make room on this disk before exporting; the saved cut is safe.')
     identity=uuid.uuid4().hex;job=_job(root,identity);job.mkdir()
     work=job/'work';work.mkdir()
@@ -327,8 +327,8 @@ def frame_picture(root,identity,frame):
 def reveal(root,identity):
     if final_state(root,identity)!='Approved by you':raise ValueError('Watch and sign final approval of this exact file before revealing the approved delivery.')
     path=playback(root,identity)
-    subprocess.run(['open','-R',str(path)],check=True,timeout=15)
-    return {'message':'This approved file has been shown in Finder.','path':str(path)}
+    programs.run(['open','-R',str(path)],check=True,timeout=15)
+    return {'message':'The approved trailer is saved in this production’s delivery folder and has been shown in Finder.','path':str(path)}
 
 def snapshot(root):
     root=Path(root);saved,timeline=_saved(root);items=[]
