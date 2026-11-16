@@ -130,14 +130,14 @@ def test_video_compose_ffmpeg_engine_reflects_path_availability(monkeypatch):
     """Regression: `get_info()["render_engines"]["ffmpeg"]` must actually check
     installed program discovery, not hardcode True. A machine without an
     installed ffmpeg must not be offered that renderer."""
-    import shutil
+    from lib import programs
 
-    monkeypatch.setattr(shutil, "which", lambda name,**kw: None)
+    monkeypatch.setattr(programs, "which", lambda name,**kw: None)
     info = VideoCompose().get_info()
     assert info["render_engines"]["ffmpeg"] is False
 
     monkeypatch.setattr(
-        shutil, "which", lambda name,**kw: "/usr/bin/ffmpeg" if name == "ffmpeg" else None
+        programs, "which", lambda name,**kw: "/usr/bin/ffmpeg" if name == "ffmpeg" else None
     )
     info = VideoCompose().get_info()
     assert info["render_engines"]["ffmpeg"] is True

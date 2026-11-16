@@ -1,4 +1,4 @@
-import {el} from '/ui/lib.js';
+import {el,actionButton} from '/ui/lib.js';
 
 const fields=[
   ['Dollar replacement value per credit','dollars_per_credit',
@@ -27,8 +27,11 @@ function localDate(seconds){
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-export function renderPriceSettings(data,state,{api,act,onSign,url}){
+export function renderPriceSettings(data,state,{api,act,onSign,url,button=actionButton}){
   state.values??={};
+  if(state.requestDigest===data.price_config_sha256&&JSON.stringify(state.values)===state.submittedValues){
+    state.dirty=false;state.requestDigest=null;state.submittedValues=null;
+  }
   if(data.price_basis&&!state.dirty&&state.digest!==data.price_config_sha256){
     state.values={};
     for(const [,key] of fields)if(key!=='expiry')state.values[key]=String(data.price_basis[key]?.value??'');
@@ -38,19 +41,23 @@ export function renderPriceSettings(data,state,{api,act,onSign,url}){
   const box=el('details',{class:'paper-panel'},el('summary',{},'Audio account consent and price ceilings'),
     el('p',{},'Use figures confirmed for your account. Front Lot supplies no default prices. Signing these settings buys no take; every paid request still needs its own signature. Saving a draft pauses paid work until it is signed or discarded.'),
     el('p',{},'Public plan averages and generation estimates do not establish a guaranteed maximum for your account. If a firm ceiling is not shown, ask ElevenLabs Support for written confirmation before signing. Do not press Generate to obtain a price.'),
-    el('p',{class:'price-saved-state'},data.price_settings_signed?'These saved figures are signed. To change them, edit the figures and sign a new settings request.':'Sign the price settings first. The figures below are not spending permission until you sign.'));
-  box.open=!!state.open;box.ontoggle=()=>{if(box.isConnected)state.open=box.open;};
+    el('p',{class:'price-saved-state'},data.price_settings_signed?'Current production figures are signed. Numbers you change below are an unsigned draft until you sign them.':'Sign the price settings first. The figures below are not spending permission until you sign.'));
+  box.open=state.open??!data.price_settings_signed;box.ontoggle=()=>{if(box.isConnected)state.open=box.open;};
   for(const [label,key,help,source] of fields){
-    const id='audio-price-help-'+key,input=el('input',{type:key==='expiry'?'datetime-local':'number','aria-label':label,'aria-describedby':id,step:'any'});
+    const id='audio-price-help-'+key,input=el('input',{type:key==='expiry'?'datetime-local':'number','aria-label':label,'aria-describedby':id,step:'any',required:key==='effect_credits_per_second'?null:''});
     input.value=state.values[key]??'';input.oninput=()=>{state.values[key]=input.value;state.dirty=true;};
-    box.append(el('div',{class:'audio-price-field'},el('label',{},label,input),el('p',{id,class:'price-help'},help,' ',el('a',{href:source,target:'_blank',rel:'noopener noreferrer'},'ElevenLabs guide'))));
+    box.append(el('div',{class:'audio-price-field'},el('label',{},label+(key==='effect_credits_per_second'?' (optional)':' (required)'),input),el('p',{id,class:'price-help'},help,' ',el('a',{href:source,target:'_blank',rel:'noopener noreferrer'},'ElevenLabs guide'))));
   }
-  box.append(el('button',{type:'button',onclick:()=>act(async()=>{
+  box.append(button('Prepare price settings for signing',()=>act(async()=>{
+    if(fields.some(([,key])=>key!=='effect_credits_per_second'&&!state.values[key]?.trim()))throw Error('Fill every required account price figure and its expiry before preparing the settings. The effect rate may be left blank to keep effects unavailable.');
     const body={expires_at:Date.parse(state.values.expiry)/1000};for(const [,key] of fields)if(key!=='expiry'&&(key!=='effect_credits_per_second'||state.values[key]))body[key]=Number(state.values[key]);
-    const request=await api(url+'/prices',body);state.dirty=false;state.digest=null;await onSign(request.request_id);
-  })},'Prepare price settings for signing'),
-  el('button',{type:'button',onclick:()=>act(async()=>{
-    const result=await api(url+'/prices/restore',{});state.dirty=false;state.digest=null;return result.message;
-  })},'Discard draft and restore signed settings'));
+    const submittedValues=JSON.stringify(state.values);
+    const request=await api(url+'/prices',body);
+    state.requestDigest=request.approval_record.config_sha256;state.submittedValues=submittedValues;state.dirty=true;
+    await onSign(request.request_id);
+  })),
+  button('Discard unsigned price draft',()=>act(async()=>{
+    const result=await api(url+'/prices/restore',{});state.dirty=false;state.digest=null;state.requestDigest=null;state.submittedValues=null;return result.message;
+  })));
   return box;
 }

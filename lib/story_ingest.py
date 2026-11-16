@@ -68,7 +68,7 @@ def text_bytes(raw):
         raise ValueError('Choose a plain UTF-8 text story no larger than 128 kilobytes. Nothing was saved.')
     try:text=raw.decode('utf-8')
     except UnicodeDecodeError:raise ValueError('This file is not readable UTF-8 text. Choose a plain text or Markdown file.') from None
-    if not any(not c.isspace() and unicodedata.category(c)[0] not in {'C','M'} and c not in '\u2800\u3164\uffa0' for c in text):
+    if not any(not c.isspace() and unicodedata.category(c)[0] not in {'C','M'} and c not in '\u115f\u1160\u2800\u3164\uffa0' for c in text):
         raise ValueError('Supply a story with some words before saving it for review.')
     if any(ord(c)<32 and c not in '\t\r\n' for c in text) or '\x7f' in text:
         raise ValueError('This file is not plain text. Choose a plain text or Markdown story.')
@@ -157,18 +157,22 @@ def complete(root):
 
 def source_warning(root,text):
     from lib.canon_enforcement import exact_passage_warning
-    cp=story_checkpoint(Path(root))
+    try:cp=story_checkpoint(Path(root))
+    except (ValueError,OSError,PathSafetyError):
+        return 'The story wording warning is unavailable because its source could not be read. Restore the unchanged story or supply and sign it again. Existing takes and held charges are still shown; this warning grants no purchase permission.'
     canon=(cp.get('artifacts',{}).get('canon_packet',{}) if cp and cp.get('status')=='completed' else {})
     return exact_passage_warning(canon,text,'This spoken line')
 
-def check_paper(root):
+def check_paper(root,expected_revision):
     from lib import trailer_edit as edit
     root=root_checked(root)
     cp=story_checkpoint(root)
     if not cp or cp.get('status')!='completed':raise ValueError('Sign the current story first, then check the saved paper cut.')
     current=edit.read_revision(root)
     if not current:raise ValueError('Save a paper cut first, then check it against the approved story.')
-    result=edit.save_revision(root,current['paper_cut'],current['edit_revision_sha256'])
+    if current['edit_revision_sha256']!=expected_revision:
+        raise ValueError('The paper cut changed elsewhere. Open the latest saved version before checking or saving; your draft is kept.')
+    result=edit.save_revision(root,current['paper_cut'],expected_revision)
     return {'message':'The saved paper cut was compared with the approved story. Review its warnings beside your lines and cards.','paper_cut':result}
 
 def status(root):

@@ -126,14 +126,14 @@ class TestPiperTTS:
         """F-12 regression: Piper generation shells out to `piper`, so importing
         the Python package is not enough to mark the provider available."""
         original_import = builtins.__import__
-        original_which = shutil.which
 
         def fake_import(name, *args, **kwargs):
             if name == "piper":
                 return object()
             return original_import(name, *args, **kwargs)
 
-        monkeypatch.setattr(shutil, "which", lambda cmd,**kw: None if cmd == "piper" else original_which(cmd,**kw))
+        from lib import programs
+        monkeypatch.setattr(programs, "which", lambda cmd,**kw: None)
         monkeypatch.setattr(builtins, "__import__", fake_import)
 
         assert PiperTTS().get_status() == ToolStatus.UNAVAILABLE

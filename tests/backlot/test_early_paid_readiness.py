@@ -10,12 +10,14 @@ import threading
 import time
 import uuid
 import wave
+import tempfile
+from datetime import datetime,timedelta
 from pathlib import Path
 
 import pytest
 from playwright.sync_api import sync_playwright, expect
 
-PARENT = Path(os.environ['TMPDIR']).resolve().parent
+PARENT=Path(os.environ.get('FRONTLOT_FOLLOWUPS_PARENT') or tempfile.gettempdir())
 RUN = os.environ.get('EARLY_PICTURE_PREFIX',uuid.uuid4().hex)
 LINE = 'The gallery is closed.'
 
@@ -27,7 +29,8 @@ def isolated_standins(monkeypatch):
     assert not (Path(__file__).resolve().parents[2]/'.env').exists()
     for name in ('ELEVENLABS_API_KEY', 'FAL_KEY', 'FAL_AI_API_KEY'):
         monkeypatch.setenv(name, 'invented-readiness-only')
-    folder=PARENT/('g'+uuid.uuid4().hex[:6]);folder.mkdir()
+    from tests.backlot.isolation_helpers import signing_directory
+    folder=signing_directory()
     monkeypatch.setenv('OPENMONTAGE_GATES_DIR',str(folder))
     monkeypatch.setenv('FRONTLOT_CLAUDE','/nonexistent/readiness-no-assistant')
     import requests
@@ -93,16 +96,19 @@ def sign_audio(page):
     page.get_by_role('button',name='Return to audio',exact=True).click()
 
 
-def set_prices(page,panel,prefix):
-    panel.get_by_text('Audio account consent and price ceilings',exact=True).click()
+def set_prices(page,panel,prefix,review=None,filled=None):
+    from tests.backlot.test_voice_panel_browser import open_prices
+    open_prices(panel)
     for label,value in [('Dollar replacement value per credit','.0002'),('Highest speech credits per character','1'),
                         ('Highest music credits per minute','1200'),('Highest voice rate multiplier','2'),
-                        ('Highest sound-effect credits per second','40'),('Prices expire','2026-11-15T12:00')]:
+                        ('Highest sound-effect credits per second','40'),('Prices expire',(datetime.now()+timedelta(days=2)).strftime('%Y-%m-%dT%H:%M'))]:
         panel.get_by_label(label,exact=True).fill(value)
+    if filled:filled()
     panel.get_by_role('button',name='Prepare price settings for signing',exact=True).click()
     expect(page.get_by_role('heading',name='Review and sign audio',exact=True)).to_be_visible(timeout=20000)
     expect(page.get_by_role('heading',name='Review and sign audio',exact=True).locator('..')).to_contain_text('Whole trailer ceiling: $10.0000')
     shot_picture(page,prefix+'-audio-settings-signing',page.get_by_role('heading',name='Review and sign audio',exact=True))
+    if review:review()
     sign_audio(page)
 
 
@@ -117,7 +123,7 @@ def test_fresh_trailer_audio_panel_can_offer_its_existing_settings_operation(tmp
     assert snapshot(root)['budget']['ceiling']==10
 
 
-def save_paper_with_controls(page,reference=''):
+def save_paper_with_controls(page,reference='',purpose='The gallery keeper looks towards a doorway.'):
     page.get_by_role('button',name='Paper cut workspace',exact=True).click()
     paper=page.get_by_role('region',name='Trailer paper cut',exact=True)
     for label,value in [('Hook','A light burns in the empty gallery.'),('Escalation','Someone is coming.'),
@@ -126,18 +132,18 @@ def save_paper_with_controls(page,reference=''):
     paper.get_by_role('button',name='Add spoken line',exact=True).click()
     line=paper.get_by_role('group',name='Line 1',exact=True)
     line.get_by_label('Exact wording',exact=True).fill(LINE)
-    line.get_by_label('Screen time in frames',exact=True).fill('72')
+    line.get_by_label('Screen time in seconds',exact=True).fill('3')
     paper.get_by_role('button',name='Add shot',exact=True).click()
     shot=paper.get_by_role('group',name='Shot 1',exact=True)
-    shot.get_by_label('Purpose (private plan)',exact=True).fill('The gallery keeper looks towards a doorway.')
-    shot.get_by_label('Screen time in frames',exact=True).fill('120')
+    shot.get_by_label('Shot purpose',exact=True).fill(purpose)
+    shot.get_by_label('Screen time in seconds',exact=True).fill('5')
     shot.get_by_label('References, separated by commas',exact=True).fill(reference)
-    shot.get_by_label('Difficulty',exact=True).fill('One simple action.')
+    shot.get_by_label('Difficulty (optional planning note)',exact=True).fill('One simple action.')
     paper.get_by_role('button',name='Add shot',exact=True).click()
     remainder=paper.get_by_role('group',name='Shot 2',exact=True)
-    remainder.get_by_label('Purpose (private plan)',exact=True).fill('Leave time for the closing invitation.')
-    remainder.get_by_label('Screen time in frames',exact=True).fill('552')
-    remainder.get_by_label('Difficulty',exact=True).fill('Unfinished placeholder.')
+    remainder.get_by_label('Shot purpose',exact=True).fill('Leave time for the closing invitation.')
+    remainder.get_by_label('Screen time in seconds',exact=True).fill('23')
+    remainder.get_by_label('Difficulty (optional planning note)',exact=True).fill('Unfinished placeholder.')
     paper.get_by_role('button',name='Save a new version',exact=True).click()
     expect(paper.get_by_role('status').first).to_contain_text('Saved.')
     # Saved words are reported before the awaited board refresh finishes.
@@ -162,7 +168,7 @@ def buy_three_audio(page,panel,calls,prefix):
             expect(panel.get_by_role('status')).to_contain_text('brief saved')
             form.get_by_role('button',name='Prepare '+kind+' spending card',exact=True).click()
         card=panel.locator('.voice-spend[data-kind="'+kind+'"]')
-        expect(card).to_contain_text(maximum)
+        expect(card).to_contain_text(maximum,timeout=20000)
         before=len(calls['audio_posts'])
         card.get_by_role('button',name='Review and sign this request',exact=True).click()
         expect(page.get_by_role('heading',name='Review and sign audio',exact=True)).to_be_visible(timeout=20000)
@@ -206,7 +212,7 @@ def test_empty_production_signs_story_checks_paper_and_keeps_three_audio_purchas
             panel=page.get_by_role('region',name='Trailer audio')
             expect(panel.locator('.voice-budget')).to_contain_text('$10.0000 remaining of $10.0000')
             set_prices(page,panel,'empty')
-            paper=save_paper_with_controls(page)
+            paper=save_paper_with_controls(page,purpose='A wide, steady view of an empty invented gallery and its doorway. No people.')
             expect(paper).to_contain_text('This draft is not yet checked against the approved story.')
             shot_picture(page,'empty-unchecked-story',paper.get_by_role('button',name='Save a new version'))
             page.get_by_role('button',name='Voice workspace',exact=True).click()
@@ -245,12 +251,13 @@ def test_empty_production_signs_story_checks_paper_and_keeps_three_audio_purchas
             buy_three_audio(page,panel,isolated_standins,'empty')
             page.get_by_role('button',name='Open footage requests',exact=True).click()
             footage=page.get_by_label('Footage workspace',exact=True)
-            expect(footage).to_contain_text('those approval controls are not built here')
             for control in footage.get_by_role('button',name='Create footage request',exact=True).all():
                 expect(control).to_be_disabled()
             shot_picture(page,'empty-footage-blocked',footage)
             assert len(isolated_standins['audio_posts'])==3 and len(isolated_standins['catalogues'])==1
             assert all(not isolated_standins[k] for k in ('uploads','video_posts','waits','downloads'))
+            from tests.backlot.footage_prereq_helpers import complete_footage_prerequisites
+            complete_footage_prerequisites(page,root,isolated_standins,tmp_path)
             assert not page.errors
             evidence={'root':str(root),'calls':isolated_standins,'body':page.locator('body').inner_text(),
                       'state':__import__('backlot.state',fromlist=['load_board_state']).load_board_state(root)}
@@ -291,7 +298,7 @@ def test_prepared_prerequisites_allow_four_separately_signed_purchases(tmp_path,
     data['default_video_endpoint']='fal-ai/kling-video/o3/pro/reference-to-video'
     data['provider_egress'].append({'provider':'fal','content_classes':['prompts','reference_images']})
     data['footage_price_basis']={'provider':'fal','model':data['default_video_endpoint'],
-        'cash_usd_per_second':.112,'credits_usd_per_second':0,'set_at':time.time()-60,'expires_at':1794772800}
+        'cash_usd_per_second':.112,'credits_usd_per_second':0,'set_at':time.time()-60,'expires_at':time.time()+2*86400}
     raw=yaml.safe_dump(data).encode();(root/'project.yaml').write_bytes(raw)
     sign_settings(root,'config',{'config_sha256':hashlib.sha256(raw).hexdigest()},'project_config')
     monkeypatch.setattr(looks,'PROJECT',root.name)
@@ -321,7 +328,7 @@ def test_prepared_prerequisites_allow_four_separately_signed_purchases(tmp_path,
                     expect(panel.get_by_role('status')).to_contain_text('brief saved')
                     form.get_by_role('button',name='Prepare '+kind+' spending card',exact=True).click()
                 card=panel.locator('.voice-spend[data-kind="'+kind+'"]')
-                expect(card).to_contain_text(maximum)
+                expect(card).to_contain_text(maximum,timeout=20000)
                 prices[kind]=card.inner_text()
                 assert len(isolated_standins['audio_posts'])==len(prices)-1
                 card.get_by_role('button',name='Review and sign this request',exact=True).click()

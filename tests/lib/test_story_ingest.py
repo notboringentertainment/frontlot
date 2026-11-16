@@ -57,7 +57,7 @@ def test_replacement_keeps_source_and_invalidates_paper_until_signed_and_checked
     assert trailer_edit.paper_state(root)['needs_review']
     approve_request(newer['gate'],root)
     assert not trailer_edit.paper_state(root)['usable_downstream']
-    story.check_paper(root)
+    story.check_paper(root,trailer_edit.read_revision(root)['edit_revision_sha256'])
     assert trailer_edit.paper_state(root)['usable_downstream']
     assert trailer_edit.read_revision(root,old['edit_revision_sha256'])==old
 

@@ -1,5 +1,5 @@
 """Run the real signer with a last-resort deadline only in disposable tests."""
-import os,sys,threading
+import os,sys,threading,tempfile
 
 if __name__=='__main__':
     role,project,identity=sys.argv[1:]
@@ -9,7 +9,7 @@ if __name__=='__main__':
         barrier=os.environ.get('FRONTLOT_TEST_RECEIPT_BARRIER')
         if barrier:
             from pathlib import Path
-            path=Path(barrier);assert path.resolve().is_relative_to(Path(os.environ['TMPDIR']).resolve())
+            path=Path(barrier);assert path.resolve().is_relative_to(Path(os.environ.get('TMPDIR') or tempfile.gettempdir()).resolve())
             original=gate_approve.record_human_approval
             def slow_receipt(*args,**kwargs):
                 import time

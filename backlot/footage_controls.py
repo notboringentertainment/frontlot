@@ -7,9 +7,9 @@ from pathlib import Path
 from fastapi import HTTPException, Request
 from lib import footage_requests as footage, receipts, supervised_production as shots
 from lib.canonical_json import record_sha256
-from lib.look_ingest import active_looks
+from lib.look_ingest import active_looks,verify_look_refs,LookIngestError
 from lib.media_spending import _tracker, request_resolution, resolve_charge, call_lock, signed_resolution, apply_signed_resolution
-from lib.pathsafe import resolve_input, sha256_file
+from lib.pathsafe import resolve_input, sha256_file,PathSafetyError
 from lib.project_config import load_current_verified_project_config, ProjectConfigError
 from lib.run_common import request_paths
 from tools.cost_tracker import load_reservations, BudgetExceededError, IndeterminatePaidCallError
@@ -19,8 +19,8 @@ def plain_refusal(exc):
     from lib.media_spending import PaidCallBusy
     if isinstance(exc,PaidCallBusy):return 'A sound or footage operation is still running. Wait for it to finish before changing or reviewing this request.'
     if isinstance(exc,IndeterminatePaidCallError):return 'A charge is unresolved. Check the service account, then use the account-review controls to sign its outcome before another request.'
-    if isinstance(exc,BudgetExceededError):return 'This clip does not fit the remaining ceiling. Choose a shorter clip or sign a higher production ceiling before creating a new request.'
-    if 'allowance is exhausted' in str(exc):return 'This shot has used its allowance. Add a new paper-cut shot with its own request, or have its brief allowance revised before another take.'
+    if isinstance(exc,BudgetExceededError):return 'This clip does not fit the remaining production ceiling. Choose an affordable length, resolve any held charges, or stop. This form cannot raise the ceiling.'
+    if 'allowance is exhausted' in str(exc):return 'This clip does not fit the shot’s remaining allowance. Choose a shorter clip or stop; any change to its allowance needs review.'
     if isinstance(exc,ValueError) and not isinstance(exc,json.JSONDecodeError):
         message=str(exc)
         # Machine paths and internal validation fields are never instructions.
@@ -41,13 +41,24 @@ def _gate(root,kind,entity):
 
 def _paper(root):
     footage.require_trailer(root)
-    from lib.trailer_edit import paper_state
+    from lib.trailer_edit import paper_state,read_revision
     state=paper_state(root)
+    if state.get('error'):
+        # Display the saved shot cards and their existing financial history
+        # even when story comparisons are unavailable. The authoritative
+        # request checks still refuse new work against unreadable sources.
+        try:state={**state,'current':read_revision(root)}
+        except (ValueError,OSError,PathSafetyError):pass
     return state,(state.get('current') or {}).get('paper_cut',{}).get('shots',[])
 
 
 def _looks(root):
-    return {kind+':'+identity:value for (kind,identity),value in active_looks(root).items()}
+    current={}
+    for (kind,identity),value in active_looks(root).items():
+        try:verify_look_refs(root,[{'entity_kind':kind,'entity_id':identity,'look_hash':value.look_hash}])
+        except (LookIngestError,ValueError,OSError,PathSafetyError):continue
+        current[kind+':'+identity]=value
+    return current
 
 
 def _prepare_brief(root,shot_id,choices):
@@ -57,7 +68,7 @@ def _prepare_brief(root,shot_id,choices):
     shot=next((s for s in paper if s['id']==shot_id),None)
     if shot is None:raise ValueError('Save this shot in the paper cut before requesting footage.')
     active=_looks(root);old=shots.read_brief(root,shot_id)
-    if not active:raise ValueError('This shot has no approved active look. Approve its looks outside these controls first.')
+    if not active:raise ValueError('This shot has no current signed look. Review and sign its location look in Footage setup before creating the request.')
     refs=[];look_refs=[]
     for path in shot['references']:
         key=choices.get(path)
@@ -88,9 +99,18 @@ def create(root,body):
     with call_lock(root):return _create(root,body)
 
 
+def bounded_quote(root,model,length):
+    price=footage.quote(root,model,length)
+    remaining=_tracker(root,load_current_verified_project_config(root)).budget_remaining_usd
+    highest=round(price['max_cash_usd']+price['max_credits_usd'],4)
+    return {**price,'highest_usd':highest,'remaining_usd':remaining}
+
+
 def _create(root,body):
     model=body.get('model');length=body.get('duration_seconds')
-    footage.quote(root,model,length)  # refuse invalid choices before writing a brief
+    price=bounded_quote(root,model,length)
+    if price['highest_usd']>price['remaining_usd']:
+        raise BudgetExceededError('The maximum clip charge exceeds the remaining production ceiling.')
     choices=body.get('looks',{})
     if not isinstance(choices,dict):raise ValueError('Choose an approved look for each picture.')
     _prepare_brief(root,body.get('shot_id'),choices)
@@ -120,7 +140,10 @@ def inspect(root,jobs):
     records=[]
     for path in sorted((root/'.footage-requests').glob('*.json'),key=lambda p:(p.stat().st_mtime_ns,p.name)):
         records.append(footage._read(root,path.stem))
-    try:remaining=_tracker(root,load_current_verified_project_config(root)).budget_remaining_usd
+    config=None
+    try:
+        config=load_current_verified_project_config(root)
+        remaining=_tracker(root,config).budget_remaining_usd
     except (ValueError,ProjectConfigError,OSError):remaining=None
     try:footage._paper_snapshot(root);source_refusal=None
     except Exception as exc:source_refusal=plain_refusal(exc)
@@ -143,7 +166,7 @@ def inspect(root,jobs):
             reservation=next((r for r in reservations.values() if (r.get('output_hint') or {}).get('footage_request_id')==rid),None)
             job=jobs.get((str(root),rid),{})
             outcome=None;outcome_error=None
-            if reservation and reservation['state'] in ('submitting','submitted','pending_billing'):
+            if reservation:
                 try:outcome=signed_resolution(root,reservation['reservation_id'])
                 except (ValueError,OSError,KeyError,receipts.ReceiptChainError) as exc:outcome_error=plain_refusal(exc)
             requests.append({'id':rid,'gate_id':gate['request_id'] if gate else None,'approved':approved,
@@ -162,7 +185,9 @@ def inspect(root,jobs):
         result.append({'id':shot['id'],'label':f'Shot {number}','purpose':shot['purpose'],
                        'duration_seconds':shot['duration_frames']/24,'references':shot['references'],
                        'brief':brief,'takes':takes,'requests':requests,'status':status})
+    from lib.media_settings import pending
     return {'shots':result,'looks':looks,'remaining_usd':remaining,
+            'quote_context':{'signed_settings':config.digest if config else None,'prices_waiting':bool(pending(root))},
             'models':[{'id':footage.MODEL,'label':'Kling o3 reference video · Fal'}],
             'story_ready':source_refusal is None,'refusal':source_refusal}
 
@@ -178,6 +203,8 @@ def install(app,require_writer,safe_project,invalidate):
         if jobs.get(key,{}).get('running'):return {'running':True}
         # Reopening a completed request is recovery, not another purchase.
         prior=next((r for r in load_reservations(root).values() if (r.get('output_hint') or {}).get('footage_request_id')==rid),None)
+        if prior and signed_resolution(root,prior['reservation_id']) is not None:
+            raise ValueError('Your signed account outcome is recorded. This signature cannot make a clip. Prepare and sign a new request; nothing was submitted again.')
         if prior and prior['state']!='completed':
             if prior['state']=='failed':
                 from lib.gates import verify_receipt_signature
@@ -217,9 +244,7 @@ def install(app,require_writer,safe_project,invalidate):
                 _,paper=_paper(root)
                 if not any(s['id']==body.get('shot_id') for s in paper):
                     raise ValueError('Save this shot in the paper cut before requesting footage.')
-                price=footage.quote(root,body.get('model'),body.get('duration_seconds'))
-                return {**price,'highest_usd':round(price['max_cash_usd']+price['max_credits_usd'],4),
-                        'remaining_usd':_tracker(root,load_current_verified_project_config(root)).budget_remaining_usd}
+                return bounded_quote(root,body.get('model'),body.get('duration_seconds'))
             if action=='create':result=await asyncio.to_thread(create,root,body)
             elif action=='dispatch':result=await dispatch(root,body.get('request_id'))
             elif action=='decision':
@@ -238,7 +263,8 @@ def install(app,require_writer,safe_project,invalidate):
                 if kind=='footage_spend':result=await dispatch(root,record['request_id'])
                 elif kind=='footage_take':
                     await asyncio.to_thread(footage.apply_decision,root,record['shot_id'],record['take']['take_id'],record['decision'])
-                    result={'applied':True}
+                    from lib.trailer_edit import paper_state
+                    result={'applied':True,'paper_cut':await asyncio.to_thread(paper_state,root)}
                 elif kind=='audio_resolution':
                     result=await asyncio.to_thread(apply_signed_resolution,root,record['reservation_id'])
                 else:raise ValueError('This signature is not a footage decision. Return to its own panel.')

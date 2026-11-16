@@ -1,10 +1,10 @@
 import {el} from '/ui/lib.js';
 export const TEST_ONLY='For the test trailer only until a person at ElevenLabs confirms otherwise in writing.';
-const button=(label,fn)=>el('button',{type:'button',onclick:fn},label);
+const defaultButton=(label,fn)=>el('button',{type:'button',onclick:fn},label);
 export function musicForms(data,draft,helpers){return cueForms(data,draft,helpers,'music');}
 export function effectForms(data,draft,helpers){return cueForms(data,draft,helpers,'effect');}
 
-function cueForms(data,draft,{api,act,url},kind){
+function cueForms(data,draft,{api,act,url,button=defaultButton},kind){
   const effect=kind==='effect',noun=effect?'effect':'music',title=effect?'Sound effects':'Trailer music';
   const keys=['text','seconds',...(effect?['start','shot','loop']:[])],saved=data[effect?'effect_brief':'music_brief'];
   if(!draft.new&&(!draft.loaded||keys.every(k=>draft[k]===draft.saved?.[k]))){
@@ -32,14 +32,15 @@ function cueForms(data,draft,{api,act,url},kind){
   }
   compose.append(el('p',{},effect?'Half a second to thirty seconds, timed in whole frames at 24 frames per second. The effect must fit inside the paper cut.':'Three seconds to two minutes, timed in whole frames at 24 frames per second.'),
     button(`Save ${noun} brief`,()=>act(async()=>{
+      const submitted=Object.fromEntries(keys.map(k=>[k,draft[k]]));
       const body={text:draft.text,seconds:Number(draft.seconds),brief_id:draft.briefId};
       if(effect)Object.assign(body,{start_frame:Number(draft.start)*24,shot_index:draft.shot,loop:draft.loop});
-      const result=await api(url+'/brief',body);draft.new=false;draft.briefId=result.brief_id;draft.saved=Object.fromEntries(keys.map(k=>[k,draft[k]]));return result.message;
+      const result=await api(url+'/brief',body);draft.new=false;draft.briefId=result.brief_id;draft.saved=submitted;return result.message;
     })));
   const prepare=button(`Prepare ${noun} spending card`,()=>act(async()=>{
     if(!clean())throw Error(`Save the current ${noun} brief and timing before preparing its spending card.`);
     await api(url+'/prepare',{brief_id:draft.briefId});
-  }));prepare.disabled=!data.usable||!data.account.configured||!data.price_settings_signed;compose.append(prepare);
+  }));prepare.disabled=!data.usable||!data.account.configured||!data.price_settings_signed||data.purchases_paused;compose.append(prepare);
   if(effect&&!data.price_basis?.effect_credits_per_second)compose.append(el('p',{role:'alert'},'Sign a sound-effect credits-per-second ceiling in the audio price settings first.'));
   if(effect)compose.append(button('Start a separate sound effect',()=>act(async()=>{
     Object.assign(draft,{loaded:true,new:true,briefId:null,text:'',seconds:'',start:0,shot:0,loop:false,saved:{}});

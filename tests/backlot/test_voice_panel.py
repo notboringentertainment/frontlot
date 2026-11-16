@@ -81,14 +81,19 @@ def test_voice_panel_http_requires_writer_capability(voice_world,monkeypatch):
         assert client.post(url,json={},headers={'origin':'http://127.0.0.1:4913'}).status_code==401
     assert posts==[] and gets==[]
 
-def test_voice_price_settings_use_existing_config_signature(voice_world):
+def test_voice_price_settings_use_existing_config_signature(voice_world,monkeypatch):
     from backlot import voice_panel as panel
     root,posts,gets=voice_world
     data={'dollars_per_credit':.0002,'speech_credits_per_character':1,'music_credits_per_minute':1200,'voice_multiplier_ceiling':2,'expires_at':4102444800}
-    req=panel.prepare_prices(root,data)
+    before=(root/'project.yaml').read_bytes();req=panel.prepare_prices(root,data)
     from lib.project_config import load_current_verified_project_config
-    with pytest.raises(RuntimeError):load_current_verified_project_config(root)
-    sign(root,'config',req['approval_record'],'project_config')
+    assert (root/'project.yaml').read_bytes()==before
+    assert load_current_verified_project_config(root)
+    from lib.media_settings import require_no_draft
+    with pytest.raises(ValueError,match='paused'):require_no_draft(root)
+    from tests.lib.look_lock_helpers import approve_request
+    monkeypatch.setattr('scripts.gate_approve.require_tty',lambda:None)
+    approve_request(req,root)
     assert load_current_verified_project_config(root).data['audio_price_basis']['voice_multiplier_ceiling']['value']==2
     assert posts==[] and gets==[]
 
@@ -136,7 +141,7 @@ def test_price_setting_signer_refuses_changed_draft(voice_world):
     root,posts,gets=voice_world
     req=panel.prepare_prices(root,{'dollars_per_credit':.0002,'speech_credits_per_character':1,'music_credits_per_minute':1200,'voice_multiplier_ceiling':2,'expires_at':4102444800})
     path=root/'project.yaml';path.write_text(path.read_text()+'\n# changed after review\n')
-    with pytest.raises(Exception,match='settings changed'):construct(root,req)
+    with pytest.raises(Exception,match='price draft changed'):construct(root,req)
     assert posts==[]
 
 def test_restore_prior_signed_prices_does_not_approve_a_new_draft(voice_world):

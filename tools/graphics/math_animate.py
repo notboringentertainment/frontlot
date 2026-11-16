@@ -455,10 +455,8 @@ class MathAnimate(BaseTool):
         """Get basic info about the rendered file."""
         info: dict[str, Any] = {"file_size_bytes": path.stat().st_size}
 
-        if not programs.which("ffprobe"):
-            return info
-
         try:
+            if not programs.which("ffprobe"):return info
             proc = programs.run(
                 [
                     "ffprobe", "-v", "quiet",

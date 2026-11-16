@@ -58,6 +58,7 @@ def test_content_store_retains_source_until_verified(env,monkeypatch,failure):
     if failure=='move':
         def broken(*a,**k):raise OSError('disk full')
         monkeypatch.setattr(pathsafe,'atomic_move',broken)
+        monkeypatch.setattr(pathsafe,'atomic_write_bytes',broken)
     else:(objects/(hashlib.sha256(raw).hexdigest()+'.bin')).write_bytes(b'damaged')
     with pytest.raises((OSError,pathsafe.PathSafetyError)):
         pathsafe.store_content_addressed(staged,objects,'.bin')

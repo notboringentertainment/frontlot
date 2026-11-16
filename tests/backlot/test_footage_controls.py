@@ -169,7 +169,8 @@ def test_missing_approved_look_has_a_true_refusal(board,provider):
     looks.retire_look(root,next(iter(active_looks(root).values())).payload)
     response=post(board,'create',shot_id=shot,model=workspace().MODEL,duration_seconds=5)
     assert response.status_code==400
-    assert 'no approved active look' in response.json()['detail']
+    assert 'no current signed look' in response.json()['detail']
+    assert 'Footage setup' in response.json()['detail']
     assert not inspect(board)['looks'] and not provider['uploads']
 
 

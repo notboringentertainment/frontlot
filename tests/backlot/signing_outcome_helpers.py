@@ -10,8 +10,8 @@ from tests.tools.test_signed_footage import film,provider,prepare,approve,worksp
 
 @pytest.fixture(autouse=True)
 def signing_folder(monkeypatch):
-    parent=Path(os.environ.get('FRONTLOT_FOLLOWUPS_PARENT') or os.environ.get('OPENMONTAGE_HOME') or tempfile.gettempdir())
-    folder=parent/('g'+uuid.uuid4().hex[:6]);folder.mkdir()
+    from tests.backlot.isolation_helpers import signing_directory
+    folder=signing_directory()
     monkeypatch.setenv('OPENMONTAGE_GATES_DIR',str(folder))
     monkeypatch.setenv('FRONTLOT_CLAUDE','/nonexistent/invented-assistant')
 

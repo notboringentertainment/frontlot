@@ -988,6 +988,7 @@ def _looks_summary(root: Path) -> list[dict[str, Any]]:
                 "look_hash": entry.get("look_hash"),
                 "source_ticket_ref": entry.get("source_ticket_ref"),
                 **({"source_ref": entry["source_ref"]} if entry.get("source_ref") else {}),
+                **({"writer_source_ref": entry["writer_source_ref"]} if entry.get("writer_source_ref") else {}),
             })
     return out
 
@@ -1421,11 +1422,18 @@ def _render_reference_import(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     staged = root / STAGING_DIR / f"reference-{asset_id}.png"
     visual = _file_packet(root, asset_id, path=staged, label="normalized import")
     return {"origin_class": hint.get("origin_class", record.get("origin_class")),
+            "origin_tool":record.get('origin_tool'),"attestation":record.get('attestation_text'),
             "visual": visual, "packet_error": bool(visual.get("error"))}
 
 
 def _render_look_lock(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     """Authoritative source: confined, parsed wayfinder ticket (text only)."""
+    if req.get('writer_source_ref'):
+        from lib.frontlot_location_source import require_current
+        try:
+            doc=require_current(root,req['writer_source_ref'])
+            return {'frontlot_location':doc,'look_spec':doc['look_spec'],'source_label':'Written in Front Lot'}
+        except (ValueError,OSError):return {'packet_error':True,'error':'The location written in Front Lot changed or cannot be verified. Prepare and sign its current description again.'}
     action = (req.get("envelope") or {}).get("action", "activate")
     scope_kind, _, scope_entity = str(req.get("scope") or "").partition(":")
     entity_kind = scope_kind or str(req.get("entity_kind") or "")
@@ -1510,6 +1518,11 @@ def _audio_price_summary(root,settings):
 
 def _render_config(root: Path, req: dict[str, Any]) -> dict[str, Any]:
     """Authoritative source: project.yaml text, shown with the request summary."""
+    if req.get('scope') in {'audio:project_config','footage:project_config'}:
+        from lib.media_settings import draft_material
+        try:_,_,raw=draft_material(root,req)
+        except (ValueError,RuntimeError):return {'packet_error':True,'error':'The price draft changed or cannot be verified. Discard it and prepare the current figures again.'}
+        return _render_media_prices(root,req,raw)
     path = root / "project.yaml"
     info = _lstat(path)
     if info is None or not stat.S_ISREG(info.st_mode):
@@ -1524,17 +1537,19 @@ def _render_config(root: Path, req: dict[str, Any]) -> dict[str, Any]:
         text = raw.decode("utf-8", errors="replace")
     except OSError:
         return {"packet_error": True, "error": "project.yaml unreadable", "summary": req.get("summary")}
-    if req.get('scope')=='audio:project_config':
+    return {"project_yaml": text, "summary": req.get("summary")}
+
+def _render_media_prices(root,req,raw):
+    if req.get('scope') in {'audio:project_config','footage:project_config'}:
         import hashlib,yaml
         if (req.get('approval_record') or {}).get('config_sha256')!=hashlib.sha256(raw).hexdigest():
-            return {'packet_error':True,'error':'The audio prices changed. Prepare a new price-settings request.'}
-        settings=yaml.safe_load(text)
-        return {'audio_prices':settings['audio_price_basis'],'record':req['approval_record'],
-                'audio_price_summary':_audio_price_summary(root,settings),
+            return {'packet_error':True,'error':'The prices changed. Prepare a new price-settings request.'}
+        settings=yaml.safe_load(raw)
+        return {'media_prices':True,'audio_prices':settings.get('audio_price_basis'),'footage_prices':settings.get('footage_price_basis'),'record':req['approval_record'],
+                'audio_price_summary':_audio_price_summary(root,settings) if settings.get('audio_price_basis') else None,
                 'production_ceiling':settings['budget_usd_cap'],'outbound_permissions':settings['provider_egress'],
                 'cast_ceiling':settings['cast_cap'],'run_minutes':settings['wall_time_minutes'],
                 'footage_model':settings['default_video_endpoint'],'picture_judge':settings.get('qc')}
-    return {"project_yaml": text, "summary": req.get("summary")}
 
 
 def _render_pipeline_migration(root: Path, req: dict[str, Any]) -> dict[str, Any]:

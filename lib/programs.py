@@ -28,6 +28,11 @@ def which(name, *, path=None):
     return found if (found and Path(found).is_absolute()
         and Path(found).resolve().parent!=Path.cwd().resolve()) else None
 
+def available(name):
+    """Optional discovery never turns a bad setting into a broken menu."""
+    try:return which(name) is not None
+    except ValueError:return False
+
 def require(name, *, path=None):
     result=which(name,path=path)
     if result is None:

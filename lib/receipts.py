@@ -81,6 +81,7 @@ ENVELOPE_FIELDS: dict[str, dict[str, bool]] = {
     "look_lock": {
         "action": True, "entity_kind": True, "look_hash": True,
         "supersedes_look_hash": False, "promotion_refs": False, "source_ticket_ref": False,
+        "writer_source_ref": False,
     },
     "headshot": {
         "action": True, "entity_kind": True, "look_hash": True, "supersedes_receipt_id": False,
@@ -372,6 +373,14 @@ def _validate_look_lock_source(env: dict) -> None:
     ``source_ticket_ref`` key. Retire envelopes carry neither and are not
     checked here."""
     has_ticket_key = "source_ticket_ref" in env
+    if 'writer_source_ref' in env:
+        ref=env['writer_source_ref']
+        if (has_ticket_key or env.get('promotion_refs') not in (None,[]) or env.get('entity_kind')!='location'
+            or not isinstance(ref,dict) or set(ref)!={'project_id','path','sha256'}
+            or not isinstance(ref['project_id'],str) or not ref['project_id']
+            or not _is_sha256_hex(ref['sha256']) or ref['path']!=f".frontlot-location-looks/{ref['sha256']}.json"):
+            raise ValueError('A location written in Front Lot needs its own production-bound source, never a ticket or promotion.')
+        return
     ticket = env.get("source_ticket_ref")
     refs = env.get("promotion_refs")
     if has_ticket_key:
@@ -537,6 +546,7 @@ def validate_envelope(
         if not record["removed"] and not record["added"]:
             raise ValueError("cast_change: a change must take out or put in at least one entity")
     out = {k: env.get(k) for k in spec}
+    if kind=='look_lock' and 'writer_source_ref' not in env:out.pop('writer_source_ref')
     if kind == "qc_override":
         # exactly-one shape: never embed the absent alternative as a null —
         # a 1.0 envelope keeps its historical bytes ({qc_receipt_id} only).

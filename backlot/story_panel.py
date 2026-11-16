@@ -53,4 +53,9 @@ def mount(app,require_writer,safe_root,invalidate):
         require_writer(request);result=await run(project_id,story.complete);invalidate(project_id);return result
     @app.post(prefix+'/check')
     async def compare(project_id:str,request:Request):
-        require_writer(request);result=await run(project_id,story.check_paper);invalidate(project_id);return result
+        require_writer(request)
+        try:
+            body=await request.json()
+            if not isinstance(body,dict) or set(body)!={'expected_revision'} or not isinstance(body['expected_revision'],str):raise ValueError()
+        except (ValueError,TypeError):raise HTTPException(400,'Open the saved paper cut before checking it against the approved story.') from None
+        result=await run(project_id,story.check_paper,body['expected_revision']);invalidate(project_id);return result

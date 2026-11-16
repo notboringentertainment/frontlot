@@ -76,6 +76,8 @@ def _read(root, identity):
 
 
 def quote(root, model, seconds):
+    from lib.media_settings import require_no_draft
+    require_no_draft(root)
     try:config = load_current_verified_project_config(root)
     except ProjectConfigError:
         raise ValueError('Valid signed footage price figures are missing from the current settings. Sign figures for this service and model before approval.') from None

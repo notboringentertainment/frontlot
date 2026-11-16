@@ -326,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
     if not project_root.is_dir():
         print(f"error: no project {args.project!r} under {paths.PROJECTS_DIR}", file=sys.stderr)
         return 2
-    api_key = os.environ.get("FAL_KEY") or os.environ.get("FAL_AI_API_KEY")
+    api_key = os.environ.get("FAL_KEY",'').strip() or os.environ.get("FAL_AI_API_KEY",'').strip()
     try:
         summary = reconcile_project(project_root, api_key=api_key)
     except Exception as exc:  # noqa: BLE001

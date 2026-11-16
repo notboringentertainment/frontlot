@@ -23,6 +23,34 @@ export function captureCapabilityToken() {
 
 captureCapabilityToken();
 
+// A refused write is never retried and never earns a replacement capability.
+let writerBannerObserver=null;
+function writerWarning(){
+  let banner=document.getElementById('writer-warning');
+  if(!banner){banner=el('aside',{id:'writer-warning',role:'alert',class:'writer-warning'},
+    'This window cannot save or sign. Its live updates may be out of date. Open Front Lot from its app icon, then reopen this production. Keep this window open to read or copy unfinished words before reloading it. No refused action will be retried automatically.');document.body.prepend(banner);
+    writerBannerObserver=new ResizeObserver(()=>document.documentElement.style.setProperty('--writer-warning-height',`${Math.ceil(banner.getBoundingClientRect().height)+8}px`));
+    writerBannerObserver.observe(banner);}
+  document.body.classList.add('writer-unavailable');
+}
+const originalFetch=window.fetch.bind(window);
+window.fetch=async(...args)=>{
+  const response=await originalFetch(...args);
+  if(response.status===401&&new URL(response.url,location.href).origin===location.origin)writerWarning();
+  return response;
+};
+export async function checkWriter(){
+  try{
+    const response=await originalFetch('/api/writer-status',{headers:{'x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},cache:'no-store'});
+    if(!response.ok)return;
+    const value=await response.json();
+    if(!value.writer)writerWarning();
+    else {writerBannerObserver?.disconnect();writerBannerObserver=null;document.getElementById('writer-warning')?.remove();document.body.classList.remove('writer-unavailable');}
+  }catch{/* Loss of a connection never grants permission. */}
+}
+window.addEventListener('focus',()=>checkWriter());
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>checkWriter());else checkWriter();
+
 export async function getJSON(url, options = {}) {
   const res = await fetch(url, options);
   if (!res.ok) throw new Error(`${res.status} ${url}`);
@@ -42,6 +70,38 @@ export function el(tag, attrs = {}, ...children) {
     node.append(child.nodeType ? child : document.createTextNode(String(child)));
   }
   return node;
+}
+
+// Results belong beside their control. A shared map keeps a result when a
+// panel redraws that same control; keys distinguish individual takes/requests.
+const feedbackViews=new WeakMap();
+export function actionButton(label,action,{feedback,key=label,...attrs}={}){
+  const control=el('button',{type:'button',...attrs},label);let running=false,local='',note=null;
+  const paint=()=>{if(!control.isConnected)return;const text=feedback?.get(key)??local;
+    if(!text){note?.remove();note=null;return;}
+    note??=el('p',{class:'action-feedback','aria-live':'polite'});note.textContent=text;control.after(note);return note;};
+  if(feedback){if(!feedbackViews.has(feedback))feedbackViews.set(feedback,new Map());feedbackViews.get(feedback).set(key,paint);}
+  const say=text=>{local=text;feedback?.set(key,text);const shown=(feedbackViews.get(feedback)?.get(key)||paint)();if(shown&&text!=='Working…')shown.scrollIntoView({block:'nearest',behavior:'instant'});};
+  control.onclick=async()=>{if(running)return;running=true;say('Working…');try{
+    const result=await action();say(typeof result==='string'?result:result?.message||'');
+  }catch(error){say(error.message||'The action did not finish. Review the form and try again.');}finally{running=false;}};
+  queueMicrotask(paint);return control;
+}
+
+// Preserve the writer's place when fresh read-only data rebuilds a panel.
+export function keepEditorPosition(root,redraw){
+  const fields=()=>[...root.querySelectorAll('input,textarea,select,button,summary')];
+  const name=e=>e.getAttribute('aria-label')||e.id||e.closest('label')?.textContent.trim()||e.textContent.trim();
+  const active=document.activeElement,inside=root.contains(active),identity=inside?name(active):null;
+  const ordinal=inside?fields().filter(e=>e.tagName===active.tagName&&name(e)===identity).indexOf(active):0;
+  const selection=inside&&typeof active.selectionStart==='number'?[active.selectionStart,active.selectionEnd]:null;
+  const open=[...root.querySelectorAll('details')].map(e=>[e.querySelector('summary')?.textContent,e.open]);
+  const scroll=[];for(let e=root;e;e=e.parentElement)scroll.push([e,e.scrollTop,e.scrollLeft]);
+  redraw();
+  for(const [label,value] of open){const e=[...root.querySelectorAll('details')].find(e=>e.querySelector('summary')?.textContent===label);if(e)e.open=value;}
+  const target=inside?fields().filter(e=>e.tagName===active.tagName&&name(e)===identity)[ordinal]:null;
+  if(target){target.focus({preventScroll:true});if(selection)try{target.setSelectionRange(...selection);}catch{}}
+  for(const [e,top,left] of scroll){e.scrollTop=top;e.scrollLeft=left;}
 }
 
 export function fmtDuration(seconds) {

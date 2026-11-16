@@ -14,6 +14,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from lib.canonical_json import record_sha256
+from lib.pathsafe import PathSafetyError
 from lib.trailer_contract import make_contract, require_contract, signed_trailer_pin, edit_digest
 
 
@@ -280,9 +281,13 @@ def _validate_paper(root, paper):
     for shot in paper['shots']:
         if type(shot.get('duration_frames')) is not int or shot['duration_frames'] < 1:
             raise ValueError('Each shot needs a positive whole-frame screen time.')
-        if (not all(isinstance(shot.get(k), str) and shot[k].strip() for k in ('purpose', 'difficulty'))
-                or not isinstance(shot.get('references'), list) or any(not isinstance(x, str) for x in shot['references'])):
-            raise ValueError('Each shot needs its purpose, references and difficulty.')
+        if not isinstance(shot.get('purpose'),str) or not shot['purpose'].strip():
+            raise ValueError('Write a purpose for each shot. This is a required private planning note.')
+        difficulty=shot.get('difficulty','')
+        if not isinstance(difficulty,str):raise ValueError('Use words for the optional difficulty note, or leave it blank.')
+        shot['difficulty']=difficulty if difficulty.strip() else 'Not assessed'
+        if not isinstance(shot.get('references'),list) or any(not isinstance(x,str) for x in shot['references']):
+            raise ValueError('Choose reference pictures for each shot, or leave its reference list empty for now.')
     check = _story_check(root, paper)
     if check['errors']:
         raise ValueError(' '.join(check['errors']))
@@ -454,7 +459,9 @@ def _legacy_time(root, version):
 
 
 def paper_state(root):
+    from lib.receipts import ReceiptChainError
     root = Path(root)
+    current = None
     try:
         with _edit_lock(root):
             current = _read_current(root)
@@ -479,9 +486,15 @@ def paper_state(root):
                 'sources': sources, 'current': current, 'needs_review': needs_review, 'inputs_changed': changed,
                 'story_check': check, 'usable_downstream': bool(current and check and check['status'] == 'checked' and not needs_review),
                 'history': history}
-    except (ValueError, OSError, KeyError, TypeError, AttributeError):
-        return {'current': None, 'needs_review': True, 'usable_downstream': False,
-                'error': 'The paper cut could not be read. Earlier versions have been kept. Restore a safe copy before editing.'}
+    except ReceiptChainError:
+        # This observer can overlap a signer's receipt append. An unverifiable
+        # read is never permission, and must not take the whole board down.
+        return {'current': current, 'needs_review': True, 'usable_downstream': False,
+                'error': 'The story’s signed approval records could not be verified. Refresh to try again; if this continues, review the approval records. Existing takes and held money remain recorded. No new purchase is permitted by this check.'}
+    except (ValueError, OSError, KeyError, TypeError, AttributeError, PathSafetyError):
+        return {'current': current, 'needs_review': True, 'usable_downstream': False,
+                'error': ('The saved paper cut is still available, but its story checks could not be read. Review the approved story, then check the paper cut again. Existing takes and held money remain recorded.' if current else
+                    'The paper cut could not be read. Earlier versions have been kept. Restore a safe copy before editing.')}
 
 
 def creation_facts(root):
