@@ -40,10 +40,11 @@ def timed_material(request, monkeypatch, tmp_path, short_signing_folder):
         monkeypatch.setenv('OPENMONTAGE_GATES_DIR', saved['signing'])
         monkeypatch.setattr('lib.paths.PROJECTS_DIR', root.parent)
         monkeypatch.setattr('lib.events.PROJECTS_DIR', root.parent)
-        # The same pictures, sound and card words get a newly saved cut
-        # version. All three Delivery reviews must therefore be signed again.
+        # Give the same pictures, sound, card words and settings a fresh
+        # readiness revision through the existing edit writer. An unchanged
+        # Save cut deliberately preserves signatures in the joined app.
         old = trailer_edit.read_revision(root)
-        cutting_view.save_cut(root, cutting_view.editable(old['timeline']), old['edit_revision_sha256'])
+        trailer_edit.save_edit_revision(root,{**old,'unfinished':True},old['edit_revision_sha256'])
     else:
         signing = parent / 'g'
         signing.mkdir(exist_ok=True)

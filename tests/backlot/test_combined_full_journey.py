@@ -58,6 +58,7 @@ def run_visible_journey(tmp_path,monkeypatch,isolated_standins,*,reload_points=F
     with browser_board(projects/'not-created',monkeypatch) as url,sync_playwright() as pw:
         url=url.replace('?static=1','')
         browser,page=start_browser(pw,url)
+        page.set_viewport_size({'width':1440,'height':900})
         tracing=bool(os.environ.get('FRONTLOT_JOURNEY_TRACE'))
         if tracing:page.context.tracing.start(screenshots=True,snapshots=True,sources=True)
         try:

@@ -25,7 +25,8 @@ def test_unrecorded_rough_blocks_later_controls_and_paper_record_waits(trailer_c
              'review':{'issues_found':[],'checks':{'technical_probe':{'duration_seconds':3,'file_size_bytes':500000}},
                        'metadata':{'test_only':False,'boundary_samples':[],'measurements':{'integrated_lufs':-16,'true_peak_dbtp':-2}}}}]}
     older=copy.deepcopy(data['exports'][0]);older['id']='invented-earlier';data['exports'].append(older)
-    monkeypatch.setattr(delivery,'snapshot',lambda *a:copy.deepcopy(data))
+    monkeypatch.setattr(delivery,'snapshot',lambda *a:{**copy.deepcopy(data),
+        'recorded_stages':['canon_ingest']+(['script'] if paper_recorded else [])+sorted(recorded)})
     with board(root,monkeypatch) as url,sync_playwright() as pw:
         browser=pw.chromium.launch(headless=True)
         try:

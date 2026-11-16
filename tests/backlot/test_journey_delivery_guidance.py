@@ -63,11 +63,13 @@ def test_delivery_controls_wait_for_the_running_operation(signed_cut,monkeypatch
             endpoint=url+f'/api/project/{root.name}/delivery/rough'
             page.route(endpoint,lambda route:held.append(route))
             review=panel.get_by_role('button',name='Review and sign the saved rough cut',exact=True)
+            review.evaluate('(node)=>node.dataset.testBusy="review"')
             with page.expect_request(endpoint,timeout=30000):review.click()
-            expect(review).to_be_disabled()
+            expect(panel.locator('[data-test-busy="review"]')).to_be_disabled()
+            expect(panel.locator('[data-test-busy="review"]')).to_have_attribute('aria-busy','true')
             assert held
             held[0].fulfill(status=400,content_type='application/json',body=json.dumps({'detail':'An invented refused preparation. No review was changed.'}))
             expect(panel.get_by_role('status')).to_contain_text('An invented refused preparation.')
-            expect(review).to_be_enabled(timeout=30000)
+            expect(panel.get_by_role('button',name='Review and sign the saved rough cut',exact=True)).to_be_enabled(timeout=30000)
             assert not errors and len(calls['posts'])==3 and len(posts)==1
         finally:browser.close()

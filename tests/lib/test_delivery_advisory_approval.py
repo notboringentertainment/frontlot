@@ -38,7 +38,7 @@ def test_timed_speech_notes_leave_final_approval_to_the_writer(delivery_cut,monk
             panel.get_by_role('button',name='Review and sign final approval',exact=True).click()
             signing=page.get_by_role('region',name='Delivery review');expect(signing).to_contain_text(note,timeout=120000)
             player=signing.locator('video');expect(player).to_have_js_property('readyState',4,timeout=30000)
-            player.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=15000)
+            player.evaluate('(v)=>{v.muted=true;return v.play();}');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=15000)
             capture(page,'exact-file-review',signing)
             page.get_by_role('button',name='Start signing',exact=True).click()
             page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=30000)
