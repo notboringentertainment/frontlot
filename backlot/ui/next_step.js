@@ -85,7 +85,7 @@ function paint(){
     }
   }
   const missing=(footage?.shots||[]).filter(s=>!s.references.length);
-  if(missing.length&&!signatureUpdating&&!held&&!heldClip&&!pending)text+=' '+missing.map(s=>`${s.label}: ${s.purpose}. No reference picture is assigned, so this shot cannot get footage yet. Assign a signed picture if you want footage for it.`).join(' ');
+  if(missing.length&&!signatureUpdating&&!held&&!heldClip&&!pending)text+=' '+missing.map(s=>{const purpose=s.purpose.trimEnd();return `${s.label}: ${purpose}${/\p{P}$/u.test(purpose)?'':'.'} No reference picture is assigned, so this shot cannot get footage yet. Assign a signed picture if you want footage for it.`;}).join(' ');
   // Avoid replacing a focused guidance button on an unrelated board refresh.
   const key=JSON.stringify([text,gate,identity]);if(node.dataset.contentKey===key)return;node.dataset.contentKey=key;
   node.replaceChildren(el('h2',{},'Next step'),el('p',{},text),actionButton(gate?'Open this signing request':'Go to this step',async()=>{

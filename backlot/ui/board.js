@@ -1434,7 +1434,7 @@ function renderNoState(s) {
   if (s.is_trailer && s.trailer_damaged) return el("div", {class:"notice", role:"alert"}, s.trailer_damaged);
   if (s.trailer_setup_pending) return el("div", {class:"notice"}, s.trailer_creation?.message || "This trailer is an unsigned draft.");
   if (s.has_pipeline_state) return null;
-  if (s.is_trailer) return el("div", {class:"notice"}, s.trimmed_contract ? "Start by supplying and signing your story in Story workspace." : "Review and sign the trailer-test contract above to use Ben’s five available reviews.");
+  if (s.is_trailer) return el("div", {class:"notice"}, s.trimmed_contract ? "Start by supplying and signing your story in Story workspace." : "Review and sign the five-review list above to use these five reviews.");
   return el("div", { class: "notice", style: "border-color:#2b2b33;background:var(--surface-2);color:var(--text-3)" },
     el("span", { style: "font-size:15px" }, "◌"),
     el("span", {},
@@ -1451,7 +1451,7 @@ function renderAwaitingNotice(s) {
     el("span", {},
       el("b", {}, s.is_trailer ? `${stageName(s, awaiting)} is waiting for your review. ` : `The ${awaiting.name} stage is waiting for your review. `),
       s.is_trailer && awaiting.approval_error ? `${awaiting.approval_error} ` : s.is_trailer ? "This review is unfinished. " : "The agent is paused at this gate. ",
-      s.is_trailer ? s.trimmed_contract ? `Review and sign it in ${awaiting.name==='canon_ingest'?'Story':awaiting.name==='script'?'Paper cut':'Delivery'} workspace.` : "Review and sign the trailer-test contract above to use Ben’s five available reviews." : (hasAuthoredGates(s) ? gatesCTA("OPEN GATES TO REVIEW AND SIGN") : "Continue the review with your agent.")));
+      s.is_trailer ? s.trimmed_contract ? `Review and sign it in ${awaiting.name==='canon_ingest'?'Story':awaiting.name==='script'?'Paper cut':'Delivery'} workspace.` : "Review and sign the five-review list above to use these five reviews." : (hasAuthoredGates(s) ? gatesCTA("OPEN GATES TO REVIEW AND SIGN") : "Continue the review with your agent.")));
 }
 
 // ---------------------------------------------------------------------------
@@ -1906,7 +1906,7 @@ const GATE_WORDS = {
   trailer_card: "Review exact card words",
 };
 const storyGate=row=>row.kind==='artifact_review'&&row.stage==='canon_ingest'&&row.scope==='trailer-stage';
-const gateWords = (kind,row={}) => storyGate({...row,kind}) ? 'Review this story' : kind==='artifact_review'&&row.scope==='trailer-paper' ? 'Review the whole paper cut' : kind==='artifact_review'&&row.scope==='trailer-stage' ? row.stage==='edit'?'Sign the rough cut':row.stage==='colour_mix'?'Sign colour and sound':'Approve the final file' : kind==='config' && row.scope==='footage:project_config' ? 'Review footage prices and permissions' : kind==='config' && row.scope==='audio:project_config' ? 'Review audio prices and permissions' : state?.is_trailer && kind === "pipeline_migration" ? state.trailer_setup_pending?"Start this trailer":"Review the trailer-test contract" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
+const gateWords = (kind,row={}) => storyGate({...row,kind}) ? 'Review this story' : kind==='artifact_review'&&row.scope==='trailer-paper' ? 'Review the whole paper cut' : kind==='artifact_review'&&row.scope==='trailer-stage' ? row.stage==='edit'?'Sign the rough cut':row.stage==='colour_mix'?'Sign colour and sound':'Approve the final file' : kind==='config' && row.scope==='footage:project_config' ? 'Review footage prices and permissions' : kind==='config' && row.scope==='audio:project_config' ? 'Review audio prices and permissions' : state?.is_trailer && kind === "pipeline_migration" ? state.trailer_setup_pending?"Start this trailer":"Review the five-review list" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
 
 const SLOT_OF_KIND = {
   look_lock: "look",
@@ -2611,7 +2611,7 @@ function renderGateViewer(s) {
   if(header.kind==='pipeline_migration'&&gateDetail.packet?.trailer_test_contract){
     const decision=gateDetail.packet.trailer_test_contract;
     return el('section',{id:'gate-detail',class:'paper-editor',role:'region','aria-label':'Trailer-test contract review'},
-      el('h2',{id:'gate-detail-heading'},s.trailer_setup_pending?'Start this trailer':'Review the trailer-test contract'),
+      el('h2',{id:'gate-detail-heading'},s.trailer_setup_pending?'Start this trailer':'Review the five-review list'),
       el('p',{},'This trailer needs five signed reviews: Story, Paper cut, Rough cut, Colour and sound, and Final file. This signature selects the contract. It approves no stage, purchase or take.'),
       gateDetail.packet.trailer_creation?el('p',{},`${gateDetail.packet.trailer_creation.title}. Target length: ${gateDetail.packet.trailer_creation.trailer.target_duration_seconds} seconds. Whole-trailer ceiling: $${gateDetail.packet.trailer_creation.spending_ceiling_usd.toFixed(2)}.`):null,
       el('h3',{},'The required signed reviews'),...decision.required_reviews.map(w=>el('p',{},w)),
@@ -3104,8 +3104,8 @@ function renderBoard(deliveryVerified=false) {
     ?renderDelivery(s,openDeliveryReview,!deliveryVerified):null;
   if(s.is_trailer&&!s.trailer_damaged&&!s.trailer_setup_pending&&!s.trimmed_contract&&!selectedGateId){
     const status=el('p',{role:'status'});
-    viewer.append(el('section',{class:'paper-panel'},el('p',{},'Ben decided to trim the trailer contract for this test. Review and sign that change to use the five available reviews. Your saved work is kept.'),
-      el('button',{type:'button',onclick:async()=>{try{const r=await fetch(`/api/project/${encodedProjectId}/trailer-contract/review`,{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:'{}'});const value=await r.json();if(!r.ok)throw Error(value.detail);await refresh();await selectGate(value.request_id);}catch(e){status.textContent=e.message;}}},'Review the trailer-test contract'),status));
+    viewer.append(el('section',{class:'paper-panel'},el('p',{},'This trailer needs five signed reviews: Story, Paper cut, Rough cut, Colour and sound, and Final file. The other whole-stage reviews are not part of a trailer. Review and sign this contract to adopt that review list. Your saved work is kept.'),
+      el('button',{type:'button',onclick:async()=>{try{const r=await fetch(`/api/project/${encodedProjectId}/trailer-contract/review`,{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:'{}'});const value=await r.json();if(!r.ok)throw Error(value.detail);await refresh();await selectGate(value.request_id);}catch(e){status.textContent=e.message;}}},'Review and sign the five-review list'),status));
   }
   if(s.is_trailer && !s.trailer_damaged && !selectedGateId){
     trailerWorkspaceNav??=el('nav',{class:'voice-workspace-nav','aria-label':'Trailer workspaces'},
