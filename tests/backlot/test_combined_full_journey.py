@@ -13,10 +13,10 @@ from tests.backlot.footage_prereq_helpers import complete_footage_prerequisites,
 RUN=os.environ.get('EARLY_PICTURE_PREFIX','journey-'+uuid.uuid4().hex[:8])
 
 def test_full_visible_journey(tmp_path,monkeypatch,isolated_standins):
-    run_visible_journey(tmp_path,monkeypatch,isolated_standins)
+    run_visible_journey(tmp_path,monkeypatch,isolated_standins,final_reload=True)
 
 
-def run_visible_journey(tmp_path,monkeypatch,isolated_standins,*,reload_points=False,prefix=None):
+def run_visible_journey(tmp_path,monkeypatch,isolated_standins,*,reload_points=False,prefix=None,final_reload=False):
     if prefix:
         monkeypatch.setattr(__import__(__name__,fromlist=['RUN']),'RUN',prefix)
         monkeypatch.setattr('tests.backlot.test_early_paid_readiness.RUN',prefix)
@@ -257,6 +257,22 @@ def run_visible_journey(tmp_path,monkeypatch,isolated_standins,*,reload_points=F
             expect(delivery.get_by_role('status').first).to_contain_text('shown in Finder',timeout=180000)
             note('signed-final-and-reveal',delivery)
             assert len(reveals)==1
+            if final_reload:
+                # The final evidence walk reopens after the actual Finder
+                # handoff, not only before it. Recheck the server's current
+                # exact-file approval before accepting what the page shows.
+                with page.expect_response(lambda r:r.url==endpoint and r.request.method=='GET',timeout=180000) as reopened_after_finder:
+                    page.reload()
+                response=reopened_after_finder.value
+                assert response.ok,response.text()
+                current=response.json()
+                assert current['revision']==expected_revision
+                assert current['rough_status']==current['colour_status']=='Signed by you'
+                assert current['exports'][0]['id']==expected_id
+                assert current['exports'][0]['status']=='Approved by you'
+                expect(tile).to_contain_text('Approved by you',timeout=5000)
+                expect(tile.get_by_role('button',name='Show approved file in Finder',exact=True)).to_be_enabled(timeout=5000)
+                note('reloaded-after-finder',delivery)
             import shutil
             picture_folder=os.environ.get('EARLY_TEST_PICTURES')
             if picture_folder:

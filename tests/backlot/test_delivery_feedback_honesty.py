@@ -12,6 +12,55 @@ from tests.backlot.test_delivery_actions import setup_delivery, snapshot
 
 
 @pytest.mark.parametrize('kind', ['music', 'effect'])
+def test_new_brief_result_wins_over_a_held_signing_return_read(voice_world, monkeypatch, kind):
+    root, posts, gets = voice_world
+    held = []
+    stalled = {'value': True}
+    with board(root, monkeypatch) as url, sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(viewport={'width': 1440, 'height': 900})
+            page.goto(f'{url}/p/{root.name}#k=invented-browser-proof')
+            audio = page.get_by_role('region', name='Trailer audio', exact=True)
+            form = audio.locator('#' + kind + '-compose')
+            field = form.get_by_label('Music brief' if kind == 'music' else 'Effect description', exact=True)
+            expect(field).to_be_visible()
+            field.fill('An invented quiet pulse.')
+            form.get_by_label('Music length in seconds' if kind == 'music' else 'Effect length in seconds', exact=True).fill('3' if kind == 'music' else '1')
+            # Return from signing starts a read, but the writer saves the
+            # next brief before that older read has answered.
+            def signing_read(route):
+                if stalled['value']:
+                    held.append(route)
+                else:
+                    data = route.fetch().json()
+                    data['record_warnings'] = ['The signing return finished.']
+                    route.fulfill(json=data)
+            page.route('**/voice', signing_read)
+            page.evaluate('()=>import("/ui/voice.js").then(m=>m.refreshAudioAfterSigning())')
+            expect(audio.get_by_role('status')).to_contain_text('Checking the saved audio decisions')
+            page.wait_for_function('()=>true')
+            assert held
+            save = form.get_by_role('button', name='Save ' + kind + ' brief', exact=True)
+            save.click()
+            expect(audio.get_by_role('status')).to_contain_text('brief saved')
+            stalled['value'] = False
+            with page.expect_response('**/voice'):
+                held.pop().continue_()
+            # Wait for the follow-up read which is required because saving
+            # invalidated the first response. Neither read may erase the
+            # newer action's result.
+            expect(form.get_by_role('button', name='Prepare ' + kind + ' spending card', exact=True)).to_be_enabled()
+            expect(audio).to_contain_text('The signing return finished.')
+            expect(audio.get_by_role('status')).to_contain_text('brief saved')
+            expect(save.locator('xpath=following-sibling::*[1]')).to_contain_text('brief saved')
+            assert not posts and not gets
+        finally:
+            page.unroute_all(behavior='ignoreErrors')
+            browser.close()
+
+
+@pytest.mark.parametrize('kind', ['music', 'effect'])
 def test_brief_saved_result_survives_unrelated_read_and_clears_for_changed_brief(voice_world, monkeypatch, kind):
     from backlot import music_panel
     root, posts, gets = voice_world
