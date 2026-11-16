@@ -1,0 +1,31 @@
+{
+  "model_id": "bytedance/seedream/v5/pro/edit",
+  "text_to_image_model_id": "bytedance/seedream/v5/pro/text-to-image",
+  "verified_at": "2026-08-25",
+  "sources": [
+    "https://fal.ai/models/bytedance/seedream/v5/pro/edit/llms.txt",
+    "https://fal.ai/models/bytedance/seedream/v5/pro/text-to-image/llms.txt"
+  ],
+  "endpoints": {
+    "edit_sync": "https://fal.run/bytedance/seedream/v5/pro/edit",
+    "edit_queue": "https://queue.fal.run/bytedance/seedream/v5/pro/edit",
+    "t2i_sync": "https://fal.run/bytedance/seedream/v5/pro/text-to-image",
+    "t2i_queue": "https://queue.fal.run/bytedance/seedream/v5/pro/text-to-image"
+  },
+  "input": {
+    "required": ["prompt", "image_urls"],
+    "properties": {
+      "prompt": {"type": "string"},
+      "image_urls": {"type": "array", "items": {"type": "string"}, "maxItems": 10, "note": "if more are sent only the last 10 are used — preflight must reject >10"},
+      "image_size": {"enum": ["square_hd", "square", "portrait_4_3", "portrait_16_9", "landscape_4_3", "landscape_16_9", "auto_1K", "auto_2K"], "default": "auto_2K", "custom": {"width": "int", "height": "int"}},
+      "num_images": {"type": "integer", "default": 1, "max": 6},
+      "output_format": {"enum": ["jpeg", "png"], "default": "jpeg"},
+      "sync_mode": {"type": "boolean", "default": false},
+      "enable_safety_checker": {"type": "boolean", "default": true}
+    },
+    "limits": {"max_reference_images": 10}
+  },
+  "output": {"required": ["images"], "image_url_path": "images[].url"},
+  "pricing": {"usd_per_image_le_1536": 0.0675, "usd_per_image_le_2048": 0.135, "usd_per_additional_input_image": 0.0045},
+  "idempotency": {"client_key_supported": false, "server_request_id": true, "no_retry_header": "X-Fal-No-Retry: 1"}
+}

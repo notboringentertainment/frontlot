@@ -1,0 +1,241 @@
+{
+  "match": [
+    {
+      "name": "key-order-nested",
+      "input": {
+        "z": 1,
+        "a": {
+          "y": 2,
+          "b": 3
+        }
+      },
+      "canonical": "{\"a\":{\"b\":3,\"y\":2},\"z\":1}",
+      "sha256": "10d6b907e50339871355376854e16e87112120f63b9ce9bca2913907cd2a124d"
+    },
+    {
+      "name": "non-ascii-keys",
+      "input": {
+        "\u00e9": 1,
+        "e": 2,
+        "\u00df": 3,
+        "\u65e5\u672c": 4,
+        "\ud83d\ude00": 5,
+        "\ufb01": 6
+      },
+      "canonical": "{\"e\":2,\"\u00df\":3,\"\u00e9\":1,\"\u65e5\u672c\":4,\"\ud83d\ude00\":5,\"\ufb01\":6}",
+      "sha256": "c2d203cad6699ae0f95e867bc8a8d77023570cf728bdb70a7a75e318adfb3255"
+    },
+    {
+      "name": "nfc-string",
+      "input": {
+        "name": "caf\u00e9"
+      },
+      "canonical": "{\"name\":\"caf\u00e9\"}",
+      "sha256": "645fa443126a8954fc6d871912b8fc67bc2ee8feae417efe55546251962ca74d"
+    },
+    {
+      "name": "nfd-string",
+      "input": {
+        "name": "cafe\u0301"
+      },
+      "canonical": "{\"name\":\"caf\u00e9\"}",
+      "sha256": "645fa443126a8954fc6d871912b8fc67bc2ee8feae417efe55546251962ca74d"
+    },
+    {
+      "name": "nfd-key",
+      "input": {
+        "cafe\u0301": true
+      },
+      "canonical": "{\"caf\u00e9\":true}",
+      "sha256": "afa61740110afa6b1d885495408eec4446d44f59ca4ea09b0ebc854891a03606"
+    },
+    {
+      "name": "control-and-escapes",
+      "input": {
+        "s": "quote\" backslash\\ tab\t newline\n bell\u0007 nul\u0000"
+      },
+      "canonical": "{\"s\":\"quote\\\" backslash\\\\ tab\\t newline\\n bell\\u0007 nul\\u0000\"}",
+      "sha256": "8cd74a15b503a91804af822fd1663d077493dd0ee50aee7fd7c5a8b36d0d7e9d"
+    },
+    {
+      "name": "int-one",
+      "input": 1,
+      "canonical": "1",
+      "sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "float-one",
+      "input": 1.0,
+      "canonical": "1",
+      "sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "name": "negative-zero",
+      "input": -0.0,
+      "canonical": "0",
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "name": "tenth",
+      "input": 0.1,
+      "canonical": "0.1",
+      "sha256": "14be4b45f18e0d8c67b4f719b5144eee88497e413709d11d85b096d8e2346310"
+    },
+    {
+      "name": "small-exponent",
+      "input": 1e-07,
+      "canonical": "1e-7",
+      "sha256": "5b33e02f2c5103a05d32f6ba9cb058294452bfbf393967f68bb30c1bdcbbab22"
+    },
+    {
+      "name": "max-safe-integer",
+      "input": 9007199254740991,
+      "canonical": "9007199254740991",
+      "sha256": "f40b423c2dd95ff2b2f027e22208f438cf7242862e5e746860e697308c9add26"
+    },
+    {
+      "name": "min-safe-integer",
+      "input": -9007199254740991,
+      "canonical": "-9007199254740991",
+      "sha256": "4c933a456bb8f2e9894b2d0b26480439cd72d52fb8a27cbf8fd7f323f22c7815"
+    },
+    {
+      "name": "array-mixed",
+      "input": [
+        1,
+        "two",
+        null,
+        true,
+        false,
+        [],
+        {}
+      ],
+      "canonical": "[1,\"two\",null,true,false,[],{}]",
+      "sha256": "922967572becce808002cdf7e6eb2fc9c7c93618b912f82fa081466469be3d28"
+    },
+    {
+      "name": "booleans-and-null",
+      "input": {
+        "t": true,
+        "f": false,
+        "n": null
+      },
+      "canonical": "{\"f\":false,\"n\":null,\"t\":true}",
+      "sha256": "22e00dc2f7b01420f940fbdbfbdf34fa0667cc6500186495023ba37722cbd05e"
+    },
+    {
+      "name": "empty-object",
+      "input": {},
+      "canonical": "{}",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "name": "look-character-1.1",
+      "input": {
+        "version": "1.1",
+        "entity_kind": "character",
+        "entity_id": "vector-engineer",
+        "fictional_subject_attestation": true,
+        "minor": false,
+        "prompt_safe_description": "A wiry station engineer in her thirties with cropped ash-blond hair, grey eyes behind wire-rimmed glasses, a weathered grey work coat over a rust jumpsuit, and a habit of standing with one hand on any nearby rail.",
+        "continuity_risks": [
+          "hair length drifts between shots",
+          "glasses vanish in close-ups"
+        ],
+        "negative_lines": [
+          "no hat"
+        ],
+        "spoiler": false,
+        "depends_on": [
+          {
+            "writeros_record_id": "mem_0123456789abcdef0123456789abcdef",
+            "content_hash": "abababababababababababababababababababababababababababababababab"
+          }
+        ],
+        "shape_only": false,
+        "age_band": "thirties",
+        "build": {
+          "kind": "lean",
+          "note": "long limbs"
+        },
+        "hair": "cropped ash-blond",
+        "distinguishing_marks": [
+          "burn scar on left wrist"
+        ],
+        "default_wardrobe": {
+          "pieces": [
+            "grey work coat",
+            "rust jumpsuit"
+          ]
+        },
+        "wardrobe_variants": [
+          {
+            "name": "dress blues",
+            "when": "the ceremony"
+          }
+        ],
+        "props": [
+          "torque wrench"
+        ],
+        "era_and_class_signals": "near-future working crew, caf\u00e9-bar regular"
+      },
+      "canonical": "{\"age_band\":\"thirties\",\"build\":{\"kind\":\"lean\",\"note\":\"long limbs\"},\"continuity_risks\":[\"hair length drifts between shots\",\"glasses vanish in close-ups\"],\"default_wardrobe\":{\"pieces\":[\"grey work coat\",\"rust jumpsuit\"]},\"depends_on\":[{\"content_hash\":\"abababababababababababababababababababababababababababababababab\",\"writeros_record_id\":\"mem_0123456789abcdef0123456789abcdef\"}],\"distinguishing_marks\":[\"burn scar on left wrist\"],\"entity_id\":\"vector-engineer\",\"entity_kind\":\"character\",\"era_and_class_signals\":\"near-future working crew, caf\u00e9-bar regular\",\"fictional_subject_attestation\":true,\"hair\":\"cropped ash-blond\",\"minor\":false,\"negative_lines\":[\"no hat\"],\"prompt_safe_description\":\"A wiry station engineer in her thirties with cropped ash-blond hair, grey eyes behind wire-rimmed glasses, a weathered grey work coat over a rust jumpsuit, and a habit of standing with one hand on any nearby rail.\",\"props\":[\"torque wrench\"],\"shape_only\":false,\"spoiler\":false,\"version\":\"1.1\",\"wardrobe_variants\":[{\"name\":\"dress blues\",\"when\":\"the ceremony\"}]}",
+      "sha256": "2ccaf54ab587d7f564b120155f1459f8519e396bc405ff49bbec87bea424ead7"
+    },
+    {
+      "name": "look-location-1.1",
+      "input": {
+        "version": "1.1",
+        "entity_kind": "location",
+        "entity_id": "vector-station",
+        "fictional_subject_attestation": true,
+        "minor": false,
+        "prompt_safe_description": "A salt-crusted orbital refuelling station of ribbed steel corridors, sodium-lit and humming, with frost blooming along every window seam and cargo netting slung between the pillars.",
+        "continuity_risks": [
+          "frost pattern must match between angles"
+        ],
+        "negative_lines": [],
+        "spoiler": true,
+        "depends_on": [],
+        "shape_only": false,
+        "establishing_view": "wide down the main corridor toward the airlock",
+        "time_of_day_default": "night",
+        "palette_anchors": [
+          "sodium amber",
+          "frost white",
+          "gunmetal"
+        ],
+        "architecture_or_terrain": "ribbed steel corridors",
+        "dressing": [
+          "cargo netting",
+          "a \"no smoking\" sign\twith a tab"
+        ],
+        "weather_or_light_rules": "always sodium-lit, never daylight"
+      },
+      "canonical": "{\"architecture_or_terrain\":\"ribbed steel corridors\",\"continuity_risks\":[\"frost pattern must match between angles\"],\"depends_on\":[],\"dressing\":[\"cargo netting\",\"a \\\"no smoking\\\" sign\\twith a tab\"],\"entity_id\":\"vector-station\",\"entity_kind\":\"location\",\"establishing_view\":\"wide down the main corridor toward the airlock\",\"fictional_subject_attestation\":true,\"minor\":false,\"negative_lines\":[],\"palette_anchors\":[\"sodium amber\",\"frost white\",\"gunmetal\"],\"prompt_safe_description\":\"A salt-crusted orbital refuelling station of ribbed steel corridors, sodium-lit and humming, with frost blooming along every window seam and cargo netting slung between the pillars.\",\"shape_only\":false,\"spoiler\":true,\"time_of_day_default\":\"night\",\"version\":\"1.1\",\"weather_or_light_rules\":\"always sodium-lit, never daylight\"}",
+      "sha256": "de3247562d3f4fc46b2326fd7e52407ff5863c404137e9e9868ef9bbfc508c6b"
+    }
+  ],
+  "refuse": [
+    {
+      "name": "float-1e21",
+      "input": 1e+21
+    },
+    {
+      "name": "int-above-safe",
+      "input": 9007199254740993
+    },
+    {
+      "name": "int-below-safe",
+      "input": -9007199254740993
+    },
+    {
+      "name": "nested-unsafe",
+      "input": {
+        "look": {
+          "count": 1152921504606846976
+        }
+      }
+    }
+  ]
+}

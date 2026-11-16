@@ -185,6 +185,16 @@ class TestParsePayload:
 # ---- execute() guardrails + mocked success ----
 
 class TestExecute:
+    @pytest.fixture
+    def tmp_path(self,tmp_path):
+        root=tmp_path/'older-audio';root.mkdir();return root
+
+    @pytest.fixture(autouse=True)
+    def signed_older_context(self,tmp_path,monkeypatch):
+        from tests.contracts.test_kling_tts import verified_older_audio_production
+        root=verified_older_audio_production.__wrapped__(tmp_path,monkeypatch)
+        monkeypatch.chdir(root)
+
     def test_missing_file(self, azure_env, tmp_path):
         res = AzureSpeechToText().execute({"input_path": str(tmp_path / "nope.wav")})
         assert not res.success

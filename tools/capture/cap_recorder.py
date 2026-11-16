@@ -19,6 +19,7 @@ This tool does NOT control Cap directly — it acts as a bridge:
 
 from __future__ import annotations
 
+from lib import programs
 import glob
 import json
 import os
@@ -57,8 +58,8 @@ def _find_cap_binary() -> str | None:
             if c.exists():
                 return str(c)
         # Try PATH
-        if shutil.which("Cap") or shutil.which("cap"):
-            return shutil.which("Cap") or shutil.which("cap")
+        if programs.which("Cap") or programs.which("cap"):
+            return programs.which("Cap") or programs.which("cap")
 
     elif sys_platform == "Darwin":
         candidates = [
@@ -72,7 +73,7 @@ def _find_cap_binary() -> str | None:
     elif sys_platform == "Linux":
         candidates = ["cap", "Cap"]
         for c in candidates:
-            found = shutil.which(c)
+            found = programs.which(c)
             if found:
                 return found
         # AppImage or Flatpak
@@ -115,19 +116,19 @@ def _is_cap_running() -> bool:
     sys_platform = platform.system()
     try:
         if sys_platform == "Windows":
-            result = subprocess.run(
+            result = programs.run(
                 ["tasklist", "/FI", "IMAGENAME eq Cap.exe", "/NH"],
                 capture_output=True, text=True, timeout=5,
             )
             return "Cap.exe" in result.stdout
         elif sys_platform == "Darwin":
-            result = subprocess.run(
+            result = programs.run(
                 ["pgrep", "-x", "Cap"],
                 capture_output=True, text=True, timeout=5,
             )
             return result.returncode == 0
         elif sys_platform == "Linux":
-            result = subprocess.run(
+            result = programs.run(
                 ["pgrep", "-x", "cap"],
                 capture_output=True, text=True, timeout=5,
             )

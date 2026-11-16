@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
+from tests.tools.conftest import generation_tmp_path as tmp_path
+
+pytestmark = pytest.mark.usefixtures('verified_generation_project')
 
 from tools.base_tool import ToolStatus
 from tools.tool_registry import ToolRegistry
@@ -112,28 +116,28 @@ def test_documentary_renderer_family_maps_to_remotion():
 
 def test_video_compose_surfaces_all_three_runtimes():
     """Preflight must see remotion, hyperframes, and ffmpeg as separate engines."""
-    import shutil
+    from lib import programs
 
     info = VideoCompose().get_info()
     engines = info["render_engines"]
     assert set(engines.keys()) == {"remotion", "hyperframes", "ffmpeg"}
-    assert engines["ffmpeg"] is bool(shutil.which("ffmpeg"))
+    assert engines["ffmpeg"] is bool(programs.which("ffmpeg"))
     assert "hyperframes_note" in info
     assert "runtime_governance" in info
 
 
 def test_video_compose_ffmpeg_engine_reflects_path_availability(monkeypatch):
     """Regression: `get_info()["render_engines"]["ffmpeg"]` must actually check
-    shutil.which("ffmpeg"), not hardcode True. A machine without ffmpeg on PATH
-    must not have the agent believe render_runtime='ffmpeg' is safe to lock."""
-    import shutil
+    installed program discovery, not hardcode True. A machine without an
+    installed ffmpeg must not be offered that renderer."""
+    from lib import programs
 
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(programs, "which", lambda name,**kw: None)
     info = VideoCompose().get_info()
     assert info["render_engines"]["ffmpeg"] is False
 
     monkeypatch.setattr(
-        shutil, "which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None
+        programs, "which", lambda name,**kw: "/usr/bin/ffmpeg" if name == "ffmpeg" else None
     )
     info = VideoCompose().get_info()
     assert info["render_engines"]["ffmpeg"] is True
