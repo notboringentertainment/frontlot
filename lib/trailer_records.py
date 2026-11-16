@@ -118,7 +118,13 @@ def sync_paper(root):
             if existing.get('artifacts')!=artifacts:write_checkpoint(root.parent,root.name,'script','in_progress',artifacts)
             for name,value in artifacts.items():_write_artifact(root,name,value)
         else:
-            for stage,name in [('script','script'),('scene_plan','scene_plan')]:_publish(root,stage,name,artifacts[name])
+            from lib.trailer_edit import read_revision
+            legacy='checkpoint_script.json' in read_revision(root).get('inputs',{})
+            for stage,name in [('script','script'),('scene_plan','scene_plan')]:
+                # An earlier paper treats these checkpoints as upstream.
+                # Project facts to artifact files, never overwrite its inputs.
+                if legacy:_write_artifact(root,name,artifacts[name])
+                else:_publish(root,stage,name,artifacts[name])
         _settings_decision(root,_settings(root))
 
 

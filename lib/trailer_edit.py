@@ -427,8 +427,12 @@ def save_revision(root, paper, expected_revision):
         old = _read_current(root)
         _expect(old, expected_revision)
         inputs = _inputs(root)
-        value = _paper_value(root, paper, old, inputs)
+        # Preserve the exact earlier source set while it still matches. A
+        # comparison is not a migration or permission to retire signatures.
+        source_inputs=old['inputs'] if old and inputs_match(root,old.get('inputs')) else inputs
+        value = _paper_value(root, paper, old, source_inputs)
         result=old if old and all(old.get(k)==value.get(k) for k in ('paper_cut','inputs','story_check','trailer')) else _commit(root,value,old,inputs)
+        if result is old and 'checkpoint_script.json' in source_inputs:return result
     from lib.trailer_records import sync_paper
     sync_paper(root)
     return result
@@ -449,7 +453,7 @@ def restore_revision(root, revision, expected_revision):
             value = copy.deepcopy(source)
             value['story_check'] = _validate_paper(root,value['paper_cut'])
             value['unfinished'] = True
-            if value.get('inputs') != inputs:
+            if not inputs_match(root,value.get('inputs')):
                 value['paper_cut_pending'] = True
                 value['timing_message'] = 'The saved cut was restored, but its story inputs changed. Review the paper cut before saving or playing it.'
         elif 'paper_cut' in source:

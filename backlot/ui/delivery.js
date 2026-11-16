@@ -135,7 +135,7 @@ export function renderDelivery(s,onSign,refreshOnRender=true){
    el('div',{class:'delivery-actions'},
     action('Review and sign the saved rough cut',async()=>{await refresh(true,true);if(!key)throw Error('The saved cut could not be checked. Reopen it and try this review again.');preparing('Preparing the saved rough cut for review locally…');const r=await api('/rough',{revision:data.revision});await onSign(r.gate_request_id);},!!data.colour_status&&(!done('canon_ingest')||!done('script'))),
     action('Record the signed rough-cut approval',()=>record('/rough/apply'),data.rough_status!=='Signed by you',false)),
-   ...(data.colour_status?[el('h3',{},'Colour and sound approval'),el('p',{},data.colour_status),
+   ...(data.colour_status?[el('h3',{},'Colour and sound approval'),el('p',{},data.colour_status==='Needs your signature'&&data.rough_status==='Signed by you'&&!done('edit')?'Waiting for the rough cut to be recorded':data.colour_status),
     el('div',{class:'delivery-actions'},
     action('Review and sign colour and sound',async()=>{preparing('Preparing the saved colour and sound for review locally…');const r=await api('/colour',{revision:data.revision});await onSign(r.gate_request_id);},data.rough_status!=='Signed by you'||!done('edit')),
      action('Record the signed colour and sound approval',()=>record('/colour/apply'),data.colour_status!=='Signed by you',false))]:[]),
