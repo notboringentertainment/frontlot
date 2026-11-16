@@ -157,6 +157,17 @@ def _inputs(root):
             result[p.name] = record_sha256(value.get('artifacts', value) if isinstance(value, dict) else value)
     return result
 
+def inputs_match(root,inputs):
+    """Recognise the exact earlier source set without dropping its script check."""
+    current=_inputs(root)
+    if inputs==current:return True
+    if not isinstance(inputs,dict) or set(inputs)!=set(current)|{'checkpoint_script.json'}:return False
+    path=Path(root)/'checkpoint_script.json'
+    if path.is_symlink():return False
+    value=json.loads(path.read_text()) if path.exists() else None
+    script='ABSENT' if value is None else record_sha256(value.get('artifacts',value) if isinstance(value,dict) else value)
+    return {k:v for k,v in inputs.items() if k!='checkpoint_script.json'}==current and inputs['checkpoint_script.json']==script
+
 
 @contextmanager
 def _edit_lock(root):
@@ -475,7 +486,7 @@ def paper_state(root):
                     words=' '.join(source['label'].split()[:10])[:80]
                     source['label']='Supplied story: '+words+('…' if len(words)<len(source['label']) else '')
         check = _story_check(root, current['paper_cut']) if current and 'paper_cut' in current else None
-        changed = bool(current and 'paper_cut' in current and current.get('inputs') != _inputs(root))
+        changed = bool(current and 'paper_cut' in current and not inputs_match(root,current.get('inputs')))
         pending = bool(current and current.get('paper_cut_pending'))
         needs_review = changed or pending or bool(check and check['status'] == 'failed')
         history = [{'id': v['edit_revision_sha256'], 'number': n, 'saved_at': v.get('saved_at') or (current or {}).get('revision_times', {}).get(v['edit_revision_sha256']) or _legacy_time(root, v),

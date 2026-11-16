@@ -15,9 +15,9 @@ def material(root):
     saved=trailer_edit.read_revision(root)
     if not saved or not saved.get('paper_cut'):
         raise ValueError('Save the complete paper cut in Paper cut workspace before reviewing it.')
-    inputs=trailer_edit._inputs(root)
+    inputs=saved.get('inputs')
     check=trailer_edit._validate_paper(root,saved['paper_cut'])
-    if saved.get('inputs')!=inputs or check['status']!='checked':
+    if not trailer_edit.inputs_match(root,inputs) or check['status']!='checked':
         raise ValueError('Compare the saved paper cut against the approved story in Paper cut workspace before signing it.')
     # The paper content is the authority here, not a later edit revision.
     # Keep the literal strings as well as their byte fingerprints.

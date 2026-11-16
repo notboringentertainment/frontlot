@@ -57,6 +57,7 @@ export function renderPaperCut(s,onSign) {
   const api=`/api/project/${encodeURIComponent(s.project_id)}/paper-cut`;
   const status=el("p",{role:"status"},"Planning only. Nothing here approves a stage or buys media.");
   const wholeReviewStatus=el('p',{role:'status','aria-label':'Whole paper-cut approval'});
+  let recordReview=null;
   const checks=el("div",{"aria-live":"polite"}), conflict=el("div",{}), content=el("div",{}), history=el("section",{class:"paper-panel"}), details=el("div",{});
   node.append(el("h2",{},"Story and paper cut"),folder,status,checks,conflict,
     el("p",{},"Supply and sign the story in Story workspace, then compare this saved paper cut against it. You can always save a draft here; later stages must wait for its story checks."),content);
@@ -137,6 +138,7 @@ export function renderPaperCut(s,onSign) {
     if(!next)return;
     state=next;
     wholeReviewStatus.textContent=state.whole_review_status||'Needs your signature';
+    if(recordReview)recordReview.disabled=dirty||state.whole_review_status!=='Signed by you';
     updateRowWarnings();
     if(Number.isInteger(state.target_frames)){targetFrames=state.target_frames;updateTiming();}
     for(const box of protectedPanels)box.replaceChildren(el("h4",{},"Protected wording from the story"),el("p",{},"Mechanical comparison cannot recognise every rewording. Compare your lines and cards with these originals."),...(state.protected_lines||[]).map(text=>el("blockquote",{},text)));
@@ -180,10 +182,10 @@ export function renderPaperCut(s,onSign) {
   node.append(save,wholeReviewStatus,button('Review and sign the whole paper cut',async()=>{try{
     if(dirty)throw Error('Save your changed draft as a new version before reviewing the whole paper cut.');
     const result=await request(api+'/review',{revision});await onSign(result.request_id);
-  }catch(error){status.textContent=error.message;}}),state.trimmed_contract?button('Record the signed paper-cut review',async()=>{try{
+  }catch(error){status.textContent=error.message;}}),state.trimmed_contract?(recordReview=button('Record the signed paper-cut review',async()=>{try{
     if(dirty)throw Error('Save and sign your changed draft before recording its review.');
     const result=await request(api+'/apply',{});await refreshFromServer();status.textContent=result.message;
-  }catch(error){status.textContent=error.message;}}):null,button("Check paper cut against approved story",async()=>{try{
+  }catch(error){status.textContent=error.message;}})):null,button("Check paper cut against approved story",async()=>{try{
     if(dirty)throw Error('Save your changed draft as a new version before comparing it with the approved story.');
     const result=await request(`/api/project/${encodeURIComponent(s.project_id)}/story/check`,{});
     revision=result.paper_cut.edit_revision_sha256;await refreshFromServer();status.textContent=result.message;

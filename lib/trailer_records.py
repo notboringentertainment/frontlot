@@ -58,6 +58,20 @@ def paper_artifacts(root):
     saved=trailer_edit.read_revision(root)
     if not saved or 'paper_cut' not in saved:return {}
     paper=copy.deepcopy(saved['paper_cut']);settings=_settings(root)
+    # This reference records the settings at the creative projection, not a
+    # demand to approve that paper again whenever financial consent is renewed.
+    checkpoint=root/'checkpoint_script.json'
+    if checkpoint.exists():
+        prior=json.loads(checkpoint.read_text()).get('artifacts',{}).get('script',{}).get('metadata',{})
+        if (prior.get('paper_cut')==paper and prior.get('story_inputs')==saved['inputs']
+                and prior.get('story_check')==saved['story_check'] and 'signed_settings' in prior):
+            reference=prior['signed_settings']
+            if reference is not None and not any(
+                    row['receipt_id']==reference.get('approval_receipt_id')
+                    and row['record']['config_sha256']==reference.get('config_sha256')
+                    for row in receipts.verified_approvals(root,'config')):
+                raise ValueError('The paper cut’s saved settings reference cannot be verified. Restore that saved record before continuing.')
+            settings=reference
     metadata={'paper_cut':paper,'paper_cut_sha256':record_sha256(paper),
               'story_inputs':saved['inputs'],'story_check':saved['story_check'],
               'signed_settings':settings,'approval':'This records the saved paper cut. No stage is approved.'}
@@ -162,7 +176,7 @@ def after_signature(root,kind):
     try:
         if kind in ('audio_take','footage_take'):sync_media(root)
         elif kind in ('config','audio_resolution'):
-            sync_paper(root)
+            if kind=='audio_resolution':sync_paper(root)
             _settings_decision(Path(root),_settings(root))
             if kind=='audio_resolution':sync_media(root)
     except CheckpointValidationError as exc:

@@ -153,7 +153,7 @@ def complete(root):
         except ValueError:raise ValueError('Nothing has been signed for this current story. Review and sign its exact text in Story workspace before applying its approval.') from None
         if cp.get('status')!='completed' or not cp.get('human_approved'):
             write_checkpoint(root.parent,root.name,'canon_ingest','completed',cp['artifacts'],human_approval_required=True,human_approved=True)
-    return {'message':'Your exact story is signed. Check the saved paper cut against it before making sound or footage.'}
+    return {'message':'Your exact story is signed. Changes to it need a new review.'}
 
 def source_warning(root,text):
     from lib.canon_enforcement import exact_passage_warning
@@ -198,4 +198,4 @@ def _status(root):
     except ValueError:pass
     if not signed and not gate_id:raise ValueError(REQUEST_UNREADABLE)
     return {'current':current,'approved':approved,'signed_unapplied':signed and not approved,'gate_id':gate_id,
-        'message':('Your exact story is signed. Check the saved paper cut against it before making sound or footage.' if approved else 'Your story signature is recorded. Apply it without signing again.' if signed else 'Saved for review. Nothing is approved until you sign this exact story.')}
+        'message':('Your exact story is signed. Changes to it need a new review.' if approved else 'Your story signature is recorded. Apply it without signing again.' if signed else 'Saved for review. Nothing is approved until you sign this exact story.')}

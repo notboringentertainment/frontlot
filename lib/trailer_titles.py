@@ -90,7 +90,9 @@ def card_png(card,*,resolution=(640,360)):
 def _record(root,card):
     exact=copy.deepcopy(card)
     exact['text_utf8_sha256']=hashlib.sha256(card['text'].encode('utf-8')).hexdigest()
-    return {'project_id':Path(root).name,'card':exact,'story_inputs':trailer_edit._inputs(Path(root))}
+    saved=trailer_edit.read_revision(root)
+    inputs=saved['inputs'] if saved and trailer_edit.inputs_match(Path(root),saved.get('inputs')) else trailer_edit._inputs(Path(root))
+    return {'project_id':Path(root).name,'card':exact,'story_inputs':inputs}
 
 def status(root,card):
     rows=receipts.verified_approvals(root,'trailer_card',entity_id=card['id'])
@@ -139,7 +141,7 @@ def approval_record(root,identity):
     except ValueError:
         raise ValueError('This trailer’s creation record cannot be verified. Restore its signed record before reviewing cards.') from None
     saved=trailer_edit.read_revision(root)
-    if not saved or saved.get('inputs')!=trailer_edit._inputs(Path(root)):
+    if not saved or not trailer_edit.inputs_match(Path(root),saved.get('inputs')):
         raise ValueError('The story or trailer settings changed. Review the paper cut before signing this card.')
     timeline=saved['timeline'];end=max(x['start_frame']+x['duration_frames'] for x in timeline['picture'])
     rows=validate_cards(root,timeline.get('cards',[]),end,require_approval=False)

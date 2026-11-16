@@ -71,7 +71,9 @@ def test_final_file_checks_use_one_current_saved_cut_for_both_signatures(trailer
     from tests.lib.look_lock_helpers import approve_request
     root,calls,posts,*_=trailer_cut
     approve_request(delivery.request_rough(root,trailer_edit.read_revision(root)['edit_revision_sha256']),root)
+    delivery.complete_stage(root,'edit')
     approve_request(delivery.request_colour(root,trailer_edit.read_revision(root)['edit_revision_sha256']),root)
+    delivery.complete_stage(root,'colour_mix')
     reads=[];original=delivery._saved
     def counted(*args,**kwargs):reads.append(1);return original(*args,**kwargs)
     monkeypatch.setattr(delivery,'_saved',counted)

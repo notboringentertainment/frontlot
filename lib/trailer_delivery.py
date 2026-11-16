@@ -37,12 +37,14 @@ def _pin(root):
     return pin
 
 def rough_record(root):
+    contract.require_recorded_predecessors(root,_pin(root),'edit')
     saved,_=_saved(root)
     if saved.get('unfinished'):raise ValueError('Prepare this saved cut for rough-cut signing first.')
     return contract.approval_record(root,_pin(root),'edit',{'edit_decisions':saved})
 
 def request_rough(root,revision):
     from lib.media_spending import gate_request
+    contract.require_recorded_predecessors(root,_pin(root),'edit')
     saved,_=_saved(root,revision)
     if saved.get('unfinished'):
         ready=copy.deepcopy(saved);ready['unfinished']=False
@@ -69,6 +71,7 @@ def rough_state(root):
 def colour_record(root):
     from lib.trailer_policy import trimmed
     if not trimmed(_pin(root)):raise ValueError('Review and sign the trailer-test contract before the colour and sound review.')
+    contract.require_recorded_predecessors(root,_pin(root),'colour_mix')
     saved,_=require_rough(root)
     return contract.approval_record(root,_pin(root),'colour_mix',{'edit_decisions':saved})
 
@@ -202,6 +205,7 @@ def _measure(root,path,saved,timeline,refs):
 
 def export(root,revision):
     root=Path(root);saved,timeline=require_rough(root,revision)
+    contract.require_recorded_predecessors(root,_pin(root),'compose')
     from lib.trailer_policy import trimmed
     if trimmed(_pin(root)):require_colour(root,revision)
     if __import__('shutil').disk_usage(root).free<60*1024**3:raise ValueError('There is less than sixty gigabytes free. Make room on this disk before exporting; the saved cut is safe.')
@@ -275,6 +279,7 @@ def read_export(root,identity):
 
 def _artifacts(root,identity,*,remeasure=False):
     root=Path(root);saved,timeline=require_rough(root)
+    contract.require_recorded_predecessors(root,_pin(root),'compose')
     from lib.trailer_policy import trimmed
     if trimmed(_pin(root)):
         # require_rough already checked this exact current cut and its files.

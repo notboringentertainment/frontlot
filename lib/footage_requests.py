@@ -114,7 +114,7 @@ def _paper_snapshot(root):
     except (ValueError,OSError,KeyError,TypeError):checked = False
     # Pending downstream timing still needs review in the cutting view. A new
     # footage signature reviews this exact shot; it does not clear that flag.
-    if not checked or value.get('inputs')!=edit._inputs(Path(root)):
+    if not checked or not edit.inputs_match(Path(root),value.get('inputs')):
         raise ValueError('The paper cut needs a current signed story and a fresh story comparison before footage can be approved.')
     return value
 

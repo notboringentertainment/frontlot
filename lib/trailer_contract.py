@@ -43,7 +43,7 @@ STAGE_LABELS = {
     'canon_ingest': 'Story', 'proposal': 'Treatment', 'look_lock': 'Looks',
     'headshots': 'Cast portraits', 'visual_bible': 'Visual references',
     'script': 'Lines and title cards', 'scene_plan': 'Shot list',
-    'assets': 'Footage and sound', 'edit': 'Rough cut', 'compose': 'Final assembly',
+    'assets': 'Footage and sound', 'edit': 'Rough cut', 'colour_mix':'Colour and sound', 'compose': 'Final assembly',
 }
 STAGE_LIMITS = {name: 'Signed stage approval controls are not available yet.' for name in STAGE_LABELS if name!='canon_ingest'}
 STAGE_LIMITS.update({
@@ -209,6 +209,17 @@ def _export_duration(path):
                              '-of','json',str(path)], capture_output=True, text=True, timeout=30, check=True)
     return float(json.loads(result.stdout)['format']['duration'])
 
+
+def require_recorded_predecessors(root,pin,stage):
+    from lib.trailer_policy import trimmed,REVIEW_LABELS
+    if not trimmed(pin):return
+    from lib.checkpoint import get_completed_stages,get_pipeline_stages
+    order=get_pipeline_stages(pin.ref);prior=order[:order.index(stage)]
+    completed=set(get_completed_stages(Path(root).parent,Path(root).name,pin.ref,before_stage=stage))
+    for name in prior:
+        if name not in completed:
+            workspace='Story' if name=='canon_ingest' else 'Paper cut' if name=='script' else 'Delivery'
+            raise ValueError('Review, sign and record '+REVIEW_LABELS[name]+' in '+workspace+' workspace before continuing.')
 
 def approval_record(root, pin, stage, artifacts, *, final_story_review=None):
     """The existing artifact-review signer must approve this exact record.

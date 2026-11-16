@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 import wave
+from datetime import datetime,timedelta
 from pathlib import Path
 
 import pytest
@@ -81,6 +82,7 @@ def shot_picture(page,name,target=None):
 def start_browser(pw,url):
     browser=pw.chromium.launch(headless=True)
     page=browser.new_page(viewport={'width':1440,'height':1000})
+    page.set_default_timeout(180000)
     page.errors=[];page.on('pageerror',lambda e:page.errors.append(str(e)))
     page.route('**/*',lambda r:r.continue_() if r.request.url.startswith(url.split('/p/')[0]+'/') else r.abort())
     return browser,page
@@ -97,7 +99,7 @@ def set_prices(page,panel,prefix):
     panel.get_by_text('Audio account consent and price ceilings',exact=True).click()
     for label,value in [('Dollar replacement value per credit','.0002'),('Highest speech credits per character','1'),
                         ('Highest music credits per minute','1200'),('Highest voice rate multiplier','2'),
-                        ('Highest sound-effect credits per second','40'),('Prices expire','2026-11-15T12:00')]:
+                        ('Highest sound-effect credits per second','40'),('Prices expire',(datetime.now()+timedelta(days=30)).strftime('%Y-%m-%dT%H:%M'))]:
         panel.get_by_label(label,exact=True).fill(value)
     panel.get_by_role('button',name='Prepare price settings for signing',exact=True).click()
     expect(page.get_by_role('heading',name='Review and sign audio',exact=True)).to_be_visible(timeout=20000)

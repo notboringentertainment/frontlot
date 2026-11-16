@@ -84,5 +84,10 @@ def test_paper_records_refer_to_the_signed_settings_while_new_prices_wait(voice_
     assert posts==[] and len(gets)==1
     receipt=approve_request(gate,root)
     record=json.loads((root/'artifacts/script.json').read_text())
-    assert record['metadata']['signed_settings']['approval_receipt_id']==receipt['receipt_id']
+    # Renewing prices records new financial consent, not new creative facts.
+    assert record['metadata']['signed_settings']['approval_receipt_id']==signed['receipt_id']
+    from lib.project_config import load_current_verified_project_config
+    assert load_current_verified_project_config(root).data['audio_price_basis']['dollars_per_credit']['value']==.0003
+    decisions=json.loads((root/'decision_log.json').read_text())['decisions']
+    assert any(receipt['receipt_id'] in row['decision_id'] for row in decisions)
     assert posts==[] and len(gets)==1
