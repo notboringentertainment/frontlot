@@ -1885,7 +1885,7 @@ def construct(root: Path, req: dict, *, selection: Optional[int] = None) -> Cons
     if kind not in CONSTRUCTORS:
         raise GateHandlerError(f"unknown kind {kind!r}")
     built = CONSTRUCTORS[kind](root, req, selection) if kind in SELECTION_KINDS else CONSTRUCTORS[kind](root, req)
-    if kind=='look_lock' and str(req.get('scope','')).startswith('location:'):
+    if kind=='look_lock' and str(req.get('scope','')).startswith('location:') and built.envelope.get('action')=='activate':
         from lib.trailer_contract import signed_trailer_pin
         if signed_trailer_pin(root) is not None:
             from lib.frontlot_location_source import require_slot
@@ -2187,7 +2187,7 @@ def _decide(
             from lib.story_ingest import complete
             complete(root)
         if kind=='config' and current.get('scope') in SCOPES:apply_signed(root,current)
-        if kind=='look_lock' and str(current.get('scope','')).startswith('location:'):
+        if kind=='look_lock' and str(current.get('scope','')).startswith('location:') and built.envelope.get('action')=='activate':
             from lib.trailer_contract import signed_trailer_pin
             if signed_trailer_pin(root) is not None:
                 from lib.frontlot_location_source import apply

@@ -87,12 +87,12 @@ def make_take(root, shot, signed=False):
 def hook_field(page):
     cut = page.get_by_role('region', name='Trailer paper cut', exact=True)
     expect(cut).to_be_visible()
-    return cut, cut.get_by_text('Hook', exact=True).locator('..').locator('textarea')
+    return cut, cut.get_by_label('Hook', exact=True)
 
 
 def save_cut(page, cut):
     cut.get_by_role('button', name='Save a new version', exact=True).click()
-    expect(cut.get_by_role('status')).to_contain_text('Saved.')
+    expect(cut.get_by_role('status').first).to_contain_text('Saved.')
     expect(cut.get_by_role('button', name='Save a new version', exact=True)).to_be_enabled()
     expect(cut).not_to_contain_text('Another window saved')
     expect(cut).not_to_contain_text('changed in another window')
@@ -171,7 +171,7 @@ def test_normal_keep_after_saving_words_keeps_those_words(film, provider, monkey
                 # Return an editor refresh without reloading the page. Return
                 # its pre-save snapshot late to check the existing epoch guard.
                 held[0][0].fulfill(json=held[0][1])
-                expect(cut.get_by_role('status')).to_contain_text('Story checks and versions refreshed')
+                expect(cut.get_by_role('status').first).to_contain_text('Story checks and versions refreshed')
             if background is None:
                 page.reload()
                 cut, hook = hook_field(page)
