@@ -462,7 +462,8 @@ def restore_revision(root, revision, expected_revision):
                 value['paper_cut_pending'] = True
                 value['timing_message'] = 'The saved cut was restored, but its story inputs changed. Review the paper cut before saving or playing it.'
         elif 'paper_cut' in source:
-            value = _paper_value(root, source['paper_cut'], old, inputs)
+            source_inputs=old['inputs'] if old and inputs_match(root,old.get('inputs')) else inputs
+            value = _paper_value(root, source['paper_cut'], old, source_inputs)
         else:
             value = copy.deepcopy(source)
         value['restored_from'] = revision
