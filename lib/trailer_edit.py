@@ -16,6 +16,7 @@ from pathlib import Path
 from lib.canonical_json import record_sha256
 from lib.pathsafe import PathSafetyError
 from lib.trailer_contract import make_contract, require_contract, signed_trailer_pin, edit_digest
+from lib.trailer_policy import CURRENT_VERSION,CURRENT_REF
 
 
 def _creation_values(title, seconds, ceiling):
@@ -38,7 +39,7 @@ def _name_key(title):
 def _creation_request(root):
     from lib.pipeline_pin import prepare_migration_request
     facts = creation_facts(root)
-    prepare_migration_request(root, root.name, 'authored-film', '1.6', trailer_creation=True,
+    prepare_migration_request(root, root.name, 'authored-film', CURRENT_VERSION, trailer_creation=True,
         summary=f"Start {facts['title']}, lasting {facts['trailer']['target_duration_seconds']:g} seconds, with a total ceiling of ${facts['spending_ceiling_usd']:.2f}. This signs creation only. It approves no stage and authorises no spending. Separate signed spending settings are still required before any paid work.")
 
 
@@ -83,7 +84,7 @@ def create_trailer(base, title, seconds, ceiling, request_key=None):
         slug = 'trailer-' + secrets.token_hex(8)
         root = staging/slug
         try:
-            init_project(slug, title=facts['title'], pipeline_type='authored-film@1.6',
+            init_project(slug, title=facts['title'], pipeline_type=CURRENT_REF,
                          pipeline_dir=staging, target_duration_seconds=seconds)
             marker = json.loads((root/'project.json').read_text())
             marker.update(spending_ceiling_usd=ceiling, trailer_creation_pending=True,
@@ -146,7 +147,8 @@ def repair_creation(root):
 
 def _inputs(root):
     result = {'project.json': record_sha256(json.loads((root/'project.json').read_text()))}
-    for stage in ('canon_ingest', 'proposal', 'script'):
+    # Script is now a projection of this paper, not an upstream input to it.
+    for stage in ('canon_ingest', 'proposal'):
         p = root/f'checkpoint_{stage}.json'
         if not p.exists():
             result[p.name] = 'ABSENT'
@@ -155,6 +157,17 @@ def _inputs(root):
             # Approval bookkeeping is not a creative change. Artifact bytes are.
             result[p.name] = record_sha256(value.get('artifacts', value) if isinstance(value, dict) else value)
     return result
+
+def inputs_match(root,inputs):
+    """Recognise the exact earlier source set without dropping its script check."""
+    current=_inputs(root)
+    if inputs==current:return True
+    if not isinstance(inputs,dict) or set(inputs)!=set(current)|{'checkpoint_script.json'}:return False
+    path=Path(root)/'checkpoint_script.json'
+    if path.is_symlink():return False
+    value=json.loads(path.read_text()) if path.exists() else None
+    script='ABSENT' if value is None else record_sha256(value.get('artifacts',value) if isinstance(value,dict) else value)
+    return {k:v for k,v in inputs.items() if k!='checkpoint_script.json'}==current and inputs['checkpoint_script.json']==script
 
 
 @contextmanager
@@ -420,9 +433,10 @@ def save_revision(root, paper, expected_revision):
         _expect(old, expected_revision)
         inputs = _inputs(root)
         value = _paper_value(root, paper, old, inputs)
-        if old and all(old.get(k) == value.get(k) for k in ('paper_cut', 'inputs', 'story_check', 'trailer')):
-            return old
-        return _commit(root, value, old, inputs)
+        result=old if old and all(old.get(k)==value.get(k) for k in ('paper_cut','inputs','story_check','trailer')) else _commit(root,value,old,inputs)
+    from lib.trailer_records import sync_paper
+    sync_paper(root)
+    return result
 
 
 def restore_revision(root, revision, expected_revision):
@@ -448,7 +462,10 @@ def restore_revision(root, revision, expected_revision):
         else:
             value = copy.deepcopy(source)
         value['restored_from'] = revision
-        return _commit(root, value, old, inputs)
+        result=_commit(root,value,old,inputs)
+    from lib.trailer_records import sync_paper
+    sync_paper(root)
+    return result
 
 
 def _legacy_time(root, version):
@@ -476,16 +493,18 @@ def paper_state(root):
                     words=' '.join(source['label'].split()[:10])[:80]
                     source['label']='Supplied story: '+words+('…' if len(words)<len(source['label']) else '')
         check = _story_check(root, current['paper_cut']) if current and 'paper_cut' in current else None
-        changed = bool(current and 'paper_cut' in current and current.get('inputs') != _inputs(root))
+        changed = bool(current and 'paper_cut' in current and not inputs_match(root,current.get('inputs')))
         pending = bool(current and current.get('paper_cut_pending'))
         needs_review = changed or pending or bool(check and check['status'] == 'failed')
         history = [{'id': v['edit_revision_sha256'], 'number': n, 'saved_at': v.get('saved_at') or (current or {}).get('revision_times', {}).get(v['edit_revision_sha256']) or _legacy_time(root, v),
                     'time_source': 'recorded' if v.get('saved_at') else 'file', 'kind': 'Paper cut' if 'paper_cut' in v else 'Rough cut'} for n, v in enumerate(versions, 1)]
+        from lib.trailer_paper_review import state as review_state
+        from lib.trailer_policy import trimmed
         return {'target_frames': round(require_contract(root)['target_duration_seconds']*24),
                 'protected_lines': [x.get('line','') for x in canon.get('protected_lines',[]) if x.get('line')],
                 'sources': sources, 'current': current, 'needs_review': needs_review, 'inputs_changed': changed,
                 'story_check': check, 'usable_downstream': bool(current and check and check['status'] == 'checked' and not needs_review),
-                'history': history}
+                'history': history, 'whole_review_status':review_state(root),'trimmed_contract':trimmed(signed_trailer_pin(root))}
     except ReceiptChainError:
         # This observer can overlap a signer's receipt append. An unverifiable
         # read is never permission, and must not take the whole board down.

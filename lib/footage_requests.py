@@ -120,7 +120,7 @@ def _paper_snapshot(root):
     except (ValueError,OSError,KeyError,TypeError):checked = False
     # Pending downstream timing still needs review in the cutting view. A new
     # footage signature reviews this exact shot; it does not clear that flag.
-    if not checked or value.get('inputs')!=edit._inputs(Path(root)):
+    if not checked or not edit.inputs_match(Path(root),value.get('inputs')):
         raise ValueError('The paper cut needs a current signed story and a fresh story comparison before footage can be approved.')
     return value
 
@@ -529,8 +529,8 @@ def _apply_decision(root, shot_id, take_id, decision):
                 for k in ('take_id','shot_id','path','asset_id','source_in_frame','source_out_frame','source_timebase_fps'):picture.pop(k,None)
                 picture.update(kind='placeholder',label='Unfinished placeholder')
         if value == old:return old
-        value.update(unfinished=True,paper_cut_pending=True,
-            timing_message='The footage choice changed. Existing timing and sound were kept; downstream work needs a fresh look. The earlier choice remains in saved versions.')
+        value.update(unfinished=True,
+            timing_message='The footage choice changed. Reopen the cutting view to use it. The paper cut and sound choices are unchanged; earlier choices remain in saved versions.')
         return edit._commit(Path(root),value,old)
 
 

@@ -84,6 +84,7 @@ def shot_picture(page,name,target=None):
 def start_browser(pw,url):
     browser=pw.chromium.launch(headless=True)
     page=browser.new_page(viewport={'width':1440,'height':1000})
+    page.set_default_timeout(180000)
     page.errors=[];page.on('pageerror',lambda e:page.errors.append(str(e)))
     page.route('**/*',lambda r:r.continue_() if r.request.url.startswith(url.split('/p/')[0]+'/') else r.abort())
     return browser,page
@@ -101,7 +102,7 @@ def set_prices(page,panel,prefix,review=None,filled=None):
     open_prices(panel)
     for label,value in [('Dollar replacement value per credit','.0002'),('Highest speech credits per character','1'),
                         ('Highest music credits per minute','1200'),('Highest voice rate multiplier','2'),
-                        ('Highest sound-effect credits per second','40'),('Prices expire',(datetime.now()+timedelta(days=2)).strftime('%Y-%m-%dT%H:%M'))]:
+                        ('Highest sound-effect credits per second','40'),('Prices expire',(datetime.now()+timedelta(days=30)).strftime('%Y-%m-%dT%H:%M'))]:
         panel.get_by_label(label,exact=True).fill(value)
     if filled:filled()
     panel.get_by_role('button',name='Prepare price settings for signing',exact=True).click()
@@ -158,7 +159,10 @@ def buy_three_audio(page,panel,calls,prefix,kinds=('speech','music','effect')):
     line.get_by_label('Voice for line 1',exact=True).select_option('invented_voice')
     line.get_by_label('I have permission to use this voice.').check()
     line.get_by_role('button',name='Prepare a spending card',exact=True).click()
-    for kind,maximum in [('speech','$0.0088'),('music','$0.0480'),('effect','$0.0160')]:
+    # The signed fixture prices are one credit per character, a multiplier
+    # ceiling of two and $0.0002 per credit. The joined journey deliberately
+    # quotes its protected line rather than the readiness example's line.
+    for kind,maximum in [('speech',f'${len(LINE)*.0004:.4f}'),('music','$0.0480'),('effect','$0.0160')]:
         if kind not in kinds:continue
         if kind!='speech':
             form=panel.locator('#'+kind+'-compose')

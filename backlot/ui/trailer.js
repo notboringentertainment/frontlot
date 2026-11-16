@@ -45,7 +45,7 @@ export async function changeSavedPaperCut(project,fn){
 function emptyPaper(){return {beats:kinds.map(kind=>({kind,text:""})),lines:[],cards:[],shots:[]};}
 function savedTime(v){return new Date(v.saved_at).toLocaleString() + (v.time_source==="file" ? " (file time)" : "");}
 
-export function renderPaperCut(s,onSaved=async()=>{}) {
+export function renderPaperCut(s,onSaved=async()=>{},onSign=async()=>{}) {
   if(editor && lastProject===s.project_id && wasPending===Boolean(s.trailer_setup_pending)) {
     editor.refresh(s.paper_cut);return editor.node;
   }
@@ -72,6 +72,8 @@ export function renderPaperCut(s,onSaved=async()=>{}) {
   let draft=structuredClone(state.current?.paper_cut || emptyPaper()), dirty=false, preserved=null, playing=null;
   const api=`/api/project/${encodeURIComponent(s.project_id)}/paper-cut`;
   const status=el("p",{role:"status"},"Planning only. Nothing here approves a stage or buys media.");
+  const wholeReviewStatus=el('p',{role:'status','aria-label':'Whole paper-cut approval'});
+  let recordReview=null;
   const checks=el("div",{"aria-live":"polite"}), conflict=el("div",{}), content=el("div",{}), history=el("section",{class:"paper-panel"}), details=el("div",{});
   node.append(el("h2",{},"Story and paper cut"),folder,status,checks,conflict,
     el("p",{},"Supply and sign the story in Story workspace, then compare this saved paper cut against it. You can always save a draft here; later stages must wait for its story checks."),content);
@@ -136,7 +138,7 @@ export function renderPaperCut(s,onSaved=async()=>{}) {
       timingText.textContent=total===target?"The shots match the target length.":`Shots total ${(total/24).toFixed(2)} seconds; target ${(target/24).toFixed(2)} seconds. ${Math.abs(total-target)} frames ${total>target?"over":"short"}.`;show();};
     cursor.oninput=show;
     const play=button("Play placeholders",()=>{if(playing){clearInterval(playing);playing=null;play.textContent="Play placeholders";}else{play.textContent="Pause";playing=setInterval(()=>{cursor.value=(Number(cursor.value)+1)%(Number(cursor.max)+1);show();},1000/24);}});
-    timing.append(el("p",{},"This timing sketch identifies shots with accepted footage and those still using placeholders. It cannot finish a stage. Timed playback and export of real media are not built yet. Watch full takes on their shot cards. Shot purposes remain private planning notes."),timingText,preview,cursor,play);updateTiming();
+    timing.append(el("p",{},"This timing sketch identifies shots with accepted footage and those still using placeholders. It cannot finish a stage. Play kept pictures and sound in Cutting workspace, then make the final file in Delivery workspace. Shot purposes remain private planning notes."),timingText,preview,cursor,play);updateTiming();
   }
   function showVersion(value, label) {
     const box=el("div",{},el("h4",{},label));
@@ -157,6 +159,8 @@ export function renderPaperCut(s,onSaved=async()=>{}) {
   function update(next) {
     if(!next)return;
     state=next;
+    wholeReviewStatus.textContent=state.whole_review_status||'Needs your signature';
+    if(recordReview)recordReview.disabled=dirty||state.whole_review_status!=='Signed by you';
     updateRowWarnings();
     if(Number.isInteger(state.target_frames)){targetFrames=state.target_frames;updateTiming();}
     for(const box of protectedPanels)box.replaceChildren(el("h4",{},"Protected wording from the story"),el("p",{},"Mechanical comparison cannot recognise every rewording. Compare your lines and cards with these originals."),...(state.protected_lines||[]).map(text=>el("blockquote",{},text)));
@@ -197,7 +201,13 @@ export function renderPaperCut(s,onSaved=async()=>{}) {
     draft.shots.forEach((shot,i)=>{shot.id=result.paper_cut.shots[i].id;});dirty=false;
     await refreshFromServer();await onSaved(state);status.textContent=`Saved. ${result.timing_message} No stage is approved.`;return status.textContent;
   }catch(error){status.textContent=error.message;try{await refreshFromServer();}catch{ /* Keep the original save failure visible. */ }return status.textContent;}}));
-  node.append(save,button("Check paper cut against approved story",()=>operation(async()=>{try{
+    node.append(save,wholeReviewStatus,button('Review and sign the whole paper cut',async()=>{try{
+    if(dirty)throw Error('Save your changed draft as a new version before reviewing the whole paper cut.');
+    const result=await request(api+'/review',{revision});await onSign(result.request_id);
+  }catch(error){status.textContent=error.message;}}),state.trimmed_contract?(recordReview=button('Record the signed paper-cut review',async()=>{try{
+    if(dirty)throw Error('Save and sign your changed draft before recording its review.');
+    const result=await request(api+'/apply',{});await refreshFromServer();status.textContent=result.message;
+  }catch(error){status.textContent=error.message;}})):null,button("Check paper cut against approved story",()=>operation(async()=>{try{
     if(dirty)throw Error('Save your changed draft as a new version before comparing it with the approved story.');
     const result=await request(`/api/project/${encodeURIComponent(s.project_id)}/story/check`,{expected_revision:revision});
     draft=structuredClone(result.paper_cut.paper_cut);revision=result.paper_cut.edit_revision_sha256;editEpoch++;draw();await refreshFromServer();await onSaved(state);status.textContent=result.message;return status.textContent;
@@ -211,4 +221,30 @@ export function renderPaperCut(s,onSaved=async()=>{}) {
     own:next=>{if(dirty)throw Error('Your changed paper cut is still here. Save or compare it before loading the footage change.');
       draft=structuredClone(next.current?.paper_cut||emptyPaper());revision=next.current?.edit_revision_sha256||null;editEpoch++;draw();update(next);},
     change:fn=>operation(async()=>{const result=await fn(revision);editor.own(result.paper_cut);return result;})};return node;
+}
+
+export function renderPaperSigning(detail,actions,onReturn){
+  const packet=detail.packet||{},r=packet.paper_review;
+  const box=el('section',{class:'paper-editor','aria-label':'Whole paper-cut review'},el('h2',{},'Review the whole paper cut'));
+  if(!r)box.append(el('p',{role:'alert'},packet.error||'Reopen the saved paper cut and prepare its review again.'));
+  else{
+    const exact=text=>el('pre',{style:'white-space:pre-wrap;font:inherit'},text);
+    box.append(el('p',{},'This signature covers the beats, exact spoken lines and cards, shot list, timing and displayed story warnings together. It buys nothing and completes no stage.'),
+      el('h3',{},'Protected story wording'),...(packet.protected_lines||[]).map(exact));
+    r.paper_cut.beats.forEach((row,i)=>box.append(el('h3',{},names[i]),exact(row.text)));
+    for(const [key,label] of [['lines','Spoken lines'],['cards','Title cards']]){
+      box.append(el('h3',{},label));
+      if(!r.paper_cut[key].length)box.append(el('p',{},'None in this saved paper cut.'));
+      r.paper_cut[key].forEach((row,i)=>box.append(el('h4',{},`${key==='lines'?'Line':'Card'} ${i+1}`),exact(row.text),
+        el('p',{},`Starts at frame ${row.start_frame} (${(row.start_frame/24).toFixed(3)} seconds); lasts ${row.duration_frames} frames (${(row.duration_frames/24).toFixed(3)} seconds).`),
+        el('p',{},`Story material: ${(packet.sources||[]).find(s=>s.value===row.source_ref)?.label||'Unassigned in this draft'}`)));
+    }
+    box.append(el('h3',{},'Shot list'));let frame=0;
+    r.paper_cut.shots.forEach((row,i)=>{box.append(el('h4',{},`Shot ${i+1}`),exact(row.purpose),
+      el('p',{},`Starts at frame ${frame} (${(frame/24).toFixed(3)} seconds); lasts ${row.duration_frames} frames (${(row.duration_frames/24).toFixed(3)} seconds).`),
+      el('p',{},`References: ${row.references.join(', ')||'None yet'}. Difficulty: ${row.difficulty}`));frame+=row.duration_frames;});
+    box.append(el('h3',{},'Story comparison'),el('p',{},r.story_check.message),
+      ...[...r.story_check.errors,...r.story_check.warnings].map(w=>el('p',{role:'note'},w)));
+  }
+  box.append(actions,el('button',{type:'button',onclick:onReturn},'Return to paper cut'));return box;
 }

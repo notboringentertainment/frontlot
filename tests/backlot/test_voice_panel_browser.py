@@ -102,6 +102,7 @@ def test_writer_voice_controls_sign_play_keep_decline_and_retake(voice_world,mon
             expect(page.locator('#gate-sign-panel').get_by_text('Your approval is recorded. You can close this.',exact=True)).to_be_visible(timeout=20000)
             page.get_by_role('button',name='Return to audio',exact=True).click()
             panel=page.get_by_role('region',name='Trailer audio');expect(panel.locator('.voice-take')).to_contain_text('Kept',timeout=15000)
+            expect(panel.get_by_role('status')).to_contain_text('Audio loaded. Kept: 1.',timeout=15000)
             capture(page,'kept-take',panel.locator('.voice-take'))
             from lib import trailer_edit
             saved=trailer_edit.read_revision(root);draft=saved['paper_cut'];draft['lines'][0]['text']='A lantern glows.'
@@ -114,6 +115,7 @@ def test_writer_voice_controls_sign_play_keep_decline_and_retake(voice_world,mon
             expect(page.locator('#gate-sign-panel').get_by_text('Your approval is recorded. You can close this.',exact=True)).to_be_visible(timeout=20000)
             page.get_by_role('button',name='Return to audio',exact=True).click()
             panel=page.get_by_role('region',name='Trailer audio');expect(panel.locator('.voice-take')).to_contain_text('Declined',timeout=15000)
+            expect(panel.get_by_role('status')).to_contain_text('Audio loaded. Kept: 0.',timeout=15000)
             capture(page,'declined-take',panel.locator('.voice-take'))
             expect(panel.get_by_role('button',name='Keep this take',exact=True)).to_have_count(0)
             panel.get_by_role('button',name='Ask for another take',exact=True).click()

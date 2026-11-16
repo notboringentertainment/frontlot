@@ -1,0 +1,54 @@
+name: authored-film
+version: "1.7"
+description: >
+  Ben decided: "trim for the trailer test". The required signed reviews are
+  Story, the whole Paper cut, Rough cut, Colour and sound, and the exact Final
+  file. Each purchase, used look and reference, kept take and literal card keeps
+  its existing individual signed protection. Nothing becomes approved by itself.
+  The dropped whole-stage reviews are treatment with three treatment options,
+  looks for the complete cast, cast portraits, the complete visual references
+  with an approved poster, separate lines and title cards, the separate shot
+  list, and the whole footage and sound collection. These can be restored only
+  by a later explicit signed contract decision. Every protected line must still
+  be heard verbatim in the final trailer, confirmed in its final signed story
+  comparison. A technical pass never supplies that human confirmation.
+category: cinematic
+stability: beta
+validation_profile: trailer-test
+required_skills:
+  - pipelines/authored-film/trailer-test-director
+stages:
+  - name: canon_ingest
+    skill: pipelines/authored-film/trailer-test-director
+    produces: [canon_packet]
+    checkpoint_required: true
+    human_approval_default: true
+    tools_available: []
+  - name: script
+    skill: pipelines/authored-film/trailer-test-director
+    required_artifacts_in: [canon_packet]
+    produces: [script, scene_plan]
+    checkpoint_required: true
+    human_approval_default: true
+    tools_available: []
+  - name: edit
+    skill: pipelines/authored-film/trailer-test-director
+    required_artifacts_in: [script, scene_plan]
+    produces: [edit_decisions]
+    checkpoint_required: true
+    human_approval_default: true
+    tools_available: []
+  - name: colour_mix
+    skill: pipelines/authored-film/trailer-test-director
+    required_artifacts_in: [edit_decisions]
+    produces: [edit_decisions]
+    checkpoint_required: true
+    human_approval_default: true
+    tools_available: []
+  - name: compose
+    skill: pipelines/authored-film/trailer-test-director
+    required_artifacts_in: [edit_decisions]
+    produces: [render_report, final_review]
+    checkpoint_required: true
+    human_approval_default: true
+    tools_available: []

@@ -29,6 +29,7 @@ async function api(url,data){
 export async function applySignedAccountOutcome(project,identity){
   return api(`/api/project/${encodeURIComponent(project)}/voice/resolution/${encodeURIComponent(identity)}/apply`,{});
 }
+export function refreshAudioAfterSigning(){current?.refresh(true);}
 export function renderVoice(s,onSign,onChanged=async()=>{}){
   if(current?.project===s.project_id){current.refresh();return current.node;}
   const project=s.project_id,url=`/api/project/${encodeURIComponent(project)}/voice`;
@@ -38,7 +39,7 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
   try{remembered=JSON.parse(localStorage.getItem(storageKey)||'{}');}catch{}
   let voices=Array.isArray(remembered?.voices)?remembered.voices.filter(v=>typeof v?.id==='string'&&typeof v.name==='string'):[];
   let last='',busy=false,loading=false,pendingRefresh=false,refreshFailed=false,editEpoch=0,catalogueLoaded=false,lastData=null;
-  let signatureEpoch=0;
+  let signatureEpoch=0,returningFromSigning=false;
   let revealingRequest=null;
   const revealResult=()=>{if(!revealingRequest)return;const target=document.querySelector(`[data-held-audio-notice="${revealingRequest}"]`);if(target){revealingRequest=null;target.scrollIntoView({block:'center',behavior:'instant'});}};
   const cancelReveal=()=>{revealingRequest=null;};
@@ -148,9 +149,10 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
     content.append(takes);
     progress();
   }
-  async function refresh(){
+  async function refresh(afterSigning=false){
+    if(afterSigning){editEpoch++;returningFromSigning=true;message.textContent='Checking the saved audio decisions…';}
     if(loading||busy){pendingRefresh=true;return;}loading=true;pendingRefresh=false;const started=editEpoch,paperStarted=paperCutEpoch();
-    try{const data=await api(url);if(started!==editEpoch||paperStarted!==paperCutEpoch()||busy){pendingRefresh=true;return;}const key=JSON.stringify(data)+JSON.stringify(voices);if(refreshFailed){message.textContent='';refreshFailed=false;}if(key!==last){last=key;draw(data);}}
+    try{const data=await api(url);if(started!==editEpoch||paperStarted!==paperCutEpoch()||busy){pendingRefresh=true;return;}const key=JSON.stringify(data)+JSON.stringify(voices);if(refreshFailed){message.textContent='';refreshFailed=false;}if(key!==last){last=key;draw(data);}if(returningFromSigning){const count=status=>data.takes.filter(t=>t.status===status).length;message.textContent=`Audio loaded. Kept: ${count('Accepted')}. Waiting for a take decision: ${count('Waiting for your decision')}. Declined: ${count('Declined')}. Needs a fresh look: ${count('Needs a fresh look')}.`;returningFromSigning=false;}}
     catch(e){if(started!==editEpoch||paperStarted!==paperCutEpoch()||busy){pendingRefresh=true;return;}refreshFailed=true;message.textContent=e.message+' Check the approved story and signed audio price settings, then reload.';}
     finally{loading=false;if(pendingRefresh&&!busy){pendingRefresh=false;refresh();}}
   }

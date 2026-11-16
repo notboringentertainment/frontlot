@@ -176,7 +176,8 @@ def trailer_workspace(film_root: Path) -> bool:
         return True
     try:
         marker = json.loads((film_root / "project.json").read_text())
-        return marker.get("production_kind") == "trailer" or marker.get("pipeline_type") == "authored-film@1.6"
+        from lib.trailer_policy import is_trailer
+        return marker.get("production_kind") == "trailer" or is_trailer(marker.get("pipeline_type"))
     except (OSError, ValueError):
         return False
 

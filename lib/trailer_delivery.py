@@ -11,6 +11,7 @@ from lib.canonical_json import record_sha256
 from lib.pathsafe import resolve_input, validate_output_parent, sha256_file
 
 ROUGH_REQUIRED='Sign the rough cut for this saved version before making the final file.'
+COLOUR_REQUIRED='Review and sign colour and sound in Delivery workspace before making the final file. '
 CHANGED='This file or its cut needs a fresh look. Reopen the saved cut, sign it and make a new final file.'
 SPEECH_NOTES='These timed speech notes are listening warnings. Listen to those passages; you can approve this exact file if the pauses and balance are right to your ear.'
 
@@ -22,6 +23,10 @@ def _saved(root,revision=None):
     if not saved or not saved.get('cutting_view'):raise ValueError('Save a cut made from kept pictures and sounds first.')
     if revision is not None and saved['edit_revision_sha256']!=revision:raise ValueError('The saved cut changed. Reopen it before reviewing or exporting.')
     if not trailer_edit.paper_state(root)['usable_downstream']:raise ValueError('Check the paper cut against the approved story before reviewing or exporting.')
+    from lib.trailer_policy import trimmed
+    if trimmed(_pin(root)):
+        from lib.trailer_paper_review import require_approval
+        require_approval(root)
     timeline=cut.validate_cut(root,cut.editable(saved['timeline']),verify_files=True)
     if 'mix' not in saved['timeline']:raise ValueError('Save the colour and sound settings before reviewing the rough cut.')
     return saved,timeline
@@ -32,12 +37,14 @@ def _pin(root):
     return pin
 
 def rough_record(root):
+    contract.require_recorded_predecessors(root,_pin(root),'edit')
     saved,_=_saved(root)
     if saved.get('unfinished'):raise ValueError('Prepare this saved cut for rough-cut signing first.')
     return contract.approval_record(root,_pin(root),'edit',{'edit_decisions':saved})
 
 def request_rough(root,revision):
     from lib.media_spending import gate_request
+    contract.require_recorded_predecessors(root,_pin(root),'edit')
     saved,_=_saved(root,revision)
     if saved.get('unfinished'):
         ready=copy.deepcopy(saved);ready['unfinished']=False
@@ -59,6 +66,34 @@ def rough_state(root):
     try:
         saved,_=_saved(root)
         return _approval_state(root,'edit',{'edit_decisions':saved},'Needs your signature','Signed by you')
+    except (ValueError,OSError,KeyError):return 'Needs a fresh look'
+
+def colour_record(root):
+    from lib.trailer_policy import trimmed
+    if not trimmed(_pin(root)):raise ValueError('Review and sign the trailer-test contract before the colour and sound review.')
+    contract.require_recorded_predecessors(root,_pin(root),'colour_mix')
+    saved,_=require_rough(root)
+    return contract.approval_record(root,_pin(root),'colour_mix',{'edit_decisions':saved})
+
+def request_colour(root,revision):
+    from lib.media_spending import gate_request
+    require_rough(root,revision)
+    return gate_request(root,'artifact_review','colour_mix',colour_record(root),
+        'Watch and listen to the saved colour and sound settings. This separate signature approves their exact saved version, not a later change. Nothing is sent or spent.',scope='trailer-stage',stage='colour_mix')
+
+def require_colour(root,revision=None):
+    try:
+        saved,timeline=require_rough(root,revision)
+        contract.require_stage_approval(root,_pin(root),'colour_mix',{'edit_decisions':saved})
+        return saved,timeline
+    except (ValueError,OSError,KeyError) as exc:
+        raise ValueError(COLOUR_REQUIRED+str(exc)) from None
+
+def colour_state(root,saved,rough_status):
+    if rough_status!='Signed by you':
+        return 'Needs a fresh look' if _stage_approvals(root,'colour_mix') else 'Waiting for the rough-cut signature'
+    try:
+        return _approval_state(root,'colour_mix',{'edit_decisions':saved},'Needs your signature','Signed by you')
     except (ValueError,OSError,KeyError):return 'Needs a fresh look'
 
 def _stage_approvals(root,stage):
@@ -172,6 +207,9 @@ def export(root,revision):
     programs.preflight('ffmpeg','ffprobe')
     root=Path(root);saved,timeline=require_rough(root,revision)
     cut.preflight_render(timeline)
+    contract.require_recorded_predecessors(root,_pin(root),'compose')
+    from lib.trailer_policy import trimmed
+    if trimmed(_pin(root)):require_colour(root,revision)
     if __import__('shutil').disk_usage(root).free<60*1024**3:raise ValueError('There is less than sixty gigabytes free. Make room on this disk before exporting; the saved cut is safe.')
     identity=uuid.uuid4().hex;job=_job(root,identity);job.mkdir()
     work=job/'work';work.mkdir()
@@ -243,6 +281,13 @@ def read_export(root,identity):
 
 def _artifacts(root,identity,*,remeasure=False):
     root=Path(root);saved,timeline=require_rough(root)
+    contract.require_recorded_predecessors(root,_pin(root),'compose')
+    from lib.trailer_policy import trimmed
+    if trimmed(_pin(root)):
+        # require_rough already checked this exact current cut and its files.
+        # Check the separate colour signature against that same material.
+        try:contract.require_stage_approval(root,_pin(root),'colour_mix',{'edit_decisions':saved})
+        except (ValueError,OSError,KeyError) as exc:raise ValueError(COLOUR_REQUIRED+str(exc)) from None
     return _file_artifacts(root,identity,saved,timeline,remeasure=remeasure)
 
 def _file_artifacts(root,identity,saved,timeline,*,remeasure=False):
@@ -278,13 +323,17 @@ def _file_artifacts(root,identity,saved,timeline,*,remeasure=False):
             clear_measurement_parts(root,directory/'mix.wav',result.data)
     return {'render_report':report,'final_review':review}
 
-def final_record(root,identity):
-    artifacts=_artifacts(root,identity,remeasure=True)
-    return contract.approval_record(root,_pin(root),'compose',artifacts)
+def story_questions(root):
+    from lib.trailer_final_story import questions
+    return questions(root)
 
-def request_final(root,identity):
+def final_record(root,identity,story_review=None):
+    artifacts=_artifacts(root,identity,remeasure=True)
+    return contract.approval_record(root,_pin(root),'compose',artifacts,final_story_review=story_review)
+
+def request_final(root,identity,story_review=None):
     from lib.media_spending import gate_request
-    record=final_record(root,identity)
+    record=final_record(root,identity,story_review)
     return gate_request(root,'artifact_review',identity,record,
         'Watch and listen to this exact final file. Your signature binds its bytes, the saved cut and the measured checks. It permits no upload or spending.',scope='trailer-stage',stage='compose')
 
@@ -299,13 +348,15 @@ def complete_stage(root,stage,identity=None):
     """A signature is necessary; existing upstream checkpoint rules still apply."""
     from lib.checkpoint import write_checkpoint,CheckpointValidationError
     root=Path(root)
-    artifacts={'edit_decisions':require_rough(root)[0]} if stage=='edit' else _artifacts(root,identity,remeasure=True)
+    if stage not in ('edit','colour_mix','compose'):raise ValueError('Choose the rough cut, colour and sound, or exact final-file review.')
+    artifacts={'edit_decisions':(require_rough(root) if stage=='edit' else require_colour(root))[0]} if stage in ('edit','colour_mix') else _artifacts(root,identity,remeasure=True)
     contract.require_stage_approval(root,_pin(root),stage,artifacts)
-    signature='Your rough-cut signature is recorded.' if stage=='edit' else 'Your final-file signature for this file is recorded.'
-    try:write_checkpoint(root.parent,root.name,stage,'completed',artifacts,pipeline_type='authored-film@1.6',human_approved=True)
+    try:write_checkpoint(root.parent,root.name,stage,'completed',artifacts,pipeline_type=_pin(root).ref,human_approved=True)
     except CheckpointValidationError:
-        return signature+' Earlier stage reviews or the separate story review are still unfinished, so this stage has not been marked finished.'
-    return signature
+        from lib.trailer_policy import trimmed
+        outstanding=contract.outstanding_stage_reviews(root,stage,artifacts.get('final_review'),rough_signed=stage=='compose',final_story_signed=stage=='compose' and trimmed(_pin(root)))
+        return 'Your signature is recorded. This stage is unfinished. '+(' '.join(outstanding) if outstanding else 'Its saved stage record could not be verified. Keep the saved work and have that record checked before trying to finish the stage again.')
+    return 'Your signed stage approval is recorded.'
 
 def playback(root,identity):
     artifacts=_artifacts(root,identity)
@@ -327,8 +378,15 @@ def frame_picture(root,identity,frame):
     return path
 
 def reveal(root,identity):
-    if final_state(root,identity)!='Approved by you':raise ValueError('Watch and sign final approval of this exact file before revealing the approved delivery.')
-    path=playback(root,identity)
+    try:
+        artifacts=_artifacts(root,identity)
+        approved=_approval_state(root,'compose',artifacts,'Needs your signature','Approved by you')=='Approved by you'
+    except (ValueError,OSError,KeyError):approved=False
+    if not approved:raise ValueError('Watch and sign final approval of this exact file before revealing the approved delivery.')
+    report=artifacts['render_report'];path=resolve_input(report['outputs'][0]['path'],Path(root))
+    # Approval verification can take time. Hash the real file once more at
+    # the handoff, without repeating the whole cut/signature traversal.
+    if sha256_file(path)!=report['export_sha256']:raise ValueError(CHANGED)
     programs.run(['open','-R',str(path)],check=True,timeout=15)
     return {'message':'The approved trailer is saved in this production’s delivery folder and has been shown in Finder.','path':str(path)}
 
@@ -356,4 +414,8 @@ def snapshot(root):
             approval_recorded=bool(status=='Approved by you' and recorded and recorded.get('status')=='completed' and recorded.get('artifacts')==pair)
             items.append({'id':item['id'],'status':status,'approval_recorded':approval_recorded,'review':item['final_review'],'samples':frame_samples(root,item),'path':item['render_report']['outputs'][0]['path']})
         except (ValueError,OSError,KeyError):continue
-    return {'revision':saved['edit_revision_sha256'],'number':saved['revision_number'],'rough_status':rough,'exports':items}
+    from lib.trailer_policy import trimmed
+    return {'revision':saved['edit_revision_sha256'],'number':saved['revision_number'],'rough_status':rough,'exports':items,
+            'colour_status':colour_state(root,saved,rough) if trimmed(_pin(root)) else None,
+            'story_questions':story_questions(root) if trimmed(_pin(root)) else None,
+            'outstanding_requirements':contract.outstanding_stage_reviews(root,'compose',items[0]['review'] if items else None,rough_signed=rough=='Signed by you',final_story_signed=any(item['status']=='Approved by you' for item in items))}

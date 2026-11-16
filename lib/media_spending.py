@@ -174,7 +174,10 @@ def apply_signed_resolution(root,identity):
                 and request.get('stage')==row.get('stage') and request.get('scope')==row.get('scope')
                 and request.get('source_checkpoint_digest')==row.get('source_checkpoint_digest')):
                 _complete_done(path,Path(root),request,row['receipt_id'])
-    return resolve_charge(root,identity,record['charged'],record['cash_usd'],record['credits_usd'],record['note'])
+    result=resolve_charge(root,identity,record['charged'],record['cash_usd'],record['credits_usd'],record['note'])
+    from lib.trailer_records import after_signature
+    after_signature(root,'audio_resolution')
+    return result
 
 _call_owners = threading.local()
 

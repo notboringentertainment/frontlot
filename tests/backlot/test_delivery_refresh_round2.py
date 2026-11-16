@@ -93,6 +93,7 @@ def test_overlapping_returns_wait_for_verified_server_state_twenty_times(signed_
                 expect(page.get_by_role('status')).to_have_text('Checking the saved cut and its approvals…')
                 expect(page.get_by_role('button',name='Review and sign the saved rough cut',exact=True)).to_be_disabled()
                 page.evaluate('async()=>{window.releaseLatest();await window.returnPromise;}')
+                expect(page.get_by_role('button',name='Make the final file',exact=True)).to_be_enabled()
                 # Simulate a late answer even if a transport ignores abort.
                 page.evaluate('()=>window.releaseOld()')
                 expect(page.get_by_role('region',name='Trailer delivery')).to_contain_text('Signed by you')

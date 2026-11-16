@@ -1562,6 +1562,13 @@ def _render_pipeline_migration(root: Path, req: dict[str, Any]) -> dict[str, Any
     result = {"from_version": req.get("from_version") or (req.get("envelope") or {}).get("from_version")
             or (prior_record or {}).get("version") or (prior_record or {}).get("pipeline_version"),
             "to_version": req.get("pipeline_version") or req.get("to_version") or hint.get("version")}
+    from lib.trailer_policy import CURRENT_VERSION,signed_decision
+    if req.get('entity_id')=='authored-film' and result['to_version']==CURRENT_VERSION:
+        result['trailer_test_contract']=signed_decision()
+        if 'trailer_creation' in hint:
+            from lib.trailer_edit import creation_facts
+            try:result['trailer_creation']=creation_facts(root)
+            except (ValueError,OSError,KeyError):result.update(packet_error=True,error='The trailer name, length or ceiling changed. Reopen creation and review its saved settings.')
     if lookup_error:
         result.update({"packet_error": True, "error": lookup_error})
     return result
@@ -1836,7 +1843,10 @@ def _render_trailer_card(root,req):
     except (ValueError,OSError,KeyError):return {'packet_error':True,'error':'This card changed. Save the cut and prepare a new review.'}
 
 def _render_artifact_review(root,req):
-    if req.get('scope')=='trailer-stage' and req.get('stage') in ('edit','compose'):
+    if req.get('scope')=='trailer-paper':
+        from lib.trailer_paper_review import packet
+        return packet(root,req)
+    if req.get('scope')=='trailer-stage' and req.get('stage') in ('edit','colour_mix','compose'):
         from backlot.delivery import signing_packet
         return signing_packet(root,req)
     return _render_text_only(root,req)
@@ -1921,7 +1931,8 @@ def _trailer_display_evidence(root: Path, marker: dict) -> bool:
     even when its history projection is broken. Ordinary or unknown films
     retain the base presentation; their writer still refuses broken history.
     """
-    if marker.get("production_kind") == "trailer" or marker.get("pipeline_type") == "authored-film@1.6":
+    from lib.trailer_policy import is_trailer
+    if marker.get("production_kind") == "trailer" or is_trailer(marker.get("pipeline_type")):
         return True
     # A stage's explicit manifest tuple is identity evidence, never approval.
     # Older stage schema versions and prose mentioning trailers do not qualify.
@@ -1956,7 +1967,7 @@ def _trailer_display_evidence(root: Path, marker: dict) -> bool:
                 record = row.get("record")
                 if (row.get("kind") == "pipeline_migration" and row.get("entity_id") == "authored-film"
                         and isinstance(record, dict) and record.get("pipeline_name") == "authored-film"
-                        and record.get("version") == "1.6"):
+                        and is_trailer({'name':record.get('pipeline_name'),'version':record.get('version')})):
                     try:
                         if gates.verify_receipt(row):
                             return True
@@ -1993,6 +2004,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
     trailer_pin = None
     trailer_setup_pending = False
     from lib.trailer_contract import signed_trailer_pin, require_contract, project_checkpoint, DAMAGED, HISTORY_DAMAGED
+    from lib.trailer_policy import is_trailer,CURRENT_REF,trimmed,REVIEW_LABELS
     try:
         trailer_pin = signed_trailer_pin(project_dir)
         if trailer_pin is not None:
@@ -2006,9 +2018,9 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         # Display identity needs evidence; broken history alone is not trailer identity.
         if _trailer_display_evidence(project_dir, marker):
             trailer_damaged = HISTORY_DAMAGED
-            pipeline_meta = _load_pipeline_meta("authored-film@1.6")
+            pipeline_meta = _load_pipeline_meta(CURRENT_REF)
 
-    if trailer_pin is None and not trailer_damaged and marker.get("production_kind") == "trailer" and marker.get("pipeline_type") == "authored-film@1.6":
+    if trailer_pin is None and not trailer_damaged and marker.get("production_kind") == "trailer" and is_trailer(marker.get("pipeline_type")):
         from lib.pipeline_pin import pinned_pipeline
         try:
             # Display a draft, not a production pin. An older signed production cannot enter this state.
@@ -2016,7 +2028,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
             if existing.receipt_id is None:
                 trailer = require_contract(project_dir)
                 trailer_setup_pending = True
-                pipeline_meta = _load_pipeline_meta("authored-film@1.6")
+                pipeline_meta = _load_pipeline_meta(marker['pipeline_type'])
                 if checkpoints:
                     trailer_damaged = DAMAGED
         except Exception:
@@ -2026,7 +2038,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
     # history. It cannot create a signed pin or authorize any saved completion.
     if trailer_pin is None and not trailer_damaged and not trailer_setup_pending and _trailer_display_evidence(project_dir, marker):
         trailer_damaged = DAMAGED
-        pipeline_meta = _load_pipeline_meta("authored-film@1.6")
+        pipeline_meta = _load_pipeline_meta(CURRENT_REF)
     trailer_creation = None
     if trailer_setup_pending:
         from lib.trailer_edit import creation_state
@@ -2038,11 +2050,16 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
     media = _scan_media(project_dir)
 
     stages = _build_stage_rail(pipeline_meta, checkpoints, history)
+    if trimmed(trailer_pin):
+        # Earlier signed definitions and their files remain historical facts;
+        # they do not add reviews Ben explicitly set aside for this test.
+        stages = [entry for entry in stages if entry['name'] in REVIEW_LABELS]
     if trailer_pin is not None or trailer_damaged or trailer_setup_pending:
         from lib.trailer_contract import STAGE_LABELS, STAGE_LIMITS
         for entry in stages:
-            entry["label"] = STAGE_LABELS.get(entry["name"], entry["name"])
-            entry["availability_message"] = "" if entry["status"] == "completed" else STAGE_LIMITS.get(entry["name"], "Signed stage approval controls are not available yet.")
+            labels=REVIEW_LABELS if trimmed(trailer_pin) or trailer_setup_pending and marker.get('pipeline_type')==CURRENT_REF else STAGE_LABELS
+            entry["label"] = labels.get(entry["name"], entry["name"])
+            entry["availability_message"] = "" if entry["status"] == "completed" or trimmed(trailer_pin) else STAGE_LIMITS.get(entry["name"], "Signed stage approval controls are not available yet.")
             if trailer_setup_pending:
                 entry["availability_message"] = trailer_creation['message']
             if trailer_damaged:
@@ -2083,6 +2100,7 @@ def load_board_state(project_dir: Path) -> dict[str, Any]:
         **({"trailer": trailer} if trailer else {}),
         **({"is_trailer": True, "trailer_damaged": trailer_damaged} if trailer_pin is not None or trailer_damaged or trailer_setup_pending else {}),
         **({"trailer_setup_pending": True, "trailer_creation": trailer_creation} if trailer_setup_pending else {}),
+        **({'trimmed_contract':trimmed(trailer_pin)} if trailer_pin is not None else {}),
         "style_playbook": marker.get("style_playbook"),
         "created_at": marker.get("created_at"),
         "has_marker": bool(marker),
