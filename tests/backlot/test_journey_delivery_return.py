@@ -82,12 +82,12 @@ def test_verified_stage_confirmation_survives_an_older_signing_return(signed_cut
             page.route('**/*',route);page.goto(url+'/delivery-message-proof')
             page.evaluate('''async()=>{
                 const module=await import('/ui/delivery.js');window.deliveryModule=module;window.stagePosts=0;
-                const state={number:1,revision:'invented-saved-cut',rough_status:'Signed by you',colour_status:'Signed by you',exports:[]};
+                const state={number:1,revision:'invented-saved-cut',rough_status:'Signed by you',colour_status:'Signed by you',exports:[],recorded_stages:[]};
                 let reads=0;
                 window.fetch=async(url,options)=>{
                     if(options?.method==='POST'){
                         if(!url.endsWith('/colour/apply'))throw Error('Unexpected operation');window.stagePosts++;
-                        return await new Promise(resolve=>window.releaseStage=()=>resolve(new Response(JSON.stringify({message:'Your signed stage approval is recorded.'}))));
+                        return await new Promise(resolve=>window.releaseStage=()=>resolve(new Response(JSON.stringify({message:'Your colour and sound signature is recorded.',delivery:state}))));
                     }
                     if(++reads===1)return new Response(JSON.stringify(state));
                     return await new Promise(resolve=>window.releaseSummary=()=>resolve(new Response(JSON.stringify(state))));
@@ -96,13 +96,13 @@ def test_verified_stage_confirmation_survives_an_older_signing_return(signed_cut
             }''')
             page.get_by_role('button',name='Record the signed colour and sound approval',exact=True).click()
             page.wait_for_function('()=>!!window.releaseStage')
-            expect(page.get_by_role('status')).to_have_text('Recording your signed review…')
+            expect(page.get_by_role('status')).to_have_text('Recording your signed colour and sound approval…')
             page.evaluate('()=>{window.returned=window.deliveryModule.refreshDelivery();}')
             page.wait_for_function('()=>!!window.releaseSummary')
             page.evaluate('()=>window.releaseStage()')
-            expect(page.get_by_role('status')).to_have_text('Your signed stage approval is recorded.')
+            expect(page.get_by_role('status')).to_contain_text('Your colour and sound signature is recorded.')
             page.evaluate('async()=>{window.releaseSummary();await window.returned;}')
-            expect(page.get_by_role('status')).to_have_text('Your signed stage approval is recorded.')
+            expect(page.get_by_role('status')).to_contain_text('Your colour and sound signature is recorded.')
             assert page.evaluate('()=>window.stagePosts')==1
             assert not errors and len(calls['posts'])==3 and len(posts)==1
         finally:browser.close()
@@ -120,11 +120,11 @@ def test_recorded_review_releases_controls_without_a_duplicate_full_read(signed_
             page.goto(url+'/recorded-review-proof')
             page.evaluate('''async()=>{
                 const module=await import('/ui/delivery.js');window.reads=0;window.stagePosts=0;
-                const state={number:1,revision:'invented-saved-cut',rough_status:'Signed by you',colour_status:'Signed by you',exports:[]};
+                const state={number:1,revision:'invented-saved-cut',rough_status:'Signed by you',colour_status:'Signed by you',exports:[],recorded_stages:[]};
                 window.fetch=async(url,options)=>{
                     if(options?.method==='POST'){
                         if(!url.endsWith('/colour/apply'))throw Error('Unexpected operation');window.stagePosts++;
-                        return new Response(JSON.stringify({message:'Your signed stage approval is recorded.'}));
+                        return new Response(JSON.stringify({message:'Your colour and sound signature is recorded.',delivery:state}));
                     }
                     if(++window.reads===1)return new Response(JSON.stringify(state));
                     return await new Promise(()=>{});
@@ -132,7 +132,7 @@ def test_recorded_review_releases_controls_without_a_duplicate_full_read(signed_
                 document.body.append(module.renderDelivery({project_id:'invented-recorded-review'},()=>{}));
             }''')
             page.get_by_role('button',name='Record the signed colour and sound approval',exact=True).click()
-            expect(page.get_by_role('status')).to_have_text('Your signed stage approval is recorded.')
+            expect(page.get_by_role('status')).to_contain_text('Your colour and sound signature is recorded.')
             expect(page.get_by_role('group',name='Saved cut and final files',exact=True)).to_be_enabled()
             # A direct module harness supplies no newly verified board stage
             # record. Releasing its busy lock must not invent that record.

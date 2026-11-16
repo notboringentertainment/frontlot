@@ -26,7 +26,7 @@ def test_identical_paper_routes_keep_rough_cards_and_sounds(reviewed,monkeypatch
     approvals=(root/'approvals.jsonl').read_bytes()
     assert delivery.rough_state(root)=='Signed by you'
     assert edit.save_revision(root,copy.deepcopy(saved['paper_cut']),saved['edit_revision_sha256'])==saved
-    story_ingest.check_paper(root)
+    story_ingest.check_paper(root,saved['edit_revision_sha256'])
     with pytest.raises(ValueError,match='another window'):
         edit.save_revision(root,saved['paper_cut'],source['edit_revision_sha256'])
     with pytest.raises(ValueError,match='another window'):

@@ -191,6 +191,8 @@ def test_results_stay_beside_the_control_that_was_used(voice_world,monkeypatch):
             save=paper.get_by_role('button',name='Save a new version',exact=True);save.click()
             expect(save.locator('xpath=following-sibling::*[1]')).to_contain_text('purpose')
             paper.get_by_role('group',name='Shot 2',exact=True).get_by_label('Shot purpose',exact=True).fill('A quiet closing invitation.')
+            paper.get_by_role('group',name='Shot 1',exact=True).get_by_label('Screen time in seconds',exact=True).fill('1')
+            paper.get_by_role('group',name='Shot 2',exact=True).get_by_label('Screen time in seconds',exact=True).fill('2')
             save.click();expect(save.locator('xpath=following-sibling::*[1]')).to_contain_text('Saved.')
             check=paper.get_by_role('button',name='Check paper cut against approved story',exact=True);check.click()
             expect(check.locator('xpath=following-sibling::*[1]')).to_contain_text('compared with the approved story')

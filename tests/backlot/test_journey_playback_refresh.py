@@ -24,7 +24,7 @@ def test_board_rebuild_keeps_only_the_same_intentionally_playing_file(signed_cut
             video=cut.locator('video');expect(video).to_have_js_property('readyState',4,timeout=20000)
             source=video.get_attribute('src')
             video.evaluate('''v=>{window.playbackEvents=[];for(const kind of ['play','pause','ended','emptied','loadedmetadata','seeking','seeked','error'])v.addEventListener(kind,()=>window.playbackEvents.push({kind,time:v.currentTime,source:v.currentSrc,connected:v.isConnected}));}''')
-            video.evaluate('(v)=>{v.play().catch(e=>window.playbackFailure=String(e));}')
+            video.evaluate('(v)=>{v.muted=true;v.play().catch(e=>window.playbackFailure=String(e));}')
             page.wait_for_function('(v)=>v.currentTime>0.1',arg=video.element_handle(),timeout=10000)
             if intent=='paused':video.evaluate('(v)=>v.pause()')
             if intent=='new-cut':

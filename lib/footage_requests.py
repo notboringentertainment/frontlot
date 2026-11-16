@@ -431,6 +431,7 @@ def request_decision(root, shot_id, take_id, decision):
 
 
 def take_state(root, shot_id, take_id):
+    from tools.video._shared import VideoVerificationError
     take = _take(root,shot_id,take_id)
     try:valid = take_decisions(root,'footage_take',take_id,take,identity_key='take_id',subject={'shot_id':shot_id})
     except (receipts.ReceiptChainError,ValueError):return 'Needs a fresh look'
@@ -440,12 +441,16 @@ def take_state(root, shot_id, take_id):
     try:
         record = _provenance(root,take);_sources(root,record)
         if hashlib.sha256((Path(root)/take['path']).read_bytes()).hexdigest()!=take['sha256']:return 'Needs a fresh look'
+    except VideoVerificationError:
+        return 'Cannot check this take. ffprobe could not verify the kept clip. Check that ffprobe is installed and working, then refresh. The clip and your signatures are still saved.'
     except (ValueError,OSError,TypeError,KeyError):return 'Needs a fresh look'
     return 'Accepted'
 
 
 def require_accepted(root, shot_id, take_id):
-    if take_state(root,shot_id,take_id) != 'Accepted':raise ValueError('Only an accepted, unchanged footage take can enter the cut.')
+    state=take_state(root,shot_id,take_id)
+    if state.startswith('Cannot check this take.'):raise ValueError(state)
+    if state != 'Accepted':raise ValueError('Only an accepted, unchanged footage take can enter the cut.')
     return _take(root,shot_id,take_id)
 
 
@@ -494,7 +499,8 @@ def preview_availability(root,value):
         try:
             validate_cut_sources(root,{'timeline':{'picture':[picture]}})
             result[picture['id']]='Accepted footage available'
-        except (ValueError,OSError,TypeError,KeyError):result[picture.get('id')]='Needs a fresh look — placeholder'
+        except (ValueError,OSError,TypeError,KeyError) as exc:
+            result[picture.get('id')]=(str(exc) if str(exc).startswith('Cannot check this take.') else 'Needs a fresh look')+' — placeholder'
     return result
 
 

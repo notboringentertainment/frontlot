@@ -17,18 +17,23 @@ def picture(page,name,target):
 
 def test_decline_open_replace_restore_and_remove(signed_cut,monkeypatch):
     from lib.trailer_edit import read_revision
+    from lib import footage_requests
     root,provider,posts,_,_=signed_cut;old=read_revision(root)
+    # Kept cards deliberately offer no second decision. Exercise the real
+    # signed decline operation before opening Cutting, so this test still
+    # proves that decline history cannot be laundered by replace/restore.
+    source=old['timeline']['picture'][1]
+    decision=footage_requests.request_decision(root,source['shot_id'],source['take_id'],'decline')
+    looks.approve_request(decision,root)
+    footage_requests.apply_decision(root,source['shot_id'],source['take_id'],'decline')
     with board(root,monkeypatch) as url,sync_playwright() as pw:
         browser=pw.chromium.launch(headless=True)
         try:
             page=browser.new_page(viewport={'width':1440,'height':1000});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
             page.goto(f'{url}/p/{root.name}#k=invented-browser-proof')
             shot=page.get_by_role('article',name='Shot 1 footage',exact=True)
-            tile=shot.locator('.take-tile').nth(1);video=tile.locator('video')
-            expect(video).to_have_js_property('readyState',4,timeout=20000)
-            video.evaluate('(v)=>{v.currentTime=v.duration-.15;return v.play();}')
-            expect(video).to_have_js_property('ended',True,timeout=15000)
-            tile.get_by_role('button',name='Decline this take',exact=True).click();sign(page,'decision')
+            expect(shot.get_by_role('button',name='Keep this take',exact=True)).to_have_count(0)
+            expect(shot.get_by_role('button',name='Decline this take',exact=True)).to_have_count(0)
             page.get_by_role('button',name='Cutting workspace',exact=True).click()
             panel=page.get_by_role('region',name='Cutting view')
             expect(panel.locator('[data-cut-kind="picture"]')).to_have_count(3,timeout=15000)

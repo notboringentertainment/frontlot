@@ -85,7 +85,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from lib.canonical_json import record_sha256  # noqa: E402
 from lib import gates  # noqa: E402
 from lib.paths import PROJECTS_DIR  # noqa: E402
-from lib.receipts import APPROVAL_KINDS, ReceiptError, exact_approval, record_human_approval, verified_approvals  # noqa: E402
+from lib.receipts import APPROVAL_KINDS, ReceiptError, exact_approval, record_human_approval, verified_approvals, verified_read  # noqa: E402
 from lib.state_io import atomic_move, atomic_write_json  # noqa: E402
 
 REQUEST_DIRNAME = ".gate-requests"
@@ -1877,6 +1877,7 @@ CONSTRUCTORS: dict[str, Callable[..., Constructed]] = {
 assert set(CONSTRUCTORS) == set(APPROVAL_KINDS), "every approval kind needs a gate-side constructor"
 
 
+@verified_read
 def construct(root: Path, req: dict, *, selection: Optional[int] = None) -> Constructed:
     """Build and cross-check the record for ``req``: the constructed record
     and envelope must equal the request's hints when those are present."""

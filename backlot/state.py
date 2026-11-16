@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from lib.events import read_events
+from lib.receipts import verified_read
 from lib.paths import PROJECTS_DIR, REPO_ROOT  # single source of truth (env-overridable)
 
 MEDIA_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
@@ -1978,6 +1979,7 @@ def _trailer_display_evidence(root: Path, marker: dict) -> bool:
     return False
 
 
+@verified_read
 def load_board_state(project_dir: Path) -> dict[str, Any]:
     """Full BoardState for one project. Never raises."""
     project_dir = Path(project_dir)

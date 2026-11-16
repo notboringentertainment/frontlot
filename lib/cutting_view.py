@@ -3,11 +3,13 @@ from lib import programs
 import copy
 import math
 from pathlib import Path
-from lib import trailer_edit,footage_requests,audio_workspace
+from lib import trailer_edit,footage_requests,audio_workspace,receipts
 from lib.pathsafe import resolve_input,sha256_file
 
 def source_problem(medium,number,state):
     label=f'{"Picture" if medium=="picture" else "Sound"} {number}'
+    if isinstance(state,str) and state.startswith('Cannot check this take.'):
+        return label+' cannot be checked. '+state.removeprefix('Cannot check this take.').strip()
     if state=='Declined':reason='This take was declined. Replace or remove this clip.'
     elif state=='Needs a fresh look':reason='This take needs a fresh look. Review a new kept take, or remove this clip.'
     elif medium=='audio':reason='Choose a kept voice, music or sound effect. A picture take cannot be used as sound.'
@@ -29,6 +31,7 @@ def _frame(value,label):
     if type(value) is not int or value<0:raise ValueError(label+' must use non-negative whole frames.')
     return value
 
+@receipts.verified_read
 def validate_cut(root,timeline,*,verify_files=False,release=False,require_card_approval=True):
     if not isinstance(timeline,dict) or not {'fps','picture','audio'}<=set(timeline) or set(timeline)-{'fps','picture','audio','cards','mix'} or type(timeline['fps']) is not int or timeline['fps']!=24:
         raise ValueError('Save picture and sound together at twenty-four frames per second.')
@@ -91,6 +94,7 @@ def editable(timeline,*,display=False):
         result['cards']=[{k:r[k] for k in CARD_FIELDS} for r in timeline['cards']]
     return result
 
+@receipts.verified_read
 def save_cut(root,timeline,expected_revision):
     root=Path(root)
     # Audio freshness reads the current paper cut under its own edit lock.
@@ -117,6 +121,7 @@ def preflight_render(timeline):
         from lib.trailer_titles import renderer_preflight
         renderer_preflight()
 
+@receipts.verified_read
 def render_saved(root,revision,comparison='after',*,resolution=(640,360),directory=None):
     import subprocess,uuid,json
     from lib.trailer_finishing import review_output,NEUTRAL

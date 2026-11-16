@@ -61,7 +61,7 @@ def test_overlapping_returns_wait_for_verified_server_state_twenty_times(signed_
                 page.evaluate('''async ({iteration,already_signed})=>{
                     const m=await import('/ui/delivery.js');
                     window.refreshDefinition=m.refreshDelivery.toString();
-                    const stale={number:1,revision:'invented-saved-version',rough_status:already_signed?'Signed by you':'Needs your signature',exports:[]};
+                    const stale={number:1,revision:'invented-saved-version',rough_status:already_signed?'Signed by you':'Needs your signature',exports:[],recorded_stages:[]};
                     const latest={...stale,rough_status:'Signed by you'};
                     let count=0;window.reads=[];window.words=[];
                     window.fetch=async()=>{

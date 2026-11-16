@@ -48,7 +48,11 @@ def test_browser_signing_uses_short_system_temp_even_with_a_long_app_home(tmp_pa
     nested=tmp_path/('long-app-home-'*12);nested.mkdir()
     monkeypatch.setenv('OPENMONTAGE_HOME',str(nested))
     short_signing_folder.__wrapped__(monkeypatch,None)
-    assert Path(os.environ['OPENMONTAGE_GATES_DIR']).parent.resolve()==Path(tempfile.gettempdir()).resolve()
+    chosen=Path(os.environ['OPENMONTAGE_GATES_DIR']).resolve()
+    assert chosen.is_relative_to(Path(tempfile.gettempdir()).resolve())
+    assert chosen.is_relative_to(Path(os.environ['FRONTLOT_TEST_RUN_ROOT']).resolve())
+    assert not chosen.is_relative_to(nested.resolve())
+    assert len(os.fsencode(chosen/'session-0123456789abcdef.sock'))<104
 
 @pytest.mark.parametrize('temporary',['/tmp','/private/tmp','/var/folders/t7/invented/T'])
 def test_resolved_locations_accept_default_named_and_mac_temporary_roots(tmp_path,monkeypatch,temporary):

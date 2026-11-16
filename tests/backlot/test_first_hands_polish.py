@@ -27,18 +27,24 @@ def test_every_audio_button_receives_its_release_during_changed_reads(voice_worl
             # Observe delivery without executing purchases. Separate journey
             # tests exercise the real callbacks and signed account review.
             page.evaluate("()=>document.addEventListener('click',e=>{if(e.target===window.pressed){window.delivered++;e.stopImmediatePropagation();e.preventDefault();}},true)")
+            page.evaluate("()=>document.addEventListener('pointerdown',e=>{window.pressed=e.target.closest('button');window.delivered=0;},true)")
             labels=audio.get_by_role('button').evaluate_all("es=>es.filter(e=>!e.disabled).map(e=>e.textContent)")
             for number,label in enumerate(dict.fromkeys(labels)):
                 button=audio.get_by_role('button',name=label,exact=True).first
                 if not button.is_visible():continue
-                button.scroll_into_view_if_needed();button.evaluate('(e)=>{window.pressed=e;window.delivered=0;}');box=button.bounding_box()
-                page.mouse.move(box['x']+box['width']/2,box['y']+box['height']/2);page.mouse.down()
+                # Locator hover retries an initial detached node. Capture the
+                # actual pressed button at pointerdown, rather than a node
+                # from a read that completed before the press began.
+                button.hover();page.mouse.down()
+                assert page.evaluate('window.pressed?.textContent')==label
                 def changed(route):
                     data=route.fetch().json();data['record_warnings']=['Invented changed information '+str(number)];route.fulfill(json=data)
                 page.route('**/voice',changed)
                 with page.expect_response(url+'/api/project/'+root.name+'/voice'):
                     page.evaluate("id=>import('/ui/voice.js').then(m=>m.renderVoice({project_id:id},()=>{}))",root.name)
-                page.wait_for_timeout(150);page.mouse.up()
+                page.wait_for_timeout(150)
+                assert page.evaluate('window.pressed.isConnected'),label+' was replaced before its release'
+                page.mouse.up()
                 assert page.evaluate('window.delivered')==1,label+' lost its mouse release'
                 page.unroute('**/voice',changed)
             assert len(posts)==before

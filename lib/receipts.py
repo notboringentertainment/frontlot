@@ -34,6 +34,11 @@ run by ``tools.cost_tracker.resume_check`` before any new paid call.
 from __future__ import annotations
 
 import re
+import copy
+import hashlib
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 
 import uuid
 from datetime import datetime, timezone
@@ -43,6 +48,65 @@ from typing import Any, Callable, Optional
 from lib import gates
 from lib.canonical_json import record_sha256 as _record_sha256
 from lib.state_io import append_jsonl, read_jsonl
+
+
+_verified_reads = ContextVar('delivery_verified_receipt_reads', default=None)
+
+
+@contextmanager
+def verified_read_scope():
+    """Reuse exact receipt proofs within one operation, never the next one.
+
+    Every lookup fingerprints the actual local and signer-owned bytes again.
+    File times are not authority. Nested checks share the operation's proofs;
+    concurrent requests have separate contexts. Returned values are copies.
+    """
+    if _verified_reads.get() is not None:
+        yield
+        return
+    token = _verified_reads.set({})
+    try:
+        yield
+    finally:
+        _verified_reads.reset(token)
+
+
+def verified_read(fn):
+    @wraps(fn)
+    def checked(*args, **kwargs):
+        with verified_read_scope():
+            return fn(*args, **kwargs)
+    return checked
+
+
+def _proof_read(root, stream, selection, read, project_id=None):
+    cache = _verified_reads.get()
+    if cache is None:
+        return read()
+    project = project_id_for(root, project_id)
+    paths = (stream_path(root, stream), gates.chain_path(project, stream),
+             gates.chain_tip_path(project, stream), gates.chain_journal_path(project, stream),
+             gates.gates_dir() / 'key',
+             gates.ledger_path() if stream == 'approval' else gates.generation_ledger_path())
+    def fingerprint():
+        result = []
+        for path in paths:
+            try:
+                digest = hashlib.sha256(path.read_bytes()).digest()
+            except FileNotFoundError:
+                digest = None
+            result.append((str(path.resolve()), digest))
+        return tuple(result)
+    before = fingerprint()
+    key = (str(Path(root).resolve()), project, stream, selection, before)
+    if key in cache:
+        return copy.deepcopy(cache[key])
+    value = read()
+    # Chain recovery can itself advance a tip. A proof spanning changed
+    # inputs is never retained; the next check runs the verifier again.
+    if before == fingerprint():
+        cache[key] = copy.deepcopy(value)
+    return value
 
 # Approval transactions in flight in this process (token_hmac). A pre-commit
 # check that reads receipts triggers WAL replay; replay must never commit the
@@ -598,6 +662,11 @@ def _commit_approval(root: Path, binding: gates.GateBinding, receipt: dict) -> N
 
 
 def chained_rows(project_root: Path | str, stream: str, *, project_id: Optional[str] = None) -> list[dict]:
+    return _proof_read(project_root, stream, ('chain',),
+                       lambda: _chained_rows(project_root, stream, project_id=project_id), project_id)
+
+
+def _chained_rows(project_root: Path | str, stream: str, *, project_id: Optional[str] = None) -> list[dict]:
     """Every row of the project-local receipt file for ``stream``
     (``approval`` → approvals.jsonl, ``generation`` → generation-receipts.jsonl)
     after proving the file reproduces the orchestrator's signed chain for
@@ -655,12 +724,17 @@ def find_approval(
     *,
     project_id: Optional[str] = None,
 ) -> Optional[dict]:
+    recover_pending_approvals(project_root)
+    return _proof_read(project_root, 'approval', ('find', kind, entity_id, record_sha256),
+                       lambda: _find_approval(project_root, kind, entity_id, record_sha256, project_id=project_id), project_id)
+
+
+def _find_approval(project_root, kind, entity_id, record_sha256, *, project_id=None):
     """Return the latest verified receipt matching the filters, or None.
 
     Rows lacking a valid signature or full-tuple ledger entry, or carrying a
     ``project_id`` other than this project's, are ignored as forged.
     """
-    recover_pending_approvals(project_root)
     match: Optional[dict] = None
     for row in chained_rows(project_root, "approval", project_id=project_id):
         if row.get("kind") != kind:
@@ -682,10 +756,15 @@ def verified_approvals(
     entity_id: Optional[str] = None,
     project_id: Optional[str] = None,
 ) -> list[dict]:
+    recover_pending_approvals(project_root)
+    return _proof_read(project_root, 'approval', ('approvals', kind, entity_id),
+                       lambda: _verified_approvals(project_root, kind, entity_id=entity_id, project_id=project_id), project_id)
+
+
+def _verified_approvals(project_root, kind, *, entity_id=None, project_id=None):
     """Every verified receipt of ``kind`` for this project, in ledger order.
     Supersession chains (looks, headshots, manifest pins) are replayed over
     this list; forged or foreign rows are invisible."""
-    recover_pending_approvals(project_root)
     out: list[dict] = []
     for row in chained_rows(project_root, "approval", project_id=project_id):
         if row.get("kind") != kind:
@@ -1076,10 +1155,10 @@ def verified_generation_receipts(
 ) -> list[dict]:
     """Every generation receipt row that passes chain + signature + ledger +
     project checks (chain divergence raises ReceiptChainError)."""
-    return [
+    return _proof_read(project_root, 'generation', ('generation',), lambda: [
         row for row in chained_rows(project_root, "generation", project_id=project_id)
         if gates.verify_generation_receipt(row)
-    ]
+    ], project_id)
 
 
 def find_generation(

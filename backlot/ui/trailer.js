@@ -159,7 +159,7 @@ export function renderPaperCut(s,onSaved=async()=>{},onSign=async()=>{}) {
   function update(next) {
     if(!next)return;
     state=next;
-    wholeReviewStatus.textContent=state.trimmed_contract?(state.whole_review_status||'Needs your signature'):'Whole-paper review is optional under this production’s signed contract; it does not finish a stage.';
+    wholeReviewStatus.textContent=state.trimmed_contract||['Signed by you','Needs a fresh look'].includes(state.whole_review_status)?(state.whole_review_status||'Needs your signature'):'Whole-paper review is optional under this production’s signed contract; it does not finish a stage.';
     if(recordReview)recordReview.disabled=dirty||state.whole_review_status!=='Signed by you';
     updateRowWarnings();
     if(Number.isInteger(state.target_frames)){targetFrames=state.target_frames;updateTiming();}

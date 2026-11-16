@@ -373,7 +373,7 @@ function renderSignPanel() {
   signPanel.replaceChildren(...kids);
   signPanel.hidden = kids.length === 0;
   const question=gateSession.appView&&gateSession.ask&&!gateSession.outcome?JSON.stringify([gateSession.requestId,gateSession.ask]):null;
-  if(question!==shownQuestion){shownQuestion=question;if(question&&matchMedia('(max-width: 760px)').matches)requestAnimationFrame(()=>{if(shownQuestion===question)signPanel.scrollIntoView({block:'center',behavior:'instant'});});}
+  if(question!==shownQuestion){shownQuestion=question;if(question)requestAnimationFrame(()=>{if(shownQuestion===question)signPanel.scrollIntoView({block:'center',behavior:'instant'});});}
   if (textOn) scheduleTerminalFit();
 }
 
@@ -1521,12 +1521,24 @@ async function selectGate(requestId, { background = false } = {}) {
 }
 
 async function openDeliveryReview(requestId){
-  // Select before updating state, so that update cannot start the unrelated
-  // workspaces that this review is replacing. Finish its verified detail
-  // before handing over to the signing screen.
-  selectedGateId=requestId;gateDetail=null;gateDetailState='loading';render();
-  await refresh();
-  if(gateDetailState!=='ready')await selectGate(requestId);
+  // The request's own server reading is sufficient to show its review.
+  // Do not put it behind a full refresh of unrelated workspace material.
+  refreshGeneration++;refreshController?.abort();refreshController=null;
+  await selectGate(requestId);
+  const detail=gateDetail,request=detail?.request;
+  if(selectedGateId!==requestId||detail?.request_id!==requestId||request?.request_id!==requestId)return;
+  if(detail.state==='pending'&&!detail.error&&!detail.packet?.packet_error
+     &&request.project_id===projectId&&request.kind==='artifact_review'
+     &&request.scope==='trailer-stage'&&['edit','colour_mix','compose'].includes(request.stage)){
+    // This is an actual pending request returned by the existing server,
+    // not an approval or a client-created signing permission. The signer
+    // still rechecks the request, evidence, lease and every signed rule.
+    const row=Object.fromEntries(['request_id','project_id','kind','scope','stage','entity_id','summary'].map(key=>[key,request[key]]));
+    row.state=detail.state;
+    state={...state,gates:{...state.gates,requests:[...(state.gates?.requests||[]).filter(value=>value.request_id!==requestId),row]}};
+    render();
+  }
+  refresh().catch(console.error);
 }
 
 function visualFigure(s, visual, label, ordinal = null) {

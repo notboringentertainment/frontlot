@@ -1,6 +1,6 @@
 """Capability-authenticated board controls for local trailer delivery."""
 from pathlib import Path
-from lib import trailer_delivery as delivery
+from lib import trailer_delivery as delivery, receipts
 
 def mount(app,require_writer,safe_root,invalidate):
     import asyncio
@@ -14,17 +14,28 @@ def mount(app,require_writer,safe_root,invalidate):
         require_writer(request);data=await request.json()
         if not isinstance(data,dict) or set(data)!=set(keys):raise HTTPException(400,'Reopen the saved delivery controls and try again.')
         return data
+    @receipts.verified_read
+    def apply_stage(root,stage,identity=None):
+        message=delivery.complete_stage(root,stage,identity)
+        # The result, file card and next step use this same fresh verified
+        # reading. A slow unrelated board refresh cannot split them apart.
+        return {'message':message,'delivery':delivery.snapshot(root)}
+    @receipts.verified_read
+    def prepare_review(root,stage,revision):
+        from lib.cutting_view import render_preview
+        from lib.trailer_edit import read_revision
+        gate=(delivery.request_rough if stage=='edit' else delivery.request_colour)(root,revision)
+        ready=read_revision(root)['edit_revision_sha256'] if stage=='edit' else revision
+        render_preview(root,ready)
+        return {'gate_request_id':gate['request_id']}
     base='/api/project/{project_id}/delivery'
     @app.get(base)
     async def state(project_id:str):return await run(delivery.snapshot,safe_root(project_id))
     @app.post(base+'/rough')
     async def rough(project_id:str,request:Request):
         data=await body(request,['revision']);root=safe_root(project_id)
-        gate=await run(delivery.request_rough,root,data['revision'])
-        from lib.cutting_view import render_preview
-        from lib.trailer_edit import read_revision
-        saved=await run(read_revision,root);await run(render_preview,root,saved['edit_revision_sha256'])
-        invalidate(project_id);return {'gate_request_id':gate['request_id']}
+        result=await run(prepare_review,root,'edit',data['revision'])
+        invalidate(project_id);return result
     @app.post(base+'/export')
     async def export(project_id:str,request:Request):
         data=await body(request,['revision']);root=safe_root(project_id)
@@ -33,20 +44,18 @@ def mount(app,require_writer,safe_root,invalidate):
     @app.post(base+'/colour')
     async def colour(project_id:str,request:Request):
         data=await body(request,['revision']);root=safe_root(project_id)
-        gate=await run(delivery.request_colour,root,data['revision'])
-        from lib.cutting_view import render_preview
-        await run(render_preview,root,data['revision'])
-        invalidate(project_id);return {'gate_request_id':gate['request_id']}
+        result=await run(prepare_review,root,'colour_mix',data['revision'])
+        invalidate(project_id);return result
     @app.post(base+'/colour/apply')
     async def apply_colour(project_id:str,request:Request):
         await body(request,[]);root=safe_root(project_id)
-        message=await run(delivery.complete_stage,root,'colour_mix');invalidate(project_id)
-        return {'message':message}
+        result=await run(apply_stage,root,'colour_mix');invalidate(project_id)
+        return result
     @app.post(base+'/rough/apply')
     async def apply_rough(project_id:str,request:Request):
         await body(request,[]);root=safe_root(project_id)
-        message=await run(delivery.complete_stage,root,'edit');invalidate(project_id)
-        return {'message':message}
+        result=await run(apply_stage,root,'edit');invalidate(project_id)
+        return result
     @app.post(base+'/{identity}/approval')
     async def approval(project_id:str,identity:str,request:Request):
         root=safe_root(project_id)
@@ -59,8 +68,8 @@ def mount(app,require_writer,safe_root,invalidate):
     @app.post(base+'/{identity}/apply')
     async def apply(project_id:str,identity:str,request:Request):
         await body(request,[]);root=safe_root(project_id)
-        message=await run(delivery.complete_stage,root,'compose',identity);invalidate(project_id)
-        return {'message':message}
+        result=await run(apply_stage,root,'compose',identity);invalidate(project_id)
+        return result
     @app.post(base+'/{identity}/reveal')
     async def reveal(project_id:str,identity:str,request:Request):
         await body(request,[]);return await run(delivery.reveal,safe_root(project_id),identity)
@@ -73,6 +82,7 @@ def mount(app,require_writer,safe_root,invalidate):
         path=await run(delivery.frame_picture,safe_root(project_id),identity,frame)
         return FileResponse(path,media_type='image/png',headers={'Cache-Control':'no-store'})
 
+@receipts.verified_read
 def signing_packet(root,request):
     from lib import trailer_edit
     from lib.pathsafe import sha256_file,resolve_input

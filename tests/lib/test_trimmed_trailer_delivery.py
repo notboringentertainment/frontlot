@@ -31,11 +31,11 @@ def test_colour_and_mix_needs_its_own_signature_of_the_saved_cut(trailer_cut):
     from tests.lib.look_lock_helpers import approve_request
     root,calls,posts,*_=trailer_cut;saved=trailer_edit.read_revision(root)
     rough=delivery.request_rough(root,saved['edit_revision_sha256']);approve_request(rough,root)
-    assert delivery.complete_stage(root,'edit')=='Your signed stage approval is recorded.'
+    assert delivery.complete_stage(root,'edit')=='Your rough-cut signature is recorded.'
     saved=trailer_edit.read_revision(root)
     with pytest.raises(ValueError,match='colour and sound'):delivery.require_colour(root)
     gate=delivery.request_colour(root,saved['edit_revision_sha256']);approve_request(gate,root)
-    assert delivery.complete_stage(root,'colour_mix')=='Your signed stage approval is recorded.'
+    assert delivery.complete_stage(root,'colour_mix')=='Your colour and sound signature is recorded.'
     delivery.require_colour(root)
     from lib.cutting_view import save_cut,editable
     changed=editable(saved['timeline']);changed['mix']['speech_margin_db']+=1
@@ -101,7 +101,7 @@ def test_reveal_checks_approved_material_once_and_rechecks_file_bytes_before_fin
         return 'Approved by you'
     monkeypatch.setattr(delivery,'_artifacts',artifacts)
     monkeypatch.setattr(delivery,'_approval_state',approved)
-    monkeypatch.setattr(delivery.subprocess,'run',lambda args,**kwargs:opened.append(args))
+    monkeypatch.setattr(delivery.programs,'run',lambda args,**kwargs:opened.append(args))
     if changed_after_approval:
         with pytest.raises(ValueError,match='changed|fresh look'):delivery.reveal(root,'a'*32)
         assert opened==[]
@@ -132,10 +132,10 @@ def test_five_real_signatures_finish_the_trimmed_trailer_and_nothing_else(traile
     dropped=('proposal','look_lock','headshots','visual_bible','scene_plan','assets')
     earlier={p:p.read_bytes() for stage in dropped if (p:=root/f'checkpoint_{stage}.json').exists()}
     gate=delivery.request_rough(root,trailer_edit.read_revision(root)['edit_revision_sha256']);approve_request(gate,root)
-    assert delivery.complete_stage(root,'edit')=='Your signed stage approval is recorded.'
+    assert delivery.complete_stage(root,'edit')=='Your rough-cut signature is recorded.'
     revision=trailer_edit.read_revision(root)['edit_revision_sha256']
     approve_request(delivery.request_colour(root,revision),root)
-    assert delivery.complete_stage(root,'colour_mix')=='Your signed stage approval is recorded.'
+    assert delivery.complete_stage(root,'colour_mix')=='Your colour and sound signature is recorded.'
     item=delivery.export(root,revision)
     assert item['final_review']['status']=='pass',item['final_review']['issues_found']
     assert get_completed_stages(root.parent,root.name,'authored-film@1.7')==['canon_ingest','script','edit','colour_mix']
@@ -149,7 +149,7 @@ def test_five_real_signatures_finish_the_trimmed_trailer_and_nothing_else(traile
     assert delivery.final_state(root,item['id'])=='Needs your signature'
     approve_request(gate,root)
     assert delivery.final_state(root,item['id'])=='Approved by you'
-    assert delivery.complete_stage(root,'compose',item['id'])=='Your signed stage approval is recorded.'
+    assert delivery.complete_stage(root,'compose',item['id'])=='Your final-file signature for this file is recorded.'
     assert get_completed_stages(root.parent,root.name,'authored-film@1.7')==['canon_ingest','script','edit','colour_mix','compose']
     # This fixture deliberately signed an update of an earlier trailer.
     # Its old records remain on disk; none becomes an approval of this pin.
@@ -160,12 +160,12 @@ def test_five_real_signatures_finish_the_trimmed_trailer_and_nothing_else(traile
     assert row['record']['final_story_review']==answers
     assert 'canon_pass' not in item['final_review']['checks'], 'A technical report must never claim the writer’s findings.'
     assert delivery.snapshot(root)['outstanding_requirements']==[]
-    opened=[];original_run=delivery.subprocess.run
+    opened=[];original_run=delivery.programs.run
     def local_run(args,*values,**options):
         if args[:2]==['open','-R']:
-            opened.append(args[2]);return delivery.subprocess.CompletedProcess(args,0)
+            opened.append(args[2]);return None
         return original_run(args,*values,**options)
-    monkeypatch.setattr(delivery.subprocess,'run',local_run)
+    monkeypatch.setattr(delivery.programs,'run',local_run)
     reads=[];original_artifacts=delivery._artifacts
     def counted(*args,**kwargs):reads.append(1);return original_artifacts(*args,**kwargs)
     monkeypatch.setattr(delivery,'_artifacts',counted)

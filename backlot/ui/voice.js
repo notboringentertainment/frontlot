@@ -39,13 +39,13 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
   try{remembered=JSON.parse(localStorage.getItem(storageKey)||'{}');}catch{}
   let voices=Array.isArray(remembered?.voices)?remembered.voices.filter(v=>typeof v?.id==='string'&&typeof v.name==='string'):[];
   let last='',busy=false,loading=false,pendingRefresh=false,refreshFailed=false,editEpoch=0,catalogueLoaded=false,lastData=null;
-  let signatureEpoch=0,returningFromSigning=false;
+  let signatureEpoch=0,returningFromSigning=false,savedBriefResult=null;
   let revealingRequest=null;
   const revealResult=()=>{if(!revealingRequest)return;const target=document.querySelector(`[data-held-audio-notice="${revealingRequest}"]`);if(target){revealingRequest=null;target.scrollIntoView({block:'center',behavior:'instant'});}};
   const cancelReveal=()=>{revealingRequest=null;};
   for(const event of ['input','pointerdown','wheel','touchmove'])document.addEventListener(event,cancelReveal,{capture:true,passive:true});
   document.addEventListener('keydown',event=>{if(['Tab','PageDown','PageUp','Home','End','ArrowDown','ArrowUp',' '].includes(event.key))cancelReveal();},true);
-  document.addEventListener('frontlot:signature-recorded',()=>{signatureEpoch++;message.textContent='';feedback.clear();node.querySelectorAll('.action-feedback').forEach(note=>note.remove());});
+  document.addEventListener('frontlot:signature-recorded',()=>{signatureEpoch++;savedBriefResult=null;message.textContent='';feedback.clear();node.querySelectorAll('.action-feedback').forEach(note=>note.remove());});
   let pressed=false,deferredData=null,pressTimer=null;
   node.addEventListener('pointerdown',()=>{pressed=true;clearTimeout(pressTimer);pressTimer=setTimeout(released,2000);},true);
   const released=()=>{clearTimeout(pressTimer);setTimeout(()=>{pressed=false;if(deferredData){const data=deferredData;deferredData=null;draw(data);}},0);};
@@ -53,12 +53,17 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
   const button=(label,fn,key=label)=>actionButton(label,fn,{feedback,key});
   const progress=()=>{if(lastData)setAudioProgress(project,{...lastData,catalogue_loaded:catalogueLoaded,choices:[...drafts].map(([index,d])=>({index,voice:d.voice,rights:d.rights}))});};
   const remember=()=>{try{localStorage.setItem(storageKey,JSON.stringify({voices,choices:Object.fromEntries([...drafts].map(([index,d])=>[index,d.voice]))}));}catch{}};
-  const act=async fn=>{if(busy)return;const startedSignature=signatureEpoch;busy=true;controls.disabled=true;editEpoch++;refreshFailed=false;message.textContent='Working…';let resultText='';try{const result=await fn();resultText=typeof result==='string'?result:'Saved. Review the request before signing.';}catch(e){resultText=e.message;}finally{busy=false;last='';try{await refresh();await onChanged();}finally{controls.disabled=false;}if(startedSignature!==signatureEpoch)resultText='';message.textContent=resultText;}return resultText;};
+  const act=async fn=>{if(busy)return;const startedSignature=signatureEpoch;savedBriefResult=null;busy=true;controls.disabled=true;editEpoch++;refreshFailed=false;message.textContent='Working…';let resultText='';try{const result=await fn();savedBriefResult=result?.savedBrief||null;resultText=typeof result==='string'?result:result?.message||'Saved. Review the request before signing.';}catch(e){resultText=e.message;}finally{busy=false;last='';try{await refresh();await onChanged();}finally{controls.disabled=false;}if(startedSignature!==signatureEpoch){resultText='';savedBriefResult=null;}message.textContent=resultText;}return resultText;};
   const loadVoices=button('Load account voices',()=>act(async()=>{voices=await api(url+'/catalogue',{});catalogueLoaded=true;remember();progress();return 'Account voices loaded. Choose a voice for the saved line.';}));
   node.append(el('h2',{},'Voice, music and sound effects'),el('p',{},'Choose a voice for each saved spoken line, request instrumental music or describe an effect for a paper-cut moment. One signature buys one take. Keeping or declining a take needs its own signature; a decline is final.'),
     message,controls);
   controls.append(loadVoices,el('p',{class:'source'},'Loading voices reads the connected account only. It sends no story and buys no speech.'),content);
-  function draw(data){if(pressed){deferredData=data;return;}if(lastData&&JSON.stringify(lastData)!==JSON.stringify(data)){message.textContent='';feedback.clear();}keepEditorPosition(content,()=>drawContents(data));if(revealingRequest)requestAnimationFrame(revealResult);}
+  function draw(data){if(pressed){deferredData=data;return;}if(lastData&&JSON.stringify(lastData)!==JSON.stringify(data)){
+    const brief=savedBriefResult&&data[savedBriefResult.kind+'_brief'];
+    const same=brief&&brief.brief_id===savedBriefResult.id&&Object.entries(savedBriefResult.fields).every(([key,value])=>brief[key]===value);
+    const result=same?feedback.get(savedBriefResult.key):null;
+    if(!same){message.textContent='';savedBriefResult=null;}feedback.clear();if(result)feedback.set(savedBriefResult.key,result);
+  }keepEditorPosition(content,()=>drawContents(data));if(revealingRequest)requestAnimationFrame(revealResult);}
   function drawContents(data){
     lastData=data;
     content.replaceChildren();
@@ -66,7 +71,7 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
     content.append(el('p',{class:'audio-account-state',role:data.account.configured?'note':'alert'},data.account.message));
     const b=data.budget;
     content.append(el('section',{class:'paper-panel voice-budget'},el('h3',{},'One production ceiling'),
-      el('p',{},`${money(b.spent)} spent · ${money(b.held)} held · ${money(b.remaining)} remaining of ${money(b.ceiling)}`),
+      el('p',{},`${money(b.spent)} spent · ${money(b.held)} held · ${b.remaining===null?'The remaining ceiling is unavailable.':`${money(b.remaining)} remaining of ${money(b.ceiling)}`}`),
       el('p',{},`Recorded audio: ${money(b.audio_cash)} new cash · ${money(b.audio_credits)} replacement value of credits. Credits are counted once in the production total.`)));
     content.append(renderPriceSettings(data,priceForm,{api,act,onSign,url,button}));
     if(data.message)content.append(el('p',{role:'alert'},data.message));

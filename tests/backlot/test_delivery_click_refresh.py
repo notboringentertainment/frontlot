@@ -15,7 +15,7 @@ def setup(voice_world,monkeypatch):
          'review':{'issues_found':[],'checks':{'technical_probe':{'duration_seconds':3,'file_size_bytes':491460}},
                    'metadata':{'test_only':False,'boundary_samples':[],
                                'measurements':{'integrated_lufs':-16,'true_peak_dbtp':-1.5}}}}
-    saved={'number':1,'revision':'invented-saved-revision','rough_status':'Signed by you','exports':[row]}
+    saved={'number':1,'revision':'invented-saved-revision','rough_status':'Signed by you','exports':[row],'recorded_stages':[]}
     monkeypatch.setattr(delivery,'snapshot',lambda _:copy.deepcopy(saved))
     movie=root/'assets/invented-local.mp4';movie.write_bytes(clip_bytes())
     monkeypatch.setattr(delivery,'playback',lambda *_:movie)

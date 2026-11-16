@@ -57,7 +57,7 @@ def test_retained_review_player_recovers_without_restarting_the_same_movie(signe
             assert page.evaluate("()=>window.updateReview({delivery_stage:'edit',play_url:'/recovery-preview.mp4',messages:[]})===window.reviewNode")
             expect(player).to_have_attribute('src','/recovery-preview.mp4')
             expect(player).to_have_js_property('readyState',4,timeout=30000)
-            player.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=15000)
+            player.evaluate('(v)=>{v.muted=true;return v.play();}');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=15000)
             page.evaluate("()=>window.updateReview({})")
             expect(player).to_have_js_property('ended',True)
             expect(player).to_have_attribute('src','/recovery-preview.mp4')

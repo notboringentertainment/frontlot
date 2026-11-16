@@ -24,10 +24,12 @@ def test_delivery_names_the_actual_missing_reviews_in_the_real_board(signed_cut,
             expect(panel).to_contain_text('Paper cut workspace')
             expect(panel).to_contain_text('The final story comparison has no control yet.')
             expect(panel.get_by_role('button',name='Record the signed rough-cut approval',exact=True)).to_be_disabled()
-            stage=page.get_by_role('button',name='Final assembly: stage unfinished. Show details',exact=True)
-            expect(stage).to_be_visible()
-            stage.click()
-            expect(page.locator('.drawer')).to_contain_text('Use Delivery workspace to review the saved work, signatures and outstanding requirements.')
+            rail=page.get_by_role('navigation',name='Stage sign-offs')
+            expect(rail).to_contain_text('Final assembly')
+            expect(rail.get_by_role('button')).to_have_count(0)
+            # The current workspace supplies the actual missing reviews;
+            # the progress rail must not invite a second approval route.
+            expect(panel.get_by_role('button',name='Record the signed rough-cut approval',exact=True)).to_be_disabled()
             assert len(calls['posts'])==3 and len(posts)==1 and not errors
         finally:browser.close()
 

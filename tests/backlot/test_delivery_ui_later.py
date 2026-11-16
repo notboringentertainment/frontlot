@@ -29,7 +29,7 @@ def screen(voice_world,monkeypatch):
             if(options?.method==='POST'){
               window.posts.push(String(url));
               if(window.refuse)return new Response(JSON.stringify({detail:'This file needs a fresh look.'}),{status:400});
-              return new Response(JSON.stringify({gate_request_id:'invented-gate',message:'Your final-file signature for this file is recorded.',path:'/private/invented/movie.mp4'}));
+              return new Response(JSON.stringify({gate_request_id:'invented-gate',message:'Your final-file signature for this file is recorded.',path:'/private/invented/movie.mp4',delivery:window.saved}));
             }
             return new Response(JSON.stringify(window.saved));
           };

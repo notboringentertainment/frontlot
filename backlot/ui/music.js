@@ -35,7 +35,9 @@ function cueForms(data,draft,{api,act,url,button=defaultButton},kind){
       const submitted=Object.fromEntries(keys.map(k=>[k,draft[k]]));
       const body={text:draft.text,seconds:Number(draft.seconds),brief_id:draft.briefId};
       if(effect)Object.assign(body,{start_frame:Number(draft.start)*24,shot_index:draft.shot,loop:draft.loop});
-      const result=await api(url+'/brief',body);draft.new=false;draft.briefId=result.brief_id;draft.saved=submitted;return result.message;
+      const result=await api(url+'/brief',body);draft.new=false;draft.briefId=result.brief_id;draft.saved=submitted;
+      return {message:result.message,savedBrief:{kind,id:result.brief_id,key:`Save ${noun} brief`,
+        fields:{text:submitted.text,duration_seconds:Number(submitted.seconds),...(effect?{loop:submitted.loop,start_frame:Number(submitted.start)*24,shot_index:submitted.shot}:{})}}};
     })));
   const prepare=button(`Prepare ${noun} spending card`,()=>act(async()=>{
     if(!clean())throw Error(`Save the current ${noun} brief and timing before preparing its spending card.`);

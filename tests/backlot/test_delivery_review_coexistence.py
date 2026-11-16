@@ -69,7 +69,7 @@ def test_story_rough_and_final_reviews_sign_in_either_start_order(film,provider,
                         gallery.evaluate('(e)=>e.scrollIntoView({block:"start",behavior:"instant"})')
                         page.screenshot(path=str(Path(__import__('os').environ['DELIVERY_CAPTURE'])/('round2-'+order+'-signing-pictures.png')))
                 player=review.locator('video');expect(player).to_have_js_property('readyState',4,timeout=30000)
-                player.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=15000)
+                player.evaluate('(v)=>{v.muted=true;return v.play();}');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=15000)
                 page.get_by_role('button',name='Start signing',exact=True).click()
                 page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=30000)
                 expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=120000)

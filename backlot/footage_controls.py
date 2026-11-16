@@ -127,6 +127,7 @@ def prepare_decision(root,body):
         return pending if pending and pending.get('approval_record')==subject else footage.request_decision(root,shot,take,decision)
 
 
+@receipts.verified_read
 def inspect(root,jobs):
     state,paper=_paper(root)
     active=_looks(root)

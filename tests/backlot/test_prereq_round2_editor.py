@@ -36,7 +36,7 @@ def test_assigning_a_picture_updates_the_same_pages_clean_paper_cut(root,monkeyp
             shot_picture(page,'round2-picture-in-current-paper-cut',refs)
             before=trailer_edit.read_revision(root)['paper_cut']['shots'][0]['references']
             cut.get_by_role('button',name='Save a new version',exact=True).click()
-            expect(cut.get_by_role('status')).to_contain_text('Saved.')
+            expect(cut.get_by_role('status').first).to_contain_text('Saved.')
             assert trailer_edit.read_revision(root)['paper_cut']['shots'][0]['references']==before
             assert not page.errors and all(not v for v in isolated_standins.values())
         finally:browser.close()
@@ -57,7 +57,7 @@ def test_unsaved_words_must_be_saved_before_assigning_a_picture(root,monkeypatch
             assert hook.input_value()=='Keep these newly written words.'
             assert trailer_edit.read_revision(root)==before
             cut.get_by_role('button',name='Save a new version',exact=True).click()
-            expect(cut.get_by_role('status')).to_contain_text('Saved.')
+            expect(cut.get_by_role('status').first).to_contain_text('Saved.')
             setup.get_by_role('button',name='Use signed picture for selected shot',exact=True).click()
             expect(setup.get_by_role('status')).to_contain_text('picture')
             expect(cut).not_to_contain_text('Another window saved')
@@ -93,19 +93,19 @@ def test_old_refresh_cannot_replace_state_after_a_save(root,monkeypatch,isolated
             wait_for(page,lambda:bool(held))
             hook=cut.get_by_label('Hook',exact=True);hook.fill('A newly saved hook.')
             cut.get_by_role('button',name='Save a new version',exact=True).click()
-            expect(cut.get_by_role('status')).to_contain_text('Saved.')
+            expect(cut.get_by_role('status').first).to_contain_text('Saved.')
             current=trailer_edit.read_revision(root)
             assert held[0][1]['current']['edit_revision_sha256']!=current['edit_revision_sha256']
             # Observe even a brief false conflict; another UI update may follow.
             page.evaluate('''()=>{window.paperConflictSeen=false;const cut=document.querySelector('[aria-label="Trailer paper cut"]');
                 const watch=new MutationObserver(()=>{if(cut.textContent.includes('Another window saved'))window.paperConflictSeen=true;});watch.observe(cut,{subtree:true,childList:true,characterData:true});}''')
             held[0][0].fulfill(json=held[0][1])
-            expect(cut.get_by_role('status')).to_contain_text('Story checks and versions refreshed')
+            expect(cut.get_by_role('status').first).to_contain_text('Story checks and versions refreshed')
             assert hook.input_value()=='A newly saved hook.'
             expect(cut).not_to_contain_text('Another window saved')
             assert not page.evaluate('()=>window.paperConflictSeen')
             cut.get_by_role('button',name='Check paper cut against approved story',exact=True).click()
-            expect(cut.get_by_role('status')).not_to_contain_text('changed elsewhere')
+            expect(cut.get_by_role('status').first).not_to_contain_text('changed elsewhere')
             expect(cut.get_by_role('button',name='Check paper cut against approved story',exact=True)).to_be_enabled()
             assert trailer_edit.read_revision(root)['paper_cut']==current['paper_cut']
             assert not page.errors

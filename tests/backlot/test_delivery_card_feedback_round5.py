@@ -42,11 +42,13 @@ def test_earlier_approved_file_keeps_record_and_finder_feedback_on_its_card(sign
             for action,suffix,words in [
                 ('Record the signed final approval','apply','Your final-file signature for this file is recorded.'),
                 ('Show approved file in Finder','reveal','The approved trailer is saved in this production’s delivery folder and has been shown in Finder.')]:
-                with page.expect_response(lambda r:r.url==endpoint and r.request.method=='GET',timeout=60000) as refreshed:
-                    with page.expect_response(lambda r:r.url==endpoint+'/'+first['id']+'/'+suffix and r.request.method=='POST',timeout=60000) as result:
-                        older.get_by_role('button',name=action,exact=True).click()
-                    assert result.value.ok,result.value.text()
-                assert refreshed.value.ok;refreshed.value.json()
+                with page.expect_response(lambda r:r.url==endpoint+'/'+first['id']+'/'+suffix and r.request.method=='POST',timeout=60000) as result:
+                    older.get_by_role('button',name=action,exact=True).click()
+                assert result.value.ok,result.value.text()
+                if suffix=='apply':
+                    # Recording returns the fresh verified summary in the same
+                    # response; a second GET is deliberately unnecessary.
+                    assert result.value.json()['delivery']['exports'][0]['id']==second['id']
                 expect(main).to_contain_text('Needs your signature')
                 expect(panel.get_by_role('status')).to_contain_text('Current final file: Needs your signature.')
                 # Check both actions on the old screen before reporting its

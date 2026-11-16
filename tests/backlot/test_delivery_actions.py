@@ -21,7 +21,7 @@ def snapshot(rough, final=None, colour='Signed by you'):
                          'checks':{'technical_probe':{'duration_seconds':3,'file_size_bytes':491460}},
                          'metadata':{'test_only':True,'boundary_samples':[],
                                      'measurements':{'integrated_lufs':-16,'true_peak_dbtp':-1.5}}}}]
-    return {'number':1,'revision':'invented-saved-revision','rough_status':rough,'colour_status':colour,'exports':rows}
+    return {'number':1,'revision':'invented-saved-revision','rough_status':rough,'colour_status':colour,'exports':rows,'recorded_stages':['canon_ingest','script']}
 
 
 def setup_delivery(voice_world,monkeypatch):
@@ -29,7 +29,7 @@ def setup_delivery(voice_world,monkeypatch):
     from tests.tools.test_signed_footage import clip_bytes
     root,posts,gets=voice_world
     served={'value':snapshot('Needs your signature'),'completed':set()}
-    monkeypatch.setattr(delivery,'snapshot',lambda _:served['value'])
+    monkeypatch.setattr(delivery,'snapshot',lambda _:{**served['value'],'recorded_stages':sorted({'canon_ingest','script'}|served['completed'])})
     from backlot import server
     original=server.load_board_state
     def state(project):
@@ -126,7 +126,8 @@ def test_finder_feedback_keeps_the_plain_sentence_and_omits_the_computer_path(vo
             page.route('**/*',route);page.goto(f'{url}/p/{root.name}#k=invented-browser-proof')
             panel=page.get_by_role('region',name='Trailer delivery',exact=True)
             panel.get_by_role('button',name='Show approved file in Finder',exact=True).click()
-            expect(panel.get_by_role('status')).to_have_text('The approved trailer has been shown in Finder.')
+            expect(panel.get_by_role('status')).to_contain_text('The approved trailer has been shown in Finder.')
+            expect(panel.get_by_role('status')).to_contain_text('Current final file: Approved by you.')
             expect(panel.get_by_role('status')).not_to_contain_text(str(root))
             assert revealed==['invented-final'] and posts==[] and gets==[] and outside==[] and not errors
         finally:browser.close()

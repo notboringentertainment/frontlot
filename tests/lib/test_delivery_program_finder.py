@@ -26,20 +26,26 @@ def test_export_preflights_before_creating_work(tmp_path,monkeypatch,missing):
         d.export(tmp_path,'invented-revision')
     assert calls==[] and list(tmp_path.iterdir())==[]
 
-def test_reveal_uses_installed_program_and_exact_approved_path(tmp_path,monkeypatch):
+def test_reveal_uses_installed_program_and_exact_approved_path(delivery_cut,monkeypatch):
     from lib import trailer_delivery as d,programs
-    movie=tmp_path/'invented-approved.mp4';movie.write_bytes(b'invented local bytes')
-    monkeypatch.setattr(d,'final_state',lambda *a:'Approved by you')
-    monkeypatch.setattr(d,'playback',lambda *a:movie)
-    if not programs.which('open'):pytest.skip('The local Finder program is not installed on this system.')
+    root,provider,posts=delivery_cut
+    saved=approve_rough(root)
+    item=d.export(root,saved['edit_revision_sha256'])
+    looks.approve_request(d.request_final(root,item['id']),root)
+    assert d.final_state(root,item['id'])=='Approved by you'
+    movie=d.playback(root,item['id'])
     launched=[]
+    original=subprocess.run
     def run(args,*a,**kw):
-        launched.append(args);return subprocess.CompletedProcess(args,0)
+        if Path(args[0]).name=='open' and args[1]=='-R':
+            launched.append(args);return subprocess.CompletedProcess(args,0)
+        return original(args,*a,**kw)
     monkeypatch.setattr(subprocess,'run',run)
     monkeypatch.setenv('PATH','/usr/bin:/bin:/usr/sbin:/sbin')
-    d.reveal(tmp_path,'invented-export')
+    d.reveal(root,item['id'])
     assert len(launched)==1 and Path(launched[0][0]).is_absolute()
     assert launched[0][1:]==['-R',str(movie)]
+    assert len(provider['posts'])==3 and len(posts)==1
 
 def test_actual_export_with_icon_path(delivery_cut,monkeypatch,short_signing_folder):
     from lib import trailer_delivery as d

@@ -122,6 +122,7 @@ def playback(root,identity):
     mime={'pcm_s16le':'audio/wav','mp3':'audio/mpeg','aac':'audio/mp4','flac':'audio/flac'}.get(take['codec'],'application/octet-stream')
     return data,mime
 
+@receipts.verified_read
 def snapshot(root):
     root=root_checked(root)
     from lib.story_ingest import source_warning
@@ -135,16 +136,22 @@ def snapshot(root):
         if basis is None:settings_error=SIGN_PRICES_FIRST
     except RuntimeError:
         from lib.project_config import read_project_config
-        draft,_=read_project_config(root)
-        # An unsigned draft explains a stop. It grants no spending permission.
-        ceiling=draft['budget_usd_cap']
-        settings_error=SIGN_PRICES_FIRST
+        try:
+            draft,_=read_project_config(root)
+            # An unsigned draft explains a stop. It grants no spending permission.
+            ceiling=draft['budget_usd_cap']
+            settings_error=SIGN_PRICES_FIRST
+        except (RuntimeError,OSError,ValueError):
+            ceiling=None
+            settings_error='The production settings cannot be read. Your recorded takes and held charges are still shown. Repair the settings before preparing another purchase.'
     account=account_status()
     from lib.media_settings import pending,PAUSED
     price_drafts=pending(root)
     if price_drafts:settings_error=PAUSED
     from tools.cost_tracker import CostTracker
-    tracker=CostTracker(budget_total_usd=ceiling,reserve_pct=0,cost_log_path=root/'cost_log.json')
+    # Read recorded spending even without a verified ceiling. This reader never
+    # reserves or writes; an unknown allowance must not become permission to buy.
+    tracker=CostTracker(budget_total_usd=ceiling if ceiling is not None else 0,reserve_pct=0,cost_log_path=root/'cost_log.json')
     state=audio.state(root)
     takes=[t for t in state['takes'] if t['kind'] in ('speech','music','effect')]
     for take in takes:
@@ -175,8 +182,9 @@ def snapshot(root):
             try:audio.check_price(root,record)
             except Exception:error='This request needs fresh review. Check the paper cut and signed price settings, then prepare another request.'
             if price_drafts:error=PAUSED
-            if record['max_cash_usd']+record['max_credits_usd']>tracker.budget_remaining_usd:
+            if ceiling is not None and record['max_cash_usd']+record['max_credits_usd']>tracker.budget_remaining_usd:
                 error='Not enough remains under the production ceiling. Resolve held charges or stop; this request cannot be approved.'
+            if ceiling is None:error=settings_error
             if record['request_id'] in used:error='This signature has already been used. If no take was recovered, prepare a new spending card; it cannot buy another call.'
             if state['unresolved_requests']:error='Resolve the held audio charge in the account review above before submitting any request.'
             if not account['configured'] and error is None:error=account['message']
@@ -208,7 +216,7 @@ def snapshot(root):
             'record_warnings':state['record_warnings'],
             'takes':takes,'requests':requests,'unresolved_requests':state['unresolved_requests'],
             'budget':{'ceiling':ceiling,'spent':tracker.budget_spent_usd,'held':tracker.budget_reserved_usd,
-                      'remaining':tracker.budget_remaining_usd,'audio_cash':sum(r.get('cash_usd',0) for r in charges),
+                      'remaining':tracker.budget_remaining_usd if ceiling is not None else None,'audio_cash':sum(r.get('cash_usd',0) for r in charges),
                       'audio_credits':sum(r.get('credits_usd',0) for r in charges)}}
 
 def prepare_prices(root,data):

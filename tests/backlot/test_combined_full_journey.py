@@ -3,16 +3,23 @@
 Every production step uses a visible board control and the real signer.
 Only service replies and the Finder reveal are counted local stand-ins.
 """
-import json,os,subprocess,time
+import json,os,subprocess,time,uuid
 from pathlib import Path
 from tests.backlot.test_journey_map import _wav
 from playwright.sync_api import sync_playwright,expect
 from tests.backlot.test_early_paid_readiness import isolated_standins,start_browser,set_prices,save_paper_with_controls,buy_three_audio,shot_picture
 from tests.backlot.test_footage_controls_browser import browser_board
 from tests.backlot.footage_prereq_helpers import complete_footage_prerequisites,simple_sign
-RUN=os.environ.get('EARLY_PICTURE_PREFIX','journey')
+RUN=os.environ.get('EARLY_PICTURE_PREFIX','journey-'+uuid.uuid4().hex[:8])
 
 def test_full_visible_journey(tmp_path,monkeypatch,isolated_standins):
+    run_visible_journey(tmp_path,monkeypatch,isolated_standins)
+
+
+def run_visible_journey(tmp_path,monkeypatch,isolated_standins,*,reload_points=False,prefix=None):
+    if prefix:
+        monkeypatch.setattr(__import__(__name__,fromlist=['RUN']),'RUN',prefix)
+        monkeypatch.setattr('tests.backlot.test_early_paid_readiness.RUN',prefix)
     parent=Path(os.environ['TMPDIR']).resolve().parent
     from tests.tools import test_signed_footage as fake
     # Prepare the stand-in's downloaded bytes before starting the board. All
@@ -51,6 +58,8 @@ def test_full_visible_journey(tmp_path,monkeypatch,isolated_standins):
     with browser_board(projects/'not-created',monkeypatch) as url,sync_playwright() as pw:
         url=url.replace('?static=1','')
         browser,page=start_browser(pw,url)
+        tracing=bool(os.environ.get('FRONTLOT_JOURNEY_TRACE'))
+        if tracing:page.context.tracing.start(screenshots=True,snapshots=True,sources=True)
         try:
             page.goto(url.split('/p/')[0]+'/#k=invented-browser-writer')
             page.get_by_text('Start a trailer',exact=True).click()
@@ -84,9 +93,14 @@ def test_full_visible_journey(tmp_path,monkeypatch,isolated_standins):
                 simple_sign(page,'Return to paper cut')
                 paper.get_by_role('button',name='Record the signed paper-cut review',exact=True).click()
                 expect(paper.get_by_role('status').first).to_contain_text('Your signed paper-cut review is recorded.')
+                if reload_points:
+                    page.reload()
+                    expect(paper).to_contain_text('Signed by you',timeout=60000)
+                    expect(audio.get_by_label('Effect description',exact=True)).to_be_visible()
                 page.get_by_role('button',name='Voice workspace',exact=True).click()
                 buy_three_audio(page,audio,calls,'purchase')
             complete_footage_prerequisites(page,root,calls,tmp_path,audio_count=0,check_changed=False,before_purchase=paper_and_sound)
+            if reload_points:page.reload()
             shot=page.get_by_role('article',name='Shot 1 footage',exact=True)
             expect(shot.get_by_role('button',name='Keep this take',exact=True)).to_have_count(0)
             expect(shot.get_by_role('button',name='Decline this take',exact=True)).to_have_count(0)
@@ -113,8 +127,8 @@ def test_full_visible_journey(tmp_path,monkeypatch,isolated_standins):
                         panel.get_by_role('button',name=label,exact=True).click()
                     response=applied.value
                     assert response.ok,response.text()
-                    assert response.json()['message']=='Your signed stage approval is recorded.'
-                    expect(panel.get_by_role('status').first).to_have_text(response.json()['message'],timeout=5000)
+                    assert response.json()['message']=={'/rough/apply':'Your rough-cut signature is recorded.','/colour/apply':'Your colour and sound signature is recorded.'}.get(path,'Your final-file signature for this file is recorded.')
+                    expect(panel.get_by_role('status').first).to_contain_text(response.json()['message'],timeout=5000)
                     assert len(posts)==1
                     evidence.setdefault('recording_seconds',{})[path]=time.monotonic()-began
                 finally:page.remove_listener('request',requested)
@@ -157,7 +171,7 @@ def test_full_visible_journey(tmp_path,monkeypatch,isolated_standins):
             expect(cut.get_by_role('status').first).to_contain_text('ready',timeout=240000)
             player=cut.locator('video');expect(player).to_have_js_property('readyState',4,timeout=20000)
             player.evaluate('''v=>{window.cutPlaybackEvents=[];for(const kind of ['play','pause','ended','emptied','loadedmetadata','seeking','seeked','error'])v.addEventListener(kind,()=>window.cutPlaybackEvents.push({kind,time:v.currentTime,source:v.currentSrc,connected:v.isConnected}));}''')
-            player.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=60000)
+            player.evaluate('(v)=>{v.muted=true;return v.play();}');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=60000)
             note('cut-titles-colour-playback',cut)
             page.reload()
             page.get_by_role('button',name='Delivery workspace',exact=True).click()
@@ -165,7 +179,7 @@ def test_full_visible_journey(tmp_path,monkeypatch,isolated_standins):
             delivery.get_by_role('button',name='Review and sign the saved rough cut',exact=True).click()
             review=page.get_by_role('region',name='Delivery review');expect(review).to_be_visible(timeout=240000)
             player=review.locator('video');expect(player).to_have_js_property('readyState',4,timeout=180000)
-            player.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=60000)
+            player.evaluate('(v)=>{v.muted=true;return v.play();}');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=60000)
             page.get_by_role('button',name='Start signing',exact=True).click()
             page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=180000)
             expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=60000)
@@ -178,7 +192,7 @@ def test_full_visible_journey(tmp_path,monkeypatch,isolated_standins):
             review=page.get_by_role('region',name='Delivery review',exact=True)
             expect(review.get_by_role('heading',name='Review the saved colour and sound',exact=True)).to_be_visible(timeout=240000)
             player=review.locator('video');expect(player).to_have_js_property('readyState',4,timeout=180000)
-            player.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=60000)
+            player.evaluate('(v)=>{v.muted=true;return v.play();}');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=60000)
             page.get_by_role('button',name='Start signing',exact=True).click()
             page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=180000)
             expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=60000)
@@ -190,7 +204,7 @@ def test_full_visible_journey(tmp_path,monkeypatch,isolated_standins):
             note('exported-file',delivery)
             tile=delivery.locator('[data-delivery]').first
             player=tile.locator('video');expect(player).to_have_js_property('readyState',4,timeout=180000)
-            player.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=60000)
+            player.evaluate('(v)=>{v.muted=true;return v.play();}');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=60000)
             comparison=tile.get_by_role('region',name='Final story comparison',exact=True)
             tile.get_by_role('button',name='Review and sign final approval',exact=True).click()
             expect(tile.get_by_role('note')).to_contain_text('Complete the final story comparison')
@@ -202,7 +216,7 @@ def test_full_visible_journey(tmp_path,monkeypatch,isolated_standins):
             expect(review).to_be_visible(timeout=240000)
             expect(review.get_by_role('region',name='Pictures from the final file')).to_be_visible()
             player=review.locator('video');expect(player).to_have_js_property('readyState',4,timeout=180000)
-            player.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=60000)
+            player.evaluate('(v)=>{v.muted=true;return v.play();}');page.wait_for_function('(v)=>v.ended',arg=player.element_handle(),timeout=60000)
             page.get_by_role('button',name='Start signing',exact=True).click()
             page.get_by_role('button',name='Approve and sign',exact=True).click(timeout=180000)
             expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded',timeout=120000)
@@ -237,7 +251,7 @@ def test_full_visible_journey(tmp_path,monkeypatch,isolated_standins):
             finally:page.remove_listener('request',requested)
             reopened=tile.locator('video')
             expect(reopened).to_have_js_property('readyState',4,timeout=180000)
-            reopened.evaluate('(v)=>v.play()');page.wait_for_function('(v)=>v.ended',arg=reopened.element_handle(),timeout=60000)
+            reopened.evaluate('(v)=>{v.muted=true;return v.play();}');page.wait_for_function('(v)=>v.ended',arg=reopened.element_handle(),timeout=60000)
             tile.get_by_role('button',name='Show approved file in Finder',exact=True).click()
             expect(delivery.get_by_role('status').first).to_contain_text('shown in Finder',timeout=180000)
             note('signed-final-and-reveal',delivery)
@@ -264,4 +278,10 @@ def test_full_visible_journey(tmp_path,monkeypatch,isolated_standins):
             with (parent/(RUN+'-journey-map-stop.json')).open('x') as f:json.dump(evidence,f,default=str,indent=2)
             shot_picture(page,'journey-stop')
             raise
-        finally:browser.close()
+        finally:
+            if tracing:
+                from tests.backlot.journey_evidence import save_action_log
+                trace=parent/(RUN+'-browser-trace.zip')
+                page.context.tracing.stop(path=str(trace))
+                save_action_log(trace,parent/(RUN+'-presses-and-waits.json'))
+            browser.close()

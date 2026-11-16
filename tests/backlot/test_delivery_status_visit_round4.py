@@ -38,6 +38,7 @@ def test_summary_follows_main_file_after_actions_without_reopening(signed_cut,mo
             expect(status).to_contain_text('Current final file: Approved by you.',timeout=60000)
             endpoint=url+f'/api/project/{root.name}/delivery'
             if case=='new-export':
+                before_stages=d.snapshot(root)['recorded_stages']
                 with page.expect_response(lambda r:r.url==endpoint+'/export' and r.request.method=='POST',timeout=180000) as exported:
                     panel.get_by_role('button',name='Make the final file',exact=True).click()
                 response=exported.value;assert response.ok,response.text()
@@ -64,7 +65,8 @@ def test_summary_follows_main_file_after_actions_without_reopening(signed_cut,mo
             expect(status).not_to_contain_text('approved trailer is saved')
             expect(panel.locator(':scope > [role="note"]')).not_to_contain_text('approved trailer is saved')
             if case=='new-export':
-                assert 'rough-cut signature' in result['stage_message'].lower()
+                assert 'completes no stage' in result['stage_message'].lower()
+                assert d.snapshot(root)['recorded_stages']==before_stages
             else:
                 expect(main.get_by_role('button',name='Show approved file in Finder',exact=True)).to_be_disabled()
                 expect(main.get_by_role('note')).to_be_empty()
