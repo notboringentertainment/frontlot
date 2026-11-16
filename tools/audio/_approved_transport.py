@@ -35,11 +35,11 @@ def _execute_locked(inputs,kind):
         import re
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',record['model']) or (kind=='speech' and not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',record['voice'])):
             raise ValueError('The approved model or voice identifier is invalid.')
+        key=os.environ.get('ELEVENLABS_API_KEY','').strip()
+        if not key:raise ValueError('Connect your ElevenLabs account before submitting audio.')
         def submit(payload,reservation):
             nonlocal contacted
             import requests
-            key=os.environ.get('ELEVENLABS_API_KEY','').strip()
-            if not key:raise ValueError('Connect your ElevenLabs account before submitting audio.')
             if kind=='speech':
                 url='https://api.elevenlabs.io/v1/text-to-speech/'+payload['voice']
                 body={'text':payload['prompt'],'model_id':payload['model']}

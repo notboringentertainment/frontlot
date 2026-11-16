@@ -1,6 +1,6 @@
 // Focused footage controls. Every write calls the existing signed operations.
 import {el, CAPABILITY_TOKEN_KEY, mediaURL, spendingCard,keepEditorPosition,actionButton} from "/ui/lib.js";
-import {savedPaperCut,paperCutChangedHere} from '/ui/trailer.js';
+import {savedPaperCut,paperCutChangedHere,changeSavedPaperCut} from '/ui/trailer.js';
 import {setFootageProgress} from '/ui/next_step.js';
 let data=null,project=null,hooks=null,globalError="",observing=false,readRetries=0;
 const drafts=new Map(),completed=new Set();
@@ -34,8 +34,9 @@ export async function afterFootageSignature(id,kind) {
   try {
     globalError="";
     const result=await footageAction("signed",{gate_id:id});
-    if(result.paper_cut)paperCutChangedHere(project,result.paper_cut);completed.add(id);
-    hooks.returnToShots();await hooks.refresh();
+    if(result.paper_cut)paperCutChangedHere(project,result.paper_cut);
+    completed.add(id);
+    hooks.returnToShots(result.paper_cut);await hooks.refresh();
   }catch(error){globalError=error.message;hooks.returnToShots();await hooks.refresh();}
 }
 export async function footageDecision(shot,take,decision) {
@@ -144,7 +145,7 @@ function shotPanel(s,shot){
   }
   for(const take of shot.takes){
     panel.append(el("p",{},take.status==="Accepted"?(take.selected?"Kept":"Signed keep needs applying"):take.status),hooks.take(s,shot,take));
-    if(take.status==="Accepted"&&!take.selected)panel.append(button("Use signed keep in the cut",()=>perform(d,()=>footageAction("apply",{shot_id:shot.id,take_id:take.take_id,decision:"accept"})),d.busy));
+    if(take.status==="Accepted"&&!take.selected)panel.append(button("Use signed keep in the cut",()=>perform(d,()=>changeSavedPaperCut(project,()=>footageAction("apply",{shot_id:shot.id,take_id:take.take_id,decision:"accept"}))),d.busy));
     if(take.declined)panel.append(el("p",{},"Declined. This decision is final for this take; create a retake request for another clip."));
     if(take.status==="Needs a fresh look")panel.append(el("p",{},"The shot or its inputs changed. This take cannot enter the cut. Review the current shot and create a fresh request."));
   }

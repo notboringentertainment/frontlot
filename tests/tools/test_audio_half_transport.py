@@ -338,3 +338,26 @@ def test_take_cannot_be_relabelled_as_another_spoken_line(priced,http):
     with pytest.raises(ValueError,match='provenance'):
         ws.decision_record(priced,take['id'],'accept')
     assert len(http)==1
+
+
+@pytest.mark.parametrize('key', [None, '', ' \t\n'])
+def test_missing_key_leaves_no_hold_and_signed_request_can_be_used(priced, http, monkeypatch, key):
+    from tools.audio.music_gen import MusicGen
+    from tools.cost_tracker import load_reservations
+    record, _ = music_request(priced)
+    sign(priced, 'audio_spend', record, record['request_id'])
+    args = {'project_dir': str(priced), 'audio_request_id': record['request_id']}
+    if key is None:
+        monkeypatch.delenv('ELEVENLABS_API_KEY', raising=False)
+    else:
+        monkeypatch.setenv('ELEVENLABS_API_KEY', key)
+    result = MusicGen().execute(args)
+    assert not result.success and 'Connect your ElevenLabs account' in result.error
+    assert http == []
+    assert load_reservations(priced) == {}
+    monkeypatch.setenv('ELEVENLABS_API_KEY', 'invented-only')
+    result = MusicGen().execute(args)
+    assert result.success, result.error
+    assert result.data['take']['approved_request_id'] == record['request_id']
+    assert len(http) == 1
+    assert [r['state'] for r in load_reservations(priced).values()] == ['completed']

@@ -3234,7 +3234,7 @@ async function refresh() {
       if(footageEpoch===footageReadEpoch())setFootageState(projectId,footage,{render,refresh,selectGate,lookCard,isRefreshing:()=>refreshController!==null,
         takeFeedback:()=>JSON.stringify([[...takeBusy],[...takeErrors]]),
         take:(s,shot,take)=>renderTakeTile(s,shot,take,{decidable:true,othersWaiting:0}),
-        returnToShots:()=>returnToWorkspace()});
+        returnToShots:(paper)=>{if(paper&&state)state.paper_cut=paper;returnToWorkspace();}});
     }
     if(paperEpoch!==paperCutEpoch()){queueMicrotask(()=>refresh().catch(console.error));return;}
     const creationJustSigned = state?.trailer_setup_pending && nextState.is_trailer && !nextState.trailer_setup_pending;
