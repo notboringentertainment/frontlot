@@ -272,6 +272,10 @@ def run_visible_journey(tmp_path,monkeypatch,isolated_standins,*,reload_points=F
                 assert current['exports'][0]['status']=='Approved by you'
                 expect(tile).to_contain_text('Approved by you',timeout=5000)
                 expect(tile.get_by_role('button',name='Show approved file in Finder',exact=True)).to_be_enabled(timeout=5000)
+                reopened=tile.locator('video')
+                expect(reopened).to_have_js_property('readyState',4,timeout=180000)
+                reopened.evaluate('(v)=>{v.muted=true;return v.play();}')
+                page.wait_for_function('(v)=>v.ended',arg=reopened.element_handle(),timeout=60000)
                 note('reloaded-after-finder',delivery)
             import shutil
             picture_folder=os.environ.get('EARLY_TEST_PICTURES')
