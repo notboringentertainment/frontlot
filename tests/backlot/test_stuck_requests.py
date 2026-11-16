@@ -87,14 +87,15 @@ def test_buying_sound_retires_waiting_clip_without_losing_the_shot(signed_cut):
     from backlot.footage_controls import create,inspect
     from lib import audio_workspace as audio
     from backlot.voice_panel import send
-    from lib.spending_requests import set_aside
     root,provider,posts,timeline,take=signed_cut;shot=timeline['picture'][0]['shot_id']
     gate=create(root,{'shot_id':shot,'model':workspace().MODEL,'duration_seconds':5})['gate']
     req=audio.prepare_request(root,'speech','eleven_multilingual_v2',line_index=0,voice='invented')
     sign(root,'audio_spend',req,req['request_id'])
     assert send(root,req['request_id'])['success']
+    assert len(provider['posts'])==3 and len(posts)==2
     row=inspect(root,{})['shots'][0]['requests'][-1]
     assert 'remaining ceiling changed' in row['signing_refusal']
+    from lib.spending_requests import set_aside
     set_aside(root,'footage_spend',gate['entity_id'])
     fresh=create(root,{'shot_id':shot,'model':workspace().MODEL,'duration_seconds':5})['gate']
     assert fresh['entity_id']!=gate['entity_id']
