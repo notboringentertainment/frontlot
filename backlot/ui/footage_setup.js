@@ -16,7 +16,7 @@ export function renderFootageSetup(s,onSign,onChange=async()=>{}){
   const controls=el('fieldset',{class:'paper-controls'});
   let snapshot=null,busy=false,loading=false,refreshAgain=false,notice='',raw='',style='\n',mixed=false,file=null,lookDirty=false,lookLoaded=false;
   const refreshWaiters=[];let refreshSerial=0;
-  const act=async fn=>{if(busy)return;busy=true;controls.disabled=true;error.textContent='';notice='';try{const result=await fn();notice=result?.message||'';}catch(e){error.textContent=e.message;}finally{try{await refresh();}finally{busy=false;controls.disabled=false;}}return error.textContent||notice||status.textContent;};
+  const act=async fn=>{if(busy)return;busy=true;controls.disabled=true;error.textContent='';notice='';try{const result=await fn();notice=result?.message||'';}catch(e){error.textContent=e.message;}finally{try{await refresh();}finally{busy=false;controls.disabled=false;for(const note of node.querySelectorAll('.action-feedback'))if(note.textContent==='Working…')note.remove();}}return error.textContent||notice||status.textContent;};
   const group=name=>el('fieldset',{class:'paper-panel'},el('legend',{},name));
   const look=group('Location written in Front Lot'),answers={};
   look.append(el('p',{},'Write twenty to eighty words, no more than six hundred characters, in the exact location description. These are the existing look limits. Supply the required visual answers yourself; nothing is invented or sent to a model.'));
@@ -83,6 +83,7 @@ export function renderFootageSetup(s,onSign,onChange=async()=>{}){
 export function renderPrereqSigning(detail,actions,onReturn,lookCard,project,stale){
   const p=detail.packet||{},doc=p.frontlot_location,isLook=detail.request?.kind==='look_lock';
   const box=el('section',{class:'viewer-inner paper-editor','aria-label':isLook?'Location source approval':'Picture origin approval'},el('h2',{},isLook?'Review location written in Front Lot':'Review machine-generated picture origin'),button('Return to footage setup',onReturn));
+  if(isLook&&detail.state==='done'){box.append(el('p',{role:'status'},'Your signature is recorded. Return to footage setup to continue.'));return box;}
   if(isLook&&!doc){box.append(el('p',{role:'alert'},p.error||'This location source could not be read. Return to footage setup and prepare its current wording again.'));return box;}
   if(isLook){box.append(el('p',{},'Written in Front Lot for this production. This signs the exact location description and its visual answers. It approves no picture, upload, purchase or whole stage.'),el('h3',{},doc.name),el('pre',{class:'exact-location',style:'white-space:pre-wrap;overflow-wrap:anywhere'},doc.look_spec.prompt_safe_description),lookCard(doc.look_spec,'Visual answers for this location'));}
   else{box.append(el('p',{},p.attestation||'The picture origin could not be read.'),el('p',{},`Tool that made it: ${p.origin_tool||'Not supplied'}.`),el('p',{},'The original stays on your Mac. This signs the picture’s origin only, not permission to send it to a service. Choose its approved location look on the footage card; each footage signature binds that pairing.'),p.visual?.path?el('img',{src:thumbURL(project,p.visual.path,1024),alt:'Machine-generated reference picture for origin review',style:'max-width:100%;max-height:65vh'}):null);}

@@ -1005,7 +1005,13 @@ def _looks_summary(root: Path) -> list[dict[str, Any]]:
         if not isinstance(entry, dict):
             continue
         if entry.get("entity_id") and entry.get("look_hash"):
+            display_name = None
+            if entry.get('writer_source_ref'):
+                from lib.frontlot_location_source import read
+                try:display_name = read(root, entry['writer_source_ref'])['name']
+                except (ValueError, OSError):pass
             out.append({
+                "display_name": display_name,
                 "entity": entry.get("entity_id"),
                 "entity_kind": entry.get("entity_kind"),
                 "look_hash": entry.get("look_hash"),
@@ -1799,7 +1805,7 @@ def _render_footage(root: Path, req: dict[str, Any]) -> dict[str, Any]:
             'highest_cash':record['max_cash_usd'],'highest_credits':record['max_credits_usd'],
             'highest_charge':round(record['max_cash_usd']+record['max_credits_usd'],4),
             'remaining':record['remaining_usd'],
-            'expiry':datetime.fromtimestamp(record['price_expires_at'],timezone.utc).strftime('%d %B %Y, %H:%M UTC'),
+            'expiry':datetime.fromtimestamp(record['price_expires_at'],timezone.utc).isoformat(),
             'looks':[{k:_footage_look_words(v) if isinstance(v,dict) or (isinstance(v,list) and any(isinstance(x,dict) for x in v)) else v
                       for k,v in m['payload'].items()} for m in record['look_material']]},'visuals':pictures}
     except (ValueError,OSError,TypeError,KeyError,receipts.ReceiptChainError) as exc:

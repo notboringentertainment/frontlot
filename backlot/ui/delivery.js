@@ -104,7 +104,7 @@ export function renderDelivery(s,onSign,refreshOnRender=true){
  const base=`/api/project/${encodeURIComponent(s.project_id)}/delivery`,node=el('section',{class:'paper-editor',role:'region','aria-label':'Trailer delivery'}),message=el('p',{role:'status'},'Checking the saved cut and its signed takes…'),body=el('fieldset',{'aria-label':'Saved cut and final files',disabled:'',style:'border:0;padding:0;margin:0;min-width:0'});
  let data,busy=false,flight=null,pendingRefresh=false,key='',progress=false,returningSummary=false,readGeneration=0,readController=null,returnGeneration=0,confirmation=null,boardState=s;
  const storyForms=new Map(),stageFeedback=new Map();
- const fileFeedback=new Map();let earlierOpen=false;
+ const fileFeedback=new Map();let earlierOpen=false,revealedId=null;
  const summary=next=>`Saved cut loaded. Rough cut: ${next.rough_status}. ${next.exports.length?`Current final file: ${next.exports[0].status}.`:'Review the current file and its approvals below.'}`;
  function stageNote(stage){if(!stageFeedback.has(stage))stageFeedback.set(stage,el('p',{role:'note','aria-live':'polite'}));return stageFeedback.get(stage);}
  function clearFeedback(){for(const held of fileFeedback.values())held.node.textContent='';for(const note of stageFeedback.values())note.textContent='';}
@@ -171,6 +171,8 @@ export function renderDelivery(s,onSign,refreshOnRender=true){
      // that answer and fulfil every waiter only after the queued read lands.
      if(pendingRefresh)continue;
      if(!busy&&!preserveFeedback)clearFeedback();
+     await new Promise(resolve=>{const paint=()=>{
+     if(generation!==readGeneration){resolve();return;}
      const first=!data,encoded=JSON.stringify(next);
      if(encoded!==key){confirmation=null;data=next;key=encoded;draw();}
      body.disabled=busy;
@@ -179,6 +181,7 @@ export function renderDelivery(s,onSign,refreshOnRender=true){
       progress=false;returningSummary=false;
       message.textContent=summary(next);
      }
+     resolve();};if(!deferDeliveryPaint('delivery-read-result-'+generation,paint))paint();});
     }catch(e){
      if(generation!==readGeneration)return;
      if(pendingRefresh)continue;
@@ -193,10 +196,10 @@ export function renderDelivery(s,onSign,refreshOnRender=true){
   const done=name=>data.recorded_stages.includes(name),current=data.exports[0];
   const next=data.rough_status!=='Signed by you'?'Review and sign the saved rough cut':data.colour_status&&!done('edit')?'Record the signed rough-cut approval':
    data.colour_status&&data.colour_status!=='Signed by you'?'Review and sign colour and sound':data.colour_status&&!done('colour_mix')?'Record the signed colour and sound approval':
-   current?.status==='Needs your signature'?'Review and sign final approval':current?.status==='Approved by you'?!current.approval_recorded?'Record the signed final approval':'Show approved file in Finder':'Make the final file';
+   current?.status==='Needs your signature'?'Review and sign final approval':current?.status==='Approved by you'?!current.approval_recorded?'Record the signed final approval':revealedId===current.id?'Your trailer is finished':'Show approved file in Finder':'Make the final file';
   const action=(label,fn,disabled=false,refreshAfter=true,main=true,feedback=null)=>button(label,fn,disabled,refreshAfter,main&&label===next,feedback);
   body.append(el('p',{},`Saved version ${data.number}. Delivery uses this saved cut, including its colour, sound and signed cards. Save any editing changes before reviewing it.`),
-   el('p',{'aria-label':'Next delivery step'},'Next: '+next+'.'),
+   el('p',{'aria-label':'Next delivery step'},(next==='Your trailer is finished'?'':'Next: ')+next+'.'),
    el('section',{class:'paper-panel','data-delivery-stage':'edit'},el('h3',{},'Rough-cut approval'),el('p',{},data.rough_status),
    el('div',{class:'delivery-actions'},
     action('Review and sign the saved rough cut',async()=>{preparing('Preparing the saved rough cut for review locally…');const current=await api();const r=await api('/rough',{revision:current.revision});await onSign(r.gate_request_id);},!!data.colour_status&&(!done('canon_ingest')||!done('script')),true,true,stageNote('edit')),
@@ -236,7 +239,7 @@ export function renderDelivery(s,onSign,refreshOnRender=true){
    tile.append(el('div',{class:'delivery-actions'},
     action('Review and sign final approval',async()=>{const value=storyForm?{story_review:storyForm.read()}:{};feedback.textContent=prefix+'Rechecking this final file and its sound…';const r=await api('/'+item.id+'/approval',value);try{await onSign(r.gate_request_id);}finally{feedback.textContent='';}},item.status!=='Needs your signature'||!!data.colour_status&&(!done('edit')||!done('colour_mix')),true,index===0,feedback),
     action('Record the signed final approval',()=>record('/'+item.id+'/apply',feedback),item.status!=='Approved by you',false,index===0,feedback),
-    action('Show approved file in Finder',async()=>{const r=await api('/'+item.id+'/reveal',{});feedback.textContent=prefix+r.message;if(index===0)confirmed('The approved trailer has been shown in Finder.');else{progress=false;message.textContent=summary(data);}},item.status!=='Approved by you',true,index===0,feedback)),feedback);
+    action('Show approved file in Finder',async()=>{const r=await api('/'+item.id+'/reveal',{});feedback.textContent=prefix+r.message;if(index===0)await new Promise(resolve=>{const paint=()=>{revealedId=item.id;draw();confirmed('The approved trailer has been shown in Finder.');resolve();};if(!deferDeliveryPaint('delivery-reveal-result',paint))paint();});else{progress=false;message.textContent=summary(data);}},item.status!=='Approved by you',true,index===0,feedback)),feedback);
    if(index===0)body.append(tile);else earlier.append(tile);
   }
   if(data.exports.length>1)body.append(earlier);
@@ -245,5 +248,5 @@ export function renderDelivery(s,onSign,refreshOnRender=true){
  node.append(el('h2',{},'Delivery'),el('p',{},'Sign and record the saved rough cut, then colour and sound. Make the local final file, watch it, compare it with the story, then sign and record that exact file. Nothing is uploaded. No stage is finished without its own signature and required earlier reviews.'),message,
  refreshButton,el('p',{role:'note','aria-live':'polite'}),body);
  const stageKey=state=>JSON.stringify(state.stages?.map(stage=>[stage.name,stage.status]));
- active={id:s.project_id,node,refresh,update(state){const before=stageKey(boardState);boardState=state;if(data&&before!==stageKey(state))draw();}};refresh();return node;
+ active={id:s.project_id,node,refresh,update(state){const before=stageKey(boardState);boardState=state;if(data&&before!==stageKey(state))refresh();}};refresh();return node;
 }

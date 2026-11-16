@@ -1983,7 +1983,7 @@ function buildRoster(s) {
     add(t.kind === "location" ? "location" : "character", t.entity_id, t.name);
   }
   for (const look of gates.looks || []) {
-    const e = add(look.entity_kind === "location" ? "location" : "character", look.entity);
+    const e = add(look.entity_kind === "location" ? "location" : "character", look.entity, look.display_name);
     if (e) e.look = look;
   }
   for (const entry of looksPacket) {
@@ -2158,7 +2158,7 @@ function renderEntityViewer(s, e) {
   const frames = e.frames.map((f) => ({ path: f.object_rel, label: frameLabel(f), state: "done", alt: `${e.name}, ${frameLabel(f)}` }));
   if (selectedFrame >= frames.length) selectedFrame = 0;
   const nextStep = e.kind === "location"
-    ? s.is_trailer ? 'Use Footage setup to review and sign the location look, then import and sign a machine-generated reference picture. Nothing is sent to a service by those steps.' : (e.slots.look !== "done"
+    ? s.is_trailer ? (e.slots.look==='done'?'The location look is signed. Open Footage workspace to see its shot takes and signed reference pictures.':'Use Footage setup to review and sign the location look, then import and sign a machine-generated reference picture. Nothing is sent to a service by those steps.') : (e.slots.look !== "done"
       ? "No look is locked yet. Once you promote a look in WriterOS and it's locked here, its pictures come next."
       : "The look is locked. Ask in the Claude box to add your own pictures of this place.")
     : e.slots.look !== "done"
@@ -2167,7 +2167,7 @@ function renderEntityViewer(s, e) {
       ? "The look is locked. The headshot comes next."
       : "The headshot is done. The character sheet comes next.";
   const blank = el("figure", { class: "screen blank" },
-    el("div", {}, el("b", {}, "Nothing on film yet"), el("p", {}, nextStep)));
+    el("div", {}, el("b", {}, s.is_trailer&&e.kind==='location'&&e.slots.look==='done'?'Approved location look':'Nothing on film yet'), el("p", {}, nextStep)));
 
   const lookText = e.lookSpec && (e.lookSpec.prompt_safe_description || e.lookSpec.description);
   const source = e.look?.writer_source_ref ? 'Written in Front Lot' : e.look && e.look.source_ref && typeof e.look.source_ref === "object"
@@ -2612,10 +2612,10 @@ function renderGateViewer(s) {
     const decision=gateDetail.packet.trailer_test_contract;
     return el('section',{id:'gate-detail',class:'paper-editor',role:'region','aria-label':'Trailer-test contract review'},
       el('h2',{id:'gate-detail-heading'},s.trailer_setup_pending?'Start this trailer':'Review the trailer-test contract'),
-      el('p',{},'Ben decided: “trim for the trailer test”. This signature selects the contract. It approves no stage, purchase or take.'),
+      el('p',{},'This trailer needs five signed reviews: Story, Paper cut, Rough cut, Colour and sound, and Final file. This signature selects the contract. It approves no stage, purchase or take.'),
       gateDetail.packet.trailer_creation?el('p',{},`${gateDetail.packet.trailer_creation.title}. Target length: ${gateDetail.packet.trailer_creation.trailer.target_duration_seconds} seconds. Whole-trailer ceiling: $${gateDetail.packet.trailer_creation.spending_ceiling_usd.toFixed(2)}.`):null,
       el('h3',{},'The required signed reviews'),...decision.required_reviews.map(w=>el('p',{},w)),
-      el('h3',{},'Whole-stage reviews set aside for this test'),...decision.dropped_whole_stage_reviews.map(w=>el('p',{},w)),
+      el('h3',{},'Other whole-stage reviews are not part of a trailer'),...decision.dropped_whole_stage_reviews.map(w=>el('p',{},w)),
       el('p',{},'Every protected line must still be heard verbatim. Each purchase, used look and reference, kept take and exact card keeps its own signed protection.'),
       gateActions(s,summary,stale,packetError),el('button',{type:'button',onclick:()=>{closeSigning();selectedGateId=null;gateDetail=null;trailerWorkbenchChosen=true;render();refresh();}},'Return to the trailer'));
   }
@@ -2716,7 +2716,7 @@ function renderGateViewer(s) {
       el("h3",{},footageCard.decision ? `Your decision: ${footageCard.decision}` : "One clip, one signature"),
       el("p",{},footageCard.description),
       el("p",{},`${footageCard.length} seconds. ${footageCard.service || ""} ${footageCard.model || ""}`),
-      footageCard.highest_charge!=null ? el("div",{},spendingCard(footageCard),
+      footageCard.highest_charge!=null ? el("div",{},spendingCard({...footageCard,expiry:new Date(footageCard.expiry).toLocaleString()}),
         el("p",{},"The exact description and reference pictures shown here leave this computer for Fal. The approved looks below establish which pictures may be used; their text is not sent separately. This request is for silent widescreen footage. There are no automatic retries or changes of service or model.")) : el("p",{},footageCard.accounting),
       ...(footageCard.looks || []).map(spec=>lookCard(spec,"Approved look behind this request")),
       el("p",{},footageCard.decision ? "Declining is final for this take. Accepting completes no stage." : "A retake needs a new request and signature. Signing this request does not approve a stage.")) : null,
@@ -3065,7 +3065,7 @@ function renderBoard(deliveryVerified=false) {
   const shots = shotsOf(s);
   const withBin = roster.length > 0 || shots.length > 0;
   const inBin = (key) => roster.some((e) => e.key === key) || shots.some((sh) => shotKey(sh) === key);
-  if (withBin && !selectedGateId && !inBin(selectedEntity)) {
+  if (withBin && !selectedGateId && !inBin(selectedEntity) && !(s.is_trailer&&trailerWorkbenchChosen)) {
     if (roster.length) {
       const pending = pendingGates(s)[0];
       const first = roster.find((e) => e.frames.length) || roster[0];
@@ -3133,7 +3133,7 @@ function renderBoard(deliveryVerified=false) {
     const inner = s.is_trailer ? renderFootageControls(s) : renderShotViewer(s, shot);
     if (drawer) inner.prepend(drawer);
     viewer.append(inner);
-  } else if (authoredGates && (selectedGateId || (roster.length > 0&&!shot))) {
+  } else if (authoredGates && (selectedGateId || (roster.length > 0&&!shot&&(!s.is_trailer||selectedEntity)))) {
     let inner;
     if (selectedGateId) inner = renderGateViewer(s);
     else inner = renderEntityViewer(s, roster.find((e) => e.key === selectedEntity) || roster[0]);

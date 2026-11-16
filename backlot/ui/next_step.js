@@ -67,18 +67,25 @@ function paint(){
       else {const choice=audio.choices?.find(c=>c.index===0);const label=!choice?.voice?'Voice for line 1':!choice.rights?'I have permission to use this voice.':'Prepare a spending card';
         text=label==='Prepare a spending card'?'Use “Prepare a spending card” beside the saved line. Review its maximum charge, then sign that one request.':label==='Voice for line 1'?'Choose “Voice for line 1” beside the saved words. Your previous voice choice is remembered across a reload.':'Confirm “I have permission to use this voice.” for the chosen voice before preparing its spending card.';
         find=()=>target('[data-voice-line="0"]',label);}
-    }else if(!setup?.price_settings_signed||!setup?.footage_prices||!setup?.approved_looks?.length||footage?.shots?.some(s=>!s.references.length)){text='Open Footage setup. Sign the location look, import and sign its reference picture, assign it to the shot, and sign current footage prices before requesting clips.';find=()=>target('[aria-label="Trailer workspaces"]','Footage setup');}
+    }else if(!setup?.price_settings_signed||!setup?.footage_prices||!setup?.approved_looks?.length||!setup?.pictures?.length){
+      const jobs=[];
+      if(!setup?.approved_looks?.length)jobs.push('review and sign the location look');
+      if(!setup?.pictures?.length)jobs.push('import and sign its reference picture');
+      if(!setup?.price_settings_signed||!setup?.footage_prices)jobs.push('sign current footage price settings');
+      text='Open Footage setup to '+jobs.join(', then ')+'.';find=()=>target('[aria-label="Trailer workspaces"]','Footage setup');}
     else if(state.stages?.find(s=>s.name==='script')?.status!=='completed'){
       const signed=paper.whole_review_status==='Signed by you',label=signed?'Record the signed paper-cut review':'Review and sign the whole paper cut';
       text=`Use “${label}” in Paper cut workspace. This review covers the beats, exact lines, cards and shot list together; it buys nothing.`;find=()=>target('[aria-label="Trailer paper cut"]',label);
     }else {
-      const shot=footage?.shots?.find(s=>!s.takes.some(t=>t.status==='Accepted'));
+      const shot=footage?.shots?.find(s=>s.references.length&&!s.takes.some(t=>t.status==='Accepted'));
       const obsolete=shot?.requests.find(r=>r.signing_refusal);
       if(shot){identity=shot.id;text=obsolete?`${shot.label} needs a fresh spending card. Set aside its unsigned request, then prepare a new footage request from the current figures.`:`Open ${shot.label} in Footage. Prepare and sign one request, then watch its clip and sign keeping or declining it.`;find=()=>target(`[aria-label="${shot.label} footage"]`,obsolete?'Set aside unsigned request':shot.requests.some(r=>r.approved&&!r.reservation)?'Make signed clip':shot.takes.some(t=>t.waiting)?'Keep this take':shot.takes.length?'Create a retake request':'Create footage request');}
       else if(!current.cutting_view||current.paper_cut_pending||!current.timeline?.picture?.length){text='Open Cutting workspace. Place kept pictures and sound, trim them, then Save cut. Saving finishes no stage.';find=()=>target('[aria-label="Trailer workspaces"]','Cutting workspace');}
       else {text='Open Delivery workspace. Review and sign this saved rough cut, check colour and mix, then make, watch and sign the final file. Each review remains separate.';find=()=>target('[aria-label="Trailer workspaces"]','Delivery workspace');}
     }
   }
+  const missing=(footage?.shots||[]).filter(s=>!s.references.length);
+  if(missing.length&&!signatureUpdating&&!held&&!heldClip&&!pending)text+=' '+missing.map(s=>`${s.label}: ${s.purpose}. No reference picture is assigned, so this shot cannot get footage yet. Assign a signed picture if you want footage for it.`).join(' ');
   // Avoid replacing a focused guidance button on an unrelated board refresh.
   const key=JSON.stringify([text,gate,identity]);if(node.dataset.contentKey===key)return;node.dataset.contentKey=key;
   node.replaceChildren(el('h2',{},'Next step'),el('p',{},text),actionButton(gate?'Open this signing request':'Go to this step',async()=>{
