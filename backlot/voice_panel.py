@@ -190,7 +190,14 @@ def snapshot(root):
             if not account['configured'] and error is None:error=account['message']
         if recoverable:error=None
         elif recovery_error:error=recovery_error
-        requests.append({'record':record,'approved':approved,'recoverable':recoverable,'error':error,'gate_request_id':_gate_id(root,record['request_id'],'audio_spend'),
+        gate_id=_gate_id(root,record['request_id'],'audio_spend')
+        from lib.spending_requests import readiness
+        from lib.run_common import read_request as gate_read
+        ready=readiness(root,gate_read(root,gate_id)[1]) if gate_id and not approved else {}
+        refusal=ready.get('signing_refusal')
+        requests.append({'record':record,'approved':approved,'recoverable':recoverable,'error':error,'gate_request_id':gate_id,
+            'signing_refusal':refusal,'replaceable':bool(refusal and gate_id and not approved and record['request_id'] not in used),
+            'waiting_reason':ready.get('waiting_reason'),
             'source_warning':source_warning(root,record['prompt']) if record['kind']=='speech' else None})
     charges={}
     for r in receipts.verified_generation_receipts(root):
@@ -218,6 +225,24 @@ def snapshot(root):
             'budget':{'ceiling':ceiling,'spent':tracker.budget_spent_usd,'held':tracker.budget_reserved_usd,
                       'remaining':tracker.budget_remaining_usd if ceiling is not None else None,'audio_cash':sum(r.get('cash_usd',0) for r in charges),
                       'audio_credits':sum(r.get('credits_usd',0) for r in charges)}}
+
+def replace_request(root,identity):
+    from lib.spending_requests import set_aside
+    from lib.media_spending import call_lock
+    root=root_checked(root)
+    with call_lock(root):
+        record=_governed.read_request(root,identity)
+        from lib.spending_requests import temporary_wait
+        waiting=temporary_wait(root)
+        if waiting:raise ValueError(waiting)
+        set_aside(root,'audio_spend',identity)
+        binding=record['binding']
+        fresh=audio.prepare_request(root,record['kind'],record['model'],line_index=binding.get('line_index'),
+            brief_id=binding.get('brief_id'),voice=record.get('voice'),
+            performance_notes=binding.get('performance_notes',''),voice_label=binding.get('voice_label'))
+        return {'request':fresh,'gate_request_id':_gate_id(root,fresh['request_id'],'audio_spend'),
+                'message':'A fresh spending card is ready. Review and sign it separately; nothing was bought.'}
+
 
 def prepare_prices(root,data):
     from lib.media_settings import prepare_audio
@@ -259,6 +284,9 @@ def mount(app,require_writer,safe_root,invalidate):
     @app.post('/api/project/{project_id}/voice/prepare')
     async def prepare(project_id:str,request:Request):
         require_writer(request);body=await form(request);result=await run(project_id,prepare_voice,body);invalidate(project_id);return result
+    @app.post('/api/project/{project_id}/voice/{identity}/replace')
+    async def replace(project_id:str,identity:str,request:Request):
+        require_writer(request);result=await run(project_id,replace_request,identity);invalidate(project_id);return result
     @app.post('/api/project/{project_id}/voice/prices')
     async def prices(project_id:str,request:Request):
         require_writer(request);result=await run(project_id,prepare_prices,await form(request));invalidate(project_id);return result

@@ -940,7 +940,7 @@ async def _tty_websocket(websocket: WebSocket, project_id: str, request_id: str)
             _log(f"tty refused project={project_id} request={request_id} reason=unknown-project")
             return
         try:
-            _request_precondition(project_dir, project_id, request_id)
+            pending_request = _request_precondition(project_dir, project_id, request_id)
         except FileNotFoundError:
             await _close(websocket, 4404, "gate request not found")
             _log(f"tty refused project={project_id} request={request_id} reason=request-not-found")
@@ -987,7 +987,12 @@ async def _tty_websocket(websocket: WebSocket, project_id: str, request_id: str)
 
         # This deliberately runs synchronously while the detached broker owns
         # the project lease.  No input event is enabled or buffered yet.
-        refreshed = server_module.load_gate_detail(project_dir, request_id)
+        # The signer has now started and may briefly hold the purchase lock
+        # while constructing this question. Its own admission checks remain
+        # authoritative; that hold is not evidence of another paid call.
+        from lib.spending_requests import signing_packet
+        with signing_packet(footage=pending_request.get('kind')=='footage_spend'):
+            refreshed = server_module.load_gate_detail(project_dir, request_id)
         if refreshed.get("state") != "pending" or refreshed.get("error") == "invalid governed project or request":
             await _close(websocket, 4400, "gate request changed before signing")
             _log(f"tty refused project={project_id} request={request_id} reason=refresh-invalid")

@@ -1,5 +1,6 @@
 import {el,CAPABILITY_TOKEN_KEY,thumbURL,actionButton} from '/ui/lib.js';
 import {changeSavedPaperCut} from '/ui/trailer.js';
+import {setFootageSetupProgress} from '/ui/next_step.js';
 let current=null;
 const button=actionButton;
 async function api(project,action='',data){
@@ -63,7 +64,7 @@ export function renderFootageSetup(s,onSign,onChange=async()=>{}){
       const result=await api(project,'/prices',{cash_usd_per_second:Number(priceFields.cash_usd_per_second.value),credits_usd_per_second:Number(priceFields.credits_usd_per_second.value),expires_at:Date.parse(priceFields.expiry.value)/1000,allow_prompts:allowPrompts.checked,allow_reference_images:allowPictures.checked});await onSign(result.request_id);
     })));
   const select=(input,items)=>{const old=input.value;input.replaceChildren(...items.map(v=>el('option',{value:v.value},v.label)));if(items.some(v=>v.value===old))input.value=old;};
-  async function refresh(){if(loading){refreshAgain=true;return new Promise(resolve=>refreshWaiters.push({after:refreshSerial+1,resolve}));}loading=true;refreshAgain=false;const serial=++refreshSerial;try{snapshot=await api(project);status.textContent=notice||snapshot.message;if(snapshot.location_error)error.textContent=snapshot.location_error;
+  async function refresh(){if(loading){refreshAgain=true;return new Promise(resolve=>refreshWaiters.push({after:refreshSerial+1,resolve}));}loading=true;refreshAgain=false;const serial=++refreshSerial;try{snapshot=await api(project);setFootageSetupProgress(project,snapshot);status.textContent=notice||snapshot.message;if(snapshot.location_error)error.textContent=snapshot.location_error;
     priceStatus.textContent=snapshot.price_draft_message||'Drafts do not change your current signed settings. Preparing a draft pauses all purchases until you sign or discard it.';
     discardPrices.disabled=!snapshot.footage_price_draft;
     const rate=snapshot.footage_prices;signedPrice.textContent=rate&&snapshot.price_settings_signed?`Current signed footage rates: $${rate.cash_usd_per_second.toFixed(4)} cash and $${rate.credits_usd_per_second.toFixed(4)} credit replacement per second. Expire ${new Date(rate.expires_at*1000).toLocaleString()}. Enter new account-confirmed figures below to change them.`:'No signed footage figures are available. Bring both figures from your Fal account; no price is pre-filled.';

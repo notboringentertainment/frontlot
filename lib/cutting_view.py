@@ -107,6 +107,8 @@ def save_cut(root,timeline,expected_revision):
         inputs=trailer_edit._inputs(root)
         check=trailer_edit._story_check(root,old['paper_cut'])
         if check['status']!='checked' or not trailer_edit.inputs_match(root,old.get('inputs')):raise ValueError('Review the story and save a current checked paper cut before cutting takes.')
+        if old.get('cutting_view') and not old.get('paper_cut_pending') and old['timeline']==validated:
+            return old
         value=copy.deepcopy(old);value['timeline']=validated
         value.update(paper_cut_pending=False,unfinished=True,cutting_view=True)
         return trailer_edit._commit(root,value,old,inputs)

@@ -870,7 +870,7 @@ def _cast_location_ids(root: Path) -> set[str]:
         return set()
 
 
-def _gate_rows(root: Path, slug: str, *, limit: Optional[int] = _MAX_GATE_ROWS) -> dict[str, Any]:
+def _gate_rows(root: Path, slug: str, *, limit: Optional[int] = _MAX_GATE_ROWS,readiness=False) -> dict[str, Any]:
     """Read bounded request summaries; malformed files are simply not rows."""
     tree_error = _gate_tree_error(root)
     if tree_error:
@@ -917,6 +917,28 @@ def _gate_rows(root: Path, slug: str, *, limit: Optional[int] = _MAX_GATE_ROWS) 
                 if loc_ids is None:
                     loc_ids = _cast_location_ids(root)
                 row["bound_kind"] = "location" if bound in loc_ids else "character"
+        if state_name=='pending' and request.get('kind') in {'audio_spend','footage_spend'}:
+            try:
+                from tools.audio._governed import read_request as audio_request
+                from lib.footage_requests import _read as footage_request
+                from lib.canonical_json import record_sha256
+                record=(audio_request if request['kind']=='audio_spend' else footage_request)(root,request['entity_id'])
+                if request.get('approval_record')!=record or request.get('record_sha256')!=record_sha256(record):raise ValueError()
+                label={'speech':'Spoken line','music':'Instrumental music','effect':'Sound effect'}.get(record.get('kind'),'Footage clip')
+                if request['kind']=='footage_spend':
+                    from lib.trailer_edit import read_revision
+                    shots=(read_revision(root) or {}).get('paper_cut',{}).get('shots',[])
+                    number=next((n for n,s in enumerate(shots,1) if s['id']==record['shot_id']),None)
+                    label=f'Shot {number} · Footage clip' if number else 'Saved shot · Footage clip'
+                row['purchase_label']=f"{label} · highest charge ${record['max_cash_usd']+record['max_credits_usd']:.4f}"
+                if readiness:
+                    from lib.spending_requests import readiness as spending_readiness
+                    row.update(spending_readiness(root,request))
+                # Rows identify cards only. Their workspaces and signing
+                # packets check readiness once, rather than reconstructing
+                # every purchase again for every row and audio snapshot.
+            except Exception:
+                row['signing_refusal']='This saved purchase request cannot be verified. Reopen its own workspace.'
         if request.get("approval_receipt_id") is not None:
             row["approval_receipt_id"] = request.get("approval_receipt_id")
         if request.get("declined_note") is not None:
@@ -1088,7 +1110,7 @@ def _gates_state(project_dir: Path, checkpoint_cost: Any) -> Any:
         # Fixed literal: RunError text can carry absolute filesystem paths,
         # which must not reach board JSON.
         return {"error": "invalid governed project", "requests": []}
-    gates = _gate_rows(root, root.name)
+    gates = _gate_rows(root, root.name,readiness=True)
     if gates.get("error"):
         return gates
     gates.update({
@@ -1703,6 +1725,9 @@ def _render_audio_spend(root: Path, req: dict[str, Any]) -> dict[str, Any]:
         validate_request(record, check_expiry=False)
     except (OSError, ValueError, TypeError):
         return {"packet_error": True, "error": "The saved audio request cannot be read."}
+    from lib.spending_requests import signing_refusal
+    refusal=signing_refusal(root,req) if req.get('status')=='pending' else None
+    if refusal:return {'packet_error':True,'error':refusal,'record':record,'spending_blocked':True}
     from lib.media_spending import _tracker
     from lib.project_config import load_current_verified_project_config
     try:remaining=_tracker(root,load_current_verified_project_config(root)).budget_remaining_usd
@@ -1762,6 +1787,9 @@ def _render_footage(root: Path, req: dict[str, Any]) -> dict[str, Any]:
                 'accounting':'Budget booked at the signed maximum.' if take.get('cost_basis')=='signed_maximum' else 'Charge reported by the service.'},
                 'footage_take':{'path':take['path'],'sha256':take['sha256']}}
         record=footage._read(root,req.get('entity_id'))
+        from lib.spending_requests import signing_refusal
+        refusal=signing_refusal(root,req) if req.get('status')=='pending' else None
+        if refusal:return {'packet_error':True,'error':refusal,'record':record,'spending_blocked':True}
         footage.check_current(root,record,check_allowance=False)
         pictures=[_file_packet(root,r['asset_id'],path=root/r['path'],label=f'Reference picture {n}')
                   for n,r in enumerate(record['references'],1)]
@@ -1878,10 +1906,10 @@ assert set(GATE_RENDERERS) == set(APPROVAL_KINDS)
 
 
 def build_gate_detail(project_dir: Path, request_id: str) -> dict[str, Any]:
-    """Build one lazy, unverified gate packet without reconstructing records.
+    """Build a gate packet; spending cards also check current signing readiness.
 
     Every response deliberately has ``record_sha256: None``: the signer is
-    the only process that constructs an approval record.  Archived requests
+    the only process that can sign an approval record. Archived requests
     show source data and a raw approvals ledger row, never current state.
     """
     project_dir = Path(project_dir)

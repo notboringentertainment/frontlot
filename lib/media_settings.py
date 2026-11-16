@@ -32,7 +32,7 @@ def require_no_draft(root):
 def decision_lock(root,req):
     # Same lock order as preparation and sending: call, reservation, approval.
     from tools.cost_tracker import reservation_lock
-    if req.get('kind')=='config' and req.get('scope') in SCOPES:
+    if req.get('kind') in {'audio_spend','footage_spend'} or req.get('kind')=='config' and req.get('scope') in SCOPES:
         with media.call_lock(root),reservation_lock(root):yield
     else:yield
 
