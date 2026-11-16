@@ -30,6 +30,7 @@ export function priceReview(p){
 export function renderPriceSigning(detail,actions,onReturn,stale){
   const p=detail.packet,box=el('section',{class:'viewer-inner paper-editor','aria-label':'Price settings approval'},
     el('h2',{},'Review prices and permissions'),el('button',{type:'button',onclick:onReturn},'Return to footage setup'));
+  if(detail.state==='done'){box.append(el('p',{role:'status'},'Your signature is recorded. Return to footage setup to continue.'));return box;}
   if(p?.media_prices)box.append(priceReview(p));
   else box.append(el('p',{role:'alert'},p?.error||'These settings could not be read. Prepare their review again.'));
   box.append(stale?el('p',{},'This settings request has been decided. Return to its form to continue.'):actions);return box;
