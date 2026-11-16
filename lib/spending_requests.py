@@ -3,8 +3,22 @@ from lib import gates,receipts,media_settings
 from lib.run_common import read_request
 from lib.canonical_json import record_sha256
 from tools.cost_tracker import load_reservations
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 KINDS={'audio_spend','footage_spend'}
+_signing_packet=ContextVar('frontlot_signing_packet',default=False)
+
+@contextmanager
+def signing_packet(*,footage=True):
+    """The spawned signer owns admission; do not mistake its preparation for a call.
+
+    Only the final board packet uses this context. It grants no approval or
+    spending authority. The signer still acquires and checks the purchase lock.
+    """
+    token=_signing_packet.set(footage)
+    try:yield
+    finally:_signing_packet.reset(token)
 
 def temporary_wait(root):
     """Observe the live owner without creating a lock or recovering its call."""
@@ -12,7 +26,7 @@ def temporary_wait(root):
     from lib.media_spending import _call_owners
     info=root.stat()
     own=(info.st_dev,info.st_ino) in getattr(_call_owners,'held',set())
-    if not own and (root/'.audio-call.lock').exists():
+    if not own and not _signing_packet.get() and (root/'.audio-call.lock').exists():
         fd=os.open(root/'.audio-call.lock',os.O_RDONLY|os.O_NOFOLLOW)
         try:
             try:fcntl.flock(fd,fcntl.LOCK_SH|fcntl.LOCK_NB)
