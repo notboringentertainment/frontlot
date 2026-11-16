@@ -123,12 +123,14 @@ export function renderDelivery(s,onSign,refreshOnRender=true){
   control.onclick=async()=>{if(busy)return;const started=returnGeneration;let succeeded=false;
    confirmation=null;busy=true;body.disabled=true;refreshButton.disabled=true;progress=true;
    const words=working[label]||'Working…';message.textContent=words;control.textContent=words;control.setAttribute('aria-busy','true');
+   if(label==='Record the signed final approval')node.querySelector('[aria-label="Next delivery step"]').textContent='Next: Wait for the signed final approval to finish recording and checking the saved file. Finder is waiting for that check.';
    if(feedback)feedback.textContent=(feedback.dataset.earlier==='true'?'This is an earlier file. ':'')+words;
    try{await fn();succeeded=true;}catch(e){progress=false;const earlier=feedback?.dataset.earlier==='true';confirmation=earlier?null:e.message;
     if(feedback)feedback.textContent=(earlier?'This is an earlier file. ':'')+e.message;
     message.textContent=summary(data)+(earlier?'':' '+e.message);
    }
    finally{busy=false;control.textContent=label;control.removeAttribute('aria-busy');
+    if(!succeeded&&label==='Record the signed final approval')draw();
     if(succeeded&&!refreshAfter)body.disabled=returningSummary;
     else if(started===returnGeneration&&node.isConnected)await refresh(true,false,true);
     else body.disabled=returningSummary;
