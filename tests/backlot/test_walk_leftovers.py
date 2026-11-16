@@ -5,6 +5,10 @@ from tests.backlot.test_walk_findings import screen, UI
 
 def test_1_older_trailer_adoption_explains_reviews_without_changing_its_request(screen):
     source = (UI / 'board.js').read_text()
+    for path in UI.rglob('*'):
+        if path.is_file():
+            text = path.read_bytes()
+            assert not any(phrase.encode() in text for phrase in ('trailer-test', 'Ben’s five', 'Ben decided')), path.name
     start = source.index('  if(s.is_trailer&&!s.trailer_damaged&&!s.trailer_setup_pending&&!s.trimmed_contract&&!selectedGateId)')
     end = source.index('\n  if(s.is_trailer &&', start)
     screen.evaluate("""async source=>{
