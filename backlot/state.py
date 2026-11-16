@@ -1765,7 +1765,7 @@ def _render_footage(root: Path, req: dict[str, Any]) -> dict[str, Any]:
         pictures=[_file_packet(root,r['asset_id'],path=root/r['path'],label=f'Reference picture {n}')
                   for n,r in enumerate(record['references'],1)]
         if any(p.get('error') for p in pictures):raise ValueError('A reference picture is missing or changed. Nothing can be sent.')
-        return {'footage_card':{'description':record['prompt'],'service':'Fal',
+        return {'record':record,'footage_card':{'description':record['prompt'],'service':'Fal',
             'model':'Kling o3 reference video','length':record['duration_seconds'],
             'highest_cash':record['max_cash_usd'],'highest_credits':record['max_credits_usd'],
             'highest_charge':round(record['max_cash_usd']+record['max_credits_usd'],4),

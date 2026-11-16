@@ -272,8 +272,10 @@ function askView(ask) {
     const note = noteBox("Add a note (optional)");
     const keep = () => { gateSession.note = note.value; };
     const request=gateSession.signingRecord;
-    const named=gateSession.signingRequest?.kind==='audio_spend'&&request?.prompt&&Number.isFinite(request.max_cash_usd)&&Number.isFinite(request.max_credits_usd);
-    const wording=named?`Approve one ${request.kind==='effect'?'sound effect':request.kind} take for “${request.prompt.length>160?request.prompt.slice(0,160)+'…':request.prompt}”? Highest charge $${(request.max_cash_usd+request.max_credits_usd).toFixed(4)} ($${request.max_cash_usd.toFixed(4)} cash and $${request.max_credits_usd.toFixed(4)} replacement value of credits).`:"Approve this?";
+    const clip=gateSession.signingRequest?.kind==='footage_spend';
+    const named=['audio_spend','footage_spend'].includes(gateSession.signingRequest?.kind)&&request?.prompt&&Number.isFinite(request.max_cash_usd)&&Number.isFinite(request.max_credits_usd)&&(!clip||Number.isFinite(request.duration_seconds));
+    const subject=clip?`clip lasting ${request?.duration_seconds} seconds`:`${request?.kind==='effect'?'sound effect':request?.kind} take`;
+    const wording=named?`Approve one ${subject} for “${request.prompt.length>160?request.prompt.slice(0,160)+'…':request.prompt}”? Highest charge $${(request.max_cash_usd+request.max_credits_usd).toFixed(4)} ($${request.max_cash_usd.toFixed(4)} cash and $${request.max_credits_usd.toFixed(4)} replacement value of credits).`:"Approve this?";
     return [
       el("p", { class: "sign-question" }, ask.ask === "approve" ? wording : "Sign the one you picked?"),
       note,
@@ -2786,6 +2788,7 @@ function renderLog(s, roster) {
       needs.append(el("button", {
         class: "need",
         type: "button",
+        "data-request-id": row.request_id,
         "aria-current": selectedGateId === row.request_id ? "true" : null,
         "aria-label": ["footage_spend","footage_take","trailer_card"].includes(row.kind) || row.kind==='artifact_review'&&row.scope==='trailer-stage' || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind,row)}` : `Inspect ${row.kind} gate ${row.request_id}`,
         onclick: () => { selectedEntity = key; selectGate(row.request_id); },

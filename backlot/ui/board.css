@@ -580,6 +580,12 @@ details.log-more[open] > summary { margin-bottom: 12px; }
   flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;
   border-top: 1px solid var(--seam);
 }
+@media (min-width: 761px) {
+  /* Keep the message form in the column's flow when signing takes space.
+     The column can scroll instead of letting History cover that form. */
+  .log { overflow-y: auto; }
+  .session { flex-shrink: 0; min-height: 200px; }
+}
 .session-state {
   flex: none; margin: 0; padding: 12px 20px 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
   font-size: 14px; line-height: 1.45; color: var(--ink-2);

@@ -33,7 +33,7 @@ def test_older_comparison_is_a_true_no_op(earlier,monkeypatch):
     script=root/'checkpoint_script.json';upstream=script.read_bytes() if script.exists() else None
     def no_commit(*a,**k):pytest.fail('An unchanged older paper cut must not commit a new version.')
     monkeypatch.setattr(edit,'_commit',no_commit)
-    story_ingest.check_paper(root)
+    story_ingest.check_paper(root,saved['edit_revision_sha256'])
     assert (root/'artifacts/edit_decisions.json').read_bytes()==raw
     assert (script.read_bytes() if script.exists() else None)==upstream
     assert delivery.rough_state(root)=='Signed by you'
