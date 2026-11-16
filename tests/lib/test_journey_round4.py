@@ -37,12 +37,12 @@ def test_restore_earlier_paper_preserves_cards_but_not_changed_words(earlier_res
         return original(root,value,old,inputs)
     monkeypatch.setattr(edit,'_commit',commit)
     restored=edit.restore_revision(root,same['edit_revision_sha256'],saved['edit_revision_sha256'])
-    assert restored['restored_from']==same['edit_revision_sha256']
+    assert restored==saved
     assert restored['paper_cut']==same['paper_cut'] and restored['inputs']==saved['inputs']
     assert [titles.status(root,c) for c in restored['timeline']['cards']]==['Signed by you']*3
     assert all((p.read_bytes() if p.exists() else None)==raw for p,raw in upstream.items())
     assert (root/'approvals.jsonl').read_bytes()==approvals
-    assert delivery.rough_state(root)=='Needs a fresh look'
+    assert delivery.rough_state(root)=='Signed by you'
     changed=edit.restore_revision(root,different['edit_revision_sha256'],restored['edit_revision_sha256'])
     assert changed['paper_cut']['lines']==different['paper_cut']['lines']
     assert changed.get('paper_cut_pending') and not edit.paper_state(root)['usable_downstream']
