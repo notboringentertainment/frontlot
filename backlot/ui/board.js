@@ -2363,6 +2363,10 @@ function renderTakeTile(s, shot, take, { decidable, othersWaiting }) {
     screen,
     el("p", { class: "take-facts" }, facts, take.from_earlier_brief ? el("small", {}, " · from an earlier brief") : null),
     changed ? el("p", { class: "take-warning", role: "note" }, changed) : null);
+  if(s.is_trailer&&(take.status==='Accepted'||take.selected||take.declined)){
+    tile.append(el('p',{class:'take-facts'},take.declined?'Declined. This decision is final.':'Kept by your signed decision. Ask for a retake if you want another clip.'));
+    return tile;
+  }
   if (!decidable) {
     tile.append(el("p", { class: "take-facts" }, tape("done", "Chosen now")));
     return tile;

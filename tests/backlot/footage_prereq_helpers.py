@@ -11,7 +11,7 @@ def simple_sign(page,back):
     expect(page.locator('#gate-sign-panel')).to_contain_text('Your approval is recorded.',timeout=20000)
     page.get_by_role('button',name=back,exact=True).click()
 
-def complete_footage_prerequisites(page,root,calls,tmp_path,*,audio_count=3,check_changed=True):
+def complete_footage_prerequisites(page,root,calls,tmp_path,*,audio_count=3,check_changed=True,before_purchase=None):
     from PIL import Image
     original=tmp_path/'Invented machine gallery.png';Image.new('RGB',(1024,576),(49,67,83)).save(original);raw=original.read_bytes()
     page.get_by_role('button',name='Footage setup',exact=True).click()
@@ -70,6 +70,9 @@ def complete_footage_prerequisites(page,root,calls,tmp_path,*,audio_count=3,chec
     expect(page.get_by_role('button',name='Start signing',exact=True)).to_be_enabled(timeout=20000)
     shot_picture(page,'prices-signing',review.get_by_role('heading').first)
     simple_sign(page,'Return to footage setup')
+    if before_purchase:
+        before_purchase()
+        audio_count=len(calls['audio_posts'])
     page.get_by_role('button',name='Open footage requests',exact=True).click()
     shot=page.get_by_role('article',name='Shot 1 footage',exact=True)
     try:expect(shot.get_by_role('button',name='Create footage request',exact=True)).to_be_enabled(timeout=15000)

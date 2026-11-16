@@ -131,7 +131,10 @@ def test_recorded_review_releases_controls_without_a_duplicate_full_read(signed_
             }''')
             page.get_by_role('button',name='Record the signed colour and sound approval',exact=True).click()
             expect(page.get_by_role('status')).to_have_text('Your signed stage approval is recorded.')
-            expect(page.get_by_role('button',name='Make the final file',exact=True)).to_be_enabled()
+            expect(page.get_by_role('group',name='Saved cut and final files',exact=True)).to_be_enabled()
+            # A direct module harness supplies no newly verified board stage
+            # record. Releasing its busy lock must not invent that record.
+            expect(page.get_by_role('button',name='Make the final file',exact=True)).to_be_disabled()
             assert page.evaluate('()=>[window.reads,window.stagePosts]')==[1,1]
             assert not errors and len(calls['posts'])==3 and len(posts)==1
         finally:browser.close()

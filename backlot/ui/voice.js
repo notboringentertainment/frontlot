@@ -33,7 +33,7 @@ export function refreshAudioAfterSigning(){current?.refresh(true);}
 export function renderVoice(s,onSign,onChanged=async()=>{}){
   if(current?.project===s.project_id){current.refresh();return current.node;}
   const project=s.project_id,url=`/api/project/${encodeURIComponent(project)}/voice`;
-  const node=el('section',{class:'voice-panel paper-editor','aria-label':'Trailer audio'}),message=el('p',{role:'status','aria-live':'polite'}),content=el('div',{});
+  const node=el('section',{class:'voice-panel paper-editor','aria-label':'Trailer audio'}),message=el('p',{role:'status','aria-live':'polite'}),content=el('div',{}),controls=el('fieldset',{'aria-label':'Audio controls',style:'border:0;padding:0;margin:0;min-width:0'});
   const drafts=new Map(),players=new Map(),priceForm={},outcomes=new Map(),musicDraft={},effectDraft={},feedback=new Map();
   const storageKey='frontlot.voice-choice.'+project;let remembered={};
   try{remembered=JSON.parse(localStorage.getItem(storageKey)||'{}');}catch{}
@@ -53,11 +53,11 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
   const button=(label,fn,key=label)=>actionButton(label,fn,{feedback,key});
   const progress=()=>{if(lastData)setAudioProgress(project,{...lastData,catalogue_loaded:catalogueLoaded,choices:[...drafts].map(([index,d])=>({index,voice:d.voice,rights:d.rights}))});};
   const remember=()=>{try{localStorage.setItem(storageKey,JSON.stringify({voices,choices:Object.fromEntries([...drafts].map(([index,d])=>[index,d.voice]))}));}catch{}};
-  const act=async fn=>{if(busy)return;const startedSignature=signatureEpoch;busy=true;editEpoch++;refreshFailed=false;message.textContent='Working…';let resultText='';try{const result=await fn();resultText=typeof result==='string'?result:'Saved. Review the request before signing.';}catch(e){resultText=e.message;}finally{busy=false;last='';await refresh();await onChanged();if(startedSignature!==signatureEpoch)resultText='';message.textContent=resultText;}return resultText;};
+  const act=async fn=>{if(busy)return;const startedSignature=signatureEpoch;busy=true;controls.disabled=true;editEpoch++;refreshFailed=false;message.textContent='Working…';let resultText='';try{const result=await fn();resultText=typeof result==='string'?result:'Saved. Review the request before signing.';}catch(e){resultText=e.message;}finally{busy=false;last='';try{await refresh();await onChanged();}finally{controls.disabled=false;}if(startedSignature!==signatureEpoch)resultText='';message.textContent=resultText;}return resultText;};
   const loadVoices=button('Load account voices',()=>act(async()=>{voices=await api(url+'/catalogue',{});catalogueLoaded=true;remember();progress();return 'Account voices loaded. Choose a voice for the saved line.';}));
   node.append(el('h2',{},'Voice, music and sound effects'),el('p',{},'Choose a voice for each saved spoken line, request instrumental music or describe an effect for a paper-cut moment. One signature buys one take. Keeping or declining a take needs its own signature; a decline is final.'),
-    loadVoices,
-    el('p',{class:'source'},'Loading voices reads the connected account only. It sends no story and buys no speech.'),message,content);
+    message,controls);
+  controls.append(loadVoices,el('p',{class:'source'},'Loading voices reads the connected account only. It sends no story and buys no speech.'),content);
   function draw(data){if(pressed){deferredData=data;return;}if(lastData&&JSON.stringify(lastData)!==JSON.stringify(data)){message.textContent='';feedback.clear();}keepEditorPosition(content,()=>drawContents(data));if(revealingRequest)requestAnimationFrame(revealResult);}
   function drawContents(data){
     lastData=data;

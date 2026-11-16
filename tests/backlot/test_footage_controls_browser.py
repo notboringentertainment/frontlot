@@ -127,11 +127,8 @@ def test_writer_complete_request_keep_decline_and_retake(film,provider,monkeypat
             paper=page.get_by_role('region',name='Trailer paper cut',exact=True)
             assert 'Another window saved' not in paper.inner_text()
             picture(page,'kept',tmp_path)
-            panel.get_by_role('button',name='Decline this take',exact=True).first.click()
-            sign(page,'decision')
-            panel.get_by_text('Declined. This decision is final',exact=False).wait_for(timeout=20000)
-            assert panel.get_by_role('button',name='Keep this take',exact=True).first.is_disabled()
-            picture(page,'declined',tmp_path)
+            assert panel.get_by_role('button',name='Keep this take',exact=True).count()==0
+            assert panel.get_by_role('button',name='Decline this take',exact=True).count()==0
             panel.get_by_role('button',name='Create a retake request',exact=True).click()
             page.locator('[aria-label="Footage request details"]').wait_for()
             picture(page,'retake-signature',tmp_path)
@@ -139,6 +136,11 @@ def test_writer_complete_request_keep_decline_and_retake(film,provider,monkeypat
             sign(page,'request')
             panel.get_by_text('Take waiting for your decision',exact=True).wait_for(timeout=30000)
             assert len(provider['posts'])==2
+            panel.get_by_role('button',name='Decline this take',exact=True).click()
+            sign(page,'decision')
+            panel.get_by_text('Declined. This decision is final',exact=False).wait_for(timeout=20000)
+            assert panel.get_by_role('button',name='Keep this take',exact=True).count()==0
+            picture(page,'declined',tmp_path)
             assert not (root/'checkpoint_assets.json').exists()
             assert not errors
             page.close()

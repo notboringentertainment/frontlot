@@ -311,6 +311,12 @@ def validate_checkpoint(checkpoint: dict[str, Any]) -> None:
     ref = _ref_from_checkpoint(checkpoint) if isinstance(checkpoint, dict) else None
     valid_stages = set(get_pipeline_stages(ref)) if ref else ALL_KNOWN_STAGES
 
+    # The trailer-test contract drops the whole-look review, not the signed
+    # individual looks needed by a used picture. Its partial support record
+    # is never a completed review and retains normal artifact validation.
+    from lib.trailer_policy import trimmed
+    if trimmed(ref) and stage == 'look_lock' and status == 'in_progress':
+        valid_stages = valid_stages | {'look_lock'}
     if not isinstance(stage, str) or stage not in valid_stages:
         raise CheckpointValidationError(
             f"Invalid stage: {stage!r} for pipeline {pipeline_type!r}. "
@@ -824,6 +830,9 @@ def write_checkpoint(
         set(get_pipeline_stages(pipeline_ref)) if pipeline_ref
         else ALL_KNOWN_STAGES
     )
+    from lib.trailer_policy import trimmed
+    if trimmed(pin) and stage == 'look_lock' and status == 'in_progress':
+        valid_stages = valid_stages | {'look_lock'}
     if stage not in valid_stages:
         raise ValueError(
             f"Invalid stage: {stage!r} for pipeline {pipeline_type!r}. "

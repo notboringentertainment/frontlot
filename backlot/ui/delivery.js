@@ -158,7 +158,7 @@ export function renderDelivery(s,onSign,refreshOnRender=true){
  }
  function draw(){if(deferDeliveryPaint('delivery-draw',draw))return;body.replaceChildren();
   const done=name=>boardState.stages?.some(stage=>stage.name===name&&stage.status==='completed'),current=data.exports[0];
-  const next=data.rough_status!=='Signed by you'?'Review and sign the saved rough cut':!done('edit')?'Record the signed rough-cut approval':
+  const next=data.rough_status!=='Signed by you'?'Review and sign the saved rough cut':data.colour_status&&!done('edit')?'Record the signed rough-cut approval':
    data.colour_status&&data.colour_status!=='Signed by you'?'Review and sign colour and sound':data.colour_status&&!done('colour_mix')?'Record the signed colour and sound approval':
    current?.status==='Needs your signature'?'Review and sign final approval':current?.status==='Approved by you'?!current.approval_recorded?'Record the signed final approval':'Show approved file in Finder':'Make the final file';
   const action=(label,fn,disabled=false,refreshAfter=true,main=true,feedback=null)=>button(label,fn,disabled,refreshAfter,main&&label===next,feedback);
@@ -202,14 +202,14 @@ export function renderDelivery(s,onSign,refreshOnRender=true){
    if(data.story_questions&&item.status==='Approved by you')tile.append(el('p',{},'Your final story comparison is recorded with your signature of this exact file, including every protected line heard verbatim.'));
    tile.append(el('div',{class:'delivery-actions'},
     action('Review and sign final approval',async()=>{const value=storyForm?{story_review:storyForm.read()}:{};feedback.textContent=prefix+'Rechecking this final file and its sound…';const r=await api('/'+item.id+'/approval',value);try{await onSign(r.gate_request_id);}finally{feedback.textContent='';}},item.status!=='Needs your signature'||!!data.colour_status&&(!done('edit')||!done('colour_mix')),true,index===0,feedback),
-    action('Record the signed final approval',async()=>{const r=await api('/'+item.id+'/apply',{});feedback.textContent=prefix+r.message;confirmed(r.message);},item.status!=='Approved by you',true,index===0,feedback),
+    action('Record the signed final approval',async()=>{const r=await api('/'+item.id+'/apply',{});feedback.textContent=prefix+r.message;message.textContent=r.message;},item.status!=='Approved by you',true,index===0,feedback),
     action('Show approved file in Finder',async()=>{const r=await api('/'+item.id+'/reveal',{});feedback.textContent=prefix+r.message;message.textContent='The approved trailer has been shown in Finder.';},item.status!=='Approved by you',true,index===0,feedback)),feedback);
    if(index===0)body.append(tile);else earlier.append(tile);
   }
   if(data.exports.length>1)body.append(earlier);
  }
  node.append(el('h2',{},'Delivery'),el('p',{},'Sign the saved rough cut, make the local final file, watch it, then sign that exact file. Nothing is uploaded. No stage is finished without its own signature and required earlier reviews.'),message,
- el('button',{type:'button',onclick:async()=>{confirmation=null;progress=true;key='';body.disabled=true;await refresh(true);}},'Refresh delivery'),body);
+ el('button',{type:'button',onclick:async()=>{confirmation=null;progress=true;key='';body.disabled=true;await refresh(true);}},'Refresh delivery'),el('p',{role:'note','aria-live':'polite'}),body);
  const stageKey=state=>JSON.stringify(state.stages?.map(stage=>[stage.name,stage.status]));
  active={id:s.project_id,node,refresh,update(state){const before=stageKey(boardState);boardState=state;if(data&&before!==stageKey(state))draw();}};refresh();return node;
 }

@@ -21,7 +21,7 @@ def screen(voice_world,monkeypatch):
             elif r.request.url.startswith(url+'/'):r.continue_()
             else:outside.append(r.request.url);r.abort()
         page.route('**/*',route);page.goto(url+'/delivery-ui-proof')
-        state=snapshot('Signed by you','Needs your signature');old=copy.deepcopy(state['exports'][0]);old.update(id='earlier-file',status='Approved by you');state['exports'].append(old)
+        state=snapshot('Signed by you','Needs your signature',colour=None);old=copy.deepcopy(state['exports'][0]);old.update(id='earlier-file',status='Approved by you');state['exports'].append(old)
         page.evaluate('''async state=>{
           const style=document.createElement('link');style.rel='stylesheet';style.href='/ui/board.css';document.head.append(style);
           const m=await import('/ui/delivery.js');window.module=m;window.saved=state;window.refuse=false;window.posts=[];

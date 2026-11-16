@@ -16,7 +16,7 @@ from tests.tools.test_audio_half_transport import priced, http
 def snapshot(rough, final=None, colour='Signed by you'):
     rows=[]
     if final:
-        rows=[{'id':'invented-final','status':final,'path':'artifacts/delivery/trailer.mp4','samples':[],
+        rows=[{'id':'invented-final','status':final,'approval_recorded':False,'path':'artifacts/delivery/trailer.mp4','samples':[],
                'review':{'status':'pass','issues_found':[],
                          'checks':{'technical_probe':{'duration_seconds':3,'file_size_bytes':491460}},
                          'metadata':{'test_only':True,'boundary_samples':[],
@@ -37,6 +37,7 @@ def setup_delivery(voice_world,monkeypatch):
         if not any(stage['name']=='colour_mix' for stage in value['stages']):
             value['stages'].append({**next(stage for stage in value['stages'] if stage['name']=='edit'),'name':'colour_mix','label':'Colour and sound'})
         for stage in value['stages']:
+            if stage['name'] in ('canon_ingest','script'):stage['status']='completed'
             if stage['name'] in ('edit','colour_mix','compose'):
                 stage['status']='completed' if stage['name'] in served['completed'] else 'not_started'
         return value
@@ -71,6 +72,7 @@ def test_delivery_buttons_are_spaced_and_next_action_follows_the_main_file(voice
             endpoint=url+f'/api/project/{root.name}/delivery'
             for index,(rough,colour,final,completed,next_label) in enumerate(cases):
                 served['value']=snapshot(rough,final,colour);served['completed']=completed
+                if final:served['value']['exports'][0]['approval_recorded']='compose' in completed
                 page.reload()
                 with page.expect_response(lambda response:response.url==endpoint and response.request.method=='GET'):
                     panel.get_by_role('button',name='Refresh delivery',exact=True).click()
