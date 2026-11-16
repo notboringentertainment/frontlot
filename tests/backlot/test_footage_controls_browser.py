@@ -3,7 +3,7 @@ import json,os,socket,threading,time,tempfile
 from contextlib import contextmanager
 from pathlib import Path
 import pytest
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright,expect
 from tests.tools.test_signed_footage import film as original_film,provider
 
 
@@ -110,6 +110,7 @@ def test_writer_complete_request_keep_decline_and_retake(film,provider,monkeypat
             sign(page,'request')
             panel.get_by_role('status').filter(has_text='Generating').first.wait_for(timeout=30000)
             assert waiting.wait(timeout=10)
+            expect(page.get_by_label('Next step',exact=True)).to_contain_text('A clip is being made')
             picture(page,'generating',tmp_path)
             arrive.set()
             panel.get_by_text('Take waiting for your decision',exact=True).wait_for(timeout=30000)

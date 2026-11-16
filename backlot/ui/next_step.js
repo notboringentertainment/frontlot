@@ -24,8 +24,10 @@ function paint(){
   const rows=state.gates?.requests||[],pending=rows.find(r=>r.state==='pending'&&!r.signing_refusal&&!obsolete.has(r.request_id)&&!decided.has(r.request_id));
   const paper=state.paper_cut||{},current=paper.current;
   const held=audio?.unresolved_requests?.[0];
+  const activeClip=footage?.shots?.find(s=>s.requests.some(r=>r.running));
   const heldClip=footage?.shots?.flatMap(s=>s.requests).find(r=>r.reservation&&['submitting','submitted','pending_billing'].includes(r.reservation.state));
   if(signatureUpdating){text='Your signature is recorded. Updating the saved state before choosing the next step.';}
+  else if(activeClip){text='A clip is being made. Wait for it to finish before reviewing another purchase.';find=()=>document.querySelector('[aria-label="Footage workspace"]');}
   else if(held){
     identity=held.reservation.reservation_id;
     const resolution=rows.find(r=>r.kind==='audio_resolution'&&r.entity_id===held.reservation.reservation_id);
@@ -72,7 +74,7 @@ function paint(){
     }else {
       const shot=footage?.shots?.find(s=>!s.takes.some(t=>t.status==='Accepted'));
       const obsolete=shot?.requests.find(r=>r.signing_refusal);
-      if(shot){identity=shot.id;text=obsolete?`${shot.label} needs a fresh spending card. Set aside its unsigned request, then create a retake request from the current figures.`:`Open ${shot.label} in Footage. Prepare and sign one request, then watch its clip and sign keeping or declining it.`;find=()=>target(`[aria-label="${shot.label} footage"]`,obsolete?'Set aside unsigned request':shot.requests.some(r=>r.approved&&!r.reservation)?'Make signed clip':shot.takes.some(t=>t.waiting)?'Keep this take':shot.requests.length?'Create a retake request':'Create footage request');}
+      if(shot){identity=shot.id;text=obsolete?`${shot.label} needs a fresh spending card. Set aside its unsigned request, then prepare a new footage request from the current figures.`:`Open ${shot.label} in Footage. Prepare and sign one request, then watch its clip and sign keeping or declining it.`;find=()=>target(`[aria-label="${shot.label} footage"]`,obsolete?'Set aside unsigned request':shot.requests.some(r=>r.approved&&!r.reservation)?'Make signed clip':shot.takes.some(t=>t.waiting)?'Keep this take':shot.takes.length?'Create a retake request':'Create footage request');}
       else if(!current.cutting_view||current.paper_cut_pending||!current.timeline?.picture?.length){text='Open Cutting workspace. Place kept pictures and sound, trim them, then Save cut. Saving finishes no stage.';find=()=>target('[aria-label="Trailer workspaces"]','Cutting workspace');}
       else {text='Open Delivery workspace. Review and sign this saved rough cut, check colour and mix, then make, watch and sign the final file. Each review remains separate.';find=()=>target('[aria-label="Trailer workspaces"]','Delivery workspace');}
     }

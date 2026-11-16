@@ -6,6 +6,15 @@ let data=null,project=null,hooks=null,globalError="",observing=false,readRetries
 const drafts=new Map(),completed=new Set();
 const feedback=new Map();
 let controlsNode=null,controlsKey='';
+let readEpoch=0;
+export const footageReadEpoch=()=>readEpoch;
+export async function refreshFootageControls(){
+  const epoch=++readEpoch;
+  const response=await fetch(`/api/project/${encodeURIComponent(project)}/footage`);
+  if(!response.ok)throw Error('The shot could not be refreshed. Reopen Footage before preparing another request.');
+  const next=await response.json();
+  if(epoch===readEpoch)setFootageState(project,next,hooks);
+}
 export async function footageAction(action,body) {
   const response=await fetch(`/api/project/${encodeURIComponent(project)}/footage/${action}`,{
     method:"POST",headers:{"Content-Type":"application/json","x-frontlot-capability":sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||""},body:JSON.stringify(body)});
@@ -83,11 +92,11 @@ function shotPanel(s,shot){
   panel.append(button("Refresh price",()=>quote(shot,d),d.busy));
   const create=async(retake)=>perform(d,async()=>{
     const result=await footageAction("create",{shot_id:shot.id,model:d.model,duration_seconds:d.length,looks:d.looks,...(retake?{retake_of:retake}:{} )});
-    await hooks.refresh();await hooks.selectGate(result.gate.request_id);
+    await refreshFootageControls();await hooks.selectGate(result.gate.request_id);
   });
   const activeRequest=shot.requests.some(r=>r.running||(!r.approved&&r.gate_id)||(r.reservation&&["submitting","submitted","pending_billing"].includes(r.reservation.state)));
   const blocked=()=>d.busy||activeRequest||!d.quote||d.quote.highest_usd>d.quote.remaining_usd||!data.story_ready||!shot.references.length||shot.references.some(p=>!d.looks[p]);
-  const requestButton=button(latest?"Create a retake request":"Create footage request",()=>create(latest?.id),blocked());panel.append(requestButton);
+  const requestButton=button(shot.takes.length?"Create a retake request":"Create footage request",()=>create(latest?.id),blocked());panel.append(requestButton);
   d.updateQuote=()=>{
     price.replaceChildren();
     if(d.quote)price.append(spendingCard({highest_charge:d.quote.highest_usd,highest_cash:d.quote.max_cash_usd,
@@ -101,10 +110,11 @@ function shotPanel(s,shot){
   if(shot.references.length&&!data.looks.length)panel.append(el("p",{role:"note"},"No current approved look is available. Open Footage setup to review and sign the location look before creating a footage request."));
   if(data.refusal)panel.append(el("p",{role:"note"},data.refusal));
   for(const req of shot.requests){
+    if(req.waiting_reason)panel.append(el('p',{role:'status'},req.waiting_reason));
     if(req.signing_refusal)panel.append(el('p',{role:'alert'},req.signing_refusal),
       button('Set aside unsigned request',()=>perform(d,()=>footageAction('set-aside',{request_id:req.id})),d.busy,req.id+':aside'),
-      el('p',{},'Then use Create a retake request for a fresh spending card. Setting this aside sends, spends and approves nothing.'));
-    else if(!req.approved&&req.gate_id)panel.append(button("Review and sign request",()=>hooks.selectGate(req.gate_id),d.busy,req.id+':sign'));
+      el('p',{},`Then use ${shot.takes.length?'Create a retake request':'Create footage request'} for a fresh spending card. Setting this aside sends, spends and approves nothing.`));
+    else if(!req.approved&&req.gate_id&&!req.waiting_reason)panel.append(button("Review and sign request",()=>hooks.selectGate(req.gate_id),d.busy,req.id+':sign'));
     if(req.approved&&!req.running&&!req.signed_outcome&&(!req.reservation||(req.reservation.state==="completed"&&!shot.takes.some(t=>t.reservation_id===req.reservation.reservation_id))))panel.append(button("Make signed clip",()=>perform(d,()=>footageAction("dispatch",{request_id:req.id})),d.busy,req.id+':make'));
     if(req.signed_outcome&&req.reservation&&["completed","failed"].includes(req.reservation.state))panel.append(el("p",{},"Your signed account outcome is recorded. It settles the money and cannot make a clip. Create a retake request and sign it separately for another clip."));
     if(req.running)panel.append(el("p",{role:"status"},"Generating this one clip. Keep this board open to watch it arrive; no retry will be made."));
@@ -169,11 +179,12 @@ setInterval(async()=>{
   if(!(data?.shots||[]).some(shot=>shot.requests.some(request=>request.running||!request.approved&&request.gate_id))&&!(retrying&&readRetries>0))return;
   if(retrying)readRetries--;
   observing=true;
+  const epoch=readEpoch;
   try{
     const response=await fetch(`/api/project/${encodeURIComponent(project)}/footage`);
     if(!response.ok){observationFailed();return;}
     const next=await response.json();
-    if(JSON.stringify(next)!==JSON.stringify(data)&&!hooks.isRefreshing())await hooks.refresh();
+    if(epoch===readEpoch&&JSON.stringify(next)!==JSON.stringify(data)&&!hooks.isRefreshing())await hooks.refresh();
   }catch{observationFailed();}
   finally{observing=false;if(retrying&&readRetries===0&&data?.error)hooks.render();}
 },1500);

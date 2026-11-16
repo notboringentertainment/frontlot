@@ -8,7 +8,7 @@ import {renderPriceSigning} from '/ui/media_prices.js';
 import {renderVoice,refreshVoice,renderAudioSigning,applySignedAccountOutcome,refreshAudioAfterSigning} from '/ui/voice.js';
 import {renderCutting,refreshCutting,renderCardSigning} from '/ui/cutting.js';
 import {renderDelivery,renderDeliverySigning,refreshDelivery,deferDeliveryPaint} from '/ui/delivery.js';
-import { setFootageState, renderFootageControls, afterFootageSignature, footageDecision } from "/ui/footage.js";
+import { setFootageState, renderFootageControls, afterFootageSignature, footageDecision, refreshFootageControls,footageReadEpoch } from "/ui/footage.js";
 import { mountSession } from "/ui/session.js";
 import {
   CAPABILITY_TOKEN_KEY, el, fmtAgo, fmtClock, fmtDuration, fmtMoney,
@@ -207,6 +207,13 @@ async function signingStopped(request,message){
   if(gateSession.outcome==='approved'){
     setTerminalStatus('Signature recorded','Your approval is recorded. The automatic follow-up did not finish. Return to its workspace and apply the signed outcome; do not sign again. '+message,'warn');
     gateSession.ask=null;gateSession.inputReady=false;renderSignPanel();return;
+  }
+  if(['audio_spend','footage_spend'].includes(request?.kind)){
+    try {
+      const detail=await getJSON(`/api/project/${encodedProjectId}/gate/${encodeURIComponent(request.id)}`);
+      if(gateSession.signingRequest!==request)return;
+      if(detail.packet?.spending_blocked){gateDetail=detail;message=detail.packet.error;}
+    }catch{}
   }
   gateSession.inputReady=false;gateSession.ask=null;gateSession.outcome='error';
   setTerminalStatus('Signing stopped',message+' No approval has been confirmed. Try signing again, or return to the workspace to apply a recorded outcome.','warn');
@@ -2685,7 +2692,7 @@ function renderGateViewer(s) {
         el("h2", { id: "gate-detail-heading", class: title.length > 34 ? "long" : "", tabindex: "-1" }, title),
         firstSentence && firstSentence !== title ? el("p", { class: "request-summary" }, shortText(firstSentence, 200)) : null),
       el("div", { class: "tapes" }, stateTape)),
-    packetError ? el("div", { class: "alert", role: "alert" }, el("b", {}, "Some evidence is missing or changed"),
+    packetError ? el("div", { class: "alert", role: "alert" }, el("b", {}, gateDetail.packet?.spending_blocked ? 'This request cannot be signed now' : "Some evidence is missing or changed"),
       el("span", {}, gateDetail.packet && gateDetail.packet.error ? gateDetail.packet.error : "Signing stays off until it's complete.")) : null,
     lookSpec ? gateActions(s, summary, stale, packetError) : null,
     resolutionCard ? el("section",{class:"paper-panel"},el("h3",{},"Spending is blocked until this account outcome is signed and applied"),
@@ -2701,11 +2708,11 @@ function renderGateViewer(s) {
         el("p",{},"The exact description and reference pictures shown here leave this computer for Fal. The approved looks below establish which pictures may be used; their text is not sent separately. This request is for silent widescreen footage. There are no automatic retries or changes of service or model.")) : el("p",{},footageCard.accounting),
       ...(footageCard.looks || []).map(spec=>lookCard(spec,"Approved look behind this request")),
       el("p",{},footageCard.decision ? "Declining is final for this take. Accepting completes no stage." : "A retake needs a new request and signature. Signing this request does not approve a stage.")) : null,
-    gateDetail.packet?.footage_take ? fullFootagePlayer(s,gateDetail.packet.footage_take) : lookSpec ? lookCard(lookSpec) : renderScreen(s, frames[selectedFrame], blank),
+    gateDetail.packet?.footage_take ? fullFootagePlayer(s,gateDetail.packet.footage_take) : lookSpec ? lookCard(lookSpec) : gateDetail.packet?.spending_blocked ? null : renderScreen(s, frames[selectedFrame], blank),
     lookSpec ? null : renderFrameStrip(s, frames, "Request"),
     evidence,
     lookSpec ? null : gateActions(s, summary, stale, packetError),
-    footageGate ? el('button',{type:'button',onclick:()=>{returnToWorkspace();render();}},'Return to footage') : null,
+    footageGate ? el('button',{type:'button',onclick:async()=>{returnToWorkspace();await refreshFootageControls();render();}},'Return to footage') : null,
     more);
 }
 
@@ -2795,7 +2802,7 @@ function renderLog(s, roster) {
         onclick: () => { selectedEntity = key; selectGate(row.request_id); },
       },
         el("span", { class: "what" }, row.purchase_label || gateWords(row.kind,row)),
-        el("span", { class: "text" }, s.is_trailer&&row.kind==='reference_import' ? 'Review the copied picture and sign its origin. This buys nothing and permits no upload by itself.' : plain(row.summary) || gateWords(row.kind,row)),
+        el("span", { class: "text" }, row.signing_refusal ? 'Needs a fresh spending card. '+row.signing_refusal : row.waiting_reason || (s.is_trailer&&row.kind==='reference_import' ? 'Review the copied picture and sign its origin. This buys nothing and permits no upload by itself.' : plain(row.summary) || gateWords(row.kind,row))),
         who ? el("span", { class: "who" }, who) : null));
     }
     if (s.gates && s.gates.error) needs.append(el("div", { class: "alert", role: "alert" }, el("b", {}, "Couldn't read the approvals"), el("span", {}, s.gates.error)));
@@ -3191,6 +3198,7 @@ function normalize(s) {
 }
 
 async function refresh() {
+  const footageEpoch=footageReadEpoch();
   const paperEpoch=paperCutEpoch();
   const generation = ++refreshGeneration;
   if (refreshController) refreshController.abort();
@@ -3211,7 +3219,7 @@ async function refresh() {
       try{footage=await getJSON(`/api/project/${encodedProjectId}/footage`,{signal:controller.signal});}
       catch(error){if(error.name==="AbortError")return;footage={error:"The footage panel could not be read. Check the saved story, looks and spending settings, then reopen this board.",shots:[]};}
       if(generation!==refreshGeneration)return;
-      setFootageState(projectId,footage,{render,refresh,selectGate,lookCard,isRefreshing:()=>refreshController!==null,
+      if(footageEpoch===footageReadEpoch())setFootageState(projectId,footage,{render,refresh,selectGate,lookCard,isRefreshing:()=>refreshController!==null,
         takeFeedback:()=>JSON.stringify([[...takeBusy],[...takeErrors]]),
         take:(s,shot,take)=>renderTakeTile(s,shot,take,{decidable:true,othersWaiting:0}),
         returnToShots:()=>returnToWorkspace()});

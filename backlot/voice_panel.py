@@ -183,11 +183,13 @@ def snapshot(root):
         if recoverable:error=None
         elif recovery_error:error=recovery_error
         gate_id=_gate_id(root,record['request_id'],'audio_spend')
-        from lib.spending_requests import signing_refusal
+        from lib.spending_requests import readiness
         from lib.run_common import read_request as gate_read
-        refusal=signing_refusal(root,gate_read(root,gate_id)[1]) if gate_id and not approved else None
+        ready=readiness(root,gate_read(root,gate_id)[1]) if gate_id and not approved else {}
+        refusal=ready.get('signing_refusal')
         requests.append({'record':record,'approved':approved,'recoverable':recoverable,'error':error,'gate_request_id':gate_id,
             'signing_refusal':refusal,'replaceable':bool(refusal and gate_id and not approved and record['request_id'] not in used),
+            'waiting_reason':ready.get('waiting_reason'),
             'source_warning':source_warning(root,record['prompt']) if record['kind']=='speech' else None})
     charges={}
     for r in receipts.verified_generation_receipts(root):
@@ -222,6 +224,9 @@ def replace_request(root,identity):
     root=root_checked(root)
     with call_lock(root):
         record=_governed.read_request(root,identity)
+        from lib.spending_requests import temporary_wait
+        waiting=temporary_wait(root)
+        if waiting:raise ValueError(waiting)
         set_aside(root,'audio_spend',identity)
         binding=record['binding']
         fresh=audio.prepare_request(root,record['kind'],record['model'],line_index=binding.get('line_index'),

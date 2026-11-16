@@ -6,11 +6,34 @@ from tools.cost_tracker import load_reservations
 
 KINDS={'audio_spend','footage_spend'}
 
+def temporary_wait(root):
+    """Observe the live owner without creating a lock or recovering its call."""
+    import os,fcntl
+    from lib.media_spending import _call_owners
+    info=root.stat()
+    own=(info.st_dev,info.st_ino) in getattr(_call_owners,'held',set())
+    if not own and (root/'.audio-call.lock').exists():
+        fd=os.open(root/'.audio-call.lock',os.O_RDONLY|os.O_NOFOLLOW)
+        try:
+            try:fcntl.flock(fd,fcntl.LOCK_SH|fcntl.LOCK_NB)
+            except BlockingIOError:return 'Another clip or sound take is being made. Wait for it to finish before reviewing this request.'
+        finally:os.close(fd)
+    if media_settings.pending(root):return media_settings.PAUSED
+    from tools.cost_tracker import nonterminal_reservations
+    if nonterminal_reservations(root):return 'A charge is held. Finish its signed account review before reviewing another spending request. This card has not been set aside.'
+    return None
+
+def readiness(root,request):
+    waiting=temporary_wait(root)
+    return {'waiting_reason':waiting,'signing_refusal':None if waiting else signing_refusal(root,request)}
+
 
 def signing_refusal(root,request):
     """Use the signer's own current checks; this never mints a signature."""
     from scripts.gate_approve import construct
     try:
+        waiting=temporary_wait(root)
+        if waiting:return waiting
         state,saved=read_request(root,request['request_id'])
         if state!='pending':return None
         if (saved.get('project_id')!=root.name or saved.get('kind')!=request.get('kind')
@@ -54,6 +77,8 @@ def set_aside(root,kind,identity):
             hint=row.get('output_hint') or {}
             if identity in (hint.get('request_id'),hint.get('footage_request_id')):
                 raise ValueError('This request has a spending record. Review its take or account outcome; it cannot be set aside as unsigned.')
+        waiting=temporary_wait(root)
+        if waiting:raise ValueError(waiting)
         directory=resolve_input('.gate-requests',root)
         found=[]
         for path in directory.glob('*.json'):
