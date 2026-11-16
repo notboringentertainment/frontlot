@@ -1,0 +1,133 @@
+import {el,CAPABILITY_TOKEN_KEY} from '/ui/lib.js';
+let active=null;
+const reviews=new Map();
+function boundaryPictures(samples=[],lazy=false){
+ const node=el('section',{'aria-label':'Pictures from the final file',class:'paper-panel'},el('h4',{},'Pictures at cuts and cards'),
+  el('p',{},'These are pictures from this exact file. Check the story, faces and lettering; the automatic picture check only measures black or unchanged picture.'));
+ const grid=el('div',{style:'display:flex;flex-wrap:wrap;gap:12px'});
+ for(const row of samples)grid.append(el('figure',{style:'margin:0;max-width:220px'},el('img',{src:row.url,...(lazy?{loading:'lazy'}:{}),alt:`Final-file picture at ${row.seconds.toFixed(3)} seconds`,style:'width:220px;max-width:100%;height:auto'}),
+  el('figcaption',{},`${row.seconds.toFixed(3)} seconds (frame ${row.frame})`)));
+ node.append(grid);node.hidden=!samples.length;return node;
+}
+export function refreshDelivery(){return active?.refresh(true,true);}
+
+export function renderDeliverySigning(detail,actions,onReturn){
+ const id=detail.request_id,packet=detail.packet||{};
+ let held=reviews.get(id);
+ if(!held){
+  const video=el('video',{controls:'',preload:'auto',src:packet.play_url,'aria-label':'Watch this exact delivery review',style:'width:100%;max-height:480px'});
+  const heading=el('h2',{}),controls=el('div',{}),words=el('div',{}),pictures=el('div',{}),node=el('section',{class:'paper-editor',role:'region','aria-label':'Delivery review'},
+   heading,
+   el('p',{},'Watch and listen to the whole file before starting your signature. A technical check never replaces your approval.'),video,words,pictures,controls,
+   el('button',{type:'button',onclick:onReturn},'Return to delivery'));
+  held={node,heading,video,controls,words,pictures,sampleKey:null,watched:false};reviews.set(id,held);
+  video.onended=()=>{held.watched=true;for(const b of controls.querySelectorAll('button.gate-primary'))b.disabled=!held.ready;};
+ }
+ const stage=detail.request?.stage;
+ held.heading.textContent=stage==='edit'?'Review the saved rough cut':stage==='compose'?'Review this exact final file':'Preparing this saved review';
+ held.ready=!!packet.play_url&&!packet.packet_error;
+ const source=packet.packet_error?'':(packet.play_url??held.video.getAttribute('src')??'');
+ if((held.video.getAttribute('src')||'')!==source){
+  held.video.pause();held.watched=false;
+  if(source)held.video.setAttribute('src',source);else held.video.removeAttribute('src');
+  held.video.load();
+ }
+ held.words.replaceChildren(...(packet.messages||[]).map(s=>el('p',{},s)));
+ const sampleKey=JSON.stringify(packet.samples||[]);
+ if(sampleKey!==held.sampleKey){held.sampleKey=sampleKey;held.pictures.replaceChildren(boundaryPictures(packet.samples));}
+ if(packet.error)held.words.append(el('p',{role:'alert'},packet.error));
+ held.controls.replaceChildren(actions);
+ if(!held.watched||!held.ready)for(const b of held.controls.querySelectorAll('button.gate-primary'))b.disabled=true;
+ return held.node;
+}
+
+export function renderDelivery(s,onSign){
+ if(active?.id===s.project_id){active.refresh();return active.node;}
+ const base=`/api/project/${encodeURIComponent(s.project_id)}/delivery`,node=el('section',{class:'paper-editor',role:'region','aria-label':'Trailer delivery'}),message=el('p',{role:'status'},'Checking the saved cut and its signed takes…'),notice=el('p',{role:'note','aria-live':'polite'}),body=el('fieldset',{'aria-label':'Saved cut and final files',disabled:'',style:'border:0;padding:0;margin:0;min-width:0'});
+ let data,busy=false,flight=null,pendingRefresh=false,key='',progress=false,readGeneration=0,readController=null,earlierOpen=false;
+ const fileFeedback=new Map();
+ async function api(path='',value,signal){const r=await fetch(base+path,value===undefined?{cache:'no-store',signal}:{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:JSON.stringify(value)});const v=await r.json();if(!r.ok)throw Error(v.detail||'Reopen the saved delivery controls and try again.');return v;}
+ function button(label,fn,disabled=false,feedback=notice,primary=false){return el('button',{type:'button',disabled:disabled?'':null,...(primary?{class:'gate-primary','aria-current':'step'}:{}),onclick:async()=>{if(busy)return;busy=true;try{await fn();}catch(e){progress=false;feedback.textContent=(feedback.dataset.earlier==='true'?'This is an earlier file. ':'')+e.message;}finally{busy=false;await refresh(true,false,true);}}},label);}
+ function preparing(words){progress=true;notice.textContent=words;}
+ function clearFeedback(){for(const held of fileFeedback.values())held.node.textContent='';}
+ function refresh(force=false,returning=false,preserveFeedback=false){
+  if(returning){
+   clearFeedback();
+   body.disabled=true;message.textContent='Checking the saved cut and its approvals…';
+   // Do not let a read begun before the signature hold its return hostage.
+   // The generation check also rejects transports that deliver after abort.
+   readGeneration++;readController?.abort();flight=null;
+  }
+  if(flight){if(force)pendingRefresh=true;return flight;}
+  if(busy&&!force)return Promise.resolve();
+  const generation=++readGeneration,controller=new AbortController();readController=controller;
+  flight=(async()=>{
+   do{
+    pendingRefresh=false;
+    try{
+     const next=await api('',undefined,controller.signal);
+     if(generation!==readGeneration)return;
+     // A signing return may arrive while an older read is waiting. Discard
+     // that answer and fulfil every waiter only after the queued read lands.
+     if(pendingRefresh)continue;
+     if(!busy&&!preserveFeedback)clearFeedback();
+     const encoded=JSON.stringify(next);
+     if(encoded!==key){data=next;key=encoded;notice.textContent='';draw();}
+     body.disabled=false;
+     // Every accepted snapshot describes the same first export as the main
+     // card, regardless of which action or refresh brought us here.
+     message.textContent=`Saved cut loaded. Rough cut: ${next.rough_status}. ${next.exports.length?`Current final file: ${next.exports[0].status}.`:next.rough_status==='Signed by you'?'Make a final file from the signed saved cut.':'Review and sign the saved rough cut before making a final file.'}`;
+     if(!busy&&progress){progress=false;notice.textContent='';}
+    }catch(e){
+     if(generation!==readGeneration)return;
+     if(pendingRefresh)continue;
+     progress=false;notice.textContent=e.message;message.textContent='The saved cut and its approvals could not be checked. Refresh delivery to verify them.';key='';body.disabled=true;
+     for(const v of node.querySelectorAll('video')){v.pause();v.removeAttribute('src');v.load();}
+    }
+   }while(pendingRefresh);
+  })().finally(()=>{if(generation===readGeneration){flight=null;readController=null;}});
+  return flight;
+ }
+ function draw(){body.replaceChildren();
+  const current=data.exports[0],next=data.rough_status!=='Signed by you'?'Review and sign the saved rough cut':current?.status==='Needs your signature'?'Review and sign final approval':current?.status==='Approved by you'?'Show approved file in Finder':'Make the final file';
+  const action=(label,fn,disabled=false,main=true,feedback=notice)=>button(label,fn,disabled,feedback,main&&label===next);
+  body.append(el('p',{},`Saved version ${data.number}. Delivery uses this saved cut, including its colour, sound and signed cards. Save any editing changes before reviewing it.`),
+   el('p',{'aria-label':'Next delivery step'},'Next: '+next+'.'),
+   el('h3',{},'Rough-cut approval'),el('p',{},data.rough_status),
+   el('div',{class:'delivery-actions'},
+    action('Review and sign the saved rough cut',async()=>{preparing('Preparing the saved rough cut for review locally…');const r=await api('/rough',{revision:data.revision});await onSign(r.gate_request_id);}),
+    action('Make the final file',async()=>{preparing('Making and measuring the full-size file locally. Nothing is sent or spent…');await api('/export',{revision:data.revision});progress=false;notice.textContent='';},data.rough_status!=='Signed by you')));
+  const earlier=el('details',{...(earlierOpen?{open:''}:{}),ontoggle:()=>{earlierOpen=earlier.open;}},el('summary',{},'Earlier exports'));
+  for(const [index,item] of data.exports.entries()){
+   const review=item.review,usable=['Needs your signature','Approved by you','Final file needs changes'].includes(item.status);
+   let held=fileFeedback.get(item.id);
+   // Keep a result beside its own card through redraws, but never carry an
+   // approval message into a changed status or from the main card to history.
+   if(!held||held.status!==item.status||held.earlier!==(index>0)){
+    held={status:item.status,earlier:index>0,node:el('p',{role:'note','aria-live':'polite'})};fileFeedback.set(item.id,held);
+   }
+   const feedback=held.node,prefix=index>0?'This is an earlier file. ':'';
+   feedback.dataset.earlier=String(index>0);
+   const tile=el('section',{class:'paper-panel','data-delivery':item.id},el('h3',{},'Final trailer file'),el('p',{},item.status),
+    el('p',{},review.metadata.test_only?'Test trailer only. Generated ElevenLabs music is not cleared for release until ElevenLabs confirms otherwise in writing.':'Local trailer file. Your signature approves this file, not a legal clearance of its material.'),
+    el('p',{},'1920 by 1080 · widescreen · twenty-four frames per second · stereo sound.'),
+    el('video',{controls:'',preload:'metadata',...(usable?{src:base+'/'+item.id+'/play'}:{}),'aria-label':'Play exported trailer',style:'width:100%;max-height:480px'}));
+   for(const words of review.issues_found)tile.append(el('p',{},words));
+   if(item.status==='Needs a fresh look')tile.append(el('p',{},'This earlier file is no longer the current approved trailer. A newer final signature or a changed cut needs its own review.'));
+   tile.append(boundaryPictures(item.samples,index>0));
+   const measured=review.metadata.measurements,figures=el('details',{},el('summary',{},'Measured figures from this final file'));
+   figures.append(el('p',{},`Duration: ${review.checks.technical_probe.duration_seconds.toFixed(3)} seconds. File size: ${review.checks.technical_probe.file_size_bytes.toLocaleString()} bytes.`),
+    el('p',{},`Overall loudness: ${measured.integrated_lufs??'not measurable'} LUFS; the target is about minus sixteen. Highest playback peak: ${measured.true_peak_dbtp??'not measurable'} dBTP; it must stay below minus one.`),
+    el('p',{},`${review.metadata.boundary_samples.length} pictures sampled at cut and card boundaries. Watch them for story, faces and lettering; the automatic checks do not judge those.`));tile.append(figures);
+   tile.append(el('div',{class:'delivery-actions'},
+    action('Review and sign final approval',async()=>{feedback.textContent=prefix+'Rechecking this final file and its sound…';const r=await api('/'+item.id+'/approval',{});try{await onSign(r.gate_request_id);}finally{feedback.textContent='';}},item.status!=='Needs your signature',index===0,feedback),
+    action('Record the signed final approval',async()=>{const r=await api('/'+item.id+'/apply',{});feedback.textContent=prefix+r.message;},item.status!=='Approved by you',index===0,feedback),
+    action('Show approved file in Finder',async()=>{const r=await api('/'+item.id+'/reveal',{});feedback.textContent=prefix+r.message;},item.status!=='Approved by you',index===0,feedback)),feedback);
+   if(index===0)body.append(tile);else earlier.append(tile);
+  }
+  if(data.exports.length>1)body.append(earlier);
+ }
+ node.append(el('h2',{},'Delivery'),el('p',{},'Sign the saved rough cut, make the local final file, watch it, then sign that exact file. Nothing is uploaded. No stage is finished without its own signature and required earlier reviews.'),message,
+ button('Refresh delivery',async()=>{clearFeedback();key='';await refresh(true);}),notice,body);
+ active={id:s.project_id,node,refresh};refresh();return node;
+}

@@ -151,7 +151,7 @@ export function renderVoice(s,onSign,onChanged=async()=>{}){
   async function refresh(){
     if(loading||busy){pendingRefresh=true;return;}loading=true;pendingRefresh=false;const started=editEpoch,paperStarted=paperCutEpoch();
     try{const data=await api(url);if(started!==editEpoch||paperStarted!==paperCutEpoch()||busy){pendingRefresh=true;return;}const key=JSON.stringify(data)+JSON.stringify(voices);if(refreshFailed){message.textContent='';refreshFailed=false;}if(key!==last){last=key;draw(data);}}
-    catch(e){if(started===editEpoch&&!busy){refreshFailed=true;message.textContent=e.message+' Check the approved story and signed audio price settings, then reload.';}}
+    catch(e){if(started!==editEpoch||paperStarted!==paperCutEpoch()||busy){pendingRefresh=true;return;}refreshFailed=true;message.textContent=e.message+' Check the approved story and signed audio price settings, then reload.';}
     finally{loading=false;if(pendingRefresh&&!busy){pendingRefresh=false;refresh();}}
   }
   current={project,node,refresh};refresh();return node;

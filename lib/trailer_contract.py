@@ -49,8 +49,8 @@ STAGE_LIMITS = {name: 'Signed stage approval controls are not available yet.' fo
 STAGE_LIMITS.update({
     'canon_ingest': '',
     'assets': 'The complete trailer footage, sound and signed stage approval controls are not available yet.',
-    'edit': 'Playable rough-cut editing and signed approval controls are not available yet.',
-    'compose': 'Trailer finishing, export and signed exact-file approval controls are not available yet.',
+    'edit': '',
+    'compose': '',
 })
 
 
@@ -80,6 +80,8 @@ def _frame_times(value, target):
 
 
 def edit_duration(edit):
+    if edit.get('cutting_view'):
+        return max((r['start_frame']+r['duration_frames'] for r in edit['timeline']['picture']),default=0)/FPS
     return sum((cut['out_seconds'] - cut['in_seconds']) / cut.get('speed', 1)
                for cut in edit.get('cuts', []) if cut.get('layer', 'primary') == 'primary')
 
@@ -160,8 +162,8 @@ def _export_duration(path):
 def approval_record(root, pin, stage, artifacts):
     """The existing artifact-review signer must approve this exact record.
 
-    The story source has a board signing surface using this record and the
-    existing gate machinery. Other stage controls remain separate work.
+    The story source and delivery controls use this record and the same
+    gate-side construction and signing machinery as other governed approvals.
     """
     contract = require_contract(root)
     if stage=='canon_ingest':

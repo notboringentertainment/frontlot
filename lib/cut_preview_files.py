@@ -13,7 +13,7 @@ def _hashes(value):
         for v in value:yield from _hashes(v)
     elif isinstance(value,str) and re.fullmatch('[a-f0-9]{64}',value):yield value
 
-def _protected(root):
+def _protected(root,*,own_measurement=False):
     blocked='This production’s approval or generation history cannot be verified. Nothing was cleared. Restore its signed history before preparing playback again.'
     try:
         rows=receipts.chained_rows(root,'approval')
@@ -22,7 +22,8 @@ def _protected(root):
         waiting=False
         for path in (gates.gates_dir()/'wal').glob('*.json'):
             binding=gates.consumed_binding(path.stem)
-            if binding is not None and binding.project_id==root.name:
+            if (binding is not None and binding.project_id==root.name
+                and not (own_measurement and path.stem in receipts._in_flight)):
                 waiting=True
         revisions={r.get('record',{}).get('edit_revision_sha256') for r in rows}
         hashes=set(_hashes(rows))|{r['output_sha256'] for r in generated}
@@ -56,6 +57,27 @@ def _discard_tree(root,directory,protected):
     for p in sorted((p for p in entries if p.is_dir()),key=lambda p:len(p.parts),reverse=True):p.rmdir()
     directory.rmdir()
 
+def _clear_sound_parts(root,mixfile,refs,protected):
+    owned=Path(refs['work_directory'])
+    if owned==mixfile.parent/(mixfile.stem+'-parts'):
+        expected={Path(p) for p in refs['temporary_files']}
+        if expected==set(owned.iterdir())|{mixfile} and all(p==mixfile or p.parent==owned for p in expected):
+            if not any(p.is_symlink() or sha256_file(resolve_input(str(p.relative_to(root)),root)) in protected for p in expected):
+                for p in expected:p.unlink()
+                owned.rmdir()
+
+def clear_measurement_parts(root,mixfile,refs):
+    """Clear only this check's complete inventory; retain its measurement record."""
+    root=Path(root);mixfile=Path(mixfile)
+    resolve_input(str(mixfile.relative_to(root)),root)
+    with gates.receipt_lock(root.name,'approval'):
+        # A final signer's pre-commit measurement runs inside its own active
+        # approval transaction. Its exclusive sound inventory is not signed
+        # material. Abandoned or foreign pending transactions still block
+        # cleanup; only this process's live transaction is exempt here.
+        _,protected=_protected(root,own_measurement=True)
+        _clear_sound_parts(root,mixfile,refs,protected)
+
 def finish_preview(root,target,mixfile,refs,title_layer=None,*,rejected=False):
     root=Path(root);directory=root/'artifacts/cut-previews'
     # A human signature and cleanup cannot race: the same approval lock
@@ -73,13 +95,7 @@ def finish_preview(root,target,mixfile,refs,title_layer=None,*,rejected=False):
             raise ValueError('This production’s saved edit history cannot be verified. Nothing was cleared. Restore its saved edit before preparing playback again.') from exc
         if _preview_record(root,target,owned_revisions) is None:
             raise ValueError('This preview’s file or record cannot be verified. Nothing was cleared. Prepare fresh playback from the saved cut.')
-        owned=Path(refs['work_directory'])
-        if owned==mixfile.parent/(mixfile.stem+'-parts'):
-            expected={Path(p) for p in refs['temporary_files']}
-            if expected==set(owned.iterdir())|{mixfile} and all(p==mixfile or p.parent==owned for p in expected):
-                if not any(p.is_symlink() or sha256_file(resolve_input(str(p.relative_to(root)),root)) in protected for p in expected):
-                    for p in expected:p.unlink()
-                    owned.rmdir()
+        _clear_sound_parts(root,mixfile,refs,protected)
         if title_layer is not None and title_layer.parent.parent==directory and re.fullmatch('titles-[a-f0-9]{32}',title_layer.parent.name):
             _discard_tree(root,title_layer.parent,protected)
         if rejected:

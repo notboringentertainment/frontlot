@@ -7,6 +7,7 @@
   "required": ["version", "cuts", "render_runtime"],
   "allOf": [{"if": {"required": ["trailer"]}, "then": {"required": ["edit_revision_sha256"], "properties": {"render_runtime": {"const": "remotion"}}}}],
   "properties": {
+    "cutting_view": {"type": "boolean"},
     "revision_history": {"type": "array", "items": {"type": "object"}},
     "revision_times": {"type": "object", "additionalProperties": {"type": "string"}},
     "saved_at": {"type": "string"},

@@ -7,6 +7,7 @@ import {renderFootageSetup,renderPrereqSigning,applyLocationApproval} from '/ui/
 import {renderPriceSigning} from '/ui/media_prices.js';
 import {renderVoice,refreshVoice,renderAudioSigning,applySignedAccountOutcome} from '/ui/voice.js';
 import {renderCutting,refreshCutting,renderCardSigning} from '/ui/cutting.js';
+import {renderDelivery,renderDeliverySigning,refreshDelivery} from '/ui/delivery.js';
 import { setFootageState, renderFootageControls, afterFootageSignature, footageDecision } from "/ui/footage.js";
 import { mountSession } from "/ui/session.js";
 import {
@@ -1867,7 +1868,7 @@ const GATE_WORDS = {
   trailer_card: "Review exact card words",
 };
 const storyGate=row=>row.kind==='artifact_review'&&row.stage==='canon_ingest'&&row.scope==='trailer-stage';
-const gateWords = (kind,row={}) => storyGate({...row,kind}) ? 'Review this story' : kind==='config' && row.scope==='footage:project_config' ? 'Review footage prices and permissions' : kind==='config' && row.scope==='audio:project_config' ? 'Review audio prices and permissions' : state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
+const gateWords = (kind,row={}) => storyGate({...row,kind}) ? 'Review this story' : kind==='artifact_review'&&row.scope==='trailer-stage' ? row.stage==='edit'?'Sign the rough cut':'Approve the final file' : kind==='config' && row.scope==='footage:project_config' ? 'Review footage prices and permissions' : kind==='config' && row.scope==='audio:project_config' ? 'Review audio prices and permissions' : state?.is_trailer && kind === "pipeline_migration" ? "Start this trailer" : state?.is_trailer && kind==="audio_resolution" ? "Review uncertain charge" : GATE_WORDS[kind] || titleCase(kind);
 
 const SLOT_OF_KIND = {
   look_lock: "look",
@@ -2569,6 +2570,7 @@ function renderGateViewer(s) {
   if(s.is_trailer&&(header.kind==='reference_import'||header.kind==='look_lock'&&gateDetail.request?.writer_source_ref))return renderPrereqSigning(gateDetail,gateActions(s,summary,stale,packetError),setupReturn,lookCard,s.project_id,stale);
   if(header.kind==='config'&&header.scope==='footage:project_config')return renderPriceSigning(gateDetail,gateActions(s,summary,stale,packetError),setupReturn,stale);
   if(header.kind==='trailer_card')return renderCardSigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;await refreshCutting();render();restoreWorkspacePosition();});
+  if(header.kind==='artifact_review'&&header.scope==='trailer-stage'&&['edit','compose'].includes(header.stage))return renderDeliverySigning(gateDetail,gateActions(s,summary,stale,packetError),async()=>{closeSigning();gateSession.inputReady=false;selectedGateId=null;gateDetail=null;selectedEntity=null;trailerWorkbenchChosen=true;const verified=refreshDelivery();render();await verified;restoreWorkspacePosition();});
   const footageResolution=header.kind==='audio_resolution'&&gateDetail.request?.approval_record?.request?.provider==='fal';
   if((['audio_spend','audio_take','audio_resolution'].includes(header.kind)&&!footageResolution)||(header.kind==='config'&&header.scope==='audio:project_config'))return renderAudioSigning(gateDetail,gateActions(s,summary,stale,packetError,gateDetail.packet?.budget_warning),()=>{returnToWorkspace();gateSession.inputReady=false;selectedEntity=null;render();},stale);
   let frames = gateFrames(gateDetail.packet);
@@ -2746,7 +2748,7 @@ function renderLog(s, roster) {
         class: "need",
         type: "button",
         "aria-current": selectedGateId === row.request_id ? "true" : null,
-        "aria-label": storyGate(row)||["footage_spend","footage_take","trailer_card"].includes(row.kind) || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind,row)}` : `Inspect ${row.kind} gate ${row.request_id}`,
+        "aria-label": ["footage_spend","footage_take","trailer_card"].includes(row.kind) || row.kind==='artifact_review'&&row.scope==='trailer-stage' || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind,row)}` : `Inspect ${row.kind} gate ${row.request_id}`,
         onclick: () => { selectedEntity = key; selectGate(row.request_id); },
       },
         el("span", { class: "what" }, gateWords(row.kind,row)),
@@ -2768,7 +2770,7 @@ function renderLog(s, roster) {
           el("button", {
             class: "text",
             type: "button",
-            "aria-label": storyGate(row)||["footage_spend","footage_take","trailer_card"].includes(row.kind) || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind,row)}` : `Inspect ${row.kind} gate ${row.request_id}`,
+            "aria-label": ["footage_spend","footage_take","trailer_card"].includes(row.kind) || row.kind==='artifact_review'&&row.scope==='trailer-stage' || (s.is_trailer && row.kind==="audio_resolution") ? `Review: ${gateWords(row.kind,row)}` : `Inspect ${row.kind} gate ${row.request_id}`,
             onclick: () => { selectedEntity = entityKeyOf(row); selectGate(row.request_id); },
           }, logLine(row, roster)),
           el("small", {}, `${row.state === "done" ? "Signed" : row.state === "declined" ? "Declined" : "Dropped"} · ${fmtGateTime(row.mtime)}`)))));
@@ -3033,7 +3035,8 @@ function renderBoard() {
     el('button',{type:'button',onclick:()=>viewer.querySelector('.voice-lines')?.scrollIntoView({block:'start'})},'Voice workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('#music-compose')?.scrollIntoView({block:'start'})},'Music workspace'),
     el('button',{type:'button',onclick:()=>viewer.querySelector('#effect-compose')?.scrollIntoView({block:'start'})},'Sound effects workspace'),
-    el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Cutting view"]')?.scrollIntoView({block:'start'})},'Cutting workspace'));
+    el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Cutting view"]')?.scrollIntoView({block:'start'})},'Cutting workspace'),
+    el('button',{type:'button',onclick:()=>viewer.querySelector('[aria-label="Trailer delivery"]')?.scrollIntoView({block:'start'})},'Delivery workspace'));
     viewer.append(trailerWorkspaceNav);
   }
   const drawer = renderDrawer(s);
@@ -3045,6 +3048,7 @@ function renderBoard() {
 
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderVoice(s,async(id)=>{await refresh();await selectGate(id);},refresh));
   if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderCutting(s,async(id)=>{await refresh();await selectGate(id);}));
+  if (s.is_trailer && !s.trailer_damaged && !selectedGateId) viewer.append(renderDelivery(s,async(id)=>{await refresh();await selectGate(id);}));
   if (shot && !s.is_trailer) {
     const inner = s.is_trailer ? renderFootageControls(s) : renderShotViewer(s, shot);
     if (drawer) inner.prepend(drawer);

@@ -12,7 +12,7 @@ Use Remotion for local timed graphics and footage composition, and FFmpeg for tr
 
 Ben works through visible controls and ordinary conversation. Use only available Front Lot operations. Never give him a command to type, run an unavailable operation by another route, or mark a placeholder as produced footage. Say plainly when a control is not available yet and stop that step. The trailer is unfinished until those later pieces exist.
 
-Every stage requires Ben's signed approval through the existing gate and receipt machinery. A bare approval flag, the assistant's words and a hand-written stage file never complete a trailer stage. Whole-stage signing screens are not available yet, including for looks, portraits and visual references; keep those stages unfinished until their signing controls exist. Technical checks and the assistant's review never approve a stage. The rough cut requires approval of its exact saved edit revision. Final approval follows watching and listening to the exact exported file and binds both that edit revision and the file's content digest. Changed inputs require fresh downstream review while preserving history. The delivery piece will supply the visible exact-file signing controls; never invent a receipt or claim those controls exist now.
+Every stage requires Ben's signed approval through the existing gate and receipt machinery. A bare approval flag, the assistant's words and a hand-written stage file never complete a trailer stage. Technical checks and the assistant's review never approve a stage. In Delivery, Ben uses “Review and sign the saved rough cut”, then “Make the final file”. After watching and listening, he uses “Review and sign final approval” for that exact exported file. “Show approved file in Finder” reveals the approved local file; nothing is uploaded. Earlier stage reviews and the separate story review remain binding. Other whole-stage signing screens that are not available, including looks, portraits and visual references, remain unfinished. The rough-cut signature binds the exact saved edit revision; final approval also binds the file and its measurements. Changed inputs require fresh downstream review while preserving history. Never invent a receipt.
 
 Record matching edit revision and export content digests in the render report and final review. Default delivery is widescreen high-definition video, at twenty-four frames per second, encoded as an H.264 MP4 with stereo AAC sound. Verify the actual export, not an intermediate. A passing review leaves final approval waiting for Ben.
 
@@ -101,7 +101,7 @@ development system.
 
 ## Approval defaults for older productions only
 
-Trailers do not use this default. A trailer requires Ben's signed stage approval, and its signing controls are not available yet.
+Trailers do not use this default. Use Delivery for Ben's signed final-file approval. Existing earlier reviews and the separate story review remain required; no technical pass completes the stage.
 
 `human_approval_default: false`, but a failed canon pass is presented
 `awaiting_human` — a render that breaks canon never self-certifies.

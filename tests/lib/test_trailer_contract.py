@@ -51,8 +51,10 @@ def test_contract_saved_and_board_is_honest(tmp_path):
     assert state['trailer'] == marker['trailer']
     stages = {s['name']: s for s in state['stages']}
     assert stages['edit']['label'] == 'Rough cut'
-    assert 'not available yet' in stages['edit']['availability_message']
-    assert stages['compose']['gated']
+    assert stages['edit']['availability_message'] == ''
+    assert stages['compose']['availability_message'] == ''
+    assert stages['edit']['gated'] is True
+    assert stages['compose']['gated'] is True
     assert all(not s['human_approved'] for s in stages.values())
 
 
