@@ -20,7 +20,7 @@ def test_1_older_trailer_adoption_explains_reviews_without_changing_its_request(
     assert 'five signed reviews: Story, Paper cut, Rough cut, Colour and sound, and Final file' in words
     assert 'other whole-stage reviews are not part of a trailer' in words
     assert 'Ben decided' not in words and 'for this test' not in words
-    screen.get_by_role('button', name='Review the trailer-test contract', exact=True).click()
+    screen.get_by_role('button', name='Review and sign the five-review list', exact=True).click()
     screen.wait_for_function('adoption.length===1')
     assert screen.evaluate('adoption') == [{'url': '/api/project/invented/trailer-contract/review', 'method': 'POST', 'body': '{}'}]
 

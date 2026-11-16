@@ -3105,7 +3105,7 @@ function renderBoard(deliveryVerified=false) {
   if(s.is_trailer&&!s.trailer_damaged&&!s.trailer_setup_pending&&!s.trimmed_contract&&!selectedGateId){
     const status=el('p',{role:'status'});
     viewer.append(el('section',{class:'paper-panel'},el('p',{},'This trailer needs five signed reviews: Story, Paper cut, Rough cut, Colour and sound, and Final file. The other whole-stage reviews are not part of a trailer. Review and sign this contract to adopt that review list. Your saved work is kept.'),
-      el('button',{type:'button',onclick:async()=>{try{const r=await fetch(`/api/project/${encodedProjectId}/trailer-contract/review`,{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:'{}'});const value=await r.json();if(!r.ok)throw Error(value.detail);await refresh();await selectGate(value.request_id);}catch(e){status.textContent=e.message;}}},'Review the trailer-test contract'),status));
+      el('button',{type:'button',onclick:async()=>{try{const r=await fetch(`/api/project/${encodedProjectId}/trailer-contract/review`,{method:'POST',headers:{'Content-Type':'application/json','x-frontlot-capability':sessionStorage.getItem(CAPABILITY_TOKEN_KEY)||''},body:'{}'});const value=await r.json();if(!r.ok)throw Error(value.detail);await refresh();await selectGate(value.request_id);}catch(e){status.textContent=e.message;}}},'Review and sign the five-review list'),status));
   }
   if(s.is_trailer && !s.trailer_damaged && !selectedGateId){
     trailerWorkspaceNav??=el('nav',{class:'voice-workspace-nav','aria-label':'Trailer workspaces'},
