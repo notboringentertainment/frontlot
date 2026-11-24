@@ -9,6 +9,7 @@ let busy = "";
 let message = "";
 let limitMessage = "";
 let limitDraft = null;
+const descriptionRequired = "Write a description before saving or making pictures.";
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -60,7 +61,7 @@ function entryPath() {
 
 function select(entry) {
   selected = entry?.id ?? null;
-  draft = entry ? {name: entry.name, description: entry.description} : null;
+  draft = entry ? {name: entry.name, description: entry.description, scene: ""} : null;
   adding = null;
   message = "";
   limitMessage = "";
@@ -129,7 +130,7 @@ function showList() {
       el("span", {class: "show-caption"}, available ? "Open show" : unavailable[project.status]));
     })),
     !shows.length && !busy && !message ? el("p", {class: "muted"}, "No shows yet. Publish a kit from WriterOS to get started.") : null,
-    feedback(busy || message));
+    feedback(busy || message, Boolean(message)));
 }
 
 function dollars(amount) {
@@ -142,12 +143,9 @@ function budget() {
     id: "limit", value: limitDraft ?? show.limit,
     oninput: event => { limitDraft = event.target.value; }});
   const total = el("p", {class: "total"});
-  const notice = feedback(limitMessage);
+  const notice = feedback(limitMessage, true);
   const project = projectPath();
-  function showTotal() {
-    total.textContent = dollars(show.spent) + (show.estimated ? " spent (estimated)" : " spent");
-  }
-  showTotal();
+  total.textContent = dollars(show.spent) + (show.estimated ? " spent (estimated)" : " spent");
   const form = el("form", {class: "budget-form", onsubmit: async event => {
     event.preventDefault();
     const amount = input.value;
@@ -157,11 +155,9 @@ function budget() {
         show.limit = saved.limit;
         if (limitDraft === amount) {
           limitDraft = null;
-          input.value = saved.limit;
+          document.querySelector("#limit").value = saved.limit;
         }
-        Object.assign(show, {spent: saved.spent, estimated: saved.estimated});
         limitMessage = "";
-        showTotal();
         notice.textContent = "";
       }
     } catch (error) {
@@ -174,8 +170,8 @@ function budget() {
   return el("aside", {class: "budget"}, total, form, notice);
 }
 
-function feedback(text, className = "feedback") {
-  return el("p", {class: className, role: "status"}, text || "");
+function feedback(text, error = false) {
+  return el("p", {class: error ? "feedback error" : "feedback", role: "status"}, text || "");
 }
 
 function group(kind) {
@@ -201,6 +197,13 @@ function group(kind) {
 
 function addForm(kind) {
   const name = el("input", {id: "new-name", name: "name", required: true});
+  const description = el("textarea", {id: "new-description", rows: 2, "aria-describedby": "new-description-help",
+    oninput: () => {
+      submit.disabled = !description.value.trim();
+      help.hidden = !submit.disabled;
+    }});
+  const submit = el("button", {type: "submit", class: "primary", disabled: true}, "Add");
+  const help = el("p", {id: "new-description-help", class: "muted"}, descriptionRequired);
   return el("form", {class: "add-form", onsubmit: event => {
     event.preventDefault();
     const value = name.value.trim();
@@ -208,13 +211,16 @@ function addForm(kind) {
       name.focus();
       return;
     }
+    const words = description.value.trim();
+    if (!words) return;
     run("Adding…", async () => {
-      const entry = await request(projectPath() + "/entries", "POST", {kind, name: value});
+      const entry = await request(projectPath() + "/entries", "POST", {kind, name: value, description: words});
       show.entries.push(entry);
       select(entry);
     });
   }}, el("label", {for: "new-name"}, "Name"), name,
-  el("button", {type: "submit", class: "primary", disabled: Boolean(busy)}, "Add"),
+  el("label", {for: "new-description"}, kind === "person" ? "Who this person is" : "What this place is"),
+  description, help, submit,
   button("Cancel", () => { adding = null; render(); }));
 }
 
@@ -224,9 +230,10 @@ function replaceEntry(entry) {
 }
 
 async function saveEdits() {
-  const entry = await request(entryPath(), "PATCH", draft);
+  const {name, description} = draft;
+  const entry = await request(entryPath(), "PATCH", {name, description});
   replaceEntry(entry);
-  draft = {name: entry.name, description: entry.description};
+  Object.assign(draft, {name: entry.name, description: entry.description});
 }
 
 async function make() {
@@ -234,7 +241,9 @@ async function make() {
   await run("Making pictures…", async () => {
     await saveEdits();
     try {
-      const entry = await request(entryPath() + "/make", "POST", {description: draft.description});
+      const {description, scene} = draft;
+      const entry = await request(entryPath() + "/make", "POST", {description, scene});
+      draft.scene = "";
       replaceEntry(entry);
       Object.assign(show, {spent: entry.spent, estimated: entry.estimated, limit: entry.limit});
     } catch (error) {
@@ -260,6 +269,7 @@ function pictureCard(picture, index, entry) {
     el("a", {href: picture.url, target: "_blank", rel: "noopener", class: "still"},
       el("img", {src: picture.url, alt: entry.name + ", picture " + (index + 1), loading: "lazy"})),
     el("figcaption", {},
+      picture.scene ? el("p", {class: "picture-caption"}, picture.scene) : null,
       button(picture.kept ? "Unkeep" : "Keep", () => change({kept: !picture.kept}, "Saving…"),
         picture.kept ? "quiet kept" : "quiet"),
       picture.main ? el("span", {class: "main-label"}, "Main look")
@@ -267,10 +277,24 @@ function pictureCard(picture, index, entry) {
 }
 
 function editor(entry) {
-  const name = el("input", {id: "entry-name", value: draft.name, required: true,
+  const editingDisabled = Boolean(busy);
+  const missingDescription = !draft.description.trim();
+  const name = el("input", {id: "entry-name", value: draft.name, required: true, disabled: editingDisabled,
     oninput: event => { draft.name = event.target.value; }});
-  const description = el("textarea", {id: "description", rows: 3,
-    oninput: event => { draft.description = event.target.value; }}, draft.description);
+  const description = el("textarea", {id: "description", rows: 3, disabled: editingDisabled,
+    "aria-describedby": "description-help", oninput: event => {
+      draft.description = event.target.value;
+      const empty = !draft.description.trim();
+      makeButton.disabled = saveButton.disabled = empty;
+      help.hidden = !empty;
+    }}, draft.description);
+  const scene = el("textarea", {id: "scene", rows: 2, disabled: editingDisabled,
+    oninput: event => { draft.scene = event.target.value; }}, draft.scene);
+  const makeButton = button("Make pictures", make, "primary", editingDisabled || missingDescription);
+  const saveButton = el("button", {type: "submit", class: "quiet",
+    disabled: editingDisabled || missingDescription}, "Save changes");
+  const help = el("p", {id: "description-help", class: "description-help muted", hidden: !missingDescription},
+    descriptionRequired);
   const file = el("input", {type: "file", accept: "image/*", hidden: true, onchange: event => {
     const picture = event.target.files[0];
     if (picture) run("Importing picture…", async () => {
@@ -279,17 +303,18 @@ function editor(entry) {
   }});
   const form = el("form", {class: "description-form", onsubmit: event => {
     event.preventDefault();
-    run("Saving…", saveEdits);
+    if (draft.description.trim()) run("Saving…", saveEdits);
   }},
   el("div", {class: "editor-fields"},
     el("label", {for: "entry-name"}, "Name"), name,
-    el("label", {for: "description"}, "Visual description"), description),
+    el("label", {for: "description"}, entry.kind === "person" ? "Who this person is" : "What this place is"), description,
+    el("label", {for: "scene"}, "This picture (optional)"), scene),
+  help,
   entry.source ? el("p", {class: "source"}, entry.source) : null,
   entry.quotes.length ? el("details", {class: "quotes"}, el("summary", {}, "Read the lines from canon"),
     entry.quotes.map(quote => el("blockquote", {}, quote))) : null,
   el("div", {class: "actions"},
-    button("Make pictures", make, "primary"),
-    el("button", {type: "submit", class: "quiet", disabled: Boolean(busy)}, "Save changes"),
+    makeButton, saveButton,
     entry.pictures.some(picture => picture.main) ? el("span", {class: "muted"}, "New pictures use the main look.") : null));
   return el("article", {class: "editor"},
     el("div", {class: "editor-heading"}, el("h2", {}, entry.name),
@@ -304,7 +329,7 @@ function editor(entry) {
       el("div", {class: "actions"},
         button("Import a picture", () => file.click()), file,
         button("Show in Finder", () => run("Opening Finder…", () => request(entryPath() + "/finder", "POST"))))),
-    feedback(busy || message),
+    feedback(busy || message, Boolean(message)),
     entry.pictures.length ? el("div", {class: "gallery " + entry.kind},
       entry.pictures.map((picture, index) => pictureCard(picture, index, entry)).reverse())
       : !busy ? el("p", {class: "muted empty-pictures"}, "Make pictures or bring in one you already have.") : null);
@@ -317,7 +342,8 @@ function workspace() {
       el("div", {class: "show-title"}, el("h1", {}, show.title),
         button("Read canon again", () => run("Reading canon…", () => readCanon(true)))),
       budget()),
-    feedback(show.notice || (!entry ? busy || message : ""), "canon-notice"),
+    show.notice ? el("p", {class: "canon-notice error", role: "status"}, show.notice) : null,
+    !entry ? feedback(busy || message, Boolean(message)) : null,
     el("div", {class: entry ? "work-columns" : "overview"},
       el("div", {class: "directory"},
         entry ? button("People and places", () => select(null), "quiet directory-back") : null,

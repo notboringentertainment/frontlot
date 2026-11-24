@@ -54,7 +54,7 @@ class Fal:
             raise FalError("The picture service needs a key before it can make pictures.")
         return {"Authorization": f"Key {key}"}
 
-    async def make(self, description, kind, count, reference, charge, save_picture):
+    async def make(self, description, kind, count, reference, charge, save_picture, *, scene=""):
         headers = self.headers()
         model = MODEL.text
         payload = {"prompt": description, "num_images": count, "resolution": "1K",
@@ -65,7 +65,12 @@ class Fal:
             subject = ("person, preserving the face and identity" if kind == "person"
                        else "place, preserving the layout and distinctive features")
             payload["prompt"] = f"Show the same {subject} from the reference picture. {description}"
+            if not scene:
+                variation = "camera angle, framing, and expression" if kind == "person" else "camera angle and framing"
+                payload["prompt"] += f" Vary the {variation} across the batch."
             payload["image_urls"] = [await asyncio.to_thread(reference_url, reference)]
+        if scene:
+            payload["prompt"] += f" Follow this direction for the picture: {scene}"
 
         async with httpx.AsyncClient(transport=self.transport, timeout=45, follow_redirects=True) as client:
             submit = await client.post(f"https://queue.fal.run/{model}", json=payload, headers=headers)

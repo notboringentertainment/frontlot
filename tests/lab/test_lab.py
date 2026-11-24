@@ -8,7 +8,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient as StarletteTestClient
 from PIL import Image
 
 from lab.app import create_app
@@ -28,6 +28,17 @@ CANON = {
         dict(name="Bell Steps", kind="place", quotes=[], description="Seaweed-covered stone steps.", drafted=True, look_id=None),
     ]
 }
+
+
+def TestClient(app):
+    return StarletteTestClient(app, base_url="http://localhost:4751")
+
+
+def test_only_local_hosts_are_allowed(folders):
+    with TestClient(create_app(*folders)) as client:
+        for host in ("127.0.0.1:4751", "localhost:4751"):
+            assert client.get("/api/ready", headers={"Host": host}).status_code == 200
+        assert client.get("/api/ready", headers={"Host": "testserver"}).status_code == 400
 
 
 @pytest.fixture
@@ -106,8 +117,31 @@ def test_claude_and_manual_entries(folders, monkeypatch, outcome):
         else:
             assert not first["entries"]
             assert "add people and places by hand" in first["notice"]
-        added = client.post(f"{SHOW}/entries", json={"name": "Pella Rook", "kind": "person"}).json()
+        added = client.post(f"{SHOW}/entries", json={"name": "Pella Rook", "kind": "person", "description": "A yellow coat."}).json()
         assert client.patch(f"{SHOW}/entries/{added['id']}", json={"name": "Pella Reed"}).json()["name"] == "Pella Reed"
+
+
+def test_description_is_required_and_unchanged_draft_keeps_its_source(folders):
+    def no_fal(request):
+        pytest.fail("A blank description must never reach Fal.")
+
+    fal = Fal(transport=httpx.MockTransport(no_fal))
+    with TestClient(create_app(*folders, canon_reader=lambda *_: CANON, fal=fal)) as client:
+        show = client.post(f"{SHOW}/canon").json()
+        orin = show["entries"][1]
+        entry = f"{SHOW}/entries/{orin['id']}"
+        for fields in ({}, {"description": "  "}):
+            assert client.post(f"{SHOW}/entries", json={"name": "Pella Rook", "kind": "person", **fields}).status_code == 422
+
+        for method, path in (("PATCH", entry), ("POST", f"{entry}/make")):
+            response = client.request(method, path, json={"description": "  "})
+            assert response.status_code == 422
+            assert response.json()["detail"] == "Write a description before saving or making pictures."
+
+        saved = client.patch(entry, json={"name": orin["name"], "description": orin["description"]}).json()
+        assert saved["description"] == orin["description"]
+        assert saved["drafted"] and saved["source"] == "Drafted, not from canon"
+        assert client.get(SHOW).json()["entries"] == show["entries"]
 
 
 def test_pictures_references_import_spending_and_read_only(folders, png, monkeypatch):
@@ -150,16 +184,26 @@ def test_pictures_references_import_spending_and_read_only(folders, png, monkeyp
         for picture in (first, second):
             assert client.patch(picture["url"], json={"kept": True}).json()["kept"]
         assert client.patch(first["url"], json={"main": True}).json()["main"]
-        more = client.post(f"{entry}/make", json={"description": "Esme in sunlight."}).json()
+        state_file = library / PROJECT / "show.json"
+        kept_file = library / PROJECT / show["entries"][0]["id"] / "kept" / first["id"]
+        before_rejection = state_file.read_bytes()
+        assert client.patch(first["url"], json={"kept": False, "main": True}).status_code == 409
+        assert state_file.read_bytes() == before_rejection
+        assert kept_file.read_bytes() == png
+
+        scene = "At a desk, lit by a lamp, looking up."
+        more = client.post(f"{entry}/make", json={"description": "Esme in a coat.", "scene": scene}).json()
+        assert more["description"] == "Esme in a coat."
+        assert all(picture["scene"] == scene for picture in more["pictures"][4:])
         assert len(more["pictures"]) == 8
         assert Decimal(more["spent"]) - Decimal(made["spent"]) == Decimal("0.19")
         state = json.loads((library / PROJECT / "show.json").read_text())
         assert Decimal(state["estimated"]) == Decimal("0.20")
         endpoint, payload = requests[-1]
         assert endpoint == "/" + MODEL.edit
-        assert payload["prompt"] == (
-            "Show the same person, preserving the face and identity from the reference picture. Esme in sunlight."
-        )
+        assert "Show the same person, preserving the face and identity from the reference picture." in payload["prompt"]
+        assert "Esme in a coat." in payload["prompt"] and scene in payload["prompt"]
+        assert "across the batch" not in payload["prompt"]
         assert base64.b64decode(payload["image_urls"][0].split(",", 1)[1]) == png
         assert client.get(first["url"]).content == png
 
@@ -175,13 +219,19 @@ def test_pictures_references_import_spending_and_read_only(folders, png, monkeyp
         assert len(requests) == 2
         assert client.patch(SHOW, json={"limit": "0.59"}).status_code == 200
         assert client.post(f"{entry}/make", json={"description": "Esme indoors."}).status_code == 200
+        prompt = requests[-1][1]["prompt"]
+        assert "Show the same person" in prompt and "Esme indoors." in prompt
+        assert all(word in prompt for word in ("angle", "framing", "expression", "across the batch"))
         ref = base64.b64decode(requests[-1][1]["image_urls"][0].split(",", 1)[1])
         assert Image.open(io.BytesIO(ref)).getpixel((0, 0)) != (98, 123, 129)
 
     with TestClient(create_app(root, library, fal=fal)) as client:
         saved = client.get(SHOW).json()
         assert Decimal(saved["spent"]) == Decimal("0.59") and saved["estimated"]
-        assert len(saved["entries"][0]["pictures"]) == 13
+        pictures = saved["entries"][0]["pictures"]
+        assert len(pictures) == 13
+        assert all("scene" not in picture for picture in pictures[:4])
+        assert all(picture["scene"] == scene for picture in pictures[4:8])
         assert sum(picture["kept"] for picture in saved["entries"][0]["pictures"]) == 2
         assert sum(picture["main"] for picture in saved["entries"][0]["pictures"]) == 1
     assert snapshot() == before
