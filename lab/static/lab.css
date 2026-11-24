@@ -134,3 +134,27 @@ figcaption .quiet { font-size: .84rem; }
   .editor-fields { display: flex; flex-direction: column; align-items: stretch; }
   .source, .quotes, .description-help, .description-form .actions { margin-left: 0; }
 }
+
+.credits { margin-top: 7px; font-size: .88rem; }
+.audio-section { margin-top: 22px; padding-top: 13px; border-top: 1px solid var(--line); }
+.audio-section > .gallery-heading { margin-top: 0; }
+.voice-button { margin-right: 8px; font-size: 1.1rem; }
+.audio-form {
+  display: grid; gap: 8px; align-items: start; margin-top: 12px; padding: 13px 16px;
+  background: var(--paper); border: 1px solid var(--line); border-radius: 5px;
+}
+.audio-form > .primary { justify-self: start; }
+.audio-form input[type=number] { width: 86px; }
+.audio-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 9px; }
+.audio-grid:not(:empty) { margin-top: 9px; }
+.audio-card { padding: 7px; background: var(--paper); border: 1px solid var(--line); border-radius: 5px; min-width: 0; }
+.audio-card audio { display: block; width: 100%; height: 38px; margin: 4px 0; }
+.sound-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.music-note { font-size: .88rem; }
+.library-voices { margin-top: 8px; }
+.library-voice { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; border-bottom: 1px solid var(--line); padding: 5px 0; }
+.library-voice span { margin-right: auto; }
+.library-voice audio { width: min(220px, 100%); height: 38px; }
+@media (max-width: 700px) {
+  .sound-columns { display: block; }
+}

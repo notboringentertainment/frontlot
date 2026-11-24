@@ -17,7 +17,9 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .canon import canon_entries, read_with_claude
+from .audio import audio_state, register_audio, voice_state
+from .canon import canon_entries, draft_with_claude, read_with_claude
+from .elevenlabs import ElevenLabs
 from .fal import MODEL, Fal, FalError
 from .kit import find_kits, read_json
 
@@ -114,7 +116,7 @@ def required_description(value):
     return description
 
 
-def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=None):
+def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=None, eleven=None, voice_reader=None):
     home = Path.home()
     projects = Path(projects_root or os.getenv("FRONT_LOT_PROJECTS", home / "WriterOS Projects"))
     library = Library(Path(library_root or os.getenv(
@@ -134,6 +136,8 @@ def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=
                 return kit
         raise HTTPException(404, "This show’s canon isn’t ready in WriterOS yet.")
 
+    register_audio(app, library, kit_for, eleven or ElevenLabs(), voice_reader or draft_with_claude)
+
     def picture_view(project, entry, picture):
         return {**picture, "main": entry["main"] == picture["id"],
                 "url": f"/api/shows/{project}/entries/{entry['id']}/pictures/{picture['id']}"}
@@ -141,7 +145,7 @@ def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=
     def entry_view(project, entry):
         return {key: entry[key] for key in ("id", "name", "kind", "description", "quotes", "source", "drafted")} | {
             "pictures": [picture_view(project, entry, picture) for picture in entry["pictures"]]
-        }
+        } | (voice_state(entry) if entry["kind"] == "person" else {})
 
     def spending(state):
         with localcontext() as context:
@@ -151,7 +155,7 @@ def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=
                     "estimated": Decimal(state["estimated"]) > 0}
 
     def show_view(kit, state):
-        return {**kit.public(), **spending(state),
+        return {**kit.public(), **spending(state), **audio_state(state),
                 "notice": state["readings"].get(kit.generation.name, ""),
                 "entries": [entry_view(kit.id, entry) for entry in state["entries"] if not entry.get("deleted")]}
 

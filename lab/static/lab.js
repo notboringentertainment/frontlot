@@ -9,6 +9,12 @@ let busy = "";
 let message = "";
 let limitMessage = "";
 let limitDraft = null;
+let audioStatus = {};
+let audioFeedback = false;
+let voiceOpen = false;
+let libraryVoices = null;
+let librarySample = null;
+let soundDrafts = freshSoundDrafts();
 const descriptionRequired = "Write a description before saving or making pictures.";
 
 function el(tag, attrs = {}, ...children) {
@@ -61,16 +67,21 @@ function entryPath() {
 
 function select(entry) {
   selected = entry?.id ?? null;
-  draft = entry ? {name: entry.name, description: entry.description, scene: ""} : null;
+  draft = entry ? {name: entry.name, description: entry.description, scene: "",
+    voice: entry.voice_description, line: ""} : null;
+  voiceOpen = false;
+  libraryVoices = librarySample = null;
+  audioFeedback = false;
   adding = null;
   message = "";
   limitMessage = "";
   render();
 }
 
-async function run(status, work) {
+async function run(status, work, audio = false) {
   if (busy) return;
   busy = status;
+  audioFeedback = audio;
   message = "";
   render();
   try {
@@ -98,7 +109,7 @@ async function enter(project) {
     show = await request("/api/shows/" + project.id);
     busy = "Reading canon…";
     render();
-    await readCanon();
+    await Promise.all([readCanon(), refreshCredits()]);
   });
 }
 
@@ -106,6 +117,8 @@ async function home() {
   if (busy) return;
   show = null;
   limitDraft = null;
+  audioStatus = {};
+  soundDrafts = freshSoundDrafts();
   select(null);
   await run("Finding shows…", async () => { shows = await request("/api/shows"); });
 }
@@ -167,7 +180,13 @@ function budget() {
   el("label", {for: "limit"}, "Spending limit"),
   el("span", {class: "money-field"}, el("span", {"aria-hidden": "true"}, "$"), input),
   el("button", {class: "quiet", type: "submit"}, "Set limit"));
-  return el("aside", {class: "budget"}, total, form, notice);
+  const used = (audioStatus.credits_used ?? show.credits_used).toLocaleString();
+  const remaining = audioStatus.remaining;
+  const count = (audioStatus.credits_partial ?? show.credits_partial) ? "At least " + used : used;
+  return el("aside", {class: "budget"}, total, form, notice,
+    el("p", {class: "credits muted"}, count + " ElevenLabs credits used" +
+      (remaining == null ? "" : " · " + remaining.toLocaleString() + " left on the account")),
+    feedback(audioStatus.notice));
 }
 
 function feedback(text, error = false) {
@@ -329,10 +348,189 @@ function editor(entry) {
       el("div", {class: "actions"},
         button("Import a picture", () => file.click()), file,
         button("Show in Finder", () => run("Opening Finder…", () => request(entryPath() + "/finder", "POST"))))),
-    feedback(busy || message, Boolean(message)),
+    !audioFeedback ? feedback(busy || message, Boolean(message)) : null,
     entry.pictures.length ? el("div", {class: "gallery " + entry.kind},
       entry.pictures.map((picture, index) => pictureCard(picture, index, entry)).reverse())
-      : !busy ? el("p", {class: "muted empty-pictures"}, "Make pictures or bring in one you already have.") : null);
+      : !busy ? el("p", {class: "muted empty-pictures"}, "Make pictures or bring in one you already have.") : null,
+    entry.kind === "person" ? voiceSection(entry) : null);
+}
+
+function freshSoundDrafts() {
+  return {effects: {text: "", seconds: ""}, music: {text: "", seconds: "10"}};
+}
+
+async function refreshCredits() {
+  audioStatus = await request(projectPath() + "/audio/credits");
+}
+
+async function audioRun(status, work, charged = false) {
+  let play;
+  await run(status, async () => {
+    try {
+      play = await work();
+    } finally {
+      if (charged) await refreshCredits();
+    }
+  }, true);
+  if (play) {
+    const player = [...document.querySelectorAll("audio")].find(node => node.getAttribute("src") === play);
+    player?.play().catch(() => {});
+  }
+}
+
+function audioNotice() {
+  return audioFeedback ? feedback(busy || (message === audioStatus.notice ? "" : message), Boolean(message)) : null;
+}
+
+function player(clip, label) {
+  return el("audio", {src: clip.url, controls: true, preload: "none", "aria-label": label});
+}
+
+function audioCards(clips) {
+  return el("div", {class: "audio-grid"}, [...clips].reverse().map(clip =>
+    el("figure", {class: "audio-card"},
+      el("p", {class: "picture-caption"}, clip.title),
+      player(clip, clip.title),
+      button(clip.kept ? "Unkeep" : "Keep", () => audioRun("Saving…", async () => {
+        Object.assign(clip, await request(clip.url, "PATCH", {kept: !clip.kept}));
+      }), clip.kept ? "quiet kept" : "quiet"))));
+}
+
+function importAudio(path, clips) {
+  const file = el("input", {type: "file", accept: "audio/*,.m4a,.aiff,.opus", hidden: true, onchange: event => {
+    const audio = event.target.files[0];
+    if (audio) audioRun("Importing audio…", async () => {
+      clips.push(await request(path + "/import?filename=" + encodeURIComponent(audio.name), "POST", audio));
+    });
+  }});
+  return [button("Import audio", () => file.click()), file];
+}
+
+function audioFinder() {
+  return button("Show in Finder", () => audioRun("Opening Finder…", () =>
+    request(projectPath() + "/audio/finder", "POST")));
+}
+
+function audioText(id, label, value, change) {
+  return [el("label", {for: id}, label),
+    el("textarea", {id, rows: 2, disabled: Boolean(busy), oninput: event => change(event.target.value)}, value)];
+}
+
+function voiceSection(entry) {
+  if (!voiceOpen) {
+    return el("section", {class: "audio-section"},
+      button("Voice", () => {
+        voiceOpen = true;
+        if (entry.voice_description) {
+          render();
+        } else {
+          audioRun("Drafting a voice from canon…", async () => {
+            const saved = await request(entryPath() + "/voice/draft", "POST");
+            entry.voice_description = draft.voice = saved.description;
+            entry.voice_drafted = saved.drafted;
+          });
+        }
+      }, "quiet voice-button"),
+      entry.voice ? el("span", {class: "muted"}, entry.voice.name + " is this person’s voice.") : null);
+  }
+
+  function pick(fields) {
+    audioRun("Saving the voice…", async () => {
+      entry.voice = await request(entryPath() + "/voice/pick", "POST", fields);
+    });
+  }
+
+  const takesPath = entryPath() + "/takes";
+  return el("section", {class: "audio-section", id: "voice-section"},
+    el("div", {class: "gallery-heading"}, el("h3", {}, "Voice"),
+      el("div", {class: "actions"}, ...importAudio(takesPath, entry.takes), audioFinder())),
+    audioNotice(),
+    entry.voice ? el("div", {class: "audio-form"},
+      el("p", {}, el("strong", {}, entry.voice.name), " is this person’s voice."),
+      ...audioText("dialogue", "Line of dialogue", draft.line, value => { draft.line = value; }),
+      button("Read the line", () => audioRun("Reading the line…", async () => {
+        const clip = await request(takesPath, "POST", {text: draft.line});
+        entry.takes.push(clip);
+        return clip.url;
+      }, true), "primary")) : null,
+    audioCards(entry.takes),
+    el("div", {class: "audio-form"},
+      ...audioText("voice-description", "Describe the voice", draft.voice, value => {
+        draft.voice = value;
+        document.querySelector("#voice-source").hidden = value.trim() !== entry.voice_description || !entry.voice_drafted;
+      }),
+      el("p", {id: "voice-source", class: "muted", hidden: !entry.voice_drafted ||
+        draft.voice.trim() !== entry.voice_description}, "Drafted from canon"),
+      el("div", {class: "actions"},
+        button("Make voice previews", () => audioRun("Making voice previews…", async () => {
+          entry.voice_previews = await request(entryPath() + "/voice/design", "POST", {text: draft.voice});
+          if (entry.voice_description !== draft.voice.trim()) entry.voice_drafted = false;
+          entry.voice_description = draft.voice.trim();
+        }, true), "primary"),
+        button(libraryVoices ? "Hide library voices" : "Browse library voices", () => {
+          if (libraryVoices) {
+            libraryVoices = librarySample = null;
+            render();
+          } else {
+            audioRun("Finding library voices…", async () => {
+              libraryVoices = await request(projectPath() + "/audio/voices");
+            });
+          }
+        })),
+      entry.voice_previews.length ? el("div", {class: "audio-grid"},
+        entry.voice_previews.map((preview, index) => el("figure", {class: "audio-card"},
+          el("p", {class: "picture-caption"}, "Preview " + (index + 1)),
+          player(preview, "Voice preview " + (index + 1)),
+          button("Use this voice", () => pick({preview: preview.id}))))) : null,
+      libraryVoices ? libraryList(pick) : null));
+}
+
+function libraryList(pick) {
+  return el("div", {class: "library-voices"},
+    el("h3", {}, "Library voices"),
+    libraryVoices.length ? libraryVoices.map(voice => el("div", {class: "library-voice"},
+      el("span", {}, voice.name),
+      librarySample?.voice === voice.id ? player(librarySample, voice.name) :
+        button(voice.sample ? "Hear sample" : "Make sample", () => audioRun("Opening the sample…", async () => {
+          librarySample = {...await request(entryPath() + "/voice/listen", "POST", {voice_id: voice.id}), voice: voice.id};
+          return librarySample.url;
+        }, !voice.sample)),
+      button("Use this voice", () => pick({voice_id: voice.id})))) : el("p", {class: "muted"}, "No library voices yet."));
+}
+
+function soundSection() {
+  return el("section", {class: "audio-section sound-section"},
+    el("div", {class: "gallery-heading"}, el("h2", {}, "Sound"), audioFinder()),
+    audioNotice(),
+    el("div", {class: "sound-columns"}, soundForm("effects"), soundForm("music")));
+}
+
+function soundForm(kind) {
+  const music = kind === "music";
+  const path = projectPath() + "/sound/" + kind;
+  const clips = show.sound[kind] ??= [];
+  const fields = soundDrafts[kind];
+  const length = el("input", {type: "number", id: kind + "-seconds", min: music ? 3 : 0.5, max: music ? 600 : 30,
+    step: "any", value: fields.seconds, required: music, disabled: Boolean(busy),
+    oninput: event => { fields.seconds = event.target.value; }});
+  const make = button(music ? "Make music" : "Make sound effect", () => {
+    if (!length.reportValidity()) return;
+    audioRun(music ? "Making music…" : "Making a sound effect…", async () => {
+      const clip = await request(path, "POST", {text: fields.text, seconds: fields.seconds ? Number(fields.seconds) : null});
+      clips.push(clip);
+      return clip.url;
+    }, true);
+  }, "primary");
+  return el("div", {class: "audio-form"},
+    el("h3", {}, music ? "Music" : "Sound effects"),
+    ...audioText(kind + "-description", music ? "Describe the music" : "Describe the sound", fields.text,
+      value => { fields.text = value; }),
+    el("div", {class: "actions"}, el("label", {for: length.id}, music ? "Seconds" : "Seconds (optional)"), length),
+    el("div", {class: "actions"}, make,
+      ...importAudio(path, clips)),
+    music ? el("p", {class: "muted music-note"},
+      "Music from ElevenLabs is not cleared for a piece shown to buyers unless ElevenLabs confirms it in writing.") : null,
+    audioCards(clips));
 }
 
 function workspace() {
@@ -343,12 +541,13 @@ function workspace() {
         button("Read canon again", () => run("Reading canon…", () => readCanon(true)))),
       budget()),
     show.notice ? el("p", {class: "canon-notice error", role: "status"}, show.notice) : null,
-    !entry ? feedback(busy || message, Boolean(message)) : null,
+    !entry && !audioFeedback ? feedback(busy || message, Boolean(message)) : null,
     el("div", {class: entry ? "work-columns" : "overview"},
       el("div", {class: "directory"},
         entry ? button("People and places", () => select(null), "quiet directory-back") : null,
         group("person"), group("place")),
-      entry ? editor(entry) : null));
+      entry ? editor(entry) : null),
+    !entry ? soundSection() : null);
 }
 
 function render() {
