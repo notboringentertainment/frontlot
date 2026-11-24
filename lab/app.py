@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 from collections import defaultdict
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -132,8 +132,11 @@ def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=
         }
 
     def spending(state):
-        return {"spent": state["spent"], "limit": state["limit"],
-                "estimated": Decimal(state["estimated"]) > 0}
+        with localcontext() as context:
+            context.rounding = ROUND_HALF_UP
+            return {"spent": f"{Decimal(state['spent']):.2f}",
+                    "limit": f"{Decimal(state['limit']):.2f}",
+                    "estimated": Decimal(state["estimated"]) > 0}
 
     def show_view(kit, state):
         return {**kit.public(), **spending(state),

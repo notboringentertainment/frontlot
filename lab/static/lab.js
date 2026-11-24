@@ -155,7 +155,10 @@ function budget() {
       const saved = await request(project, "PATCH", {limit: amount});
       if (show && project === projectPath()) {
         show.limit = saved.limit;
-        if (limitDraft === amount) limitDraft = null;
+        if (limitDraft === amount) {
+          limitDraft = null;
+          input.value = saved.limit;
+        }
         Object.assign(show, {spent: saved.spent, estimated: saved.estimated});
         limitMessage = "";
         showTotal();

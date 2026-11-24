@@ -78,6 +78,7 @@ def test_claude_and_manual_entries(folders, monkeypatch, outcome):
         assert "--no-session-persistence" in args
         assert "clapboard room" in calls[-1] and "The undelivered letters" in calls[-1]
         assert "esme-dock" in calls[-1]
+        assert "face clearly visible and turned toward the camera" in calls[-1]
         if outcome == "missing":
             raise FileNotFoundError
         stdout = json.dumps({"structured_output": CANON}) if outcome == "good" else "Not JSON"
@@ -125,7 +126,8 @@ def test_pictures_references_import_spending_and_read_only(folders, png, monkeyp
         if request.url.path == "/fixture/status":
             return httpx.Response(200, json={"status": "COMPLETED"})
         if request.url.path == "/fixture/result":
-            headers = {"X-Fal-Billable-Units": "3"} if len(requests) == 2 else {}
+            units = {2: "0.19", 3: "invalid"}.get(len(requests))
+            headers = {"X-Fal-Billable-Units": units} if units is not None else {}
             return httpx.Response(200, headers=headers, json={"images": [{"url": "https://fixture.invalid/picture.png"}] * 4})
         assert request.url.host == "fixture.invalid"
         assert "authorization" not in request.headers
@@ -140,8 +142,9 @@ def test_pictures_references_import_spending_and_read_only(folders, png, monkeyp
         entry = f"{SHOW}/entries/{show['entries'][0]['id']}"
         made = client.post(f"{entry}/make", json={"description": "Esme in a coat."}).json()
         assert len(made["pictures"]) == 4
-        assert Decimal(made["spent"]) == MODEL.usd * 4 and made["estimated"]
+        assert Decimal(made["spent"]) == Decimal("0.20") and made["estimated"]
         assert requests[0][0] == "/" + MODEL.text
+        assert requests[0][1]["prompt"] == "Esme in a coat."
         assert requests[0][1]["num_images"] == 4 and "image_urls" not in requests[0][1]
         first, second, *_ = made["pictures"]
         for picture in (first, second):
@@ -149,10 +152,14 @@ def test_pictures_references_import_spending_and_read_only(folders, png, monkeyp
         assert client.patch(first["url"], json={"main": True}).json()["main"]
         more = client.post(f"{entry}/make", json={"description": "Esme in sunlight."}).json()
         assert len(more["pictures"]) == 8
-        assert Decimal(more["spent"]) == MODEL.usd * 7
+        assert Decimal(more["spent"]) - Decimal(made["spent"]) == Decimal("0.19")
+        state = json.loads((library / PROJECT / "show.json").read_text())
+        assert Decimal(state["estimated"]) == Decimal("0.20")
         endpoint, payload = requests[-1]
         assert endpoint == "/" + MODEL.edit
-        assert "same person" in payload["prompt"]
+        assert payload["prompt"] == (
+            "Show the same person, preserving the face and identity from the reference picture. Esme in sunlight."
+        )
         assert base64.b64decode(payload["image_urls"][0].split(",", 1)[1]) == png
         assert client.get(first["url"]).content == png
 
@@ -163,21 +170,36 @@ def test_pictures_references_import_spending_and_read_only(folders, png, monkeyp
         assert imported["kept"]
         assert client.patch(imported["url"], json={"main": True}).json()["main"]
         assert not client.patch(first["url"], json={"kept": False}).json()["main"]
-        assert client.patch(SHOW, json={"limit": "0.75"}).status_code == 200
+        assert client.patch(SHOW, json={"limit": "0.58"}).status_code == 200
         assert client.post(f"{entry}/make", json={"description": "Esme indoors."}).status_code == 409
         assert len(requests) == 2
-        assert client.patch(SHOW, json={"limit": "1.00"}).status_code == 200
+        assert client.patch(SHOW, json={"limit": "0.59"}).status_code == 200
         assert client.post(f"{entry}/make", json={"description": "Esme indoors."}).status_code == 200
         ref = base64.b64decode(requests[-1][1]["image_urls"][0].split(",", 1)[1])
         assert Image.open(io.BytesIO(ref)).getpixel((0, 0)) != (98, 123, 129)
 
     with TestClient(create_app(root, library, fal=fal)) as client:
         saved = client.get(SHOW).json()
-        assert Decimal(saved["spent"]) == MODEL.usd * 11
+        assert Decimal(saved["spent"]) == Decimal("0.59") and saved["estimated"]
         assert len(saved["entries"][0]["pictures"]) == 13
         assert sum(picture["kept"] for picture in saved["entries"][0]["pictures"]) == 2
         assert sum(picture["main"] for picture in saved["entries"][0]["pictures"]) == 1
     assert snapshot() == before
+
+
+def test_budget_shows_cents_without_rounding_saved_spending(folders):
+    _, library = folders
+    with TestClient(create_app(*folders)) as client:
+        assert client.patch(SHOW, json={"limit": "25"}).status_code == 200
+        path = library / PROJECT / "show.json"
+        state = json.loads(path.read_text())
+        state["spent"] = "0.025"
+        path.write_text(json.dumps(state))
+
+        saved = client.get(SHOW).json()
+        assert saved["spent"] == "0.03"
+        assert saved["limit"] == "25.00"
+        assert json.loads(path.read_text())["spent"] == "0.025"
 
 
 def test_changed_generation_reads_named_canon_and_keeps_local_edits(folders):

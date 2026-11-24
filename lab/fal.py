@@ -19,8 +19,8 @@ class Model:
     usd: Decimal
 
 
-# 1K pictures, with web search off and standard thinking.
-MODEL = Model("google/nano-banana-2.1", "google/nano-banana-2.1/edit", Decimal("0.08"))
+# Estimated cost per 1K picture, with web search off and standard thinking.
+MODEL = Model("google/nano-banana-2.1", "google/nano-banana-2.1/edit", Decimal("0.05"))
 
 
 class FalError(Exception):
@@ -94,7 +94,9 @@ class Fal:
                     billed = None
             except InvalidOperation:
                 billed = None
-            charge(MODEL.usd * (len(images) if billed is None else billed), estimated=billed is None)
+            # This model bills at one dollar per unit.
+            amount = MODEL.usd * len(images) if billed is None else billed
+            charge(amount, estimated=billed is None)
 
             missing = False
             for image in images:
