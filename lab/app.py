@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .canon import canon_entries, read_with_claude
 from .fal import MODEL, Fal, FalError
@@ -38,6 +39,7 @@ class EntryEdit(BaseModel):
 
 class MakeInput(BaseModel):
     description: str
+    scene: str = ""
 
 
 class LimitInput(BaseModel):
@@ -76,13 +78,15 @@ class Library:
                 return entry
         raise HTTPException(404, "This entry is no longer in the show.")
 
-    def add_picture(self, project, entry, data, kept=False):
+    def add_picture(self, project, entry, data, kept=False, *, scene=""):
         folder = self.pictures(project, entry)
         folder.mkdir(parents=True, exist_ok=True)
         name = f"{uuid4().hex}.png"
         path = folder / name
         path.write_bytes(data)
         picture = {"id": name, "kept": False}
+        if scene:
+            picture["scene"] = scene
         if kept:
             self.keep(folder, picture, True)
         entry["pictures"].append(picture)
@@ -103,6 +107,13 @@ def new_entry(**fields):
             "main": None, "pictures": [], **fields}
 
 
+def required_description(value):
+    description = value.strip()
+    if not description:
+        raise HTTPException(422, "Write a description before saving or making pictures.")
+    return description
+
+
 def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=None):
     home = Path.home()
     projects = Path(projects_root or os.getenv("FRONT_LOT_PROJECTS", home / "WriterOS Projects"))
@@ -114,6 +125,7 @@ def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=
     reading = defaultdict(asyncio.Lock)
     making = defaultdict(asyncio.Lock)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     def kit_for(project):
@@ -219,8 +231,9 @@ def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=
         name = fields.name.strip()
         if not name:
             raise HTTPException(422, "Give this person or place a name.")
+        description = required_description(fields.description)
         state = library.load(project)
-        entry = new_entry(name=name, kind=fields.kind, description=fields.description.strip(), edited=True)
+        entry = new_entry(name=name, kind=fields.kind, description=description, edited=True)
         state["entries"].append(entry)
         library.save(project, state)
         return entry_view(project, entry)
@@ -234,13 +247,13 @@ def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=
             if not change.name.strip():
                 raise HTTPException(422, "Give this person or place a name.")
             entry["name"] = change.name.strip()
-        if change.description is not None:
-            update_description(entry, change.description.strip())
+        description = entry["description"] if change.description is None else change.description
+        update_description(entry, required_description(description))
         library.save(project, state)
         return entry_view(project, entry)
 
     def update_description(entry, description):
-        if entry["description"] != description:
+        if entry["description"].strip() != description:
             entry.update(description=description, edited=True, source="", drafted=False)
 
     @app.delete("/api/shows/{project}/entries/{entry_id}", status_code=204)
@@ -256,9 +269,8 @@ def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=
             kit_for(project)
             state = library.load(project)
             entry = library.entry(state, entry_id)
-            description = fields.description.strip()
-            if not description:
-                raise HTTPException(422, "Write a visual description first.")
+            description = required_description(fields.description)
+            scene = fields.scene.strip()
             update_description(entry, description)
             library.save(project, state)
             cost = MODEL.usd * DEFAULT_BATCH
@@ -282,11 +294,11 @@ def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=
             def save_picture(data):
                 latest = library.load(project)
                 target = next(item for item in latest["entries"] if item["id"] == entry_id)
-                library.add_picture(project, target, data)
+                library.add_picture(project, target, data, scene=scene)
                 library.save(project, latest)
 
             try:
-                await fal.make(description, entry["kind"], DEFAULT_BATCH, reference, charge, save_picture)
+                await fal.make(description, entry["kind"], DEFAULT_BATCH, reference, charge, save_picture, scene=scene)
             except FalError as error:
                 raise HTTPException(502, str(error)) from None
             except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError):
@@ -336,13 +348,14 @@ def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=
         state = library.load(project)
         entry = library.entry(state, entry_id)
         picture = get_picture(entry, picture_id)
-        if change.kept is not None and change.kept != picture["kept"]:
-            library.keep(library.pictures(project, entry), picture, change.kept)
-            if not change.kept and entry["main"] == picture_id:
+        kept = picture["kept"] if change.kept is None else change.kept
+        if change.main and not kept:
+            raise HTTPException(409, "Keep this picture before making it the main look.")
+        if kept != picture["kept"]:
+            library.keep(library.pictures(project, entry), picture, kept)
+            if not kept and entry["main"] == picture_id:
                 entry["main"] = None
         if change.main:
-            if not picture["kept"]:
-                raise HTTPException(409, "Keep this picture before making it the main look.")
             entry["main"] = picture_id
         library.save(project, state)
         return picture_view(project, entry, picture)

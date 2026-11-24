@@ -65,7 +65,8 @@ main { max-width: 1390px; margin: auto; padding: 34px 34px 54px; }
 .budget .feedback { max-width: 315px; font-size: .91rem; }
 .canon-notice { margin-top: 15px; }
 .canon-notice:empty, .feedback:empty { display: none; }
-.feedback, .canon-notice { color: var(--hint); line-height: 1.45; }
+.feedback, .canon-notice { color: var(--muted); line-height: 1.45; }
+.error { color: var(--hint); }
 .feedback:not(:empty) { margin-top: 9px; }
 .work-columns, .overview { border-top: 1px solid var(--line); margin-top: 26px; }
 .work-columns { display: grid; grid-template-columns: 240px minmax(0, 1fr); }
@@ -94,7 +95,7 @@ main { max-width: 1390px; margin: auto; padding: 34px 34px 54px; }
 input, textarea { border: 1px solid var(--line); border-radius: 4px; padding: 6px 9px; background: white; }
 input#entry-name { max-width: 290px; }
 textarea { display: block; width: 100%; resize: vertical; line-height: 1.44; }
-.source, .quotes { margin: 7px 0 0 147px; color: var(--muted); font-size: .88rem; }
+.source, .quotes, .description-help { margin: 7px 0 0 147px; color: var(--muted); font-size: .88rem; }
 .quotes summary { cursor: pointer; width: fit-content; }
 blockquote { margin: 6px 0; padding-left: 12px; border-left: 2px solid var(--line); }
 .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
@@ -114,6 +115,7 @@ blockquote { margin: 6px 0; padding-left: 12px; border-left: 2px solid var(--lin
 .place .still { aspect-ratio: 4/3; }
 .still img { display: block; width: 100%; height: 100%; object-fit: cover; }
 figcaption { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; min-height: 40px; padding: 3px 5px; }
+.picture-caption { flex-basis: 100%; padding: 4px; color: var(--muted); font-size: .88rem; overflow-wrap: anywhere; }
 figcaption .quiet { font-size: .84rem; }
 .kept, .main-label { background: var(--active); border-radius: 4px; }
 .main-label { padding: 4px 7px; font-size: .82rem; color: var(--accent); font-weight: 650; }
@@ -130,5 +132,5 @@ figcaption .quiet { font-size: .84rem; }
   .work-columns, .overview .directory { display: block; }
   .editor { border: 0; margin: 0; padding-inline: 0; }
   .editor-fields { display: flex; flex-direction: column; align-items: stretch; }
-  .source, .quotes, .description-form .actions { margin-left: 0; }
+  .source, .quotes, .description-help, .description-form .actions { margin-left: 0; }
 }
