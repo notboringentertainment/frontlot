@@ -1,0 +1,19 @@
+{
+  "format": 1,
+  "layout": 1,
+  "project_id": "0b4cb6ec-ec94-46c7-a9ea-aa90f1d753cb",
+  "project_title": "The Lantern Post",
+  "made_at": "2026-11-24T15:00:00Z",
+  "canon_revision": 2,
+  "canon_sha": "fb8efe95cbfaa7ba7e9ca70e0ce81206fed1ed799aa2363fa62159d5fb1e7fc3",
+  "beat_sheet_hash": "118bfa0f01b04b037df4436294ff86838ea0ef208c395c4bd7d12a175c6fe27d",
+  "looks_digest": "4fb8618f4a0fb31b57c1cadfa0b187109425d6e0b0060c4ff1bb284a342a601a",
+  "script_sha": null,
+  "title_page_sha": null,
+  "files": {
+    "looks.json": "4fb8618f4a0fb31b57c1cadfa0b187109425d6e0b0060c4ff1bb284a342a601a",
+    "outline.json": "118bfa0f01b04b037df4436294ff86838ea0ef208c395c4bd7d12a175c6fe27d",
+    "canon.md": "fb8efe95cbfaa7ba7e9ca70e0ce81206fed1ed799aa2363fa62159d5fb1e7fc3"
+  },
+  "missing": []
+}
