@@ -163,7 +163,7 @@ class Fal:
             if missing or len(images) < count:
                 raise FalError("Some pictures didn’t come through. Any pictures that arrived are below.")
 
-    async def submit_video(self, description, seconds, start, references=()):
+    async def submit_video(self, description, seconds, start, references=(), *, shape="16:9"):
         headers = self.headers("The footage service needs a key before it can make a clip.")
         model = VIDEO_IMAGE if start else VIDEO_TEXT
         payload = {"prompt": description, "duration": str(seconds), "generate_audio": False}
@@ -173,6 +173,8 @@ class Fal:
             model = VIDEO_REFERENCES
             payload["prompt"] = reference_prompt(description, references)
             payload["image_urls"] = [await asyncio.to_thread(reference_url, path) for _, path in references]
+        if model != VIDEO_IMAGE:
+            payload["aspect_ratio"] = shape
         async with httpx.AsyncClient(transport=self.transport, timeout=45, follow_redirects=True) as client:
             response = await client.post(f"https://queue.fal.run/{model}", headers=headers, json=payload)
             job = response.raise_for_status().json()

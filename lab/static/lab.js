@@ -114,6 +114,8 @@ async function readCanon(again = false) {
 async function enter(project) {
   await run("Opening the show…", async () => {
     show = await request("/api/shows/" + project.id);
+    const savedShape = localStorage.getItem("lab-shot-shape:" + show.id);
+    if (Object.hasOwn(show.footage.shapes, savedShape)) shotDraft.shape = savedShape;
     sessionStorage.setItem("lab-show", project.id);
     busy = "Reading canon…";
     render();
@@ -590,7 +592,8 @@ function soundForm(kind) {
 }
 
 function freshShot() {
-  return {description: "", seconds: "5", picture: null, pictures: []};
+  return {description: "", seconds: "5", shape: "16:9", picture: null, pictures: [],
+    original: null, writing: false, writingMessage: ""};
 }
 
 function footageAction(status, work) {
@@ -630,7 +633,9 @@ function pollFootage() {
 
 function footageCaption(clip) {
   return [clip.from ? "From: " + clip.from : "",
-    clip.with?.length ? "With: " + clip.with.join(", ") : ""].filter(Boolean).join(" · ");
+    clip.with?.length ? "With: " + clip.with.join(", ") : "",
+    clip.shape_note ? "Shape follows the opening picture" : show.footage.shapes[clip.shape]]
+    .filter(Boolean).join(" · ");
 }
 
 function footageCard(title, clip, take) {
@@ -723,7 +728,8 @@ function footageSection() {
   shotDraft.pictures = shotDraft.pictures.filter(id => kept.has(id));
   if (!shotDraft.pictures.includes(shotDraft.picture)) shotDraft.picture = null;
 
-  const {prices, max_pictures: maxPictures} = show.footage;
+  const {prices, shapes, opening_shape_note: openingShapeNote, max_pictures: maxPictures} = show.footage;
+  const followsOpening = () => Boolean(shotDraft.picture && !references().length);
   const references = () => shotDraft.pictures.filter(id => id !== shotDraft.picture);
   const price = el("span", {class: "muted"}, clipPrice());
   function clipPrice() {
@@ -736,6 +742,18 @@ function footageSection() {
     price.textContent = clipPrice();
   }}, Object.keys(prices.plain).map(seconds =>
     el("option", {value: seconds, selected: seconds === shotDraft.seconds}, seconds + " seconds")));
+
+  const shape = el("select", {id: "shot-shape", "aria-describedby": "shot-shape-note", onchange: event => {
+    shotDraft.shape = event.target.value;
+    localStorage.setItem("lab-shot-shape:" + show.id, shotDraft.shape);
+  }}, Object.entries(shapes).map(([value, name]) =>
+    el("option", {value, selected: value === shotDraft.shape}, name)));
+  const shapeNote = el("p", {id: "shot-shape-note", class: "muted", role: "status"});
+  function updateShape() {
+    shape.disabled = Boolean(busy) || followsOpening();
+    shapeNote.hidden = !followsOpening();
+    shapeNote.textContent = followsOpening() ? openingShapeNote : "";
+  }
 
   const nameCounts = new Map();
   const namePositions = new Map();
@@ -775,6 +793,7 @@ function footageSection() {
     "aria-describedby": "shot-opening-help", onchange: event => {
       shotDraft.picture = event.target.value || null;
       price.textContent = clipPrice();
+      updateShape();
     }});
   const openingChoice = el("div", {},
     el("div", {class: "actions"}, el("label", {for: opening.id}, "Open the clip on"), opening),
@@ -795,12 +814,13 @@ function footageSection() {
     summary.textContent = chosen.length ? "This shot uses: " + names.join(", ") + "."
       : "No pictures chosen. The clip will be made from your words alone.";
     openingChoice.hidden = !chosen.length;
-    opening.replaceChildren(el("option", {value: ""}, "Let the engine decide"), ...chosen.map(picture => {
+    opening.replaceChildren(el("option", {value: ""}, "No opening picture"), ...chosen.map(picture => {
       const detail = pictureDetails.get(picture.id);
       return el("option", {value: picture.id}, picture.name + "’s picture" + (detail ? " (" + detail + ")" : ""));
     }));
     opening.value = shotDraft.picture ?? "";
     price.textContent = clipPrice();
+    updateShape();
   }
   updateChoices();
 
@@ -811,18 +831,82 @@ function footageSection() {
       show.footage = (await request(projectPath())).footage;
     });
   }});
+  const shotFields = () => ({description: shotDraft.description, seconds: Number(shotDraft.seconds),
+    shape: shotDraft.shape, picture: shotDraft.picture, references: references()});
   const makeClip = button("Make a clip", () =>
     footageAction("Starting your clip…", async () => {
-      const referenceIds = references();
-      const startingClip = {title: shotDraft.description.trim(), from: kept.get(shotDraft.picture)?.name ?? null,
-        with: [...new Set(referenceIds.map(id => kept.get(id).name))]};
+      const fields = shotFields();
+      const startingClip = {title: fields.description.trim(), from: kept.get(fields.picture)?.name ?? null,
+        with: [...new Set(fields.references.map(id => kept.get(id).name))], shape: fields.shape,
+        shape_note: followsOpening() ? openingShapeNote : null};
       updateFootageShots(startingClip);
       const shot = app.querySelector(`#footage-shots [data-title="${CSS.escape(startingClip.title)}"]`);
       shot.querySelector(".pending-clip:last-child").scrollIntoView({block: "nearest"});
-      const saved = await request(path, "POST", {description: startingClip.title, seconds: Number(shotDraft.seconds),
-        picture: shotDraft.picture, references: referenceIds});
+      const saved = await request(path, "POST", fields);
       Object.assign(show, saved);
     }), "primary", Boolean(busy) || !shotDraft.description.trim());
+
+  const [descriptionLabel, descriptionBox] = audioText(
+    "shot-description", "What happens in the shot", shotDraft.description, value => {
+      shotDraft.description = value;
+      makeClip.disabled = Boolean(busy) || !value.trim();
+    });
+  descriptionBox.rows = 5;
+  makeClip.id = "make-clip";
+  const helpLabel = () => shotDraft.writing ? "Claude is writing…" : "Help me write this shot";
+  const help = button(helpLabel(), async () => {
+    const current = shotDraft;
+    const fields = shotFields();
+    if (!fields.description.trim()) {
+      current.writingMessage = "Type a few words about the shot first.";
+      syncWriter();
+      app.querySelector("#shot-description")?.focus();
+      return;
+    }
+    current.writing = true;
+    current.writingMessage = "";
+    syncWriter();
+    try {
+      const result = await request(path + "/draft", "POST", fields);
+      if (current.description === fields.description) {
+        current.original = fields.description;
+        current.description = result.description;
+      } else {
+        current.writingMessage = "You changed the shot while Claude worked. Your words are still here.";
+      }
+    } catch (error) {
+      current.writingMessage = error.status ? error.message
+        : "Claude couldn’t write this one. Your words are still here.";
+    } finally {
+      current.writing = false;
+      if (shotDraft === current) syncWriter();
+    }
+  }, "quiet", Boolean(busy) || shotDraft.writing);
+  help.id = "shot-writing-help";
+  const undo = button("Put mine back", () => {
+    shotDraft.description = shotDraft.original;
+    shotDraft.original = null;
+    shotDraft.writingMessage = "";
+    syncWriter();
+    app.querySelector("#shot-description")?.focus();
+  }, "shot-writing-undo");
+  undo.id = "shot-writing-undo";
+  undo.hidden = shotDraft.original === null;
+  const writerStatus = feedback(shotDraft.writingMessage, true);
+  writerStatus.id = "shot-writing-status";
+
+  function syncWriter() {
+    // Canon can refresh the form while Claude is working.
+    const helpButton = app.querySelector("#shot-writing-help");
+    if (!helpButton) return;
+    helpButton.textContent = helpLabel();
+    helpButton.disabled = Boolean(busy) || shotDraft.writing;
+    app.querySelector("#shot-writing-undo").hidden = shotDraft.original === null;
+    app.querySelector("#shot-writing-status").textContent = shotDraft.writingMessage;
+    const box = app.querySelector("#shot-description");
+    if (box.value !== shotDraft.description) box.value = shotDraft.description;
+    app.querySelector("#make-clip").disabled = Boolean(busy) || !shotDraft.description.trim();
+  }
 
   const status = feedback(footageStatus(), Boolean(footageMessage));
   status.id = "footage-status";
@@ -833,11 +917,12 @@ function footageSection() {
         button("Show in Finder", () => footageAction("Opening Finder…", () => request(path + "/finder", "POST"))))),
     el("div", {class: "audio-form shot-form"},
       pictureRow, limit, summary, openingChoice,
-      ...audioText("shot-description", "What happens in the shot", shotDraft.description, value => {
-        shotDraft.description = value;
-        makeClip.disabled = !value.trim();
-      }),
-      el("div", {class: "actions"}, el("label", {for: length.id}, "Length"), length),
+      el("div", {class: "actions"}, descriptionLabel, help, undo),
+      descriptionBox, writerStatus,
+      el("div", {class: "actions shot-settings"},
+        el("span", {class: "actions"}, el("label", {for: length.id}, "Length"), length),
+        el("span", {class: "actions"}, el("label", {for: shape.id}, "Shape"), shape)),
+      shapeNote,
       el("div", {class: "actions"}, makeClip, price),
       status),
     el("div", {id: "footage-shots"}));
