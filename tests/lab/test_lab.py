@@ -486,6 +486,9 @@ def test_footage_from_a_kept_picture_and_words_groups_takes(folders, footage_fal
         queued = client.post(path, json={**fields, "picture": picture["id"]})
         assert queued.status_code == 202
         assert queued.json()["spent"] == "0.35"
+        assert queued.json()["footage"]["pending_jobs"] == [
+            {"title": fields["description"], "from": place["name"]},
+        ]
         first = client.post(path + "/check").json()
         assert first["spent"] == "0.33" and not first["estimated"]
         assert client.post(path, json=fields).status_code == 202
@@ -527,14 +530,17 @@ def test_pending_footage_survives_reload_and_uses_shared_limit(folders, footage_
         assert client.post(path, json=fields).status_code == 202
         checked = client.post(path + "/check").json()
         assert checked["footage"]["pending"] and checked["spent"] == "0.70"
+        assert checked["footage"]["pending_jobs"] == [{"title": fields["description"], "from": None}]
         assert client.post(path, json=fields).status_code == 409
 
     with TestClient(create_app(*folders, fal=fal)) as client:
         show = client.get(SHOW).json()
         assert show["footage"]["pending"] and show["spent"] == "0.70"
+        assert show["footage"]["pending_jobs"] == [{"title": fields["description"], "from": None}]
         status["status"] = "COMPLETED"
         checked = client.post(path + "/check").json()
         assert not checked["footage"]["pending"] and checked["spent"] == "0.70"
+        assert checked["footage"]["pending_jobs"] == []
         assert len(checked["footage"]["shots"][0]["clips"]) == 1
         assert client.post(path + "/check").json() == checked
         assert len(submissions) == 1
@@ -554,6 +560,7 @@ def test_footage_import_and_old_show(folders, png, monkeypatch):
         before = state_file.read_bytes()
         loaded = client.get(SHOW).json()
         assert loaded["footage"]["shots"] == [] and not loaded["footage"]["pending"]
+        assert loaded["footage"]["pending_jobs"] == []
         assert loaded["entries"][0]["pictures"] == [picture]
         assert loaded["entries"][0]["voice"]["id"] == "old"
         assert loaded["entries"][0]["takes"] == old["entries"][0]["takes"]
