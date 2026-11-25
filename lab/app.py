@@ -21,6 +21,7 @@ from .audio import audio_state, register_audio, voice_state
 from .canon import canon_entries, draft_with_claude, read_with_claude
 from .elevenlabs import ElevenLabs
 from .fal import MODEL, Fal, FalError
+from .footage import footage_state, register_footage
 from .kit import find_kits, read_json
 
 STATIC = Path(__file__).parent / "static"
@@ -154,8 +155,11 @@ def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=
                     "limit": f"{Decimal(state['limit']):.2f}",
                     "estimated": Decimal(state["estimated"]) > 0}
 
+    register_footage(app, library, kit_for, fal, making, spending)
+
     def show_view(kit, state):
         return {**kit.public(), **spending(state), **audio_state(state),
+                "footage": footage_state(state),
                 "notice": state["readings"].get(kit.generation.name, ""),
                 "entries": [entry_view(kit.id, entry) for entry in state["entries"] if not entry.get("deleted")]}
 

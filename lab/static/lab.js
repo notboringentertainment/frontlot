@@ -16,6 +16,9 @@ let voiceOpen = false;
 let libraryVoices = null;
 let librarySample = null;
 let soundDrafts = freshSoundDrafts();
+let shotDraft = freshShot();
+let footageMessage = "";
+let footagePoll = null;
 const descriptionRequired = "Write a description before saving or making pictures.";
 
 function el(tag, attrs = {}, ...children) {
@@ -81,6 +84,8 @@ function select(entry) {
 
 async function run(status, work, audio = false) {
   if (busy) return;
+  clearTimeout(footagePoll);
+  footagePoll = null;
   busy = status;
   audioFeedback = audio;
   message = "";
@@ -92,6 +97,7 @@ async function run(status, work, audio = false) {
   } finally {
     busy = "";
     render();
+    pollFootage();
   }
 }
 
@@ -108,21 +114,28 @@ async function readCanon(again = false) {
 async function enter(project) {
   await run("Opening the show…", async () => {
     show = await request("/api/shows/" + project.id);
+    sessionStorage.setItem("lab-show", project.id);
     busy = "Reading canon…";
     render();
     await Promise.all([readCanon(), refreshCredits()]);
   });
 }
 
-async function home() {
+async function home(restore = false) {
   if (busy) return;
   stopCreditsPoll();
+  const lastShow = restore === true ? sessionStorage.getItem("lab-show") : null;
+  sessionStorage.removeItem("lab-show");
+  shotDraft = freshShot();
+  footageMessage = "";
   show = null;
   limitDraft = null;
   audioStatus = {};
   soundDrafts = freshSoundDrafts();
   select(null);
   await run("Finding shows…", async () => { shows = await request("/api/shows"); });
+  const project = shows.find(item => item.id === lastShow && item.status === "current");
+  if (project) await enter(project);
 }
 
 const unavailable = {
@@ -153,6 +166,10 @@ function dollars(amount) {
   return new Intl.NumberFormat("en-US", {style: "currency", currency: "USD"}).format(number);
 }
 
+function spendingText() {
+  return dollars(show.spent) + (show.estimated ? " spent (estimated)" : " spent");
+}
+
 function budget() {
   const input = el("input", {type: "number", inputmode: "decimal", min: 0, step: "0.01", required: true,
     id: "limit", value: limitDraft ?? show.limit,
@@ -160,7 +177,7 @@ function budget() {
   const total = el("p", {class: "total"});
   const notice = feedback(limitMessage, true);
   const project = projectPath();
-  total.textContent = dollars(show.spent) + (show.estimated ? " spent (estimated)" : " spent");
+  total.textContent = spendingText();
   const form = el("form", {class: "budget-form", onsubmit: async event => {
     event.preventDefault();
     const amount = input.value;
@@ -572,6 +589,132 @@ function soundForm(kind) {
     audioCards(clips));
 }
 
+function freshShot() {
+  return {description: "", seconds: "5", picture: null, chooserOpen: false};
+}
+
+function footageAction(status, work) {
+  return run(status, async () => {
+    footageMessage = "";
+    try {
+      await work();
+    } catch (error) {
+      footageMessage = error.message;
+    }
+  });
+}
+
+function footageStatus() {
+  return footageMessage || show.footage.notice ||
+    (show.footage.pending ? "Making your footage. You can keep working while it’s being made." : "");
+}
+
+function pollFootage() {
+  if (footagePoll || !show?.footage.pending) return;
+  const path = projectPath() + "/footage/check";
+  const timer = footagePoll = setTimeout(async () => {
+    const saved = await request(path, "POST").catch(() => null);
+    if (footagePoll !== timer) return;
+    footagePoll = null;
+    if (saved) {
+      const {footage, spent, estimated} = saved;
+      const changed = JSON.stringify(show.footage.shots) !== JSON.stringify(footage.shots);
+      Object.assign(show, {footage, spent, estimated});
+      app.querySelector(".total").textContent = spendingText();
+      const status = app.querySelector("#footage-status");
+      if (status) status.textContent = footageStatus();
+      if (changed) app.querySelector("#footage-shots")?.replaceWith(footageShots());
+    }
+    pollFootage();
+  }, 3000);
+}
+
+function footageShots() {
+  return el("div", {id: "footage-shots"}, show.footage.shots.length ?
+    [...show.footage.shots].reverse().map(shot => el("section", {class: "shot"},
+      el("h3", {}, shot.title),
+      el("div", {class: "footage-grid"}, shot.clips.map((clip, index) =>
+        el("figure", {class: "audio-card"},
+          el("video", {src: clip.url, controls: true, playsinline: true, preload: "metadata",
+            "aria-label": shot.title + " Take " + (index + 1)}),
+          el("figcaption", {},
+            el("p", {class: "picture-caption"}, "Take " + (index + 1), clip.from ? " · From: " + clip.from : ""),
+            button(clip.kept ? "Unkeep" : "Keep", () => footageAction("Saving…", async () => {
+              Object.assign(clip, await request(clip.url, "PATCH", {kept: !clip.kept}));
+            }), clip.kept ? "quiet kept" : "quiet")))))))
+    : el("p", {class: "muted"}, "Make a clip or bring in one you already have."));
+}
+
+function footageSection() {
+  const path = projectPath() + "/footage";
+  const pictures = show.entries.flatMap(entry => entry.pictures.filter(picture => picture.kept)
+    .map(picture => ({...picture, name: entry.name}))).sort((a, b) => Number(b.main) - Number(a.main));
+  const startingPicture = pictures.find(picture => picture.id === shotDraft.picture);
+  const price = el("span", {class: "muted"}, clipPrice());
+  function clipPrice() {
+    return "About " + dollars(show.footage.prices[shotDraft.seconds]) + " a clip";
+  }
+
+  const length = el("select", {id: "shot-length", disabled: Boolean(busy), onchange: event => {
+    shotDraft.seconds = event.target.value;
+    price.textContent = clipPrice();
+  }}, Object.keys(show.footage.prices).map(seconds =>
+    el("option", {value: seconds, selected: seconds === shotDraft.seconds}, seconds + " seconds")));
+
+  const chooser = el("div", {class: "starting-pictures", hidden: !shotDraft.chooserOpen},
+    button("Words alone", () => choose(null), startingPicture ? "quiet" : "quiet kept"),
+    pictures.map(picture => el("button", {type: "button", class: "quiet" + (picture === startingPicture ? " kept" : ""),
+      disabled: Boolean(busy), onclick: () => choose(picture.id)},
+      el("img", {src: picture.url, alt: ""}), el("span", {}, picture.name),
+      picture.main ? el("small", {class: "muted"}, "Main look") : null)));
+  const chooseButton = button(startingPicture ? "Starting picture: " + startingPicture.name : "Choose a starting picture",
+    () => {
+      shotDraft.chooserOpen = !shotDraft.chooserOpen;
+      chooser.hidden = !shotDraft.chooserOpen;
+      chooseButton.setAttribute("aria-expanded", String(shotDraft.chooserOpen));
+    });
+  chooseButton.setAttribute("aria-expanded", String(shotDraft.chooserOpen));
+  function choose(picture) {
+    shotDraft.picture = picture;
+    shotDraft.chooserOpen = false;
+    render();
+    app.querySelector(".starting-picture button").focus();
+  }
+
+  const file = el("input", {type: "file", accept: ".mp4,.mov,.webm", hidden: true, onchange: event => {
+    const clip = event.target.files[0];
+    if (clip) footageAction("Importing a clip…", async () => {
+      await request(path + "/import?filename=" + encodeURIComponent(clip.name), "POST", clip);
+      show.footage = (await request(projectPath())).footage;
+    });
+  }});
+  const makeClip = button("Make a clip", () =>
+    footageAction("Starting your clip…", async () => {
+      const saved = await request(path, "POST", {description: shotDraft.description, seconds: Number(shotDraft.seconds),
+        picture: startingPicture?.id ?? null});
+      Object.assign(show, saved);
+    }), "primary", Boolean(busy) || !shotDraft.description.trim());
+
+  const status = feedback(footageStatus(), Boolean(footageMessage));
+  status.id = "footage-status";
+  return el("section", {class: "audio-section", id: "footage"},
+    el("div", {class: "gallery-heading"}, el("h2", {}, "Footage"),
+      el("div", {class: "actions"},
+        button("Import a clip", () => file.click()), file,
+        button("Show in Finder", () => footageAction("Opening Finder…", () => request(path + "/finder", "POST"))))),
+    el("div", {class: "audio-form shot-form"},
+      pictures.length ? el("div", {class: "starting-picture"}, chooseButton,
+        startingPicture ? el("img", {src: startingPicture.url, alt: ""}) : null, chooser) : null,
+      ...audioText("shot-description", "What happens in the shot", shotDraft.description, value => {
+        shotDraft.description = value;
+        makeClip.disabled = !value.trim();
+      }),
+      el("div", {class: "actions"}, el("label", {for: length.id}, "Length"), length),
+      el("div", {class: "actions"}, makeClip, price),
+      status),
+    footageShots());
+}
+
 function workspace() {
   const entry = show.entries.find(item => item.id === selected);
   return el("div", {class: "workspace"},
@@ -586,7 +729,8 @@ function workspace() {
         entry ? button("People and places", () => select(null), "quiet directory-back") : null,
         group("person"), group("place")),
       entry ? editor(entry) : null),
-    !entry ? soundSection() : null);
+    !entry ? soundSection() : null,
+    !entry ? footageSection() : null);
 }
 
 function render() {
@@ -598,4 +742,4 @@ function render() {
 
 document.querySelector("#home").addEventListener("click", home);
 back.addEventListener("click", home);
-home();
+home(true);

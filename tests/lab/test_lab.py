@@ -444,3 +444,128 @@ def test_audio_missing_key(folders, monkeypatch):
         assert client.get(f"{SHOW}/audio/credits").json()["notice"] == message
         response = client.post(f"{SHOW}/sound/effects", json={"text": "A bell in the fog."})
         assert response.status_code == 502 and response.json()["detail"] == message
+
+
+@pytest.fixture
+def footage_fal(monkeypatch):
+    monkeypatch.setenv("FAL_KEY", "fixture")
+    submissions = []
+    status = {"status": "IN_PROGRESS"}
+    video = b"fixture mp4 video"
+
+    def queue(request):
+        if request.url.host == "fixture.invalid":
+            assert "authorization" not in request.headers
+            return httpx.Response(200, content=video)
+        assert request.headers["authorization"] == "Key fixture"
+        if request.method == "POST":
+            submissions.append((request.url.path, json.loads(request.content)))
+            job = f"https://queue.fal.run/fixture/{len(submissions)}"
+            return httpx.Response(200, json={"status_url": job + "/status", "response_url": job})
+        if request.url.path.endswith("/status"):
+            return httpx.Response(200, json=status)
+        headers = {"X-Fal-Billable-Units": "4.75"} if submissions[0][0].endswith("/image-to-video") and request.url.path.endswith("/1") else {}
+        return httpx.Response(200, headers=headers, json={"video": {"url": "https://fixture.invalid/shot.mp4"}})
+
+    return Fal(httpx.MockTransport(queue)), submissions, status, video
+
+
+def test_footage_from_a_kept_picture_and_words_groups_takes(folders, footage_fal, png, monkeypatch):
+    fal, submissions, status, video = footage_fal
+    status["status"] = "COMPLETED"
+    opened = []
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **_: opened.append(args))
+    with TestClient(create_app(*folders, canon_reader=lambda *_: CANON, fal=fal)) as client:
+        show = client.post(f"{SHOW}/canon").json()
+        place = show["entries"][2]
+        entry = f"{SHOW}/entries/{place['id']}"
+        picture = client.post(entry + "/import", content=png).json()
+        path = SHOW + "/footage"
+        fields = {"description": "The tide rises under the office.", "seconds": 5}
+
+        queued = client.post(path, json={**fields, "picture": picture["id"]})
+        assert queued.status_code == 202
+        assert queued.json()["spent"] == "0.35"
+        first = client.post(path + "/check").json()
+        assert first["spent"] == "0.33" and not first["estimated"]
+        assert client.post(path, json=fields).status_code == 202
+        second = client.post(path + "/check").json()
+        assert second["spent"] == "0.68" and second["estimated"]
+        (shot,) = second["footage"]["shots"]
+        assert shot["title"] == fields["description"]
+        reference, words = shot["clips"]
+        assert reference["from"] == place["name"] and not words.get("from")
+        kling = "/fal-ai/kling-video/v2.6/pro/"
+        image_call, text_call = submissions
+        assert image_call[0] == kling + "image-to-video"
+        assert base64.b64decode(image_call[1]["start_image_url"].split(",", 1)[1]) == client.get(picture["url"]).content
+        assert text_call == (kling + "text-to-video",
+                             {"prompt": fields["description"], "duration": "5", "generate_audio": False})
+
+        url = reference["url"]
+        assert client.get(url, headers={"Host": "elsewhere"}).status_code == 400
+        response = client.get(url, headers={"Range": "bytes=2-6"})
+        assert response.status_code == 206 and response.content == video[2:7]
+        assert client.patch(url, json={"kept": True}).json()["kept"]
+        kept = folders[1] / PROJECT / "footage/kept" / reference["id"]
+        assert kept.read_bytes() == video and kept.name.startswith("The tide rises")
+        assert client.post(path + "/finder").status_code == 204
+        assert opened == [["open", str(kept.parent)]]
+        assert not client.patch(url, json={"kept": False}).json()["kept"]
+        assert not kept.exists()
+
+
+def test_pending_footage_survives_reload_and_uses_shared_limit(folders, footage_fal):
+    fal, submissions, status, _ = footage_fal
+    path = SHOW + "/footage"
+    fields = {"description": "Mist moves over the steps.", "seconds": 10}
+    with TestClient(create_app(*folders, fal=fal)) as client:
+        client.patch(SHOW, json={"limit": "0.69"})
+        assert client.post(path, json=fields).status_code == 409
+        assert not submissions
+        client.patch(SHOW, json={"limit": "0.70"})
+        assert client.post(path, json=fields).status_code == 202
+        checked = client.post(path + "/check").json()
+        assert checked["footage"]["pending"] and checked["spent"] == "0.70"
+        assert client.post(path, json=fields).status_code == 409
+
+    with TestClient(create_app(*folders, fal=fal)) as client:
+        show = client.get(SHOW).json()
+        assert show["footage"]["pending"] and show["spent"] == "0.70"
+        status["status"] = "COMPLETED"
+        checked = client.post(path + "/check").json()
+        assert not checked["footage"]["pending"] and checked["spent"] == "0.70"
+        assert len(checked["footage"]["shots"][0]["clips"]) == 1
+        assert client.post(path + "/check").json() == checked
+        assert len(submissions) == 1
+
+
+def test_footage_import_and_old_show(folders, png, monkeypatch):
+    path = SHOW + "/footage"
+    monkeypatch.setattr("lab.footage.MAX_IMPORT_BYTES", 20, raising=False)
+    with TestClient(create_app(*folders, canon_reader=lambda *_: CANON)) as client:
+        entry = client.post(SHOW + "/canon").json()["entries"][0]
+        picture = client.post(f"{SHOW}/entries/{entry['id']}/import", content=png).json()
+        state_file = folders[1] / PROJECT / "show.json"
+        old = json.loads(state_file.read_text())
+        old["entries"][0].update(voice={"id": "old", "name": "Old voice"}, takes=[{"title": "Wait for the tide."}])
+        old["sound"] = {"music": [{"title": "A piano phrase."}]}
+        state_file.write_text(json.dumps(old))
+        before = state_file.read_bytes()
+        loaded = client.get(SHOW).json()
+        assert loaded["footage"]["shots"] == [] and not loaded["footage"]["pending"]
+        assert loaded["entries"][0]["pictures"] == [picture]
+        assert loaded["entries"][0]["voice"]["id"] == "old"
+        assert loaded["entries"][0]["takes"] == old["entries"][0]["takes"]
+        assert loaded["sound"] == old["sound"]
+        assert state_file.read_bytes() == before
+
+        params = {"filename": "Outside take.mov"}
+        assert client.post(path + "/import", params=params, content=b"x" * 21).status_code == 413
+        response = client.post(path + "/import", params=params, content=b"x" * 20)
+        assert response.status_code == 201
+        clip = response.json()
+        assert clip["kept"] and client.get(clip["url"]).content == b"x" * 20
+        assert client.get(clip["url"]).headers["content-type"] == "video/quicktime"
+        assert (folders[1] / PROJECT / "footage/kept" / clip["id"]).is_file()
+        assert client.get(SHOW).json()["footage"]["shots"][0]["title"] == "Outside take"
