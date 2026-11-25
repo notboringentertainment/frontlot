@@ -396,9 +396,17 @@ def test_voices_sound_and_credits(folders, monkeypatch, png):
             assert client.get(clip["url"], headers={"Range": "bytes=0-2"}).content == b"ID3"
             assert client.patch(clip["url"], json={"kept": True}).json()["kept"]
             assert (library / PROJECT / "audio/kept" / clip["id"]).read_bytes() == audio
-        for path in (f"{entry}/takes", f"{SHOW}/sound/effects", f"{SHOW}/sound/music"):
-            imported = client.post(f"{path}/import", params={"filename": "Outside take.mp3"}, content=audio).json()
-            assert imported["kept"] and client.get(imported["url"]).content == audio
+        for path, extension, media_type in (
+            (f"{entry}/takes", "mp3", "audio/mpeg"),
+            (f"{SHOW}/sound/effects", "aiff", "audio/aiff"),
+            (f"{SHOW}/sound/music", "aif", "audio/aiff"),
+        ):
+            response = client.post(f"{path}/import", params={"filename": f"Outside take.{extension}"}, content=audio)
+            assert response.status_code == 201
+            imported = response.json()
+            playback = client.get(imported["url"])
+            assert imported["kept"] and playback.content == audio
+            assert playback.headers["content-type"] == media_type
         assert "Wait for the tide" in take["id"] and person["name"] in take["id"]
 
     with TestClient(create_app(root, library, eleven=provider)) as client:
@@ -410,6 +418,22 @@ def test_voices_sound_and_credits(folders, monkeypatch, png):
         assert len(saved["sound"]["effects"]) == len(saved["sound"]["music"]) == 2
         assert saved["credits_used"] == 199 and not saved["credits_partial"]
         assert client.get(f"{SHOW}/audio/credits").json()["remaining"] == 701
+
+
+def test_audio_import_size_limit(folders, monkeypatch):
+    monkeypatch.setattr("lab.audio.MAX_IMPORT_BYTES", 10, raising=False)
+    root, library = folders
+    with TestClient(create_app(root, library)) as client:
+        path = f"{SHOW}/sound/music/import"
+        params = {"filename": "Outside take.wav"}
+        response = client.post(path, params=params, content=iter([b"12345", b"678901"]))
+        assert response.status_code == 413
+        assert response.json()["detail"] == "Choose an audio file that is 200 MB or smaller."
+        assert not (library / PROJECT / "audio").exists()
+
+        response = client.post(path, params=params, content=iter([b"12345", b"67890"]))
+        assert response.status_code == 201
+        assert client.get(response.json()["url"]).content == b"1234567890"
 
 
 def test_audio_missing_key(folders, monkeypatch):

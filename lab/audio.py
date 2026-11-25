@@ -1,8 +1,11 @@
 import asyncio
 import base64
 import re
+import shutil
 import subprocess
+from io import BytesIO
 from pathlib import Path
+from tempfile import TemporaryFile
 from typing import Literal
 from urllib.parse import quote
 from uuid import uuid4
@@ -16,8 +19,10 @@ from .elevenlabs import EFFECTS, MUSIC, VOICE_DESIGN, ElevenLabsError
 SHOW = "/api/shows/{project}"
 PERSON = SHOW + "/entries/{entry_id}"
 AUDIO_TYPES = {".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
-               ".aac": "audio/aac", ".aiff": "audio/aiff", ".flac": "audio/flac",
+               ".aac": "audio/aac", ".aif": "audio/aiff", ".aiff": "audio/aiff",
+               ".flac": "audio/flac",
                ".ogg": "audio/ogg", ".opus": "audio/ogg", ".webm": "audio/webm"}
+MAX_IMPORT_BYTES = 200_000_000
 
 
 class Words(BaseModel):
@@ -99,7 +104,7 @@ def register_audio(app, library, kit_for, eleven, voice_reader):
         (directory / name).write_bytes(data)
         return {"id": name, "url": f"/api/shows/{project}/audio/previews/{name}"}
 
-    def save_clip(project, target, title, data, suffix=".mp3", kept=False, person_id=None):
+    def save_clip(project, target, title, source, suffix=".mp3", kept=False, person_id=None):
         state = library.load(project)
         # Keep a paid take even if the entry was removed while ElevenLabs was working.
         entry = next((item for item in state["entries"] if item["id"] == person_id), None)
@@ -111,7 +116,8 @@ def register_audio(app, library, kit_for, eleven, voice_reader):
         number = 1
         while (directory / (name := f"{stem} - {number}{suffix}")).exists():
             number += 1
-        (directory / name).write_bytes(data)
+        with (directory / name).open("wb") as destination:
+            shutil.copyfileobj(source, destination)
         clip = {"id": name, "title": title, "kept": False,
                 "url": f"/api/shows/{project}/audio/clips/{quote(name)}"}
         if kept:
@@ -123,10 +129,19 @@ def register_audio(app, library, kit_for, eleven, voice_reader):
     async def import_clip(project, target, filename, request, person_id=None):
         path = Path(filename)
         suffix = path.suffix.lower()
-        data = await request.body()
-        if suffix not in AUDIO_TYPES or not data:
+        if suffix not in AUDIO_TYPES:
             raise HTTPException(422, "Choose an audio file, such as an MP3 or WAV.")
-        return save_clip(project, target, path.stem, data, suffix, kept=True, person_id=person_id)
+        with TemporaryFile() as source:
+            size = 0
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > MAX_IMPORT_BYTES:
+                    raise HTTPException(413, "Choose an audio file that is 200 MB or smaller.")
+                source.write(chunk)
+            if not size:
+                raise HTTPException(422, "Choose an audio file, such as an MP3 or WAV.")
+            source.seek(0)
+            return save_clip(project, target, path.stem, source, suffix, kept=True, person_id=person_id)
 
     def words(value, minimum=1, maximum=1000):
         value = value.strip()
@@ -251,7 +266,7 @@ def register_audio(app, library, kit_for, eleven, voice_reader):
             raise HTTPException(422, "Choose a voice before reading a line.")
         text = words(fields.text, maximum=40000)
         result = await eleven.speech(entry["voice"]["id"], text, charge_for(project))
-        return save_clip(project, "takes", text, result.content, person_id=entry_id)
+        return save_clip(project, "takes", text, BytesIO(result.content), person_id=entry_id)
 
     @app.post(PERSON + "/takes/import", status_code=201)
     async def import_take(project: str, entry_id: str, filename: str, request: Request):
@@ -278,7 +293,7 @@ def register_audio(app, library, kit_for, eleven, voice_reader):
             payload = {"prompt": text, "music_length_ms": round(fields.seconds * 1000), "model_id": MUSIC}
         product = "Music" if kind == "music" else "Sound Effects"
         result = await eleven.generate(path, payload, charge_for(project), product=product)
-        return save_clip(project, kind, text, result.content)
+        return save_clip(project, kind, text, BytesIO(result.content))
 
     @app.post(SHOW + "/sound/{kind}/import", status_code=201)
     async def import_sound(project: str, kind: Literal["effects", "music"], filename: str, request: Request):

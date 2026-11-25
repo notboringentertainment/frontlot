@@ -10,6 +10,7 @@ let message = "";
 let limitMessage = "";
 let limitDraft = null;
 let audioStatus = {};
+let creditsPoll = null;
 let audioFeedback = false;
 let voiceOpen = false;
 let libraryVoices = null;
@@ -115,6 +116,7 @@ async function enter(project) {
 
 async function home() {
   if (busy) return;
+  stopCreditsPoll();
   show = null;
   limitDraft = null;
   audioStatus = {};
@@ -180,12 +182,8 @@ function budget() {
   el("label", {for: "limit"}, "Spending limit"),
   el("span", {class: "money-field"}, el("span", {"aria-hidden": "true"}, "$"), input),
   el("button", {class: "quiet", type: "submit"}, "Set limit"));
-  const used = (audioStatus.credits_used ?? show.credits_used).toLocaleString();
-  const remaining = audioStatus.remaining;
-  const count = (audioStatus.credits_partial ?? show.credits_partial) ? "At least " + used : used;
   return el("aside", {class: "budget"}, total, form, notice,
-    el("p", {class: "credits muted"}, count + " ElevenLabs credits used" +
-      (remaining == null ? "" : " · " + remaining.toLocaleString() + " left on the account")),
+    el("p", {class: "credits muted"}, creditsText()),
     feedback(audioStatus.notice));
 }
 
@@ -359,8 +357,49 @@ function freshSoundDrafts() {
   return {effects: {text: "", seconds: ""}, music: {text: "", seconds: "10"}};
 }
 
+function creditsArePartial() {
+  return audioStatus.credits_partial ?? show.credits_partial;
+}
+
+function creditsText() {
+  const used = audioStatus.credits_used ?? show.credits_used;
+  const remaining = audioStatus.remaining;
+  const partial = creditsArePartial();
+  const prefix = partial ? "At least " : "";
+  const count = partial && used === 0 ? "Counting ElevenLabs credits…"
+    : prefix + used.toLocaleString() + " ElevenLabs credits used";
+  return count + (remaining == null ? "" : " · " + remaining.toLocaleString() + " left on the account");
+}
+
+function stopCreditsPoll() {
+  clearTimeout(creditsPoll?.timer);
+  creditsPoll = null;
+}
+
+function pollCredits(path, poll, deadline) {
+  if (!creditsArePartial()) return;
+  poll.timer = setTimeout(async () => {
+    if (Date.now() > deadline) return;
+    const status = await request(path).catch(() => null);
+    if (creditsPoll !== poll) return;
+    if (status) {
+      audioStatus = status;
+      app.querySelector(".credits").textContent = creditsText();
+    }
+    pollCredits(path, poll, deadline);
+  }, 10000);
+}
+
 async function refreshCredits() {
-  audioStatus = await request(projectPath() + "/audio/credits");
+  stopCreditsPoll();
+  const poll = creditsPoll = {timer: null};
+  const path = projectPath() + "/audio/credits";
+  try {
+    const status = await request(path);
+    if (creditsPoll === poll) audioStatus = status;
+  } finally {
+    if (creditsPoll === poll) pollCredits(path, poll, Date.now() + 180000);
+  }
 }
 
 async function audioRun(status, work, charged = false) {
@@ -397,7 +436,7 @@ function audioCards(clips) {
 }
 
 function importAudio(path, clips) {
-  const file = el("input", {type: "file", accept: "audio/*,.m4a,.aiff,.opus", hidden: true, onchange: event => {
+  const file = el("input", {type: "file", accept: "audio/*,.m4a,.aif,.aiff,.opus", hidden: true, onchange: event => {
     const audio = event.target.files[0];
     if (audio) audioRun("Importing audio…", async () => {
       clips.push(await request(path + "/import?filename=" + encodeURIComponent(audio.name), "POST", audio));
