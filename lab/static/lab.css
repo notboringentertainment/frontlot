@@ -165,12 +165,11 @@ figcaption .quiet { font-size: .84rem; }
   border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px;
 }
 .shot-form .feedback { margin-top: 0; }
-.starting-picture > img, .starting-pictures img {
+.shot-pictures img {
   display: block; width: 52px; height: 42px; object-fit: cover; border-radius: 3px;
 }
-.starting-picture > img { display: inline-block; vertical-align: middle; }
-.starting-pictures { display: flex; flex-wrap: wrap; align-items: start; gap: 6px; margin-top: 6px; }
-.starting-pictures button { display: grid; gap: 3px; justify-items: start; text-align: left; }
+.shot-pictures { display: flex; flex-wrap: wrap; align-items: start; gap: 6px; margin-top: 6px; }
+.shot-pictures button { display: grid; gap: 3px; justify-items: start; text-align: left; }
 #footage-shots { margin-top: 13px; }
 .shot { margin-top: 16px; }
 .shot h3 { font-weight: 600; overflow-wrap: anywhere; }

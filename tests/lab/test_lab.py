@@ -464,7 +464,8 @@ def footage_fal(monkeypatch):
             return httpx.Response(200, json={"status_url": job + "/status", "response_url": job})
         if request.url.path.endswith("/status"):
             return httpx.Response(200, json=status)
-        headers = {"X-Fal-Billable-Units": "4.75"} if submissions[0][0].endswith("/image-to-video") and request.url.path.endswith("/1") else {}
+        model, _ = submissions[int(request.url.path.rsplit("/", 1)[1]) - 1]
+        headers = {"X-Fal-Billable-Units": "4.75"} if model.endswith(("/image-to-video", "/reference-to-video")) else {}
         return httpx.Response(200, headers=headers, json={"video": {"url": "https://fixture.invalid/shot.mp4"}})
 
     return Fal(httpx.MockTransport(queue)), submissions, status, video
@@ -486,12 +487,14 @@ def test_footage_from_a_kept_picture_and_words_groups_takes(folders, footage_fal
         queued = client.post(path, json={**fields, "picture": picture["id"]})
         assert queued.status_code == 202
         assert queued.json()["spent"] == "0.35"
+        assert queued.json()["footage"]["prices"]["plain"] == {"5": "0.35", "10": "0.70"}
         assert queued.json()["footage"]["pending_jobs"] == [
             {"title": fields["description"], "from": place["name"]},
         ]
         first = client.post(path + "/check").json()
         assert first["spent"] == "0.33" and not first["estimated"]
-        assert client.post(path, json=fields).status_code == 202
+        queued = client.post(path, json=fields)
+        assert queued.status_code == 202 and queued.json()["spent"] == "0.68"
         second = client.post(path + "/check").json()
         assert second["spent"] == "0.68" and second["estimated"]
         (shot,) = second["footage"]["shots"]
@@ -501,6 +504,9 @@ def test_footage_from_a_kept_picture_and_words_groups_takes(folders, footage_fal
         kling = "/fal-ai/kling-video/v2.6/pro/"
         image_call, text_call = submissions
         assert image_call[0] == kling + "image-to-video"
+        assert {key: value for key, value in image_call[1].items() if key != "start_image_url"} == {
+            "prompt": fields["description"], "duration": "5", "generate_audio": False,
+        }
         assert base64.b64decode(image_call[1]["start_image_url"].split(",", 1)[1]) == client.get(picture["url"]).content
         assert text_call == (kling + "text-to-video",
                              {"prompt": fields["description"], "duration": "5", "generate_audio": False})
@@ -518,8 +524,61 @@ def test_footage_from_a_kept_picture_and_words_groups_takes(folders, footage_fal
         assert not kept.exists()
 
 
-def test_pending_footage_survives_reload_and_uses_shared_limit(folders, footage_fal):
+@pytest.mark.parametrize("has_start", [False, True])
+def test_footage_with_kept_references(folders, footage_fal, png, has_start):
     fal, submissions, status, _ = footage_fal
+    path = SHOW + "/footage"
+    with TestClient(create_app(*folders, canon_reader=lambda *_: CANON, fal=fal)) as client:
+        show = client.post(SHOW + "/canon").json()
+        person, _, place, _ = show["entries"]
+        portrait = client.post(f"{SHOW}/entries/{person['id']}/import", content=png).json()
+        with io.BytesIO() as stream:
+            Image.new("RGB", (20, 20), "#ffffff").save(stream, format="PNG")
+            landscape = client.post(f"{SHOW}/entries/{place['id']}/import", content=stream.getvalue()).json()
+
+        description = f"Locked wide shot. {person['name'].lower()} walks into the shot"
+        references = [portrait]
+        names = [person["name"]]
+        expected_prompt = "Locked wide shot. @Image1 walks into the shot"
+        if not has_start:
+            description += f" at {place['name']}"
+            expected_prompt += " at @Image2"
+            references.append(landscape)
+            names.append(place["name"])
+        queued = client.post(path, json={"description": description, "seconds": 5,
+                             "picture": landscape["id"] if has_start else None,
+                             "references": [picture["id"] for picture in references]})
+        assert queued.status_code == 202
+        assert queued.json()["spent"] == "0.56"
+        assert queued.json()["footage"]["prices"]["references"] == {"5": "0.560", "10": "1.120"}
+        origin = place["name"] if has_start else None
+        assert queued.json()["footage"]["pending_jobs"] == [
+            {"title": description, "from": origin, "with": names},
+        ]
+
+        (model, payload), = submissions
+        assert model == "/fal-ai/kling-video/o3/pro/reference-to-video"
+        assert payload["prompt"] == expected_prompt
+        assert payload["duration"] == "5" and payload["generate_audio"] is False
+        assert [base64.b64decode(url.split(",", 1)[1]) for url in payload["image_urls"]] == [
+            client.get(picture["url"]).content for picture in references
+        ]
+        if has_start:
+            assert base64.b64decode(payload["start_image_url"].split(",", 1)[1]) == client.get(landscape["url"]).content
+        else:
+            assert "start_image_url" not in payload
+
+        status["status"] = "COMPLETED"
+        checked = client.post(path + "/check").json()
+        assert checked["spent"] == "0.53" and not checked["estimated"]
+        shot, = checked["footage"]["shots"]
+        clip, = shot["clips"]
+        assert shot["title"] == description
+        assert clip.get("from") == origin and clip["with"] == names
+
+
+def test_pending_footage_survives_reload_and_uses_shared_limit(folders, footage_fal):
+    fal, submissions, status, video = footage_fal
     path = SHOW + "/footage"
     fields = {"description": "Mist moves over the steps.", "seconds": 10}
     with TestClient(create_app(*folders, fal=fal)) as client:
@@ -533,15 +592,27 @@ def test_pending_footage_survives_reload_and_uses_shared_limit(folders, footage_
         assert checked["footage"]["pending_jobs"] == [{"title": fields["description"], "from": None}]
         assert client.post(path, json=fields).status_code == 409
 
+    state_file = folders[1] / PROJECT / "show.json"
+    old = json.loads(state_file.read_text())
+    clip = {"id": "Old take.mp4", "url": path + "/clips/Old%20take.mp4", "kept": True, "from": "Bell Steps"}
+    clip_folder = state_file.parent / "footage"
+    clip_folder.mkdir()
+    (clip_folder / clip["id"]).write_bytes(video)
+    old["footage"]["shots"] = [{"title": "The tide turns.", "clips": [clip]}]
+    assert "with" not in next(iter(old["footage"]["jobs"].values()))
+    state_file.write_text(json.dumps(old))
+
     with TestClient(create_app(*folders, fal=fal)) as client:
         show = client.get(SHOW).json()
+        assert show["footage"]["shots"][0]["clips"] == [clip]
+        assert client.get(clip["url"]).content == video
         assert show["footage"]["pending"] and show["spent"] == "0.70"
         assert show["footage"]["pending_jobs"] == [{"title": fields["description"], "from": None}]
         status["status"] = "COMPLETED"
         checked = client.post(path + "/check").json()
         assert not checked["footage"]["pending"] and checked["spent"] == "0.70"
         assert checked["footage"]["pending_jobs"] == []
-        assert len(checked["footage"]["shots"][0]["clips"]) == 1
+        assert len(checked["footage"]["shots"][1]["clips"]) == 1
         assert client.post(path + "/check").json() == checked
         assert len(submissions) == 1
 

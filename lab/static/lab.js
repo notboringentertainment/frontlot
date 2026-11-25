@@ -590,7 +590,7 @@ function soundForm(kind) {
 }
 
 function freshShot() {
-  return {description: "", seconds: "5", picture: null, chooserOpen: false};
+  return {description: "", seconds: "5", picture: null, references: []};
 }
 
 function footageAction(status, work) {
@@ -628,12 +628,18 @@ function pollFootage() {
   }, 3000);
 }
 
+function footageCaption(clip) {
+  return [clip.from ? "From: " + clip.from : "",
+    clip.with?.length ? "With: " + clip.with.join(", ") : ""].filter(Boolean).join(" · ");
+}
+
 function footageCard(title, clip, take) {
+  const caption = footageCaption(clip);
   return el("figure", {class: "audio-card", "data-clip-id": clip.id},
     el("video", {src: clip.url, controls: true, playsinline: true, preload: "metadata",
       "aria-label": title + " Take " + take}),
     el("figcaption", {},
-      el("p", {class: "picture-caption"}, "Take " + take, clip.from ? " · From: " + clip.from : ""),
+      el("p", {class: "picture-caption"}, "Take " + take, caption ? " · " + caption : ""),
       button(clip.kept ? "Unkeep" : "Keep", () => footageAction("Saving…", async () => {
         const shot = show.footage.shots.find(item => item.title === title);
         const current = shot.clips.find(item => item.id === clip.id);
@@ -642,11 +648,12 @@ function footageCard(title, clip, take) {
 }
 
 function pendingFootageCard(job) {
-  return el("figure", {class: "audio-card pending-clip", "data-from": job.from ?? ""},
+  const caption = footageCaption(job);
+  return el("figure", {class: "audio-card pending-clip", "data-caption": caption},
     el("div", {class: "pending-clip-preview", role: "status"},
       el("strong", {}, "Making your clip…"),
       el("p", {}, "This usually takes a minute or two. You can keep working.")),
-    job.from ? el("figcaption", {class: "picture-caption"}, "From: " + job.from) : null);
+    caption ? el("figcaption", {class: "picture-caption"}, caption) : null);
 }
 
 function updateFootageShots(startingClip) {
@@ -702,7 +709,7 @@ function updateFootageShots(startingClip) {
     shot.jobs.forEach((job, index) => {
       const card = placeholders[index];
       if (!card) grid.append(pendingFootageCard(job));
-      else if (card.dataset.from !== (job.from ?? "")) card.replaceWith(pendingFootageCard(job));
+      else if (card.dataset.caption !== footageCaption(job)) card.replaceWith(pendingFootageCard(job));
     });
     for (const card of placeholders.slice(shot.jobs.length)) card.remove();
   }
@@ -712,37 +719,62 @@ function footageSection() {
   const path = projectPath() + "/footage";
   const pictures = show.entries.flatMap(entry => entry.pictures.filter(picture => picture.kept)
     .map(picture => ({...picture, name: entry.name}))).sort((a, b) => Number(b.main) - Number(a.main));
-  const startingPicture = pictures.find(picture => picture.id === shotDraft.picture);
+  const kept = new Map(pictures.map(picture => [picture.id, picture]));
+  if (!kept.has(shotDraft.picture)) shotDraft.picture = null;
+  shotDraft.references = shotDraft.references.filter(id => kept.has(id));
+
+  const {prices, max_pictures: maxPictures} = show.footage;
   const price = el("span", {class: "muted"}, clipPrice());
   function clipPrice() {
-    return "About " + dollars(show.footage.prices[shotDraft.seconds]) + " a clip";
+    const mode = shotDraft.references.length ? "references" : "plain";
+    return "About " + dollars(prices[mode][shotDraft.seconds]) + " a clip";
   }
 
   const length = el("select", {id: "shot-length", disabled: Boolean(busy), onchange: event => {
     shotDraft.seconds = event.target.value;
     price.textContent = clipPrice();
-  }}, Object.keys(show.footage.prices).map(seconds =>
+  }}, Object.keys(prices.plain).map(seconds =>
     el("option", {value: seconds, selected: seconds === shotDraft.seconds}, seconds + " seconds")));
 
-  const chooser = el("div", {class: "starting-pictures", hidden: !shotDraft.chooserOpen},
-    button("Words alone", () => choose(null), startingPicture ? "quiet" : "quiet kept"),
-    pictures.map(picture => el("button", {type: "button", class: "quiet" + (picture === startingPicture ? " kept" : ""),
-      disabled: Boolean(busy), onclick: () => choose(picture.id)},
+  function pictureRow(id, label, isStart) {
+    const choices = pictures.map(picture => el("button", {type: "button", class: "quiet",
+      onclick: () => {
+        if (isStart) {
+          shotDraft.picture = shotDraft.picture === picture.id ? null : picture.id;
+        } else if (shotDraft.references.includes(picture.id)) {
+          shotDraft.references = shotDraft.references.filter(id => id !== picture.id);
+        } else {
+          shotDraft.references.push(picture.id);
+        }
+        updateChoices();
+      }},
       el("img", {src: picture.url, alt: ""}), el("span", {}, picture.name),
-      picture.main ? el("small", {class: "muted"}, "Main look") : null)));
-  const chooseButton = button(startingPicture ? "Starting picture: " + startingPicture.name : "Choose a starting picture",
-    () => {
-      shotDraft.chooserOpen = !shotDraft.chooserOpen;
-      chooser.hidden = !shotDraft.chooserOpen;
-      chooseButton.setAttribute("aria-expanded", String(shotDraft.chooserOpen));
-    });
-  chooseButton.setAttribute("aria-expanded", String(shotDraft.chooserOpen));
-  function choose(picture) {
-    shotDraft.picture = picture;
-    shotDraft.chooserOpen = false;
-    render();
-    app.querySelector(".starting-picture button").focus();
+      picture.main ? el("small", {class: "muted"}, "Main look") : null));
+    return el("div", {id, role: "group", "aria-labelledby": id + "-label"},
+      el("p", {id: id + "-label", class: "muted"}, label),
+      choices.length ? el("div", {class: "shot-pictures"}, choices) : null);
   }
+
+  const startRow = pictureRow("shot-start", "Start on this picture (optional)", true);
+  const referenceRow = pictureRow("shot-references", "People and places in this shot (optional)", false);
+  function updateChoices() {
+    const referenceCount = shotDraft.references.length;
+    const atLimit = referenceCount + Number(Boolean(shotDraft.picture)) >= maxPictures;
+    function mark(button, selected, unavailable) {
+      button.classList.toggle("kept", selected);
+      button.setAttribute("aria-pressed", String(selected));
+      button.disabled = Boolean(busy) || unavailable;
+    }
+    startRow.querySelectorAll("button").forEach((button, index) => {
+      mark(button, shotDraft.picture === pictures[index].id, referenceCount >= maxPictures);
+    });
+    referenceRow.querySelectorAll("button").forEach((button, index) => {
+      const selected = shotDraft.references.includes(pictures[index].id);
+      mark(button, selected, atLimit && !selected);
+    });
+    price.textContent = clipPrice();
+  }
+  updateChoices();
 
   const file = el("input", {type: "file", accept: ".mp4,.mov,.webm", hidden: true, onchange: event => {
     const clip = event.target.files[0];
@@ -753,12 +785,13 @@ function footageSection() {
   }});
   const makeClip = button("Make a clip", () =>
     footageAction("Starting your clip…", async () => {
-      const startingClip = {title: shotDraft.description.trim(), from: startingPicture?.name ?? null};
+      const startingClip = {title: shotDraft.description.trim(), from: kept.get(shotDraft.picture)?.name ?? null,
+        with: [...new Set(shotDraft.references.map(id => kept.get(id).name))]};
       updateFootageShots(startingClip);
       const shot = app.querySelector(`#footage-shots [data-title="${CSS.escape(startingClip.title)}"]`);
       shot.querySelector(".pending-clip:last-child").scrollIntoView({block: "nearest"});
       const saved = await request(path, "POST", {description: startingClip.title, seconds: Number(shotDraft.seconds),
-        picture: startingPicture?.id ?? null});
+        picture: shotDraft.picture, references: shotDraft.references});
       Object.assign(show, saved);
     }), "primary", Boolean(busy) || !shotDraft.description.trim());
 
@@ -770,8 +803,7 @@ function footageSection() {
         button("Import a clip", () => file.click()), file,
         button("Show in Finder", () => footageAction("Opening Finder…", () => request(path + "/finder", "POST"))))),
     el("div", {class: "audio-form shot-form"},
-      pictures.length ? el("div", {class: "starting-picture"}, chooseButton,
-        startingPicture ? el("img", {src: startingPicture.url, alt: ""}) : null, chooser) : null,
+      startRow, referenceRow,
       ...audioText("shot-description", "What happens in the shot", shotDraft.description, value => {
         shotDraft.description = value;
         makeClip.disabled = !value.trim();
