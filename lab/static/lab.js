@@ -114,6 +114,8 @@ async function readCanon(again = false) {
 async function enter(project) {
   await run("Opening the show…", async () => {
     show = await request("/api/shows/" + project.id);
+    const savedShape = localStorage.getItem("lab-shot-shape:" + show.id);
+    if (Object.hasOwn(show.footage.shapes, savedShape)) shotDraft.shape = savedShape;
     sessionStorage.setItem("lab-show", project.id);
     busy = "Reading canon…";
     render();
@@ -590,7 +592,8 @@ function soundForm(kind) {
 }
 
 function freshShot() {
-  return {description: "", seconds: "5", picture: null, references: []};
+  return {description: "", seconds: "5", shape: "16:9", picture: null, pictures: [],
+    original: null, writing: false, writingMessage: ""};
 }
 
 function footageAction(status, work) {
@@ -630,7 +633,9 @@ function pollFootage() {
 
 function footageCaption(clip) {
   return [clip.from ? "From: " + clip.from : "",
-    clip.with?.length ? "With: " + clip.with.join(", ") : ""].filter(Boolean).join(" · ");
+    clip.with?.length ? "With: " + clip.with.join(", ") : "",
+    clip.shape_note ? "Shape follows the opening picture" : show.footage.shapes[clip.shape]]
+    .filter(Boolean).join(" · ");
 }
 
 function footageCard(title, clip, take) {
@@ -720,13 +725,15 @@ function footageSection() {
   const pictures = show.entries.flatMap(entry => entry.pictures.filter(picture => picture.kept)
     .map(picture => ({...picture, name: entry.name}))).sort((a, b) => Number(b.main) - Number(a.main));
   const kept = new Map(pictures.map(picture => [picture.id, picture]));
-  if (!kept.has(shotDraft.picture)) shotDraft.picture = null;
-  shotDraft.references = shotDraft.references.filter(id => kept.has(id));
+  shotDraft.pictures = shotDraft.pictures.filter(id => kept.has(id));
+  if (!shotDraft.pictures.includes(shotDraft.picture)) shotDraft.picture = null;
 
-  const {prices, max_pictures: maxPictures} = show.footage;
+  const {prices, shapes, opening_shape_note: openingShapeNote, max_pictures: maxPictures} = show.footage;
+  const followsOpening = () => Boolean(shotDraft.picture && !references().length);
+  const references = () => shotDraft.pictures.filter(id => id !== shotDraft.picture);
   const price = el("span", {class: "muted"}, clipPrice());
   function clipPrice() {
-    const mode = shotDraft.references.length ? "references" : "plain";
+    const mode = references().length ? "references" : "plain";
     return "About " + dollars(prices[mode][shotDraft.seconds]) + " a clip";
   }
 
@@ -736,43 +743,84 @@ function footageSection() {
   }}, Object.keys(prices.plain).map(seconds =>
     el("option", {value: seconds, selected: seconds === shotDraft.seconds}, seconds + " seconds")));
 
-  function pictureRow(id, label, isStart) {
-    const choices = pictures.map(picture => el("button", {type: "button", class: "quiet",
-      onclick: () => {
-        if (isStart) {
-          shotDraft.picture = shotDraft.picture === picture.id ? null : picture.id;
-        } else if (shotDraft.references.includes(picture.id)) {
-          shotDraft.references = shotDraft.references.filter(id => id !== picture.id);
-        } else {
-          shotDraft.references.push(picture.id);
-        }
-        updateChoices();
-      }},
-      el("img", {src: picture.url, alt: ""}), el("span", {}, picture.name),
-      picture.main ? el("small", {class: "muted"}, "Main look") : null));
-    return el("div", {id, role: "group", "aria-labelledby": id + "-label"},
-      el("p", {id: id + "-label", class: "muted"}, label),
-      choices.length ? el("div", {class: "shot-pictures"}, choices) : null);
+  const shape = el("select", {id: "shot-shape", "aria-describedby": "shot-shape-note", onchange: event => {
+    shotDraft.shape = event.target.value;
+    localStorage.setItem("lab-shot-shape:" + show.id, shotDraft.shape);
+  }}, Object.entries(shapes).map(([value, name]) =>
+    el("option", {value, selected: value === shotDraft.shape}, name)));
+  const shapeNote = el("p", {id: "shot-shape-note", class: "muted", role: "status"});
+  function updateShape() {
+    shape.disabled = Boolean(busy) || followsOpening();
+    shapeNote.hidden = !followsOpening();
+    shapeNote.textContent = followsOpening() ? openingShapeNote : "";
   }
 
-  const startRow = pictureRow("shot-start", "Start on this picture (optional)", true);
-  const referenceRow = pictureRow("shot-references", "People and places in this shot (optional)", false);
+  const nameCounts = new Map();
+  const namePositions = new Map();
+  const pictureDetails = new Map();
+  for (const {name} of pictures) nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+  const choices = pictures.map(picture => {
+    const position = (namePositions.get(picture.name) ?? 0) + 1;
+    namePositions.set(picture.name, position);
+    const detail = [picture.main ? "Main look" : "",
+      nameCounts.get(picture.name) > 1 ? "Picture " + position : ""].filter(Boolean).join(" · ");
+    pictureDetails.set(picture.id, detail);
+
+    return el("button", {type: "button", class: "shot-picture", onclick: () => {
+      if (shotDraft.pictures.includes(picture.id)) {
+        shotDraft.pictures = shotDraft.pictures.filter(id => id !== picture.id);
+        if (shotDraft.picture === picture.id) shotDraft.picture = null;
+      } else {
+        shotDraft.pictures.push(picture.id);
+      }
+      updateChoices();
+    }},
+    el("img", {src: picture.url, alt: ""}),
+    el("span", {class: "shot-picture-tick", "aria-hidden": "true"}, "✓"),
+    el("span", {}, picture.name),
+    detail ? el("small", {class: "muted"}, detail) : null);
+  });
+
+  const pictureRow = el("div", {role: "group", "aria-labelledby": "shot-pictures-label",
+    "aria-describedby": "shot-pictures-help"},
+    el("h3", {id: "shot-pictures-label"}, "Pictures for this shot (optional)"),
+    el("p", {id: "shot-pictures-help", class: "muted"},
+      "Click every person and place that appears in the shot. Click again to remove."),
+    el("div", {class: "shot-pictures"}, choices));
+  const limit = el("p", {class: "muted", role: "status"});
+  const summary = el("p", {class: "shot-picture-summary", role: "status"});
+  const opening = el("select", {id: "shot-opening-picture", disabled: Boolean(busy),
+    "aria-describedby": "shot-opening-help", onchange: event => {
+      shotDraft.picture = event.target.value || null;
+      price.textContent = clipPrice();
+      updateShape();
+    }});
+  const openingChoice = el("div", {},
+    el("div", {class: "actions"}, el("label", {for: opening.id}, "Open the clip on"), opening),
+    el("p", {id: "shot-opening-help", class: "muted"},
+      "Choose a picture here only if the clip should begin on exactly that picture."));
+
   function updateChoices() {
-    const referenceCount = shotDraft.references.length;
-    const atLimit = referenceCount + Number(Boolean(shotDraft.picture)) >= maxPictures;
-    function mark(button, selected, unavailable) {
-      button.classList.toggle("kept", selected);
-      button.setAttribute("aria-pressed", String(selected));
-      button.disabled = Boolean(busy) || unavailable;
-    }
-    startRow.querySelectorAll("button").forEach((button, index) => {
-      mark(button, shotDraft.picture === pictures[index].id, referenceCount >= maxPictures);
+    const chosen = shotDraft.pictures.map(id => kept.get(id));
+    const atLimit = chosen.length >= maxPictures;
+    choices.forEach((button, index) => {
+      const pressed = shotDraft.pictures.includes(pictures[index].id);
+      button.setAttribute("aria-pressed", String(pressed));
+      button.disabled = Boolean(busy) || (atLimit && !pressed);
     });
-    referenceRow.querySelectorAll("button").forEach((button, index) => {
-      const selected = shotDraft.references.includes(pictures[index].id);
-      mark(button, selected, atLimit && !selected);
-    });
+    limit.hidden = !atLimit;
+    limit.textContent = atLimit ? "You’ve chosen the maximum of " + maxPictures + " pictures for this clip." : "";
+    const names = [...new Set(chosen.map(picture => picture.name))];
+    summary.textContent = chosen.length ? "This shot uses: " + names.join(", ") + "."
+      : "No pictures chosen. The clip will be made from your words alone.";
+    openingChoice.hidden = !chosen.length;
+    opening.replaceChildren(el("option", {value: ""}, "No opening picture"), ...chosen.map(picture => {
+      const detail = pictureDetails.get(picture.id);
+      return el("option", {value: picture.id}, picture.name + "’s picture" + (detail ? " (" + detail + ")" : ""));
+    }));
+    opening.value = shotDraft.picture ?? "";
     price.textContent = clipPrice();
+    updateShape();
   }
   updateChoices();
 
@@ -783,17 +831,82 @@ function footageSection() {
       show.footage = (await request(projectPath())).footage;
     });
   }});
+  const shotFields = () => ({description: shotDraft.description, seconds: Number(shotDraft.seconds),
+    shape: shotDraft.shape, picture: shotDraft.picture, references: references()});
   const makeClip = button("Make a clip", () =>
     footageAction("Starting your clip…", async () => {
-      const startingClip = {title: shotDraft.description.trim(), from: kept.get(shotDraft.picture)?.name ?? null,
-        with: [...new Set(shotDraft.references.map(id => kept.get(id).name))]};
+      const fields = shotFields();
+      const startingClip = {title: fields.description.trim(), from: kept.get(fields.picture)?.name ?? null,
+        with: [...new Set(fields.references.map(id => kept.get(id).name))], shape: fields.shape,
+        shape_note: followsOpening() ? openingShapeNote : null};
       updateFootageShots(startingClip);
       const shot = app.querySelector(`#footage-shots [data-title="${CSS.escape(startingClip.title)}"]`);
       shot.querySelector(".pending-clip:last-child").scrollIntoView({block: "nearest"});
-      const saved = await request(path, "POST", {description: startingClip.title, seconds: Number(shotDraft.seconds),
-        picture: shotDraft.picture, references: shotDraft.references});
+      const saved = await request(path, "POST", fields);
       Object.assign(show, saved);
     }), "primary", Boolean(busy) || !shotDraft.description.trim());
+
+  const [descriptionLabel, descriptionBox] = audioText(
+    "shot-description", "What happens in the shot", shotDraft.description, value => {
+      shotDraft.description = value;
+      makeClip.disabled = Boolean(busy) || !value.trim();
+    });
+  descriptionBox.rows = 5;
+  makeClip.id = "make-clip";
+  const helpLabel = () => shotDraft.writing ? "Claude is writing…" : "Help me write this shot";
+  const help = button(helpLabel(), async () => {
+    const current = shotDraft;
+    const fields = shotFields();
+    if (!fields.description.trim()) {
+      current.writingMessage = "Type a few words about the shot first.";
+      syncWriter();
+      app.querySelector("#shot-description")?.focus();
+      return;
+    }
+    current.writing = true;
+    current.writingMessage = "";
+    syncWriter();
+    try {
+      const result = await request(path + "/draft", "POST", fields);
+      if (current.description === fields.description) {
+        current.original = fields.description;
+        current.description = result.description;
+      } else {
+        current.writingMessage = "You changed the shot while Claude worked. Your words are still here.";
+      }
+    } catch (error) {
+      current.writingMessage = error.status ? error.message
+        : "Claude couldn’t write this one. Your words are still here.";
+    } finally {
+      current.writing = false;
+      if (shotDraft === current) syncWriter();
+    }
+  }, "quiet", Boolean(busy) || shotDraft.writing);
+  help.id = "shot-writing-help";
+  const undo = button("Put mine back", () => {
+    shotDraft.description = shotDraft.original;
+    shotDraft.original = null;
+    shotDraft.writingMessage = "";
+    syncWriter();
+    app.querySelector("#shot-description")?.focus();
+  }, "shot-writing-undo");
+  undo.id = "shot-writing-undo";
+  undo.hidden = shotDraft.original === null;
+  const writerStatus = feedback(shotDraft.writingMessage, true);
+  writerStatus.id = "shot-writing-status";
+
+  function syncWriter() {
+    // Canon can refresh the form while Claude is working.
+    const helpButton = app.querySelector("#shot-writing-help");
+    if (!helpButton) return;
+    helpButton.textContent = helpLabel();
+    helpButton.disabled = Boolean(busy) || shotDraft.writing;
+    app.querySelector("#shot-writing-undo").hidden = shotDraft.original === null;
+    app.querySelector("#shot-writing-status").textContent = shotDraft.writingMessage;
+    const box = app.querySelector("#shot-description");
+    if (box.value !== shotDraft.description) box.value = shotDraft.description;
+    app.querySelector("#make-clip").disabled = Boolean(busy) || !shotDraft.description.trim();
+  }
 
   const status = feedback(footageStatus(), Boolean(footageMessage));
   status.id = "footage-status";
@@ -803,12 +916,13 @@ function footageSection() {
         button("Import a clip", () => file.click()), file,
         button("Show in Finder", () => footageAction("Opening Finder…", () => request(path + "/finder", "POST"))))),
     el("div", {class: "audio-form shot-form"},
-      startRow, referenceRow,
-      ...audioText("shot-description", "What happens in the shot", shotDraft.description, value => {
-        shotDraft.description = value;
-        makeClip.disabled = !value.trim();
-      }),
-      el("div", {class: "actions"}, el("label", {for: length.id}, "Length"), length),
+      pictureRow, limit, summary, openingChoice,
+      el("div", {class: "actions"}, descriptionLabel, help, undo),
+      descriptionBox, writerStatus,
+      el("div", {class: "actions shot-settings"},
+        el("span", {class: "actions"}, el("label", {for: length.id}, "Length"), length),
+        el("span", {class: "actions"}, el("label", {for: shape.id}, "Shape"), shape)),
+      shapeNote,
       el("div", {class: "actions"}, makeClip, price),
       status),
     el("div", {id: "footage-shots"}));

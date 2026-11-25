@@ -17,17 +17,22 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from .audio import SHOW, KeepInput
+from .canon import draft_shot_with_claude
 from .fal import MAX_VIDEO_PICTURES, FalError, VideoFailed, video_price
 
 FOOTAGE = SHOW + "/footage"
 VIDEO_TYPES = {".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm"}
 MAX_IMPORT_BYTES = 200_000_000
 SHOT_LENGTHS = (5, 10)
+SHAPE_NAMES = {"16:9": "Widescreen", "9:16": "Upright", "1:1": "Square"}
+OPENING_SHAPE_NOTE = "This clip will take the shape of its opening picture."
+DRAFT_FAILURE = "Claude couldn’t write this one. Your words are still here."
 
 
 class ShotInput(BaseModel):
     description: str
     seconds: Literal[5, 10]
+    shape: Literal["16:9", "9:16", "1:1"] = "16:9"
     picture: str | None = None
     references: list[str] = []
 
@@ -35,7 +40,7 @@ class ShotInput(BaseModel):
 def footage_state(state):
     footage = state.get("footage", {})
     pending_jobs = [
-        {"title": job["title"], "from": job["from"], **({"with": job["with"]} if "with" in job else {})}
+        {key: job[key] for key in ("title", "from", "with", "shape", "shape_note") if key in job}
         for job in footage.get("jobs", {}).values()
     ]
     return {
@@ -48,6 +53,8 @@ def footage_state(state):
             for mode in ("plain", "references")
         },
         "max_pictures": MAX_VIDEO_PICTURES,
+        "shapes": SHAPE_NAMES,
+        "opening_shape_note": OPENING_SHAPE_NOTE,
     }
 
 
@@ -60,7 +67,7 @@ def register_footage(app, library, kit_for, fal, making, spending):
     def folder(project):
         return library.root / project / "footage"
 
-    def save_clip(project, state, title, source, suffix, origin=None, kept=False, references=()):
+    def save_clip(project, state, title, source, suffix, origin=None, kept=False, references=(), shape=None, shape_note=None):
         directory = folder(project)
         directory.mkdir(parents=True, exist_ok=True)
         stem = re.sub(r"[^\w .'-]", " ", title).strip(" .")[:58].rstrip() or "Clip"
@@ -74,6 +81,10 @@ def register_footage(app, library, kit_for, fal, making, spending):
             clip["from"] = origin
         if references:
             clip["with"] = references
+        if shape:
+            clip["shape"] = shape
+        if shape_note:
+            clip["shape_note"] = shape_note
         if kept:
             library.keep(directory, clip, True)
         shots = state.setdefault("footage", {}).setdefault("shots", [])
@@ -83,6 +94,39 @@ def register_footage(app, library, kit_for, fal, making, spending):
             shots.append(shot)
         shot["clips"].append(clip)
         return clip
+
+    @app.post(FOOTAGE + "/draft")
+    async def draft_clip(project: str, fields: ShotInput):
+        kit = kit_for(project)
+        if not fields.description.strip():
+            raise HTTPException(422, "Type a few words about the shot first.")
+        kept = {
+            picture["id"]: entry
+            for entry in library.load(project)["entries"] if not entry.get("deleted")
+            for picture in entry["pictures"] if picture["kept"]
+        }
+        picture_ids = list(dict.fromkeys(filter(None, [fields.picture, *fields.references])))
+        if any(picture_id not in kept for picture_id in picture_ids):
+            raise HTTPException(404, "One of the pictures is no longer kept. Your words are still here.")
+        pictures = [{key: kept[picture_id][key] for key in ("name", "kind", "description")}
+                    for picture_id in picture_ids]
+        shape = SHAPE_NAMES[fields.shape]
+        if fields.picture and not fields.references:
+            shape = f"{shape} was chosen, but the clip takes the shape of its opening picture."
+        try:
+            canon, outline, looks = kit.sources()
+            description = await asyncio.to_thread(
+                draft_shot_with_claude, canon, outline, looks, words=fields.description,
+                pictures=pictures, seconds=fields.seconds, shape=shape,
+            )
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, AttributeError):
+            raise HTTPException(502, DRAFT_FAILURE) from None
+        if not description:
+            raise HTTPException(502, DRAFT_FAILURE)
+        for name in dict.fromkeys(picture["name"] for picture in pictures):
+            if not re.search(rf"(?<!\w){re.escape(name)}(?!\w)", description):
+                raise HTTPException(502, f"Claude left out {name}. Your words are still here.")
+        return {"description": description}
 
     @app.post(FOOTAGE, status_code=202)
     async def make_clip(project: str, fields: ShotInput):
@@ -111,7 +155,7 @@ def register_footage(app, library, kit_for, fal, making, spending):
             origin, start = kept.get(fields.picture, (None, None))
             references = [kept[picture] for picture in reference_ids]
             try:
-                job = await fal.submit_video(description, fields.seconds, start, references)
+                job = await fal.submit_video(description, fields.seconds, start, references, shape=fields.shape)
             except FalError as error:
                 raise HTTPException(502, str(error)) from None
             except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError):
@@ -121,7 +165,8 @@ def register_footage(app, library, kit_for, fal, making, spending):
             footage.pop("notice", None)
             footage.setdefault("jobs", {})[uuid4().hex] = {
                 **job, "title": description, "from": origin, "cost": str(cost),
-                "unit_price": str(unit_price),
+                "unit_price": str(unit_price), "shape": fields.shape,
+                **({"shape_note": OPENING_SHAPE_NOTE} if start and not references else {}),
                 **({"with": list(dict.fromkeys(name for name, _ in references))} if references else {}),
             }
             for total in ("spent", "estimated"):
@@ -154,7 +199,8 @@ def register_footage(app, library, kit_for, fal, making, spending):
                     data, units = result
                     try:
                         save_clip(project, state, job["title"], BytesIO(data), ".mp4", job["from"],
-                                  references=job.get("with", ()))
+                                  references=job.get("with", ()), shape=job.get("shape"),
+                                  shape_note=job.get("shape_note"))
                     except OSError:
                         notice = "The lab couldn’t save the clip yet. It will try again."
                         continue

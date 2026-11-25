@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import re
 import shutil
 import subprocess
 from decimal import Decimal
@@ -39,6 +40,25 @@ def test_only_local_hosts_are_allowed(folders):
         for host in ("127.0.0.1:4751", "localhost:4751"):
             assert client.get("/api/ready", headers={"Host": host}).status_code == 200
         assert client.get("/api/ready", headers={"Host": "testserver"}).status_code == 400
+
+
+def test_page_revalidates_and_versions_its_assets(folders, tmp_path, monkeypatch):
+    static = tmp_path / "static"
+    shutil.copytree(Path(__file__).parents[2] / "lab" / "static", static)
+    monkeypatch.setattr("lab.app.STATIC", static)
+
+    with TestClient(create_app(*folders)) as client:
+        page = client.get("/")
+        assert page.headers.get("cache-control") == "no-cache"
+        for asset in ("lab.js", "lab.css"):
+            pattern = rf'"/static/{re.escape(asset)}\?v=([^"]+)"'
+            version = re.search(pattern, page.text)
+            assert version, f"Missing version in the link to {asset}"
+            with (static / asset).open("a") as file:
+                file.write("\n/* An asset update */\n")
+            updated = re.search(pattern, client.get("/").text)
+            assert updated and updated[1] != version[1]
+            assert client.get(updated[0].strip('"')).status_code == 200
 
 
 @pytest.fixture
@@ -484,16 +504,17 @@ def test_footage_from_a_kept_picture_and_words_groups_takes(folders, footage_fal
         path = SHOW + "/footage"
         fields = {"description": "The tide rises under the office.", "seconds": 5}
 
-        queued = client.post(path, json={**fields, "picture": picture["id"]})
+        queued = client.post(path, json={**fields, "picture": picture["id"], "shape": "1:1"})
         assert queued.status_code == 202
         assert queued.json()["spent"] == "0.35"
         assert queued.json()["footage"]["prices"]["plain"] == {"5": "0.35", "10": "0.70"}
         assert queued.json()["footage"]["pending_jobs"] == [
-            {"title": fields["description"], "from": place["name"]},
+            {"title": fields["description"], "from": place["name"], "shape": "1:1",
+             "shape_note": "This clip will take the shape of its opening picture."},
         ]
         first = client.post(path + "/check").json()
         assert first["spent"] == "0.33" and not first["estimated"]
-        queued = client.post(path, json=fields)
+        queued = client.post(path, json={**fields, "shape": "9:16"})
         assert queued.status_code == 202 and queued.json()["spent"] == "0.68"
         second = client.post(path + "/check").json()
         assert second["spent"] == "0.68" and second["estimated"]
@@ -501,6 +522,7 @@ def test_footage_from_a_kept_picture_and_words_groups_takes(folders, footage_fal
         assert shot["title"] == fields["description"]
         reference, words = shot["clips"]
         assert reference["from"] == place["name"] and not words.get("from")
+        assert reference["shape"] == "1:1" and words["shape"] == "9:16"
         kling = "/fal-ai/kling-video/v2.6/pro/"
         image_call, text_call = submissions
         assert image_call[0] == kling + "image-to-video"
@@ -509,7 +531,7 @@ def test_footage_from_a_kept_picture_and_words_groups_takes(folders, footage_fal
         }
         assert base64.b64decode(image_call[1]["start_image_url"].split(",", 1)[1]) == client.get(picture["url"]).content
         assert text_call == (kling + "text-to-video",
-                             {"prompt": fields["description"], "duration": "5", "generate_audio": False})
+                             {"prompt": fields["description"], "duration": "5", "generate_audio": False, "aspect_ratio": "9:16"})
 
         url = reference["url"]
         assert client.get(url, headers={"Host": "elsewhere"}).status_code == 400
@@ -545,7 +567,7 @@ def test_footage_with_kept_references(folders, footage_fal, png, has_start):
             expected_prompt += " at @Image2"
             references.append(landscape)
             names.append(place["name"])
-        queued = client.post(path, json={"description": description, "seconds": 5,
+        queued = client.post(path, json={"description": description, "seconds": 5, "shape": "1:1",
                              "picture": landscape["id"] if has_start else None,
                              "references": [picture["id"] for picture in references]})
         assert queued.status_code == 202
@@ -553,13 +575,14 @@ def test_footage_with_kept_references(folders, footage_fal, png, has_start):
         assert queued.json()["footage"]["prices"]["references"] == {"5": "0.560", "10": "1.120"}
         origin = place["name"] if has_start else None
         assert queued.json()["footage"]["pending_jobs"] == [
-            {"title": description, "from": origin, "with": names},
+            {"title": description, "from": origin, "with": names, "shape": "1:1"},
         ]
 
         (model, payload), = submissions
         assert model == "/fal-ai/kling-video/o3/pro/reference-to-video"
         assert payload["prompt"] == expected_prompt
         assert payload["duration"] == "5" and payload["generate_audio"] is False
+        assert payload["aspect_ratio"] == "1:1"
         assert [base64.b64decode(url.split(",", 1)[1]) for url in payload["image_urls"]] == [
             client.get(picture["url"]).content for picture in references
         ]
@@ -589,7 +612,7 @@ def test_pending_footage_survives_reload_and_uses_shared_limit(folders, footage_
         assert client.post(path, json=fields).status_code == 202
         checked = client.post(path + "/check").json()
         assert checked["footage"]["pending"] and checked["spent"] == "0.70"
-        assert checked["footage"]["pending_jobs"] == [{"title": fields["description"], "from": None}]
+        assert checked["footage"]["pending_jobs"] == [{"title": fields["description"], "from": None, "shape": "16:9"}]
         assert client.post(path, json=fields).status_code == 409
 
     state_file = folders[1] / PROJECT / "show.json"
@@ -599,7 +622,9 @@ def test_pending_footage_survives_reload_and_uses_shared_limit(folders, footage_
     clip_folder.mkdir()
     (clip_folder / clip["id"]).write_bytes(video)
     old["footage"]["shots"] = [{"title": "The tide turns.", "clips": [clip]}]
-    assert "with" not in next(iter(old["footage"]["jobs"].values()))
+    old_job = next(iter(old["footage"]["jobs"].values()))
+    assert "with" not in old_job
+    del old_job["shape"]
     state_file.write_text(json.dumps(old))
 
     with TestClient(create_app(*folders, fal=fal)) as client:
@@ -615,6 +640,7 @@ def test_pending_footage_survives_reload_and_uses_shared_limit(folders, footage_
         assert len(checked["footage"]["shots"][1]["clips"]) == 1
         assert client.post(path + "/check").json() == checked
         assert len(submissions) == 1
+        assert submissions[0][1]["aspect_ratio"] == "16:9"
 
 
 def test_footage_import_and_old_show(folders, png, monkeypatch):
@@ -647,3 +673,50 @@ def test_footage_import_and_old_show(folders, png, monkeypatch):
         assert client.get(clip["url"]).headers["content-type"] == "video/quicktime"
         assert (folders[1] / PROJECT / "footage/kept" / clip["id"]).is_file()
         assert client.get(SHOW).json()["footage"]["shots"][0]["title"] == "Outside take"
+
+
+@pytest.mark.parametrize("outcome", ["success", "missing name", "unavailable"])
+def test_help_write_shot(folders, footage_fal, png, monkeypatch, outcome):
+    fal, submissions, _, _ = footage_fal
+    draft = ("Esme Vale pauses inside the Tide Office, her coat collar turned up. "
+             "The camera moves slowly toward her as pale light falls across the clapboard walls. "
+             "She turns toward the window while the water rises below the room.")
+    calls = []
+
+    def ask(prompt, schema):
+        calls.append(prompt)
+        if outcome == "unavailable":
+            raise FileNotFoundError
+        return {"description": draft.replace("Tide Office", "Tide Offices") if outcome == "missing name" else draft}
+
+    monkeypatch.setattr("lab.canon.ask_claude", ask)
+    with TestClient(create_app(*folders, canon_reader=lambda *_: CANON, fal=fal)) as client:
+        show = client.post(SHOW + "/canon").json()
+        person, _, place, _ = show["entries"]
+        pictures = [client.post(f"{SHOW}/entries/{entry['id']}/import", content=png).json()["id"]
+                    for entry in (person, place)]
+        path = SHOW + "/footage/draft"
+        fields = {"description": "  She stops and looks outside.  ", "seconds": 10, "shape": "9:16",
+                  "picture": pictures[0], "references": pictures[1:]}
+
+        assert client.post(path, json={**fields, "description": "  "}).status_code == 422
+        assert not calls
+        response = client.post(path, json=fields)
+        if outcome == "success":
+            assert response.status_code == 200
+            assert response.json() == {"description": draft}
+        else:
+            assert response.status_code == 502
+            assert "Your words are still here." in response.json()["detail"]
+            if outcome == "missing name":
+                assert place["name"] in response.json()["detail"]
+
+        prompt, = calls
+        context = json.loads(prompt.split("\n\n", 1)[1])
+        assert fields["description"] == context["your_words"]
+        assert context["length_in_seconds"] == 10 and context["shape"] == "Upright"
+        assert context["canon"] and context["outline"] and context["approved_looks"]
+        assert context["pictures"] == [
+            {key: entry[key] for key in ("name", "kind", "description")} for entry in (person, place)
+        ]
+        assert not submissions and client.get(SHOW).json()["spent"] == "0.00"

@@ -165,11 +165,29 @@ figcaption .quiet { font-size: .84rem; }
   border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px;
 }
 .shot-form .feedback { margin-top: 0; }
-.shot-pictures img {
-  display: block; width: 52px; height: 42px; object-fit: cover; border-radius: 3px;
+.shot-settings { column-gap: 16px; }
+.shot-writing-undo {
+  border: 0; background: transparent; padding: 5px;
+  color: var(--accent); text-decoration: underline; text-underline-offset: 2px;
 }
-.shot-pictures { display: flex; flex-wrap: wrap; align-items: start; gap: 6px; margin-top: 6px; }
-.shot-pictures button { display: grid; gap: 3px; justify-items: start; text-align: left; }
+.shot-pictures { display: flex; flex-wrap: wrap; align-items: start; gap: 8px; margin-top: 8px; }
+.shot-pictures:empty { display: none; }
+.shot-picture {
+  position: relative; display: grid; gap: 4px; width: 128px; max-width: 100%;
+  padding: 5px; border: 2px solid var(--line); border-radius: 5px;
+  background: var(--paper); text-align: left; font-size: .91rem; overflow-wrap: anywhere;
+}
+.shot-picture:hover:not(:disabled) { background: var(--active); }
+.shot-picture img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 3px; }
+.shot-picture[aria-pressed="true"] { border-color: var(--accent); }
+.shot-picture-tick {
+  display: none; position: absolute; top: 9px; right: 9px; width: 24px; height: 24px;
+  place-items: center; border-radius: 50%; background: var(--accent); color: white; font-weight: 700;
+}
+.shot-picture[aria-pressed="true"] .shot-picture-tick { display: grid; }
+.shot-picture-summary { font-weight: 600; }
+#shot-opening-picture { max-width: 100%; }
+#shot-opening-help { margin-top: 4px; }
 #footage-shots { margin-top: 13px; }
 .shot { margin-top: 16px; }
 .shot h3 { font-weight: 600; overflow-wrap: anywhere; }
