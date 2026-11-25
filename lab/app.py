@@ -5,13 +5,14 @@ import os
 import subprocess
 from collections import defaultdict
 from decimal import ROUND_HALF_UP, Decimal, localcontext
+from hashlib import sha256
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
@@ -165,7 +166,11 @@ def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=
 
     @app.get("/")
     async def page():
-        return FileResponse(STATIC / "index.html")
+        html = (STATIC / "index.html").read_text(encoding="utf-8")
+        for asset in ("lab.js", "lab.css"):
+            version = sha256((STATIC / asset).read_bytes()).hexdigest()[:12]
+            html = html.replace(f'"/static/{asset}"', f'"/static/{asset}?v={version}"')
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/ready")
     async def ready():

@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import re
 import shutil
 import subprocess
 from decimal import Decimal
@@ -39,6 +40,25 @@ def test_only_local_hosts_are_allowed(folders):
         for host in ("127.0.0.1:4751", "localhost:4751"):
             assert client.get("/api/ready", headers={"Host": host}).status_code == 200
         assert client.get("/api/ready", headers={"Host": "testserver"}).status_code == 400
+
+
+def test_page_revalidates_and_versions_its_assets(folders, tmp_path, monkeypatch):
+    static = tmp_path / "static"
+    shutil.copytree(Path(__file__).parents[2] / "lab" / "static", static)
+    monkeypatch.setattr("lab.app.STATIC", static)
+
+    with TestClient(create_app(*folders)) as client:
+        page = client.get("/")
+        assert page.headers.get("cache-control") == "no-cache"
+        for asset in ("lab.js", "lab.css"):
+            pattern = rf'"/static/{re.escape(asset)}\?v=([^"]+)"'
+            version = re.search(pattern, page.text)
+            assert version, f"Missing version in the link to {asset}"
+            with (static / asset).open("a") as file:
+                file.write("\n/* An asset update */\n")
+            updated = re.search(pattern, client.get("/").text)
+            assert updated and updated[1] != version[1]
+            assert client.get(updated[0].strip('"')).status_code == 200
 
 
 @pytest.fixture
