@@ -1,6 +1,6 @@
 """Music generation tool via ElevenLabs Music API.
 
-Generates background music and sound effects for video production.
+Generates instrumental background music for video production.
 Reports unavailable when no API key is configured.
 """
 
@@ -43,11 +43,10 @@ class MusicGen(BaseTool):
         "Get a key at https://elevenlabs.io"
     )
 
-    agent_skills = ["music", "sound-effects", "elevenlabs"]
+    agent_skills = ["music", "elevenlabs"]
 
     capabilities = [
         "generate_background_music",
-        "generate_sfx",
     ]
 
     input_schema = {
@@ -83,10 +82,22 @@ class MusicGen(BaseTool):
         },
     }
 
+    # The protected route consumes a saved request, not mutable generation
+    # fields. Retain deprecated field descriptions for older readers only.
+    input_schema["required"] = ["project_dir", "audio_request_id"]
+    input_schema["properties"].update({
+        "project_dir": {"type":"string", "description":"The registered production folder."},
+        "audio_request_id": {"type":"string", "description":"The saved request that needs Ben's individual signature."},
+    })
+    for _field, _spec in input_schema["properties"].items():
+        if _field not in {"project_dir", "audio_request_id", "output_path", "force_instrumental"}:
+            _spec["deprecated"] = True
+            _spec["description"] = "Legacy input; generation material now comes only from the approved saved request."
+
     resource_profile = ResourceProfile(
         cpu_cores=1, ram_mb=256, vram_mb=0, disk_mb=50, network_required=True
     )
-    retry_policy = RetryPolicy(max_retries=2, retryable_errors=["rate_limit", "timeout"])
+    retry_policy = RetryPolicy(max_retries=0, retryable_errors=[])
     idempotency_key_fields = ["prompt", "duration_seconds"]
     side_effects = ["writes audio file to output_path", "calls ElevenLabs API"]
     user_visible_verification = [
@@ -99,89 +110,13 @@ class MusicGen(BaseTool):
         return ToolStatus.UNAVAILABLE
 
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
-        # ElevenLabs music generation pricing is per generation
-        duration = inputs.get("duration_seconds")
-        if duration is None:
-            raise ValueError(
-                "music_gen.estimate_cost: duration_seconds is required. "
-                "Derive it from the approved target runtime in the script/proposal. "
-                "Silent defaults are not permitted."
-            )
-        # Approximate: ~$0.05 per 30 seconds
-        return round(duration / 30 * 0.05, 4)
+        from tools.audio._approved_transport import estimate
+        return estimate(inputs,'music')
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
-        api_key = os.environ.get("ELEVENLABS_API_KEY")
-        if not api_key:
-            return ToolResult(
-                success=False,
-                error="No ElevenLabs API key. " + self.install_instructions,
-            )
-
-        start = time.time()
-
-        try:
-            result = self._generate(inputs, api_key)
-        except Exception as e:
-            return ToolResult(success=False, error=f"Music generation failed: {e}")
-
-        result.duration_seconds = round(time.time() - start, 2)
-        result.cost_usd = self.estimate_cost(inputs)
-        return result
+        from tools.audio._approved_transport import execute
+        return execute(inputs, 'music')
 
     def _generate(self, inputs: dict[str, Any], api_key: str) -> ToolResult:
-        import logging
-        import requests
-
-        logger = logging.getLogger(__name__)
-
-        prompt = inputs["prompt"]
-        duration = inputs.get("duration_seconds")
-        if duration is None:
-            return ToolResult(
-                success=False,
-                error=(
-                    "music_gen: duration_seconds is required. "
-                    "Derive it from the approved target runtime in the script/proposal. "
-                    "Silent defaults to 60s are not permitted — the generated music "
-                    "must match the actual video duration."
-                ),
-            )
-
-        url = "https://api.elevenlabs.io/v1/music"
-
-        headers = {
-            "xi-api-key": api_key,
-            "Content-Type": "application/json",
-        }
-
-        payload = {
-            "prompt": prompt,
-            "music_length_ms": int(duration * 1000),
-            # music-gen-usage mandate: always set force_instrumental=true for
-            # video background music (vocals collide with narration). The input
-            # schema defaults this to True, so callers get the mandate by
-            # default; they may opt out only by passing force_instrumental=False.
-            "force_instrumental": bool(inputs.get("force_instrumental", True)),
-        }
-
-        response = requests.post(
-            url, headers=headers, json=payload, timeout=180
-        )
-        response.raise_for_status()
-
-        output_path = Path(inputs.get("output_path", "music_output.mp3"))
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(response.content)
-
-        return ToolResult(
-            success=True,
-            data={
-                "provider": "elevenlabs",
-                "prompt": prompt,
-                "duration_seconds": duration,
-                "output": str(output_path),
-                "format": "mp3",
-            },
-            artifacts=[str(output_path)],
-        )
+        # The caller cannot substitute another credential or bypass consent.
+        return self.execute(inputs)

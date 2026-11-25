@@ -7,6 +7,9 @@ Run: pytest tests/contracts/test_jimeng_video.py -v
 """
 
 import pytest
+from tests.tools.conftest import generation_tmp_path as tmp_path, verified_generation_project
+
+pytestmark = pytest.mark.usefixtures('verified_generation_project')
 
 from tools.base_tool import (
     BaseTool,

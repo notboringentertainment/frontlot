@@ -349,8 +349,13 @@ class SeedanceVideo(BaseTool):
 
         governance: dict[str, Any] = {}
         try:
-            # Look governance (look_refs verified before any upload) runs inside paid_call_context.
-            project_root, tracker, config = _shared.paid_call_context(inputs, governance=governance, media="video")
+            # Look governance (look_refs verified before any upload) and the
+            # per-shot allowance (C2) both run inside paid_call_context, which
+            # needs this call's own estimate to measure the shot's dollars.
+            estimate = self._estimate_cost_v25(inputs)
+            project_root, tracker, config = _shared.paid_call_context(
+                inputs, governance=governance, media="video", estimated_usd=estimate,
+            )
             # Prompts always leave the machine; reference images only when consented.
             config.require_egress("fal", "prompts")
             local_refs = [pathsafe.resolve_input(p, project_root) for p in inputs.get("reference_image_paths") or []]
@@ -373,7 +378,6 @@ class SeedanceVideo(BaseTool):
                     "shot_id": str(inputs["shot_id"]),
                 })
             payload = self._build_v25_payload(inputs, image_urls)
-            estimate = self._estimate_cost_v25(inputs)
             reservation_id = reserve_paid_call(
                 tracker,
                 project_root,
@@ -383,6 +387,8 @@ class SeedanceVideo(BaseTool):
                 reserved_usd=estimate,
                 output_hint={"kind": "video", "output_path": str(output_path),
                              "generate_audio": bool(payload["generate_audio"])},
+                inputs=inputs,
+                kind="video",
             )
         except Exception as exc:
             return ToolResult(success=False, error=f"Seedance 2.5 preflight failed: {exc}")
@@ -411,6 +417,8 @@ class SeedanceVideo(BaseTool):
             )
             video_url = data["video"]["url"]
             staging = pathsafe.staging_file(project_root, ".mp4")
+            from tools.cost_tracker import retain_download
+            retain_download(project_root,reservation_id,staging)
             _shared.fal_download(
                 video_url,
                 staging,
@@ -448,11 +456,8 @@ class SeedanceVideo(BaseTool):
             receipts.complete_generation(project_root, execution_id, tracker=tracker)
             state = "completed"
         except Exception as exc:
-            if staging is not None and not completion_started:
-                try:
-                    staging.unlink()
-                except FileNotFoundError:
-                    pass
+            # Never discard a provider-accepted download because a local
+            # verifier failed. Its hold and quarantined bytes need review.
             return ToolResult(success=False, error=f"Seedance 2.5 video generation failed: {exc}")
         finally:
             # Submit-without-persisted-request-id is INDETERMINATE (the provider

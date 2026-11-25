@@ -6,13 +6,13 @@ provider-egress consent and (1.1) the sheet-QC judge. It refuses to return a
 config that is not bound to a human-approved ``config`` receipt for the exact
 file digest, so a caller can never act on an edited-but-unapproved ``project.yaml``.
 
-Three schema versions are accepted and normalised to ONE in-memory shape
+Five schema versions are accepted and normalised to ONE in-memory shape
 (D19 R2#2): 1.0 carries a single FAL ``provider_egress`` object; 1.1 carries a
-list of per-provider entries plus a ``qc`` block; 1.2 (D20) adds the hero QC
+list of per-provider entries plus a ``qc`` block; 1.3 adds ElevenLabs audio consent; 1.4 adds signed audio price rates; 1.2 (D20) adds the hero QC
 fields ``qc.hero_policy_sha256`` and ``qc.max_hero_attempts``. Consumers read
 only the normalised accessors (``egress_for``, ``require_egress``, ``qc``,
 ``require_qc``, ``require_hero_qc``), never the raw fields. Hero runs need
-1.2: there is NO code default for the hero budget or bundle (R1#7, R5#3).
+1.2 or 1.3: there is NO code default for the hero budget or bundle (R1#7, R5#3).
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ PROJECT_CONFIG_FILENAME = "project.yaml"
 EGRESS_CLASS_PROMPTS = "prompts"
 EGRESS_CLASS_REFERENCE_IMAGES = "reference_images"
 EGRESS_CLASS_GENERATED_SHEET_IMAGES = "generated_sheet_images"
-SUPPORTED_VERSIONS = ("1.0", "1.1", "1.2")
+SUPPORTED_VERSIONS = ("1.0", "1.1", "1.2", "1.3", "1.4")
 HERO_QC_VERSION = "1.2"
 
 
@@ -134,7 +134,7 @@ class VerifiedProjectConfig:
         """D20: hero judging needs a 1.2 config naming the hero bundle and the
         hero budget. A 1.1 config is sheet-only; nothing about it changes."""
         qc = self.require_qc()
-        if not qc.has_hero or self.version != HERO_QC_VERSION:
+        if not qc.has_hero or self.version not in (HERO_QC_VERSION, "1.3", "1.4"):
             raise ProjectConfigError(
                 f"{PROJECT_CONFIG_FILENAME} {self.version} carries no hero QC policy; headshot judging needs a "
                 f"{HERO_QC_VERSION} config with qc.hero_policy_sha256 and qc.max_hero_attempts approved through the human gate."
@@ -206,3 +206,17 @@ def load_verified_project_config(project_root: Path | str) -> VerifiedProjectCon
             f"before any paid call or governed stage."
         )
     return VerifiedProjectConfig(project_root=root, digest=digest, data=data)
+
+
+def load_current_verified_project_config(project_root: Path | str) -> VerifiedProjectConfig:
+    """Audio spending requires the latest signed settings, never a restored
+    historical configuration. Other historical readers retain their contract."""
+    from lib.receipts import verified_approvals
+
+    config = load_verified_project_config(project_root)
+    approvals = verified_approvals(project_root, "config")
+    if not approvals or approvals[-1].get("record") != {"config_sha256": config.digest}:
+        raise ProjectConfigError(
+            "The production's settings do not match its latest signed approval. No audio can be sent."
+        )
+    return config

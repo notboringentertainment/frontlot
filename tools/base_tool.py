@@ -6,6 +6,7 @@ interface for discovery, execution, cost estimation, and health reporting.
 
 from __future__ import annotations
 
+from lib import programs
 import functools
 import hashlib
 import inspect
@@ -161,6 +162,7 @@ _VOLATILE_INPUT_KEYS = frozenset({
     "project_dir", "project_path", "output_path", "output_dir", "output_file",
     "objects_dir", "scene_id", "execution_id", "cost_tracker", "api_key",
     "budget_usd_cap", "poll_s", "deadline_s", "timeout_s",
+    "footage_request_id",  # consent identity; bound separately by the signed receipt
 })
 _PATH_KEY_SUFFIXES = ("_path", "_paths", "_dir", "_file")
 
@@ -313,7 +315,39 @@ def _instrument_execute(fn: Callable) -> Callable:
         try:
             from lib.events import emit_event, infer_project_dir
         except Exception:
+            # Missing optional telemetry cannot turn an alternate audio route
+            # into an unsigned service call.
+            runtime=getattr(self,'runtime',None)
+            if getattr(self,'name','') not in {'elevenlabs_tts','music_gen','elevenlabs_sfx','tts_selector'} and (
+                getattr(self,'capability','') in {'tts','music_generation','sfx','sound_effects','audio_generation','speech_to_text'}
+                or (self.__class__.__module__.startswith('tools.audio.') or getattr(self,'name','') in {'azure_stt','dashscope_asr'}) and getattr(runtime,'value',runtime)=='api'):
+                from tools.audio._legacy_guard import refusal
+                denied=refusal(inputs)
+                if denied:return ToolResult(success=False,error=denied)
             return fn(self, inputs, *args, **kwargs)
+
+        # A pending audio bill freezes further network audio, including a
+        # direct provider call that does not pass through the voice selector.
+        # This stop never supplies spending permission for any tool.
+        runtime = getattr(self, "runtime", None)
+        protected_audio = getattr(self, "name", "") in {"elevenlabs_tts", "music_gen", "elevenlabs_sfx"} or (getattr(self, "name", "") == "tts_selector" and isinstance(inputs,dict) and inputs.get("audio_request_id"))
+        if not protected_audio and getattr(runtime, "value", runtime) == "api" and (getattr(self, "capability", "") in {"tts", "music_generation", "sfx", "sound_effects", "audio_generation", "speech_to_text"} or getattr(self,'name','') in {'azure_stt','dashscope_asr'}):
+            audio_root = infer_project_dir(inputs)
+            if audio_root is not None:
+                from tools.cost_tracker import nonterminal_reservations
+                pending = nonterminal_reservations(audio_root)
+                if any((r.get("output_hint") or {}).get("kind") == "audio" for r in pending):
+                    return ToolResult(success=False, error="An audio charge is unresolved. Check and sign its account outcome before any more audio calls.")
+
+        # Alternate audio routes need positive authority, never a failed attempt
+        # to identify a trailer. Pure local processing has no service boundary.
+        audio_generator = getattr(self, "capability", "") in {"tts", "music_generation", "sfx", "sound_effects", "audio_generation", "speech_to_text"}
+        audio_service = (self.__class__.__module__.startswith("tools.audio.") or getattr(self,'name','') in {'azure_stt','dashscope_asr'}) and getattr(runtime, "value", runtime) == "api"
+        if getattr(self, "name", "") not in {"elevenlabs_tts", "music_gen", "elevenlabs_sfx", "tts_selector"} and (audio_generator or audio_service):
+            from tools.audio._legacy_guard import refusal
+            denied = refusal(inputs)
+            if denied:
+                return ToolResult(success=False, error=denied)
 
         tool_name = getattr(self, "name", "") or self.__class__.__name__
         scene_id = inputs.get("scene_id") if isinstance(inputs, dict) else None
@@ -393,7 +427,12 @@ class BaseTool(ABC):
         super().__init_subclass__(**kwargs)
         impl = cls.__dict__.get("execute")
         if impl is not None and not getattr(impl, "__isabstractmethod__", False):
-            cls.execute = _instrument_execute(impl)
+            from tools._generation_guard import protect
+            cls.execute = protect(_instrument_execute(impl))
+        for name,impl in list(cls.__dict__.items()):
+            if (name=='_generate' or name.startswith('_generate_') or name=='_execute') and inspect.isfunction(impl):
+                from tools._generation_guard import protect
+                setattr(cls,name,protect(impl))
 
     # --- Identity (override in subclasses) ---
     name: str = ""
@@ -481,7 +520,7 @@ class BaseTool(ABC):
             if dep.startswith(("cmd:", "binary:")):
                 prefix = "cmd:" if dep.startswith("cmd:") else "binary:"
                 cmd_name = dep[len(prefix):]
-                if shutil.which(cmd_name) is None:
+                if not programs.available(cmd_name):
                     raise DependencyError(
                         f"Command {cmd_name!r} not found. {self.install_instructions}"
                     )
@@ -592,15 +631,15 @@ class BaseTool(ABC):
         """Run a subprocess command with standard error handling.
 
         On Windows, resolves .cmd/.bat wrappers (e.g. npx, npm) via
-        shutil.which() so subprocess.run() can find them without shell=True.
+        programs.which() so programs.run() can find them without shell=True.
         """
         resolved_cmd = list(cmd)
         if platform.system() == "Windows" and resolved_cmd:
-            exe = shutil.which(resolved_cmd[0])
+            exe = programs.which(resolved_cmd[0])
             if exe:
                 resolved_cmd[0] = exe
         try:
-            return subprocess.run(
+            return programs.run(
                 resolved_cmd,
                 capture_output=True,
                 text=True,

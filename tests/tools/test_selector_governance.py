@@ -81,9 +81,39 @@ def image(monkeypatch):
 
 def test_legacy_call_without_project_is_unchanged(video, image):
     loose_v, bound_v = video
-    assert VideoSelector().execute({"prompt": "fog"}).success and loose_v.calls and not bound_v.calls
+    assert not VideoSelector().execute({"prompt": "fog"}).success and not loose_v.calls and not bound_v.calls
     loose_i, bound_i = image
-    assert ImageSelector().execute({"prompt": "fog"}).success and loose_i.calls and not bound_i.calls
+    assert not ImageSelector().execute({"prompt": "fog"}).success and not loose_i.calls and not bound_i.calls
+
+
+@pytest.mark.parametrize('selector_cls, fixture, provider', [
+    (VideoSelector, 'video', 'kling_reference_video'),
+    (ImageSelector, 'image', 'seedream_image'),
+])
+@pytest.mark.parametrize('allowance', [.05, .20])
+def test_supervised_selector_checks_chosen_provider_estimate(
+        env, verifiers, request, selector_cls, fixture, provider, allowance):
+    from lib.supervised_production import prepare
+    loose, bound = request.getfixturevalue(fixture)
+    bound.name = provider
+    # The unbound provider ranks higher and is cheaper: its estimate must not
+    # authorize the governed provider, which costs 10 cents.
+    loose.estimate_cost = lambda inputs: 0.0
+    (env / 'canon.md').write_text('Existing story.')
+    prepare(env, {'shot_id': 'supervised', 'direction': 'Turn toward the camera.',
+        'source_paths': ['canon.md'], 'spend_allowance_usd': allowance,
+        'max_video_takes': 1, 'allowed_tools': [provider],
+        'look_refs': [CHAR_REF], 'reference_manifest': []}, user_note='Try this shot.')
+    result = selector_cls().execute({'project_dir': str(env), 'shot_id': 'supervised',
+        'asset_class': 'supervised_shot', 'prompt': 'Turn toward the camera.',
+        'look_refs': [CHAR_REF], 'reference_manifest': []})
+    assert not loose.calls
+    if allowance < .1:
+        assert not result.success and 'allowance' in result.error
+        assert not bound.calls
+    else:
+        assert result.success, result.error
+        assert len(bound.calls) == 1
 
 
 def _governed_inputs(verifiers, selector_cls, **extra):
@@ -141,7 +171,7 @@ def test_governance_refusal_stops_delegation(env, verifiers, request, selector_c
     # Governed keys without a resolvable project are refused too (no ungoverned escape).
     verifiers.refuse_look = False
     r = selector_cls().execute({"prompt": "fog", "look_refs": [CHAR_REF]})
-    assert not r.success and "refused before delegation" in r.error and not loose.calls and not bound.calls
+    assert not r.success and "registered production" in r.error and not loose.calls and not bound.calls
 
 
 def test_governed_project_by_signed_pin_needs_no_keys(env, verifiers, image, monkeypatch):

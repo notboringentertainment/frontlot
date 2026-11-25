@@ -1,0 +1,1 @@
+{ "name": "frontlot-live", "version": "0.1.0", "description": "Reports a Story-drive session to the app's live session screen. Inert outside Story-drive.", "author": { "name": "Not Boring Entertainment" }, "types": "./types/index.d.ts" }

@@ -419,9 +419,9 @@ def hero_migration_blockers(project_dir: Path | str) -> list[str]:
     from lib.project_config import ProjectConfigError, load_verified_project_config
 
     project_dir = Path(project_dir)
-    proposal = _read_json(project_dir / "checkpoint_proposal.json")
-    cast = (((proposal or {}).get("artifacts") or {}).get("proposal_packet") or {}).get("cast") or {}
-    char_ids = [str(c) for c in cast.get("character_ids") or []]
+    from lib.cast_change import effective_cast
+
+    char_ids = list(effective_cast(project_dir)["character_ids"])  # the proposal cast plus signed cast changes
     try:
         heads = active_headshots(project_dir)
     except HeadshotError as exc:

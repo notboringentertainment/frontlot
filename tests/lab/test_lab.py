@@ -1,0 +1,989 @@
+import base64
+import io
+import json
+import re
+import shutil
+import subprocess
+from decimal import Decimal
+from pathlib import Path
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient as StarletteTestClient
+from PIL import Image
+
+from lab.app import create_app
+from lab.canon import read_with_claude
+from lab.fal import MODEL, Fal
+
+FIXTURES = Path(__file__).parent / "fixtures"
+PROJECT = "0b4cb6ec-ec94-46c7-a9ea-aa90f1d753cb"
+SHOW = f"/api/shows/{PROJECT}"
+CANON = {
+    "entries": [
+        dict(name="Esme Vale", kind="person", quotes=["She has a blunt dark bob and a coat with a collar turned up against the salt wind."],
+             description="An approximation.", drafted=False, look_id="esme-dock"),
+        dict(name="Orin Bell", kind="person", quotes=[], description="A broad man with silver hair.", drafted=True, look_id=None),
+        dict(name="Tide Office", kind="place", quotes=["The Tide Office is a clapboard room on stilts over a tidal inlet."],
+             description="A clapboard room on stilts.", drafted=False, look_id=None),
+        dict(name="Bell Steps", kind="place", quotes=[], description="Seaweed-covered stone steps.", drafted=True, look_id=None),
+    ]
+}
+
+
+def TestClient(app):
+    return StarletteTestClient(app, base_url="http://localhost:4751")
+
+
+def test_only_local_hosts_are_allowed(folders):
+    with TestClient(create_app(*folders)) as client:
+        for host in ("127.0.0.1:4751", "localhost:4751"):
+            assert client.get("/api/ready", headers={"Host": host}).status_code == 200
+        assert client.get("/api/ready", headers={"Host": "testserver"}).status_code == 400
+
+
+def test_page_revalidates_and_versions_its_assets(folders, tmp_path, monkeypatch):
+    static = tmp_path / "static"
+    shutil.copytree(Path(__file__).parents[2] / "lab" / "static", static)
+    monkeypatch.setattr("lab.app.STATIC", static)
+
+    with TestClient(create_app(*folders)) as client:
+        page = client.get("/")
+        assert page.headers.get("cache-control") == "no-cache"
+        for asset in ("lab.js", "lab.css"):
+            pattern = rf'"/static/{re.escape(asset)}\?v=([^"]+)"'
+            version = re.search(pattern, page.text)
+            assert version, f"Missing version in the link to {asset}"
+            with (static / asset).open("a") as file:
+                file.write("\n/* An asset update */\n")
+            updated = re.search(pattern, client.get("/").text)
+            assert updated and updated[1] != version[1]
+            assert client.get(updated[0].strip('"')).status_code == 200
+
+
+@pytest.fixture
+def folders(tmp_path):
+    return shutil.copytree(FIXTURES, tmp_path / "writer"), tmp_path / "lab"
+
+
+@pytest.fixture
+def png():
+    with io.BytesIO() as stream:
+        Image.new("RGB", (20, 20), "#627b81").save(stream, format="PNG")
+        return stream.getvalue()
+
+
+def test_kit_list(folders):
+    root, _ = folders
+    pending = root / "River Index (a9q3).writeros/memory/exports/studio-kit"
+    pending.mkdir(parents=True)
+    (pending / "state.json").write_text('{"status":"pending","generation":null}')
+    unreadable = root / "October Rooks (x6q8).writeros/memory/exports/studio-kit"
+    unreadable.mkdir(parents=True)
+    (unreadable / "state.json").write_text("{?")
+    missing = root / "Oxbow Weather (n2t4).writeros"
+    missing.mkdir()
+    with TestClient(create_app(*folders)) as client:
+        shows = {show["title"]: show for show in client.get("/api/shows").json()}
+        assert {title: show["status"] for title, show in shows.items()} == {
+            "The Lantern Post": "current", "Winter Freight": "no-canon",
+            "River Index": "pending", "October Rooks": "unreadable", "Oxbow Weather": "missing",
+        }
+        assert shows["The Lantern Post"]["id"] == PROJECT
+        assert client.post(f"/api/shows/{shows['Winter Freight']['id']}/canon").status_code == 404
+
+
+def test_missing_root(folders):
+    root, library = folders
+    with TestClient(create_app(root / "missing", library)) as client:
+        assert client.get("/api/shows").json() == []
+
+
+@pytest.mark.parametrize("outcome", ["good", "bad", "missing"])
+def test_claude_and_manual_entries(folders, monkeypatch, outcome):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(kwargs["input"])
+        assert args[1] == "-p"
+        assert "--no-session-persistence" in args
+        assert "clapboard room" in calls[-1] and "The undelivered letters" in calls[-1]
+        assert "esme-dock" in calls[-1]
+        assert "face clearly visible and turned toward the camera" in calls[-1]
+        if outcome == "missing":
+            raise FileNotFoundError
+        stdout = json.dumps({"structured_output": CANON}) if outcome == "good" else "Not JSON"
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    monkeypatch.setattr("lab.canon.subprocess.run", run)
+    monkeypatch.setattr("lab.canon.shutil.which", lambda _: "claude")
+    with TestClient(create_app(*folders, canon_reader=read_with_claude)) as client:
+        first = client.post(f"{SHOW}/canon").json()
+        assert client.post(f"{SHOW}/canon").json() == first
+        assert len(calls) == 1
+        if outcome == "good":
+            assert first["notice"] == ""
+            esme, orin, tide, steps = first["entries"]
+            assert esme["description"].startswith("A woman with a blunt dark bob")
+            assert esme["quotes"] and not esme["drafted"]
+            assert orin["drafted"] and not orin["quotes"]
+            assert tide["kind"] == steps["kind"] == "place"
+            client.patch(f"{SHOW}/entries/{esme['id']}", json={"name": "Esme V.", "description": "A red coat."})
+            client.delete(f"{SHOW}/entries/{orin['id']}")
+            reread = client.post(f"{SHOW}/canon?again=true").json()
+            assert [entry["name"] for entry in reread["entries"]] == ["Esme V.", "Tide Office", "Bell Steps"]
+            assert reread["entries"][0]["description"] == "A red coat."
+            assert len(calls) == 2
+        else:
+            assert not first["entries"]
+            assert "add people and places by hand" in first["notice"]
+        added = client.post(f"{SHOW}/entries", json={"name": "Pella Rook", "kind": "person", "description": "A yellow coat."}).json()
+        assert client.patch(f"{SHOW}/entries/{added['id']}", json={"name": "Pella Reed"}).json()["name"] == "Pella Reed"
+
+
+def test_description_is_required_and_unchanged_draft_keeps_its_source(folders):
+    def no_fal(request):
+        pytest.fail("A blank description must never reach Fal.")
+
+    fal = Fal(transport=httpx.MockTransport(no_fal))
+    with TestClient(create_app(*folders, canon_reader=lambda *_: CANON, fal=fal)) as client:
+        show = client.post(f"{SHOW}/canon").json()
+        orin = show["entries"][1]
+        entry = f"{SHOW}/entries/{orin['id']}"
+        for fields in ({}, {"description": "  "}):
+            assert client.post(f"{SHOW}/entries", json={"name": "Pella Rook", "kind": "person", **fields}).status_code == 422
+
+        for method, path in (("PATCH", entry), ("POST", f"{entry}/make")):
+            response = client.request(method, path, json={"description": "  "})
+            assert response.status_code == 422
+            assert response.json()["detail"] == "Write a description before saving or making pictures."
+
+        saved = client.patch(entry, json={"name": orin["name"], "description": orin["description"]}).json()
+        assert saved["description"] == orin["description"]
+        assert saved["drafted"] and saved["source"] == "Drafted, not from canon"
+        assert client.get(SHOW).json()["entries"] == show["entries"]
+
+
+def test_pictures_references_import_spending_and_read_only(folders, png, monkeypatch):
+    root, library = folders
+    snapshot = lambda: {path.relative_to(root): (path.stat().st_mtime_ns, path.read_bytes() if path.is_file() else None)
+                        for path in root.rglob("*")}
+    before = snapshot()
+    requests = []
+
+    def fal_queue(request):
+        if request.method == "POST":
+            assert request.headers["authorization"] == "Key fixture"
+            requests.append((request.url.path, json.loads(request.content)))
+            return httpx.Response(200, json={"status_url": "https://queue.fal.run/fixture/status",
+                                             "response_url": "https://queue.fal.run/fixture/result"})
+        if request.url.path == "/fixture/status":
+            return httpx.Response(200, json={"status": "COMPLETED"})
+        if request.url.path == "/fixture/result":
+            units = {2: "0.19", 3: "invalid"}.get(len(requests))
+            headers = {"X-Fal-Billable-Units": units} if units is not None else {}
+            return httpx.Response(200, headers=headers, json={"images": [{"url": "https://fixture.invalid/picture.png"}] * 4})
+        assert request.url.host == "fixture.invalid"
+        assert "authorization" not in request.headers
+        return httpx.Response(200, content=png)
+
+    fal = Fal(transport=httpx.MockTransport(fal_queue))
+    monkeypatch.setattr(fal, "headers", lambda: {"Authorization": "Key fixture"})
+    with TestClient(create_app(root, library, canon_reader=lambda *_: CANON, fal=fal)) as client:
+        assert client.get("/").status_code == 200
+        show = client.post(f"{SHOW}/canon").json()
+        assert Decimal(show["limit"]) == 25
+        entry = f"{SHOW}/entries/{show['entries'][0]['id']}"
+        made = client.post(f"{entry}/make", json={"description": "Esme in a coat."}).json()
+        assert len(made["pictures"]) == 4
+        assert Decimal(made["spent"]) == Decimal("0.20") and made["estimated"]
+        assert requests[0][0] == "/" + MODEL.text
+        assert requests[0][1]["prompt"] == "Esme in a coat."
+        assert requests[0][1]["num_images"] == 4 and "image_urls" not in requests[0][1]
+        first, second, *_ = made["pictures"]
+        for picture in (first, second):
+            assert client.patch(picture["url"], json={"kept": True}).json()["kept"]
+        assert client.patch(first["url"], json={"main": True}).json()["main"]
+        state_file = library / PROJECT / "show.json"
+        kept_file = library / PROJECT / show["entries"][0]["id"] / "kept" / first["id"]
+        before_rejection = state_file.read_bytes()
+        assert client.patch(first["url"], json={"kept": False, "main": True}).status_code == 409
+        assert state_file.read_bytes() == before_rejection
+        assert kept_file.read_bytes() == png
+
+        scene = "At a desk, lit by a lamp, looking up."
+        more = client.post(f"{entry}/make", json={"description": "Esme in a coat.", "scene": scene}).json()
+        assert more["description"] == "Esme in a coat."
+        assert all(picture["scene"] == scene for picture in more["pictures"][4:])
+        assert len(more["pictures"]) == 8
+        assert Decimal(more["spent"]) - Decimal(made["spent"]) == Decimal("0.19")
+        state = json.loads((library / PROJECT / "show.json").read_text())
+        assert Decimal(state["estimated"]) == Decimal("0.20")
+        endpoint, payload = requests[-1]
+        assert endpoint == "/" + MODEL.edit
+        assert "Show the same person, preserving the face and identity from the reference picture." in payload["prompt"]
+        assert "Esme in a coat." in payload["prompt"] and scene in payload["prompt"]
+        assert "across the batch" not in payload["prompt"]
+        assert base64.b64decode(payload["image_urls"][0].split(",", 1)[1]) == png
+        assert client.get(first["url"]).content == png
+
+        outside = Image.new("RGB", (32, 32), "#301860")
+        with io.BytesIO() as stream:
+            outside.save(stream, format="JPEG")
+            imported = client.post(f"{entry}/import", content=stream.getvalue()).json()
+        assert imported["kept"]
+        assert client.patch(imported["url"], json={"main": True}).json()["main"]
+        assert not client.patch(first["url"], json={"kept": False}).json()["main"]
+        assert client.patch(SHOW, json={"limit": "0.58"}).status_code == 200
+        assert client.post(f"{entry}/make", json={"description": "Esme indoors."}).status_code == 409
+        assert len(requests) == 2
+        assert client.patch(SHOW, json={"limit": "0.59"}).status_code == 200
+        assert client.post(f"{entry}/make", json={"description": "Esme indoors."}).status_code == 200
+        prompt = requests[-1][1]["prompt"]
+        assert "Show the same person" in prompt and "Esme indoors." in prompt
+        assert all(word in prompt for word in ("angle", "framing", "expression", "across the batch"))
+        ref = base64.b64decode(requests[-1][1]["image_urls"][0].split(",", 1)[1])
+        assert Image.open(io.BytesIO(ref)).getpixel((0, 0)) != (98, 123, 129)
+
+    with TestClient(create_app(root, library, fal=fal)) as client:
+        saved = client.get(SHOW).json()
+        assert Decimal(saved["spent"]) == Decimal("0.59") and saved["estimated"]
+        pictures = saved["entries"][0]["pictures"]
+        assert len(pictures) == 13
+        assert all("scene" not in picture for picture in pictures[:4])
+        assert all(picture["scene"] == scene for picture in pictures[4:8])
+        assert sum(picture["kept"] for picture in saved["entries"][0]["pictures"]) == 2
+        assert sum(picture["main"] for picture in saved["entries"][0]["pictures"]) == 1
+    assert snapshot() == before
+
+
+def test_budget_shows_cents_without_rounding_saved_spending(folders):
+    _, library = folders
+    with TestClient(create_app(*folders)) as client:
+        assert client.patch(SHOW, json={"limit": "25"}).status_code == 200
+        path = library / PROJECT / "show.json"
+        state = json.loads(path.read_text())
+        state["spent"] = "0.025"
+        path.write_text(json.dumps(state))
+
+        saved = client.get(SHOW).json()
+        assert saved["spent"] == "0.03"
+        assert saved["limit"] == "25.00"
+        assert json.loads(path.read_text())["spent"] == "0.025"
+
+
+def test_changed_generation_reads_named_canon_and_keeps_local_edits(folders):
+    root, library = folders
+    exports = next(root.glob("The Lantern Post*/memory/exports/studio-kit"))
+    calls = []
+
+    def reader(canon, *_):
+        calls.append(canon)
+        return CANON
+
+    with TestClient(create_app(root, library, canon_reader=reader)) as client:
+        original = client.post(f"{SHOW}/canon").json()
+        entry = original["entries"][0]
+        client.patch(f"{SHOW}/entries/{entry['id']}", json={"description": "A different coat."})
+        state_file = exports / "state.json"
+        state = json.loads(state_file.read_text())
+        newer = exports / "gen-3-0123456789ab"
+        shutil.copytree(exports / state["generation"], newer)
+        new_canon = newer / "canon.md"
+        new_canon.write_text(new_canon.read_text() + "\nEsme works through the night.\n")
+        client.post(f"{SHOW}/canon")
+        assert len(calls) == 1
+        state["generation"] = newer.name
+        state_file.write_text(json.dumps(state))
+        updated = client.post(f"{SHOW}/canon").json()
+        assert len(calls) == 2
+        assert "works through the night" in calls[-1]
+        assert updated["entries"][0]["id"] == entry["id"]
+        assert updated["entries"][0]["description"] == "A different coat."
+
+
+def test_voices_sound_and_credits(folders, monkeypatch, png):
+    from lab.elevenlabs import ElevenLabs
+
+    audio = b"ID3 fixture audio"
+    description = "Middle-aged, with a coastal accent and a low, dry voice."
+    drafts = []
+    used = 100
+    awaiting_usage = set()
+
+    def draft_voice(canon, outline, person):
+        assert "clapboard room" in canon
+        drafts.append(person["name"])
+        return description
+
+    def eleven(request):
+        nonlocal used
+        path = request.url.path
+        if request.url.host == "fixture.invalid":
+            assert "xi-api-key" not in request.headers
+            return httpx.Response(200, content=audio)
+        assert request.headers["xi-api-key"] == "fixture"
+        if path == "/v1/user/subscription":
+            return httpx.Response(200, json={"character_count": used, "character_limit": 1000})
+        if path == "/v1/workspace/analytics/query/usage-by-product-over-time":
+            query = json.loads(request.content)
+            assert query["start_time"] <= query["end_time"]
+            rows = [["Voice Generation", 100, 1], ["Music", 50, 1]]
+            if awaiting_usage:
+                rows = [row for row in rows if row[0] not in awaiting_usage]
+                awaiting_usage.clear()
+            return httpx.Response(200, json={
+                "columns": ["product_type", "total_usage", "usage_count"],
+                "rows": rows,
+            })
+        voice = {"voice_id": "library-voice", "name": "Library voice",
+                 "preview_url": "https://fixture.invalid/sample.mp3"}
+        if path == "/v2/voices":
+            return httpx.Response(200, json={"voices": [voice], "has_more": False})
+        if path == "/v1/voices/library-voice":
+            return httpx.Response(200, json=voice)
+        payload = json.loads(request.content)
+        if path == "/v1/text-to-voice/design":
+            assert payload["voice_description"] == description
+            assert payload["model_id"] == "eleven_multilingual_ttv_v2"
+            awaiting_usage.add("Voice Generation")
+            used += 100
+            return httpx.Response(200, json={"previews": [
+                {"generated_voice_id": name, "audio_base_64": base64.b64encode(audio).decode()}
+                for name in ("first", "second", "third")
+            ]})
+        if path == "/v1/text-to-voice":
+            assert payload["generated_voice_id"] == "second"
+            assert payload["voice_description"] == description
+            return httpx.Response(200, json={"voice_id": "new-voice", "name": payload["voice_name"]})
+        if path == "/v1/text-to-speech/new-voice":
+            assert payload == {"text": "Wait for the tide.", "model_id": "eleven_flash_v2_5"}
+            used += 9
+            return httpx.Response(200, content=audio, headers={"character-cost": "9"})
+        if path == "/v1/sound-generation":
+            assert payload["model_id"] == "eleven_text_to_sound_v3"
+            assert payload["text"] == "A bell in the fog."
+            used += 40
+            return httpx.Response(200, content=audio, headers={"character-cost": "40"})
+        assert path == "/v1/music"
+        assert payload == {"prompt": "A short piano phrase.", "music_length_ms": 3000, "model_id": "music_v2_5"}
+        used += 50
+        return httpx.Response(200, content=audio)
+
+    root, library = folders
+    provider = ElevenLabs(httpx.MockTransport(eleven))
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "fixture")
+    with TestClient(create_app(root, library, canon_reader=lambda *_: CANON,
+                               eleven=provider, voice_reader=draft_voice)) as client:
+        show = client.post(f"{SHOW}/canon").json()
+        person, other = show["entries"][:2]
+        entry = f"{SHOW}/entries/{person['id']}"
+        picture = client.post(f"{entry}/import", content=png).json()
+        assert client.get(picture["url"]).headers["content-type"] == "image/png"
+        old = json.loads((library / PROJECT / "show.json").read_text())
+        assert "voice" not in old["entries"][0] and "sound" not in old
+        loaded = client.get(SHOW).json()
+        assert loaded["entries"][0]["pictures"] == [picture]
+        assert loaded["credits_used"] == 0 and loaded["sound"] == {}
+        assert drafts == []
+        client.patch(SHOW, json={"limit": "0"})
+        assert client.get(f"{SHOW}/audio/credits").json()["remaining"] == 900
+        for _ in range(2):
+            assert client.post(f"{entry}/voice/draft").json()["description"] == description
+        assert drafts == [person["name"]]
+
+        previews = client.post(f"{entry}/voice/design", json={"text": description}).json()
+        assert len(previews) == 3
+        assert client.get(f"{SHOW}/audio/credits").json()["credits_partial"]
+        assert client.get(f"{SHOW}/audio/credits").json()["credits_used"] == 100
+        assert client.get(previews[1]["url"]).content == audio
+        picked = client.post(f"{entry}/voice/pick", json={"preview": previews[1]["id"]}).json()
+        assert picked["id"] == "new-voice"
+        voices = client.get(f"{SHOW}/audio/voices").json()
+        assert voices == [{"id": "library-voice", "name": "Library voice", "sample": True}]
+        other_entry = f"{SHOW}/entries/{other['id']}"
+        sample = client.post(f"{other_entry}/voice/listen", json={"voice_id": "library-voice"}).json()
+        assert client.get(sample["url"]).content == audio
+        assert client.post(f"{other_entry}/voice/pick", json={"voice_id": "library-voice"}).json()["id"] == "library-voice"
+
+        take = client.post(f"{entry}/takes", json={"text": "Wait for the tide."}).json()
+        effect = client.post(f"{SHOW}/sound/effects", json={"text": "A bell in the fog."}).json()
+        music = client.post(f"{SHOW}/sound/music", json={"text": "A short piano phrase.", "seconds": 3}).json()
+        credits = client.get(f"{SHOW}/audio/credits").json()
+        assert credits["credits_used"] == 199 and not credits["credits_partial"]
+        for clip in (take, effect, music):
+            assert client.get(clip["url"], headers={"Host": "elsewhere"}).status_code == 400
+            assert client.get(clip["url"], headers={"Range": "bytes=0-2"}).content == b"ID3"
+            assert client.patch(clip["url"], json={"kept": True}).json()["kept"]
+            assert (library / PROJECT / "audio/kept" / clip["id"]).read_bytes() == audio
+        for path, extension, media_type in (
+            (f"{entry}/takes", "mp3", "audio/mpeg"),
+            (f"{SHOW}/sound/effects", "aiff", "audio/aiff"),
+            (f"{SHOW}/sound/music", "aif", "audio/aiff"),
+        ):
+            response = client.post(f"{path}/import", params={"filename": f"Outside take.{extension}"}, content=audio)
+            assert response.status_code == 201
+            imported = response.json()
+            playback = client.get(imported["url"])
+            assert imported["kept"] and playback.content == audio
+            assert playback.headers["content-type"] == media_type
+        assert "Wait for the tide" in take["id"] and person["name"] in take["id"]
+
+    with TestClient(create_app(root, library, eleven=provider)) as client:
+        saved = client.get(SHOW).json()
+        assert saved["spent"] == saved["limit"] == "0.00"
+        assert saved["entries"][0]["voice"]["id"] == "new-voice"
+        assert saved["entries"][1]["voice"]["id"] == "library-voice"
+        assert len(saved["entries"][0]["takes"]) == 2
+        assert len(saved["sound"]["effects"]) == len(saved["sound"]["music"]) == 2
+        assert saved["credits_used"] == 199 and not saved["credits_partial"]
+        assert client.get(f"{SHOW}/audio/credits").json()["remaining"] == 701
+
+
+def test_audio_import_size_limit(folders, monkeypatch):
+    monkeypatch.setattr("lab.audio.MAX_IMPORT_BYTES", 10, raising=False)
+    root, library = folders
+    with TestClient(create_app(root, library)) as client:
+        path = f"{SHOW}/sound/music/import"
+        params = {"filename": "Outside take.wav"}
+        response = client.post(path, params=params, content=iter([b"12345", b"678901"]))
+        assert response.status_code == 413
+        assert response.json()["detail"] == "Choose an audio file that is 200 MB or smaller."
+        assert not (library / PROJECT / "audio").exists()
+
+        response = client.post(path, params=params, content=iter([b"12345", b"67890"]))
+        assert response.status_code == 201
+        assert client.get(response.json()["url"]).content == b"1234567890"
+
+
+def test_audio_missing_key(folders, monkeypatch):
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    monkeypatch.setattr("lab.elevenlabs.dotenv_values", lambda *_, **__: {})
+    with TestClient(create_app(*folders)) as client:
+        message = "ElevenLabs needs a key before it can make audio."
+        assert client.get(f"{SHOW}/audio/credits").json()["notice"] == message
+        response = client.post(f"{SHOW}/sound/effects", json={"text": "A bell in the fog."})
+        assert response.status_code == 502 and response.json()["detail"] == message
+
+
+@pytest.fixture
+def footage_fal(monkeypatch):
+    monkeypatch.setenv("FAL_KEY", "fixture")
+    submissions = []
+    status = {"status": "IN_PROGRESS"}
+    video = b"fixture mp4 video"
+
+    def queue(request):
+        if request.url.host == "fixture.invalid":
+            assert "authorization" not in request.headers
+            return httpx.Response(200, content=video)
+        assert request.headers["authorization"] == "Key fixture"
+        if request.method == "POST":
+            submissions.append((request.url.path, json.loads(request.content)))
+            job = f"https://queue.fal.run/fixture/{len(submissions)}"
+            return httpx.Response(200, json={"status_url": job + "/status", "response_url": job})
+        if request.url.path.endswith("/status"):
+            return httpx.Response(200, json=status)
+        model, _ = submissions[int(request.url.path.rsplit("/", 1)[1]) - 1]
+        headers = {"X-Fal-Billable-Units": "4.75"} if model.endswith(("/image-to-video", "/reference-to-video")) else {}
+        return httpx.Response(200, headers=headers, json={"video": {"url": "https://fixture.invalid/shot.mp4"}})
+
+    return Fal(httpx.MockTransport(queue)), submissions, status, video
+
+
+def test_footage_from_a_kept_picture_and_words_groups_takes(folders, footage_fal, png, monkeypatch):
+    fal, submissions, status, video = footage_fal
+    status["status"] = "COMPLETED"
+    opened = []
+    monkeypatch.setattr(subprocess, "Popen", lambda args, **_: opened.append(args))
+    with TestClient(create_app(*folders, canon_reader=lambda *_: CANON, fal=fal)) as client:
+        show = client.post(f"{SHOW}/canon").json()
+        place = show["entries"][2]
+        entry = f"{SHOW}/entries/{place['id']}"
+        picture = client.post(entry + "/import", content=png).json()
+        path = SHOW + "/footage"
+        fields = {"description": "The tide rises under the office.", "seconds": 5}
+
+        queued = client.post(path, json={**fields, "picture": picture["id"], "shape": "1:1"})
+        assert queued.status_code == 202
+        assert queued.json()["spent"] == "0.35"
+        assert queued.json()["footage"]["prices"]["plain"] == {"5": "0.35", "10": "0.70"}
+        assert queued.json()["footage"]["pending_jobs"] == [
+            {"title": fields["description"], "from": place["name"], "shape": "1:1",
+             "shape_note": "This clip will take the shape of its opening picture."},
+        ]
+        first = client.post(path + "/check").json()
+        assert first["spent"] == "0.33" and not first["estimated"]
+        queued = client.post(path, json={**fields, "shape": "9:16"})
+        assert queued.status_code == 202 and queued.json()["spent"] == "0.68"
+        second = client.post(path + "/check").json()
+        assert second["spent"] == "0.68" and second["estimated"]
+        (shot,) = second["footage"]["shots"]
+        assert shot["title"] == fields["description"]
+        reference, words = shot["clips"]
+        assert reference["from"] == place["name"] and not words.get("from")
+        assert reference["shape"] == "1:1" and words["shape"] == "9:16"
+        kling = "/fal-ai/kling-video/v2.6/pro/"
+        image_call, text_call = submissions
+        assert image_call[0] == kling + "image-to-video"
+        assert {key: value for key, value in image_call[1].items() if key != "start_image_url"} == {
+            "prompt": fields["description"], "duration": "5", "generate_audio": False,
+        }
+        assert base64.b64decode(image_call[1]["start_image_url"].split(",", 1)[1]) == client.get(picture["url"]).content
+        assert text_call == (kling + "text-to-video",
+                             {"prompt": fields["description"], "duration": "5", "generate_audio": False, "aspect_ratio": "9:16"})
+
+        url = reference["url"]
+        assert client.get(url, headers={"Host": "elsewhere"}).status_code == 400
+        response = client.get(url, headers={"Range": "bytes=2-6"})
+        assert response.status_code == 206 and response.content == video[2:7]
+        assert client.patch(url, json={"kept": True}).json()["kept"]
+        kept = folders[1] / PROJECT / "footage/kept" / reference["id"]
+        assert kept.read_bytes() == video and kept.name.startswith("The tide rises")
+        assert client.post(path + "/finder").status_code == 204
+        assert opened == [["open", str(kept.parent)]]
+        assert not client.patch(url, json={"kept": False}).json()["kept"]
+        assert not kept.exists()
+
+
+@pytest.mark.parametrize("has_start", [False, True])
+def test_footage_with_kept_references(folders, footage_fal, png, has_start):
+    fal, submissions, status, _ = footage_fal
+    path = SHOW + "/footage"
+    with TestClient(create_app(*folders, canon_reader=lambda *_: CANON, fal=fal)) as client:
+        show = client.post(SHOW + "/canon").json()
+        person, _, place, _ = show["entries"]
+        portrait = client.post(f"{SHOW}/entries/{person['id']}/import", content=png).json()
+        with io.BytesIO() as stream:
+            Image.new("RGB", (20, 20), "#ffffff").save(stream, format="PNG")
+            landscape = client.post(f"{SHOW}/entries/{place['id']}/import", content=stream.getvalue()).json()
+
+        description = f"Locked wide shot. {person['name'].lower()} walks into the shot"
+        references = [portrait]
+        names = [person["name"]]
+        expected_prompt = "Locked wide shot. @Image1 walks into the shot"
+        if not has_start:
+            description += f" at {place['name']}"
+            expected_prompt += " at @Image2"
+            references.append(landscape)
+            names.append(place["name"])
+        queued = client.post(path, json={"description": description, "seconds": 5, "shape": "1:1",
+                             "picture": landscape["id"] if has_start else None,
+                             "references": [picture["id"] for picture in references]})
+        assert queued.status_code == 202
+        assert queued.json()["spent"] == "0.56"
+        assert queued.json()["footage"]["prices"]["references"] == {"5": "0.560", "10": "1.120"}
+        origin = place["name"] if has_start else None
+        assert queued.json()["footage"]["pending_jobs"] == [
+            {"title": description, "from": origin, "with": names, "shape": "1:1"},
+        ]
+
+        (model, payload), = submissions
+        assert model == "/fal-ai/kling-video/o3/pro/reference-to-video"
+        assert payload["prompt"] == expected_prompt
+        assert payload["duration"] == "5" and payload["generate_audio"] is False
+        assert payload["aspect_ratio"] == "1:1"
+        assert [base64.b64decode(url.split(",", 1)[1]) for url in payload["image_urls"]] == [
+            client.get(picture["url"]).content for picture in references
+        ]
+        if has_start:
+            assert base64.b64decode(payload["start_image_url"].split(",", 1)[1]) == client.get(landscape["url"]).content
+        else:
+            assert "start_image_url" not in payload
+
+        status["status"] = "COMPLETED"
+        checked = client.post(path + "/check").json()
+        assert checked["spent"] == "0.53" and not checked["estimated"]
+        shot, = checked["footage"]["shots"]
+        clip, = shot["clips"]
+        assert shot["title"] == description
+        assert clip.get("from") == origin and clip["with"] == names
+
+
+def test_pending_footage_survives_reload_and_uses_shared_limit(folders, footage_fal):
+    fal, submissions, status, video = footage_fal
+    path = SHOW + "/footage"
+    fields = {"description": "Mist moves over the steps.", "seconds": 10}
+    with TestClient(create_app(*folders, fal=fal)) as client:
+        client.patch(SHOW, json={"limit": "0.69"})
+        assert client.post(path, json=fields).status_code == 409
+        assert not submissions
+        client.patch(SHOW, json={"limit": "0.70"})
+        assert client.post(path, json=fields).status_code == 202
+        checked = client.post(path + "/check").json()
+        assert checked["footage"]["pending"] and checked["spent"] == "0.70"
+        assert checked["footage"]["pending_jobs"] == [{"title": fields["description"], "from": None, "shape": "16:9"}]
+        assert client.post(path, json=fields).status_code == 409
+
+    state_file = folders[1] / PROJECT / "show.json"
+    old = json.loads(state_file.read_text())
+    clip = {"id": "Old take.mp4", "url": path + "/clips/Old%20take.mp4", "kept": True, "from": "Bell Steps"}
+    clip_folder = state_file.parent / "footage"
+    clip_folder.mkdir()
+    (clip_folder / clip["id"]).write_bytes(video)
+    old["footage"]["shots"] = [{"title": "The tide turns.", "clips": [clip]}]
+    old_job = next(iter(old["footage"]["jobs"].values()))
+    assert "with" not in old_job
+    del old_job["shape"]
+    state_file.write_text(json.dumps(old))
+
+    with TestClient(create_app(*folders, fal=fal)) as client:
+        show = client.get(SHOW).json()
+        assert show["footage"]["shots"][0]["clips"] == [clip]
+        assert client.get(clip["url"]).content == video
+        assert show["footage"]["pending"] and show["spent"] == "0.70"
+        assert show["footage"]["pending_jobs"] == [{"title": fields["description"], "from": None}]
+        status["status"] = "COMPLETED"
+        checked = client.post(path + "/check").json()
+        assert not checked["footage"]["pending"] and checked["spent"] == "0.70"
+        assert checked["footage"]["pending_jobs"] == []
+        assert len(checked["footage"]["shots"][1]["clips"]) == 1
+        assert client.post(path + "/check").json() == checked
+        assert len(submissions) == 1
+        assert submissions[0][1]["aspect_ratio"] == "16:9"
+
+
+def test_footage_import_and_old_show(folders, png, monkeypatch):
+    path = SHOW + "/footage"
+    monkeypatch.setattr("lab.footage.MAX_IMPORT_BYTES", 20, raising=False)
+    with TestClient(create_app(*folders, canon_reader=lambda *_: CANON)) as client:
+        entry = client.post(SHOW + "/canon").json()["entries"][0]
+        picture = client.post(f"{SHOW}/entries/{entry['id']}/import", content=png).json()
+        state_file = folders[1] / PROJECT / "show.json"
+        old = json.loads(state_file.read_text())
+        old["entries"][0].update(voice={"id": "old", "name": "Old voice"}, takes=[{"title": "Wait for the tide."}])
+        old["sound"] = {"music": [{"title": "A piano phrase."}]}
+        state_file.write_text(json.dumps(old))
+        before = state_file.read_bytes()
+        loaded = client.get(SHOW).json()
+        assert loaded["footage"]["shots"] == [] and not loaded["footage"]["pending"]
+        assert loaded["footage"]["pending_jobs"] == []
+        assert loaded["entries"][0]["pictures"] == [picture]
+        assert loaded["entries"][0]["voice"]["id"] == "old"
+        assert loaded["entries"][0]["takes"] == old["entries"][0]["takes"]
+        assert loaded["sound"] == old["sound"]
+        assert state_file.read_bytes() == before
+
+        params = {"filename": "Outside take.mov"}
+        assert client.post(path + "/import", params=params, content=b"x" * 21).status_code == 413
+        response = client.post(path + "/import", params=params, content=b"x" * 20)
+        assert response.status_code == 201
+        clip = response.json()
+        assert clip["kept"] and client.get(clip["url"]).content == b"x" * 20
+        assert client.get(clip["url"]).headers["content-type"] == "video/quicktime"
+        assert (folders[1] / PROJECT / "footage/kept" / clip["id"]).is_file()
+        assert client.get(SHOW).json()["footage"]["shots"][0]["title"] == "Outside take"
+
+
+@pytest.mark.parametrize("outcome", ["success", "missing name", "unavailable"])
+def test_help_write_shot(folders, footage_fal, png, monkeypatch, outcome):
+    fal, submissions, _, _ = footage_fal
+    draft = ("Esme Vale pauses inside the Tide Office, her coat collar turned up. "
+             "The camera moves slowly toward her as pale light falls across the clapboard walls. "
+             "She turns toward the window while the water rises below the room.")
+    calls = []
+
+    def ask(prompt, schema):
+        calls.append(prompt)
+        if outcome == "unavailable":
+            raise FileNotFoundError
+        return {"description": draft.replace("Tide Office", "Tide Offices") if outcome == "missing name" else draft}
+
+    monkeypatch.setattr("lab.canon.ask_claude", ask)
+    with TestClient(create_app(*folders, canon_reader=lambda *_: CANON, fal=fal)) as client:
+        show = client.post(SHOW + "/canon").json()
+        person, _, place, _ = show["entries"]
+        pictures = [client.post(f"{SHOW}/entries/{entry['id']}/import", content=png).json()["id"]
+                    for entry in (person, place)]
+        path = SHOW + "/footage/draft"
+        fields = {"description": "  She stops and looks outside.  ", "seconds": 10, "shape": "9:16",
+                  "picture": pictures[0], "references": pictures[1:]}
+
+        assert client.post(path, json={**fields, "description": "  "}).status_code == 422
+        assert not calls
+        response = client.post(path, json=fields)
+        if outcome == "success":
+            assert response.status_code == 200
+            assert response.json() == {"description": draft}
+        else:
+            assert response.status_code == 502
+            assert "Your words are still here." in response.json()["detail"]
+            if outcome == "missing name":
+                assert place["name"] in response.json()["detail"]
+
+        prompt, = calls
+        context = json.loads(prompt.split("\n\n", 1)[1])
+        assert fields["description"] == context["your_words"]
+        assert context["length_in_seconds"] == 10 and context["shape"] == "Upright"
+        assert context["canon"] and context["outline"] and context["approved_looks"]
+        assert context["pictures"] == [
+            {key: entry[key] for key in ("name", "kind", "description")} for entry in (person, place)
+        ]
+        assert not submissions and client.get(SHOW).json()["spent"] == "0.00"
+
+
+@pytest.mark.parametrize("clip_id, trim, length", [
+    ("missing", 0, 1), ("shot", -1, 1), ("shot", 1, 1.5), ("shot", 0, 0),
+])
+def test_cut_rejects_an_unknown_clip_or_impossible_trim(clip_id, trim, length):
+    from lab.cut import check_plan
+
+    pieces = {"shot": {"kind": "clip", "description": "Rain over the inlet", "seconds": 2}}
+    plan = {"clips": [{"id": clip_id, "trim": trim, "length": length}], "cards": [], "sounds": []}
+    with pytest.raises(ValueError):
+        check_plan(plan, pieces)
+
+
+@pytest.fixture
+def cut_media(tmp_path):
+    from lab.cut import ffmpeg
+
+    sources = {
+        "Rain over the inlet.webm": ["-f", "lavfi", "-i", "color=red:s=90x160:r=16", "-c:v", "libvpx-vp9"],
+        "A lamp comes on.mov": ["-f", "lavfi", "-i", "color=blue:s=160x90:r=30",
+                               "-f", "lavfi", "-i", "sine=220", "-c:v", "libx264", "-c:a", "aac"],
+        "A low note.wav": ["-f", "lavfi", "-i", "sine=440"],
+    }
+    for name, inputs in sources.items():
+        ffmpeg([*inputs, "-t", "1.5", str(tmp_path / name)])
+    return {name: (tmp_path / name).read_bytes() for name in sources}
+
+
+def test_cut_from_kept_pieces_makes_a_preview_and_numbered_finals(folders, cut_media, monkeypatch):
+    from urllib.parse import quote
+
+    from lab.cut import ffmpeg, probe
+
+    calls = []
+
+    def plan_cut(prompt, schema):
+        materials = json.loads(prompt[prompt.index("\n\n") + 2:])
+        calls.append(materials)
+        pieces = {item["description"]: item for item in materials["pieces"]}
+        assert set(pieces) == {"Rain over the inlet", "A lamp comes on", "A low note"}
+        assert all(1.4 < item["seconds"] < 1.6 for item in pieces.values())
+        return {
+            "clips": [{"id": pieces[name]["id"], "trim": 0, "length": duration}
+                      for name, duration in [("Rain over the inlet", 1.59), ("A lamp comes on", 1)]],
+            "cards": [{"words": "THE LIGHT IS ON" if len(calls) == 1 else "COME CLOSER",
+                       "start": 1.5, "length": 1}],
+            "sounds": [{"id": pieces["A low note"]["id"], "start": 0, "level": 0.5}],
+        }
+
+    monkeypatch.setattr("lab.cut.ask_claude", plan_cut)
+    with TestClient(create_app(*folders)) as client:
+        cut = f"{SHOW}/cut"
+        assert "Keep a clip first" in client.post(cut, json={"words": "A trailer"}).json()["detail"]
+        for name, data in cut_media.items():
+            route = "sound/music" if name.endswith(".wav") else "footage"
+            response = client.post(f"{SHOW}/{route}/import", params={"filename": name}, content=data)
+            assert response.status_code == 201
+        hidden = client.post(f"{SHOW}/footage/import", params={"filename": "An unused shot.webm"},
+                             content=cut_media["Rain over the inlet.webm"]).json()
+        assert client.patch(f"{SHOW}/footage/clips/{quote(hidden['id'])}", json={"kept": False}).is_success
+
+        assert client.post(cut, json={"words": "A trailer"}).status_code == 202
+        first = client.get(cut).json()["current"]
+        picture = first["timeline"]["picture"]
+        assert [item["kind"] for item in picture] == ["clip", "card", "clip"]
+        assert picture[0]["length"] == 1.5  # A small overrun is clamped.
+        assert client.get(f"{cut}/files/{first['preview']}").is_success
+        directory = folders[1] / PROJECT / "cut"
+        preview = directory / first["preview"]
+        streams = probe(preview)["streams"]
+        assert [(s["codec_name"], s.get("width"), s.get("height")) for s in streams] == [
+            ("h264", 640, 360), ("aac", None, None)]
+        for time, color in [(0.5, "red"), (2, "card"), (3, "blue")]:
+            frame = Image.open(io.BytesIO(ffmpeg(["-ss", str(time), "-i", str(preview),
+                                                  "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-"])))
+            red, _, blue = frame.getpixel((320, 60))
+            if color == "card":
+                assert frame.getpixel((0, 0)) == (0, 0, 0)
+                assert frame.convert("L").getextrema()[1] > 240
+            else:
+                assert (red > blue) == (color == "red")
+        mixed = ffmpeg(["-ss", "0.1", "-t", "0.4", "-i", str(preview), "-vn", "-f", "s16le", "-"])
+        assert any(mixed)  # The silent footage plays with the added music.
+
+        assert client.post(f"{cut}/revise", json={"words": "Change the card"}).status_code == 202
+        revised = client.get(cut).json()
+        assert calls[-1]["current_timeline"] == first["timeline"]
+        assert calls[-1]["change"] == "Change the card"
+        assert revised["current"]["timeline"]["picture"][1]["words"] == "COME CLOSER"
+        assert revised["previous"] == first
+        assert client.post(f"{cut}/restore").json()["current"] == first
+
+        monkeypatch.setattr("lab.cut.ask_claude", lambda *_: {"clips": [], "cards": [], "sounds": []})
+        assert client.post(f"{cut}/revise", json={"words": "Make it shorter"}).status_code == 202
+        failed = client.get(cut).json()
+        assert failed["current"] == first
+        assert "Your last cut is still here." in failed["notice"]
+        assert client.post(cut, json={"words": "A different trailer"}).status_code == 202
+        assert client.get(cut).json() == failed
+        for number in (1, 2):
+            assert client.post(f"{cut}/final").status_code == 202
+            assert client.get(cut).json()["current"]["final"] == f"Final {number}.mp4"
+        assert (directory / "Final 1.mp4").is_file()
+        final = probe(directory / "Final 2.mp4")
+        assert (final["streams"][0]["width"], final["streams"][0]["height"]) == (1920, 1080)
+
+
+def test_cut_job_is_visible_in_a_fresh_show_request(folders, cut_media, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    cutting = Event()
+    finish = Event()
+
+    def plan_cut(prompt, schema):
+        cutting.set()
+        assert finish.wait(10)
+        return {"clips": [], "cards": [], "sounds": []}
+
+    monkeypatch.setattr("lab.cut.ask_claude", plan_cut)
+    with TestClient(create_app(*folders)) as client, ThreadPoolExecutor() as pool:
+        name = "Rain over the inlet.webm"
+        assert client.post(f"{SHOW}/footage/import", params={"filename": name}, content=cut_media[name]).is_success
+        started = pool.submit(client.post, f"{SHOW}/cut", json={"words": "An opening scene"})
+        try:
+            assert cutting.wait(10)
+            assert client.get("/").is_success
+            assert client.get(SHOW).json()["cut"]["job"] == "cutting"
+            saved = json.loads((folders[1] / PROJECT / "show.json").read_text())
+            assert saved["cut"]["job"] == "cutting"
+        finally:
+            finish.set()
+        assert started.result(timeout=10).status_code == 202
+        assert not client.get(SHOW).json()["cut"]["job"]
+
+
+def test_cut_can_trim_within_the_last_frame_of_slow_footage(tmp_path):
+    from lab.cut import check_plan, ffmpeg, measure, probe, render_cut
+
+    clip = tmp_path / "Slow picture.mp4"
+    ffmpeg(["-f", "lavfi", "-i", "color=red:s=80x60:r=1:d=2", "-c:v", "libx264", str(clip)])
+    pieces = measure({"shot": {"kind": "clip", "description": "Slow picture", "path": clip}})
+    timeline = check_plan({"clips": [{"id": "shot", "trim": 1.5, "length": 0.5}],
+                           "cards": [], "sounds": []}, pieces)
+    output = tmp_path / "cut.mp4"
+    render_cut(timeline, pieces, "1:1", output)
+    video = probe(output)["streams"][0]
+    assert (video["width"], video["height"], video["nb_frames"]) == (480, 480, "12")
+
+
+def test_cut_renders_a_closing_card_after_rounding_twenty_clips(tmp_path):
+    from lab.cut import check_plan, ffmpeg, measure, probe, render_cut
+
+    clip = tmp_path / "Red sky.mp4"
+    ffmpeg(["-f", "lavfi", "-i", "color=red:s=80x60:r=24:d=7", "-c:v", "libx264", str(clip)])
+    pieces = measure({"sky": {"kind": "clip", "description": "Red sky", "path": clip}})
+    timeline = check_plan({
+        "clips": [{"id": "sky", "trim": 0, "length": 6.03}] * 20,
+        "cards": [{"words": "THE SKY CLEARS", "start": 120.6, "length": 1}],
+        "sounds": [],
+    }, pieces)
+    assert timeline["picture"][-1]["kind"] == "card"
+    assert timeline["picture"][-1]["start"] == pytest.approx(120 + 20 / 24)
+
+    output = tmp_path / "cut.mp4"
+    render_cut(timeline, pieces, "16:9", output)
+    video = probe(output)["streams"][0]
+    assert int(video["nb_frames"]) == 2924
+    assert float(video["duration"]) == pytest.approx(121 + 20 / 24)
+
+
+def test_cut_trims_music_to_the_source_and_the_picture(tmp_path):
+    from lab.cut import check_plan, ffmpeg, measure, probe, render_cut
+
+    clip = tmp_path / "Blue sky.mp4"
+    music = tmp_path / "A rising note.wav"
+    short_music = tmp_path / "A low note.wav"
+    ffmpeg(["-f", "lavfi", "-i", "color=blue:s=80x60:r=24:d=5", "-c:v", "libx264", str(clip)])
+    ffmpeg(["-f", "lavfi", "-i", "sine=330:d=8", str(music)])
+    ffmpeg(["-f", "lavfi", "-i", "sine=440:d=1.5", str(short_music)])
+    pieces = measure({
+        "sky": {"kind": "clip", "description": "Blue sky", "path": clip},
+        "rising": {"kind": "music", "description": "A rising note", "path": music},
+        "low": {"kind": "music", "description": "A low note", "path": short_music},
+    })
+    timeline = check_plan({
+        "clips": [{"id": "sky", "trim": 0, "length": 5}], "cards": [],
+        "sounds": [
+            {"id": "rising", "start": 0, "length": 90, "level": 0.5},
+            {"id": "low", "start": 1, "trim": 0.5, "length": 90, "level": 0.5},
+            {"id": "low", "start": 6, "length": 90, "level": 0.5},
+        ],
+    }, pieces)
+    assert [(cue["id"], cue["length"]) for cue in timeline["sounds"]] == [("rising", 5), ("low", 1)]
+
+    output = tmp_path / "cut.mp4"
+    render_cut(timeline, pieces, "16:9", output)
+    assert float(probe(output)["format"]["duration"]) == pytest.approx(5)
+    mixed = ffmpeg(["-ss", "4.5", "-i", str(output), "-vn", "-f", "s16le", "-"])
+    assert any(mixed)
+
+
+def test_cut_preserves_clip_sound_and_lowers_it_under_voice(tmp_path, cut_media):
+    from array import array
+
+    from lab.cut import check_plan, ffmpeg, measure, probe, render_cut
+
+    fixtures = {
+        "lamp": ("clip", "A lamp comes on.mov"),
+        "rain": ("clip", "Rain over the inlet.webm"),
+        "voice": ("voice", "A low note.wav"),
+    }
+    pieces = {}
+    for name, (kind, filename) in fixtures.items():
+        path = tmp_path / filename
+        path.write_bytes(cut_media[filename])
+        pieces[name] = {"kind": kind, "description": path.stem, "path": path}
+    pieces = measure(pieces)
+    timeline = check_plan({
+        "clips": [{"id": "lamp", "trim": 0.25, "length": 1}, {"id": "rain", "trim": 0, "length": 1}],
+        "cards": [],
+        "sounds": [{"id": "voice", "start": 0.5, "length": 0.35, "level": 0.05}],
+    }, pieces)
+
+    output = tmp_path / "cut.mp4"
+    render_cut(timeline, pieces, "16:9", output)
+    assert [stream["codec_type"] for stream in probe(output)["streams"]] == ["video", "audio"]
+
+    def peak(start):
+        samples = ffmpeg(["-ss", start, "-i", str(output), "-t", "0.1", "-vn", "-f", "s16le", "-"])
+        return max(abs(sample) for sample in array("h", samples))
+
+    normal = peak("0.2")
+    assert normal > 1000
+    assert 0 < peak("0.65") < normal * 0.6
+    assert peak("1.4") == 0
+
+
+def test_first_cut_plan_failure_has_a_retry_message(folders, cut_media, monkeypatch):
+    monkeypatch.setattr("lab.cut.ask_claude", lambda *_: {"clips": [], "cards": [], "sounds": []})
+    with TestClient(create_app(*folders)) as client:
+        name = "Rain over the inlet.webm"
+        assert client.post(f"{SHOW}/footage/import", params={"filename": name}, content=cut_media[name]).is_success
+        assert client.post(f"{SHOW}/cut", json={"words": "An opening scene"}).status_code == 202
+        failed = client.get(f"{SHOW}/cut").json()
+        assert not failed.get("current")
+        assert failed["notice"] == "Claude couldn't make that cut. Try again, or say it another way."
+
+
+def test_restarted_lab_clears_an_interrupted_cut_after_one_notice(folders):
+    from lab.app import Library
+
+    library = Library(folders[1])
+    state = library.load(PROJECT)
+    state["cut"] = {"job": "preview", "notice": ""}
+    library.save(PROJECT, state)
+
+    with TestClient(create_app(*folders)) as client:
+        interrupted = client.get(SHOW).json()["cut"]
+        assert interrupted["job"] is None
+        assert interrupted["notice"] == "The lab stopped before finishing. Try making the cut again."
+        assert library.load(PROJECT)["cut"]["job"] is None
+        assert not client.get(f"{SHOW}/cut").json()["notice"]
+
+    with TestClient(create_app(*folders)) as client:
+        assert not client.get(SHOW).json()["cut"]["notice"]

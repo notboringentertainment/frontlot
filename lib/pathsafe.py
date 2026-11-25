@@ -138,7 +138,7 @@ def reencode_png_bytes(source: Path | str) -> bytes:
 def store_content_addressed(
     staging_path: Path | str, objects_dir: Path | str, ext: str
 ) -> tuple[str, Path]:
-    """Move a staged file into ``objects_dir`` under its content hash.
+    """Publish a staged file into ``objects_dir`` under its content hash.
 
     Images (``ext == '.png'``) are decoded and re-encoded deterministically
     before hashing so JPEG/WebP/PNG inputs with identical pixels share an id.
@@ -162,18 +162,21 @@ def store_content_addressed(
         asset_id = sha256_file(staging_path)
 
     final_path = objects_dir / f"{asset_id}{ext}"
-    try:
-        if final_path.exists():
-            if sha256_file(final_path) != asset_id:
-                raise PathSafetyError(
-                    f"existing object {final_path} does not match its content hash"
-                )
+    if not final_path.exists():
+        if source==staging_path:
+            # A rename can succeed before its directory sync fails. Keep the
+            # original at its recorded quarantine path until publication is
+            # durable, rather than leaving a paid-download locator dangling.
+            atomic_write_bytes(final_path,source.read_bytes())
         else:
             atomic_move(source, final_path)
-    finally:
-        for leftover in {source, staging_path}:
-            try:
-                Path(leftover).unlink()
-            except FileNotFoundError:
-                pass
+    if sha256_file(final_path) != asset_id:
+        raise PathSafetyError('The stored object does not match its content hash. Its source was kept.')
+    # Discard only after a verified destination exists. Failure must retain the
+    # original download, even when the normalized copy could not be stored.
+    for leftover in {source, staging_path}:
+        try:
+            Path(leftover).unlink()
+        except FileNotFoundError:
+            pass
     return asset_id, final_path

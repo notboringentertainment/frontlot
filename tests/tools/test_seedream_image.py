@@ -148,11 +148,11 @@ def test_unregistered_or_unapproved_project_rejected(env, tmp_path, monkeypatch)
     (stray / "project.yaml").write_bytes((env / "project.yaml").read_bytes())
     with patch.object(_shared, "fal_queue_submit") as submit:
         r = SeedreamImage().execute({"prompt": "p", "project_dir": str(stray), "cost_tracker": object(), "budget_usd_cap": 99})
-        assert not r.success and "registered project" in r.error
+        assert not r.success and "registered production" in r.error
         unapproved = make_verified_project(tmp_path, monkeypatch, "proj-unbound")
         (unapproved / "project.yaml").write_text((unapproved / "project.yaml").read_text() + "# edited\n")
         r = SeedreamImage().execute({"prompt": "p", "project_dir": str(unapproved)})
-        assert not r.success and "approval receipt" in r.error
+        assert not r.success and "verifiable signed settings" in r.error
     submit.assert_not_called()
 
 
@@ -184,7 +184,10 @@ def test_submit_crash_is_indeterminate_and_wait_failure_is_pending_billing(env, 
     assert not r.success
     res = list(load_reservations(env2).values())[0]
     assert res["state"] == "pending_billing" and res["provider_request_id"] == "req-f"
-    assert project_tracker(env2).budget_spent_usd == pytest.approx(res["reserved_usd"], abs=1e-4)
+    tracker = project_tracker(env2)
+    assert tracker.budget_spent_usd == 0
+    assert tracker.budget_reserved_usd == pytest.approx(res["reserved_usd"], abs=1e-4)
+    assert tracker.budget_remaining_usd == pytest.approx(tracker.budget_total_usd-res["reserved_usd"], abs=1e-4)
     with pytest.raises(IndeterminatePaidCallError):
         resume_check(env2)
 

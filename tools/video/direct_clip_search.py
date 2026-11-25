@@ -33,6 +33,7 @@ No CLIP model. No embeddings. No corpus index. Just files on disk.
 """
 from __future__ import annotations
 
+from lib import programs
 from contextlib import contextmanager
 import subprocess
 import time
@@ -638,7 +639,7 @@ def _extract_mid_thumbnail(
     ]
     try:
         probe_timeout = min(10, remaining_seconds(deadline))
-        result = subprocess.run(
+        result = programs.run(
             probe_cmd, capture_output=True, text=True, timeout=probe_timeout
         )
         duration = float(result.stdout.strip() or "0")
@@ -657,7 +658,7 @@ def _extract_mid_thumbnail(
         str(thumb_path),
     ]
     extract_timeout = min(15, remaining_seconds(deadline))
-    subprocess.run(
+    programs.run(
         extract_cmd, capture_output=True, timeout=extract_timeout,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )

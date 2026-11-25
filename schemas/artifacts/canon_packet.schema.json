@@ -141,6 +141,7 @@
                 "minLength": 1,
                 "description": "Stable id, e.g. lock-001 or the atom filename stem"
               },
+              "spoiler": {"type": "boolean", "default": false},
               "decision": {
                 "type": "string",
                 "minLength": 1,
@@ -679,6 +680,7 @@
                 "minLength": 1,
                 "description": "Stable id, e.g. lock-001 or the atom filename stem"
               },
+              "spoiler": {"type": "boolean", "default": false},
               "decision": {
                 "type": "string",
                 "minLength": 1,

@@ -64,9 +64,11 @@ def test_resume_check_blocks_on_every_nonterminal_state(env):
 def test_pending_billing_retains_charge_until_reconciled(env):
     rid = _reserve(env, usd=2.5, request_id="req-p", state="pending_billing")
     t = project_tracker(env)
-    assert t.budget_spent_usd == pytest.approx(2.5) and t.budget_reserved_usd == 0.0
+    assert t.budget_spent_usd == 0 and t.budget_reserved_usd == pytest.approx(2.5)
+    assert t.budget_remaining_usd == pytest.approx(t.budget_total_usd-2.5)
     reconcile_paid_call(env, rid, 0.0, "failed", t)
     assert t.budget_spent_usd == 0.0
+    assert t.budget_reserved_usd == 0.0
     assert load_reservations(env)[rid]["state"] == "failed"
 
 
