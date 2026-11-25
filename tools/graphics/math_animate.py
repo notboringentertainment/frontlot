@@ -6,6 +6,7 @@ using the Manim Community Edition engine. Free, local, no API key required.
 
 from __future__ import annotations
 
+from lib import programs
 import ast
 import os
 import shutil
@@ -186,7 +187,7 @@ class MathAnimate(BaseTool):
     ]
 
     def get_status(self) -> ToolStatus:
-        if shutil.which("manim"):
+        if programs.which("manim"):
             return ToolStatus.AVAILABLE
         return ToolStatus.UNAVAILABLE
 
@@ -206,7 +207,7 @@ class MathAnimate(BaseTool):
         return estimates.get(quality, 15.0)
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
-        if not shutil.which("manim"):
+        if not programs.which("manim"):
             return ToolResult(
                 success=False,
                 error="Manim not found. " + self.install_instructions,
@@ -347,7 +348,7 @@ class MathAnimate(BaseTool):
 
         # Execute Manim
         try:
-            proc = subprocess.run(
+            proc = programs.run(
                 cmd,
                 capture_output=True,
                 text=True,
@@ -454,11 +455,9 @@ class MathAnimate(BaseTool):
         """Get basic info about the rendered file."""
         info: dict[str, Any] = {"file_size_bytes": path.stat().st_size}
 
-        if not shutil.which("ffprobe"):
-            return info
-
         try:
-            proc = subprocess.run(
+            if not programs.which("ffprobe"):return info
+            proc = programs.run(
                 [
                     "ffprobe", "-v", "quiet",
                     "-print_format", "json",

@@ -50,7 +50,7 @@ def _planning_stages(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     """Return every 'proposal' or 'idea' stage (a pipeline may have one or both)."""
     out: list[dict[str, Any]] = []
     for stage in manifest.get("stages", []):
-        if stage.get("name") in {"proposal", "idea"}:
+        if stage.get("name") in {"proposal", "idea"} or (manifest.get('validation_profile')=='trailer-test' and stage.get('name')=='script'):
             out.append(stage)
     return out
 

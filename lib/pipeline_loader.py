@@ -1,6 +1,14 @@
 """Pipeline manifest loader.
 
 Loads and validates pipeline YAML manifests from pipeline_defs/.
+
+Versioned manifests (plan D10, R3#1/R4#1): a pipeline may ship
+``pipeline_defs/<name>@<version>.yaml`` files next to the bare
+``<name>.yaml``. A reference ``<name>@<version>`` resolves to the versioned
+file; the bare name stays an alias of whatever the bare file declares
+(``authored-film.yaml`` is the 1.1 alias for now). Which version a PROJECT
+runs under is decided by its signed ``pipeline_migration`` receipt chain —
+see ``lib.pipeline_pin`` — never by this module alone.
 """
 
 from __future__ import annotations
@@ -46,6 +54,47 @@ def load_pipeline_readonly(name: str, defs_dir: Optional[Path] = None) -> dict[s
     return _load_pipeline_cached(name, str(defs_dir) if defs_dir else "")
 
 
+def parse_pipeline_ref(ref: str) -> tuple[str, Optional[str]]:
+    """Split ``name@version`` into ``(name, version)``; bare names give ``(name, None)``."""
+    if not isinstance(ref, str) or not ref:
+        raise ValueError(f"invalid pipeline reference {ref!r}")
+    if "@" not in ref:
+        return ref, None
+    name, version = ref.split("@", 1)
+    if not name or not version or "@" in version:
+        raise ValueError(f"invalid pipeline reference {ref!r}: expected <name>@<version>")
+    return name, version
+
+
+def manifest_path(ref: str, defs_dir: Optional[Path] = None) -> Path:
+    """The manifest file a reference names (may not exist)."""
+    defs_dir = defs_dir or PIPELINE_DEFS_DIR
+    parse_pipeline_ref(ref)
+    return defs_dir / f"{ref}.yaml"
+
+
+def manifest_versions(name: str, defs_dir: Optional[Path] = None) -> list[str]:
+    """Versions with a dedicated ``<name>@<version>.yaml`` file, sorted."""
+    defs_dir = defs_dir or PIPELINE_DEFS_DIR
+    base, _ = parse_pipeline_ref(name)
+    out = []
+    for p in defs_dir.glob(f"{base}@*.yaml"):
+        n, v = parse_pipeline_ref(p.stem)
+        if n == base and v:
+            out.append(v)
+    return sorted(out, key=lambda v: tuple(int(x) if x.isdigit() else x for x in v.split(".")))
+
+
+def manifest_digest(ref: str, defs_dir: Optional[Path] = None) -> str:
+    """sha256 of the manifest file bytes — what checkpoints and migration receipts bind."""
+    import hashlib
+
+    path = manifest_path(ref, defs_dir)
+    if not path.exists():
+        raise FileNotFoundError(f"Pipeline manifest not found: {path}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def load_pipeline(name: str, defs_dir: Optional[Path] = None) -> dict[str, Any]:
     """Load and validate a pipeline manifest by name.
 
@@ -57,7 +106,7 @@ def load_pipeline(name: str, defs_dir: Optional[Path] = None) -> dict[str, Any]:
         Validated pipeline manifest dict.
     """
     defs_dir = defs_dir or PIPELINE_DEFS_DIR
-    path = defs_dir / f"{name}.yaml"
+    path = manifest_path(name, defs_dir)
     if not path.exists():
         raise FileNotFoundError(f"Pipeline manifest not found: {path}")
 
@@ -67,13 +116,29 @@ def load_pipeline(name: str, defs_dir: Optional[Path] = None) -> dict[str, Any]:
     schema = _load_manifest_schema()
     jsonschema.validate(instance=manifest, schema=schema)
 
+    base, version = parse_pipeline_ref(name)
+    if manifest.get("name") != base:
+        raise ValueError(
+            f"manifest {path.name} declares name {manifest.get('name')!r}, expected {base!r}"
+        )
+    if version is not None and str(manifest.get("version")) != version:
+        raise ValueError(
+            f"manifest {path.name} declares version {manifest.get('version')!r}, "
+            f"but its filename pins {version!r}"
+        )
     return manifest
 
 
 def list_pipelines(defs_dir: Optional[Path] = None) -> list[str]:
-    """List all available pipeline manifest names."""
+    """List all available pipeline names (bare names; versioned files are
+    variants of their base name, not separate pipelines)."""
     defs_dir = defs_dir or PIPELINE_DEFS_DIR
-    return [p.stem for p in defs_dir.glob("*.yaml")]
+    names: list[str] = []
+    for p in sorted(defs_dir.glob("*.yaml")):
+        base, _ = parse_pipeline_ref(p.stem)
+        if base not in names:
+            names.append(base)
+    return names
 
 
 def _condition_is_active(condition: Optional[str], context: Optional[dict[str, Any]]) -> bool:

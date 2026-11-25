@@ -7,6 +7,7 @@ built-in profile presets and external .cube LUT files.
 from __future__ import annotations
 
 import time
+from lib import programs
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +137,11 @@ class ColorGrade(BaseTool):
         if not input_path.exists():
             return ToolResult(success=False, error=f"Input not found: {input_path}")
 
+        try:
+            programs.preflight('ffmpeg')
+        except ValueError as error:
+            return ToolResult(success=False, error=str(error))
+
         output_path = Path(
             inputs.get("output_path", str(input_path.with_stem(f"{input_path.stem}_graded")))
         )
@@ -179,6 +185,21 @@ class ColorGrade(BaseTool):
         )
 
     def _build_filter(self, inputs: dict[str, Any]) -> str:
+        if 'trailer_adjustments' in inputs:
+            c = self.trailer_adjustments(inputs['trailer_adjustments'])
+            source = inputs.get('source_colour', {})
+            if source.get('color_transfer') in ('smpte2084', 'arib-std-b67') or source.get('color_primaries') in ('bt2020','smpte428','smpte431','smpte432') or source.get('color_space') in ('bt2020nc','bt2020c'):
+                raise ValueError('HDR or wide-colour picture cannot be matched here. Bring in a standard-range Rec.709 take first.')
+            # Untagged YUV follows FFmpeg's conventional BT.601 matrix. The
+            # preview report states this assumption; tags are never invented
+            # as evidence of the source's original colour space.
+            space = source.get('color_space')
+            origin = {'bt709':'bt709','bt470bg':'bt601-6-625','smpte170m':'smpte170m'}.get(space,'bt601-6-625')
+            warmth = c['warmth'] / 1000
+            return (f'colorspace=iall={origin}:all=bt709:fast=1:range=tv:format=yuv420p,'
+                    f'eq=brightness={c["brightness"]*.0015}:contrast={1+c["contrast"]*.003}:saturation={1+c["colour"]*.01},'
+                    f'colorbalance=rm={warmth}:bm={-warmth},'
+                    'scale=out_color_matrix=bt709:out_range=tv,format=yuv420p')
         if "custom_vf" in inputs:
             return inputs["custom_vf"]
 
@@ -205,6 +226,13 @@ class ColorGrade(BaseTool):
             )
 
         return vf
+
+    @staticmethod
+    def trailer_adjustments(value):
+        keys = {'brightness','warmth','contrast','colour'}
+        if not isinstance(value,dict) or set(value) != keys or any(type(v) is not int or not -100 <= v <= 100 for v in value.values()):
+            raise ValueError('Each colour control needs a whole number from minus one hundred to one hundred. Reopen the cut and adjust the sliders.')
+        return dict(value)
 
     @staticmethod
     def list_profiles() -> dict[str, str]:

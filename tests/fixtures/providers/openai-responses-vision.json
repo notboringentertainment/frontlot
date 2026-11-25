@@ -1,0 +1,18 @@
+{
+  "provider": "openai",
+  "endpoint": "POST https://api.openai.com/v1/responses ; GET https://api.openai.com/v1/responses/{id}",
+  "verified": "2026-08-27 (D19 probe on the four real 2026-08-26 turnaround images; all four verdicts as expected)",
+  "model": "gpt-5.5 (returned model: gpt-5.5-2026-04-23)",
+  "request_shape": {
+    "model": "gpt-5.5", "background": true, "max_output_tokens": 1200, "store": true,
+    "instructions": "<policy.SYSTEM_PROMPT>",
+    "text": {"format": {"type": "json_schema", "name": "sheet_qc", "strict": true, "schema": "<policy.response_schema(role)>"}},
+    "input": [{"role": "user", "content": [{"type": "input_text", "text": "<policy.judge_prompt>"}, {"type": "input_image", "image_url": "data:image/png;base64,...", "detail": "high"}]}]
+  },
+  "notes": [
+    "background:true returns {id, status:'queued'} within ~6s; poll GET until status not in (queued, in_progress)",
+    "gpt-5.x reasoning models reject 'temperature' (400 'Unsupported parameter')",
+    "output text is in output[].content[].type == 'output_text'; strict json_schema honoured",
+    "usage.total_tokens ~4.5-5k for one 2560x1600 PNG at detail:high; reservation of $0.05/call is conservative"
+  ]
+}

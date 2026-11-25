@@ -1,15 +1,17 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/monty-dark.svg">
-    <img src="assets/monty-light.svg" alt="Monty the Clapper — the official mascot of OpenMontage" width="200">
+    <img src="assets/monty-light.svg" alt="Monty the Clapper — the official mascot of Front Lot" width="200">
   </picture>
 </p>
 
-<p align="center"><sub><em>Monty the Clapper — the official mascot of OpenMontage</em></sub></p>
+<p align="center"><sub><em>Monty the Clapper — the official mascot of Front Lot</em></sub></p>
 
-<h1 align="center">OpenMontage</h1>
+<h1 align="center">FRONT LOT</h1>
 
-<p align="center"><strong>The first open-source, agentic video production system.</strong></p>
+<p align="center"><strong>The AI studio where films get built.</strong><br><sub>By Not Boring Entertainment</sub></p>
+
+<p align="center"><sub>Built on <a href="https://github.com/calesthio/OpenMontage">OpenMontage</a> by Calesthio (AGPL-3.0), heavily extended into its own studio. "OpenMontage" in internal docs and code refers to the engine layer.</sub></p>
 
 <p align="center">
   <a href="https://openmontage.video"><img src="https://img.shields.io/badge/Website-openmontage.video-d14a28?style=for-the-badge" alt="openmontage.video"></a>

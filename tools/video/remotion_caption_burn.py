@@ -30,6 +30,7 @@ React scene stack in ``remotion-composer/``.
 
 from __future__ import annotations
 
+from lib import programs
 import json
 import math
 import re
@@ -171,7 +172,7 @@ class RemotionCaptionBurn(BaseTool):
 
     def _remotion_available(self) -> bool:
         return (
-            shutil.which("npx") is not None
+            programs.which("npx") is not None
             and self._find_remotion_root() is not None
         )
 
@@ -324,9 +325,9 @@ class RemotionCaptionBurn(BaseTool):
         props_file = props_dir / f"caption-burn-{Path(input_path).stem}.json"
         props_file.write_text(json.dumps(props, indent=2), encoding="utf-8")
 
-        # Render (use npx.cmd on Windows for subprocess compatibility)
-        import sys
-        npx_bin = "npx.cmd" if sys.platform == "win32" else "npx"
+        # Discovery and execution use one setting; Windows discovery resolves
+        # the installed .cmd executable through its normal extension rules.
+        npx_bin = programs.require("npx")
         render_cmd = [
             npx_bin, "remotion", "render",
             "TalkingHead",
