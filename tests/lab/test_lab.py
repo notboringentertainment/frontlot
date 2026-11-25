@@ -280,3 +280,167 @@ def test_changed_generation_reads_named_canon_and_keeps_local_edits(folders):
         assert "works through the night" in calls[-1]
         assert updated["entries"][0]["id"] == entry["id"]
         assert updated["entries"][0]["description"] == "A different coat."
+
+
+def test_voices_sound_and_credits(folders, monkeypatch, png):
+    from lab.elevenlabs import ElevenLabs
+
+    audio = b"ID3 fixture audio"
+    description = "Middle-aged, with a coastal accent and a low, dry voice."
+    drafts = []
+    used = 100
+    awaiting_usage = set()
+
+    def draft_voice(canon, outline, person):
+        assert "clapboard room" in canon
+        drafts.append(person["name"])
+        return description
+
+    def eleven(request):
+        nonlocal used
+        path = request.url.path
+        if request.url.host == "fixture.invalid":
+            assert "xi-api-key" not in request.headers
+            return httpx.Response(200, content=audio)
+        assert request.headers["xi-api-key"] == "fixture"
+        if path == "/v1/user/subscription":
+            return httpx.Response(200, json={"character_count": used, "character_limit": 1000})
+        if path == "/v1/workspace/analytics/query/usage-by-product-over-time":
+            query = json.loads(request.content)
+            assert query["start_time"] <= query["end_time"]
+            rows = [["Voice Generation", 100, 1], ["Music", 50, 1]]
+            if awaiting_usage:
+                rows = [row for row in rows if row[0] not in awaiting_usage]
+                awaiting_usage.clear()
+            return httpx.Response(200, json={
+                "columns": ["product_type", "total_usage", "usage_count"],
+                "rows": rows,
+            })
+        voice = {"voice_id": "library-voice", "name": "Library voice",
+                 "preview_url": "https://fixture.invalid/sample.mp3"}
+        if path == "/v2/voices":
+            return httpx.Response(200, json={"voices": [voice], "has_more": False})
+        if path == "/v1/voices/library-voice":
+            return httpx.Response(200, json=voice)
+        payload = json.loads(request.content)
+        if path == "/v1/text-to-voice/design":
+            assert payload["voice_description"] == description
+            assert payload["model_id"] == "eleven_multilingual_ttv_v2"
+            awaiting_usage.add("Voice Generation")
+            used += 100
+            return httpx.Response(200, json={"previews": [
+                {"generated_voice_id": name, "audio_base_64": base64.b64encode(audio).decode()}
+                for name in ("first", "second", "third")
+            ]})
+        if path == "/v1/text-to-voice":
+            assert payload["generated_voice_id"] == "second"
+            assert payload["voice_description"] == description
+            return httpx.Response(200, json={"voice_id": "new-voice", "name": payload["voice_name"]})
+        if path == "/v1/text-to-speech/new-voice":
+            assert payload == {"text": "Wait for the tide.", "model_id": "eleven_flash_v2_5"}
+            used += 9
+            return httpx.Response(200, content=audio, headers={"character-cost": "9"})
+        if path == "/v1/sound-generation":
+            assert payload["model_id"] == "eleven_text_to_sound_v3"
+            assert payload["text"] == "A bell in the fog."
+            used += 40
+            return httpx.Response(200, content=audio, headers={"character-cost": "40"})
+        assert path == "/v1/music"
+        assert payload == {"prompt": "A short piano phrase.", "music_length_ms": 3000, "model_id": "music_v2_5"}
+        used += 50
+        return httpx.Response(200, content=audio)
+
+    root, library = folders
+    provider = ElevenLabs(httpx.MockTransport(eleven))
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "fixture")
+    with TestClient(create_app(root, library, canon_reader=lambda *_: CANON,
+                               eleven=provider, voice_reader=draft_voice)) as client:
+        show = client.post(f"{SHOW}/canon").json()
+        person, other = show["entries"][:2]
+        entry = f"{SHOW}/entries/{person['id']}"
+        picture = client.post(f"{entry}/import", content=png).json()
+        assert client.get(picture["url"]).headers["content-type"] == "image/png"
+        old = json.loads((library / PROJECT / "show.json").read_text())
+        assert "voice" not in old["entries"][0] and "sound" not in old
+        loaded = client.get(SHOW).json()
+        assert loaded["entries"][0]["pictures"] == [picture]
+        assert loaded["credits_used"] == 0 and loaded["sound"] == {}
+        assert drafts == []
+        client.patch(SHOW, json={"limit": "0"})
+        assert client.get(f"{SHOW}/audio/credits").json()["remaining"] == 900
+        for _ in range(2):
+            assert client.post(f"{entry}/voice/draft").json()["description"] == description
+        assert drafts == [person["name"]]
+
+        previews = client.post(f"{entry}/voice/design", json={"text": description}).json()
+        assert len(previews) == 3
+        assert client.get(f"{SHOW}/audio/credits").json()["credits_partial"]
+        assert client.get(f"{SHOW}/audio/credits").json()["credits_used"] == 100
+        assert client.get(previews[1]["url"]).content == audio
+        picked = client.post(f"{entry}/voice/pick", json={"preview": previews[1]["id"]}).json()
+        assert picked["id"] == "new-voice"
+        voices = client.get(f"{SHOW}/audio/voices").json()
+        assert voices == [{"id": "library-voice", "name": "Library voice", "sample": True}]
+        other_entry = f"{SHOW}/entries/{other['id']}"
+        sample = client.post(f"{other_entry}/voice/listen", json={"voice_id": "library-voice"}).json()
+        assert client.get(sample["url"]).content == audio
+        assert client.post(f"{other_entry}/voice/pick", json={"voice_id": "library-voice"}).json()["id"] == "library-voice"
+
+        take = client.post(f"{entry}/takes", json={"text": "Wait for the tide."}).json()
+        effect = client.post(f"{SHOW}/sound/effects", json={"text": "A bell in the fog."}).json()
+        music = client.post(f"{SHOW}/sound/music", json={"text": "A short piano phrase.", "seconds": 3}).json()
+        credits = client.get(f"{SHOW}/audio/credits").json()
+        assert credits["credits_used"] == 199 and not credits["credits_partial"]
+        for clip in (take, effect, music):
+            assert client.get(clip["url"], headers={"Host": "elsewhere"}).status_code == 400
+            assert client.get(clip["url"], headers={"Range": "bytes=0-2"}).content == b"ID3"
+            assert client.patch(clip["url"], json={"kept": True}).json()["kept"]
+            assert (library / PROJECT / "audio/kept" / clip["id"]).read_bytes() == audio
+        for path, extension, media_type in (
+            (f"{entry}/takes", "mp3", "audio/mpeg"),
+            (f"{SHOW}/sound/effects", "aiff", "audio/aiff"),
+            (f"{SHOW}/sound/music", "aif", "audio/aiff"),
+        ):
+            response = client.post(f"{path}/import", params={"filename": f"Outside take.{extension}"}, content=audio)
+            assert response.status_code == 201
+            imported = response.json()
+            playback = client.get(imported["url"])
+            assert imported["kept"] and playback.content == audio
+            assert playback.headers["content-type"] == media_type
+        assert "Wait for the tide" in take["id"] and person["name"] in take["id"]
+
+    with TestClient(create_app(root, library, eleven=provider)) as client:
+        saved = client.get(SHOW).json()
+        assert saved["spent"] == saved["limit"] == "0.00"
+        assert saved["entries"][0]["voice"]["id"] == "new-voice"
+        assert saved["entries"][1]["voice"]["id"] == "library-voice"
+        assert len(saved["entries"][0]["takes"]) == 2
+        assert len(saved["sound"]["effects"]) == len(saved["sound"]["music"]) == 2
+        assert saved["credits_used"] == 199 and not saved["credits_partial"]
+        assert client.get(f"{SHOW}/audio/credits").json()["remaining"] == 701
+
+
+def test_audio_import_size_limit(folders, monkeypatch):
+    monkeypatch.setattr("lab.audio.MAX_IMPORT_BYTES", 10, raising=False)
+    root, library = folders
+    with TestClient(create_app(root, library)) as client:
+        path = f"{SHOW}/sound/music/import"
+        params = {"filename": "Outside take.wav"}
+        response = client.post(path, params=params, content=iter([b"12345", b"678901"]))
+        assert response.status_code == 413
+        assert response.json()["detail"] == "Choose an audio file that is 200 MB or smaller."
+        assert not (library / PROJECT / "audio").exists()
+
+        response = client.post(path, params=params, content=iter([b"12345", b"67890"]))
+        assert response.status_code == 201
+        assert client.get(response.json()["url"]).content == b"1234567890"
+
+
+def test_audio_missing_key(folders, monkeypatch):
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    monkeypatch.setattr("lab.elevenlabs.dotenv_values", lambda *_, **__: {})
+    with TestClient(create_app(*folders)) as client:
+        message = "ElevenLabs needs a key before it can make audio."
+        assert client.get(f"{SHOW}/audio/credits").json()["notice"] == message
+        response = client.post(f"{SHOW}/sound/effects", json={"text": "A bell in the fog."})
+        assert response.status_code == 502 and response.json()["detail"] == message
