@@ -20,6 +20,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .audio import audio_state, register_audio, voice_state
 from .canon import canon_entries, draft_with_claude, read_with_claude
+from .cut import register_cut
 from .elevenlabs import ElevenLabs
 from .fal import MODEL, Fal, FalError
 from .footage import footage_state, register_footage
@@ -158,9 +159,11 @@ def create_app(projects_root=None, library_root=None, *, canon_reader=None, fal=
 
     register_footage(app, library, kit_for, fal, making, spending)
 
+    cut_view = register_cut(app, library, kit_for)
+
     def show_view(kit, state):
         return {**kit.public(), **spending(state), **audio_state(state),
-                "footage": footage_state(state),
+                "footage": footage_state(state), "cut": cut_view(kit.id, state),
                 "notice": state["readings"].get(kit.generation.name, ""),
                 "entries": [entry_view(kit.id, entry) for entry in state["entries"] if not entry.get("deleted")]}
 

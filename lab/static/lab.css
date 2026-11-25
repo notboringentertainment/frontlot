@@ -212,3 +212,19 @@ figcaption .quiet { font-size: .84rem; }
   .pending-clip-preview strong::before { animation: clip-pulse 2s ease-in-out infinite alternate; }
 }
 @keyframes clip-pulse { to { opacity: .35; } }
+
+#the-cut [hidden] { display: none; }
+#the-cut textarea { width: 100%; }
+.cut-playback {
+  display: grid; grid-template-columns: minmax(0, 640px) minmax(220px, 1fr);
+  align-items: start; gap: 16px; margin-top: 12px;
+}
+.cut-playback video { width: 100%; max-height: 480px; display: block; background: #192d2b; border-radius: 5px; }
+.cut-list { overflow-wrap: anywhere; }
+.cut-list ol { margin: 8px 0 0; padding-left: 1.4rem; }
+.cut-list li + li { margin-top: 6px; }
+.cut-progress { aspect-ratio: auto; min-height: 108px; margin-top: 12px; }
+.cut-final-actions { margin-top: 12px; }
+@media (max-width: 760px) {
+  .cut-playback { grid-template-columns: minmax(0, 1fr); }
+}

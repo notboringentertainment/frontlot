@@ -19,6 +19,9 @@ let soundDrafts = freshSoundDrafts();
 let shotDraft = freshShot();
 let footageMessage = "";
 let footagePoll = null;
+let cutPoll = null;
+let cutSending = false;
+let cutMessage = "";
 const descriptionRequired = "Write a description before saving or making pictures.";
 
 function el(tag, attrs = {}, ...children) {
@@ -128,6 +131,10 @@ async function home(restore = false) {
   stopCreditsPoll();
   const lastShow = restore === true ? sessionStorage.getItem("lab-show") : null;
   sessionStorage.removeItem("lab-show");
+  clearTimeout(cutPoll);
+  cutPoll = null;
+  cutSending = false;
+  cutMessage = "";
   shotDraft = freshShot();
   footageMessage = "";
   show = null;
@@ -928,6 +935,141 @@ function footageSection() {
     el("div", {id: "footage-shots"}));
 }
 
+const cutProgress = {
+  cutting: "Claude is cutting…",
+  preview: "Making the preview…",
+  final: "Making the final file…",
+};
+
+async function cutAction(suffix, data) {
+  if (cutSending || show.cut.job) return;
+  const project = show.id;
+  const path = projectPath() + "/cut";
+  cutSending = true;
+  cutMessage = "";
+  updateCut();
+  try {
+    const saved = await request(path + suffix, "POST", data);
+    if (show?.id === project && saved) show.cut = saved;
+  } catch (error) {
+    if (show?.id === project) cutMessage = error.message;
+  } finally {
+    if (show?.id === project) {
+      cutSending = false;
+      updateCut();
+      pollCut();
+    }
+  }
+}
+
+function pollCut() {
+  if (cutPoll || !show?.cut.job) return;
+  const path = projectPath() + "/cut";
+  const timer = cutPoll = setTimeout(async () => {
+    const saved = await request(path).catch(() => null);
+    if (cutPoll !== timer) return;
+    cutPoll = null;
+    if (saved) {
+      show.cut = saved;
+      updateCut();
+    }
+    pollCut();
+  }, 3000);
+}
+
+function cutSection() {
+  const current = show.cut.current;
+  const words = el("textarea", {id: "cut-words", rows: 2, required: true,
+    placeholder: "A ninety-second trailer, or the opening scene"});
+  words.value = current?.words ?? "";
+  const shape = el("select", {id: "cut-shape"},
+    Object.entries(show.footage.shapes).map(([value, name]) => el("option", {value}, name)));
+  shape.value = current?.shape ?? "16:9";
+  const change = el("textarea", {id: "cut-change", rows: 2, required: true,
+    placeholder: "Open on the park, or make it shorter"});
+  return el("section", {class: "audio-section", id: "the-cut"},
+    el("h2", {}, "The cut"),
+    el("form", {class: "audio-form shot-form", onsubmit: event => {
+      event.preventDefault();
+      cutAction("", {words: words.value, shape: shape.value});
+    }},
+    el("label", {for: words.id}, "What are you making?"), words,
+    el("div", {class: "actions"}, el("label", {for: shape.id}, "Shape"), shape),
+    el("div", {class: "actions"},
+      el("button", {type: "submit", class: "primary", "data-cut-action": true}, "Have Claude cut it"),
+      el("span", {class: "muted"}, "Cutting costs no money."))),
+    el("div", {id: "cut-preview-job"}),
+    el("div", {id: "cut-result"}),
+    el("form", {class: "audio-form shot-form", id: "cut-revise", hidden: true, onsubmit: event => {
+      event.preventDefault();
+      cutAction("/revise", {words: change.value});
+    }},
+    el("label", {for: change.id}, "What should change?"), change,
+    el("div", {class: "actions"},
+      el("button", {type: "submit", class: "primary", "data-cut-action": true}, "Make this change"),
+      el("button", {type: "button", class: "shot-writing-undo", id: "cut-restore",
+        "data-cut-action": true, onclick: () => cutAction("/restore")}, "Put the last cut back"))),
+    el("div", {class: "actions cut-final-actions", id: "cut-final-actions", hidden: true},
+      el("button", {type: "button", class: "primary", "data-cut-action": true,
+        onclick: () => cutAction("/final")}, "Make the final file")),
+    el("div", {id: "cut-final-result"}),
+    el("p", {class: "feedback error", id: "cut-notice", role: "status"}));
+}
+
+function cutTime(seconds) {
+  return Number(seconds.toFixed(1)) + " sec";
+}
+
+function updateCut() {
+  const section = app.querySelector("#the-cut");
+  if (!section) return;
+  const {current, previous, job, notice} = show.cut;
+  const previewJob = section.querySelector("#cut-preview-job");
+  const result = section.querySelector("#cut-result");
+  const final = section.querySelector("#cut-final-result");
+  const disabled = Boolean(job || cutSending);
+  const progress = phase => el("div", {class: "pending-clip-preview cut-progress", role: "status"},
+    el("strong", {}, cutProgress[phase]), el("p", {}, "You can keep working while the lab finishes."));
+  const previewPhase = job === "cutting" || job === "preview" ? job : "";
+  if (previewJob.dataset.phase !== previewPhase) {
+    previewJob.dataset.phase = previewPhase;
+    previewJob.replaceChildren(...(previewPhase ? [progress(previewPhase)] : []));
+  }
+  if (result.dataset.preview !== (current?.preview ?? "")) {
+    result.dataset.preview = current?.preview ?? "";
+    result.replaceChildren();
+    if (current) {
+      const {picture, sounds} = current.timeline;
+      const kinds = {voice: "Voice", effect: "Sound", music: "Music"};
+      const items = [...picture, ...sounds].sort((left, right) => left.start - right.start);
+      const list = items.map(item => {
+        const text = item.kind === "card" ? "Title card “" + item.words + "”"
+          : item.kind === "clip" ? item.description : kinds[item.kind] + " · " + item.description;
+        return el("li", {}, el("span", {class: "muted"}, cutTime(item.start)), " · ", text,
+          " · " + cutTime(item.length));
+      });
+      result.append(el("div", {class: "cut-playback"},
+        el("video", {controls: true, playsinline: true, preload: "metadata",
+          "aria-label": "Preview of the cut", src: projectPath() + "/cut/files/" + encodeURIComponent(current.preview)}),
+        el("div", {class: "cut-list"},
+          el("h3", {}, "What’s in the cut"), el("ol", {}, list))));
+    }
+  }
+  const finalKey = job === "final" ? job : current?.final ?? "";
+  if (final.dataset.file !== finalKey) {
+    final.dataset.file = finalKey;
+    final.replaceChildren(...(job === "final" ? [progress(job)] : current?.final ? [
+      el("div", {class: "audio-form"}, el("p", {}, "This is the file you choose in Studio Head as the trailer."),
+        el("div", {class: "actions"}, button("Show in Finder", () => cutAction("/finder"), "quiet", false)))
+    ] : []));
+  }
+  section.querySelector("#cut-revise").hidden = !current;
+  section.querySelector("#cut-final-actions").hidden = !current;
+  section.querySelector("#cut-restore").hidden = !previous;
+  section.querySelector("#cut-notice").textContent = cutMessage || notice || "";
+  for (const action of section.querySelectorAll("[data-cut-action]")) action.disabled = disabled;
+}
+
 function workspace() {
   const entry = show.entries.find(item => item.id === selected);
   return el("div", {class: "workspace"},
@@ -943,7 +1085,8 @@ function workspace() {
         group("person"), group("place")),
       entry ? editor(entry) : null),
     !entry ? soundSection() : null,
-    !entry ? footageSection() : null);
+    !entry ? footageSection() : null,
+    !entry ? cutSection() : null);
 }
 
 function render() {
@@ -956,7 +1099,7 @@ function render() {
   if (footage && nextFootage) {
     // Refresh the form and the rest of the page without detaching the playing videos.
     while (footage.previousElementSibling) footage.previousElementSibling.remove();
-    footage.before(...[...page.children].slice(0, -1));
+    footage.before(...[...page.children].slice(0, [...page.children].indexOf(nextFootage)));
     const gallery = footage.lastElementChild;
     while (footage.firstElementChild !== gallery) footage.firstElementChild.remove();
     gallery.before(...[...nextFootage.children].slice(0, -1));
@@ -964,6 +1107,8 @@ function render() {
     app.replaceChildren(page);
   }
   updateFootageShots();
+  updateCut();
+  pollCut();
 }
 
 document.querySelector("#home").addEventListener("click", home);
