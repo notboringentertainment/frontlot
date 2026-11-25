@@ -17,23 +17,25 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from .audio import SHOW, KeepInput
-from .fal import VIDEO_USD_PER_SECOND, FalError, VideoFailed
+from .fal import MAX_VIDEO_PICTURES, FalError, VideoFailed, video_price
 
 FOOTAGE = SHOW + "/footage"
 VIDEO_TYPES = {".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm"}
 MAX_IMPORT_BYTES = 200_000_000
+SHOT_LENGTHS = (5, 10)
 
 
 class ShotInput(BaseModel):
     description: str
     seconds: Literal[5, 10]
     picture: str | None = None
+    references: list[str] = []
 
 
 def footage_state(state):
     footage = state.get("footage", {})
     pending_jobs = [
-        {"title": job["title"], "from": job["from"]}
+        {"title": job["title"], "from": job["from"], **({"with": job["with"]} if "with" in job else {})}
         for job in footage.get("jobs", {}).values()
     ]
     return {
@@ -41,7 +43,11 @@ def footage_state(state):
         "pending": bool(pending_jobs),
         "pending_jobs": pending_jobs,
         "notice": footage.get("notice", ""),
-        "prices": {seconds: str(VIDEO_USD_PER_SECOND * seconds) for seconds in (5, 10)},
+        "prices": {
+            mode: {seconds: str(video_price(mode == "references") * seconds) for seconds in SHOT_LENGTHS}
+            for mode in ("plain", "references")
+        },
+        "max_pictures": MAX_VIDEO_PICTURES,
     }
 
 
@@ -54,7 +60,7 @@ def register_footage(app, library, kit_for, fal, making, spending):
     def folder(project):
         return library.root / project / "footage"
 
-    def save_clip(project, state, title, source, suffix, origin=None, kept=False):
+    def save_clip(project, state, title, source, suffix, origin=None, kept=False, references=()):
         directory = folder(project)
         directory.mkdir(parents=True, exist_ok=True)
         stem = re.sub(r"[^\w .'-]", " ", title).strip(" .")[:58].rstrip() or "Clip"
@@ -66,6 +72,8 @@ def register_footage(app, library, kit_for, fal, making, spending):
         clip = {"id": name, "kept": False, "url": f"/api/shows/{project}/footage/clips/{quote(name)}"}
         if origin:
             clip["from"] = origin
+        if references:
+            clip["with"] = references
         if kept:
             library.keep(directory, clip, True)
         shots = state.setdefault("footage", {}).setdefault("shots", [])
@@ -84,22 +92,26 @@ def register_footage(app, library, kit_for, fal, making, spending):
             raise HTTPException(422, "Describe what happens before making a clip.")
         async with making[project]:
             state = library.load(project)
-            cost = VIDEO_USD_PER_SECOND * fields.seconds
+            reference_ids = list(dict.fromkeys(fields.references))
+            if len(reference_ids) + bool(fields.picture) > MAX_VIDEO_PICTURES:
+                raise HTTPException(422, f"Choose up to {MAX_VIDEO_PICTURES} pictures, including the starting picture.")
+            unit_price = video_price(reference_ids)
+            cost = unit_price * fields.seconds
             if Decimal(state["spent"]) + cost > Decimal(state["limit"]):
                 raise HTTPException(409, "This clip would go over the spending limit. Raise the limit to make more clips.")
-            reference = origin = None
-            if fields.picture:
-                for entry in state["entries"]:
-                    if not entry.get("deleted") and any(
-                        picture["id"] == fields.picture and picture["kept"] for picture in entry["pictures"]
-                    ):
-                        reference = library.pictures(project, entry) / fields.picture
-                        origin = entry["name"]
-                        break
-                if reference is None:
-                    raise HTTPException(404, "This starting picture is no longer kept.")
+            kept = {
+                picture["id"]: (entry["name"], library.pictures(project, entry) / picture["id"])
+                for entry in state["entries"] if not entry.get("deleted")
+                for picture in entry["pictures"] if picture["kept"]
+            }
+            if fields.picture and fields.picture not in kept:
+                raise HTTPException(404, "This starting picture is no longer kept.")
+            if any(picture not in kept for picture in reference_ids):
+                raise HTTPException(404, "One of the people and places pictures is no longer kept.")
+            origin, start = kept.get(fields.picture, (None, None))
+            references = [kept[picture] for picture in reference_ids]
             try:
-                job = await fal.submit_video(description, fields.seconds, reference)
+                job = await fal.submit_video(description, fields.seconds, start, references)
             except FalError as error:
                 raise HTTPException(502, str(error)) from None
             except (httpx.HTTPError, OSError, ValueError, KeyError, TypeError):
@@ -109,7 +121,8 @@ def register_footage(app, library, kit_for, fal, making, spending):
             footage.pop("notice", None)
             footage.setdefault("jobs", {})[uuid4().hex] = {
                 **job, "title": description, "from": origin, "cost": str(cost),
-                "unit_price": str(VIDEO_USD_PER_SECOND),
+                "unit_price": str(unit_price),
+                **({"with": list(dict.fromkeys(name for name, _ in references))} if references else {}),
             }
             for total in ("spent", "estimated"):
                 state[total] = str(Decimal(state[total]) + cost)
@@ -140,7 +153,8 @@ def register_footage(app, library, kit_for, fal, making, spending):
                 if result is not None:
                     data, units = result
                     try:
-                        save_clip(project, state, job["title"], BytesIO(data), ".mp4", job["from"])
+                        save_clip(project, state, job["title"], BytesIO(data), ".mp4", job["from"],
+                                  references=job.get("with", ()))
                     except OSError:
                         notice = "The lab couldn’t save the clip yet. It will try again."
                         continue

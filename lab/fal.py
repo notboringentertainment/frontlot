@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import os
+import re
 import time
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -28,6 +29,39 @@ MODEL = Model("google/nano-banana-2.1", "google/nano-banana-2.1/edit", Decimal("
 VIDEO_TEXT = "fal-ai/kling-video/v2.6/pro/text-to-video"
 VIDEO_IMAGE = "fal-ai/kling-video/v2.6/pro/image-to-video"
 VIDEO_USD_PER_SECOND = Decimal("0.07")
+
+# Kling O3 Pro accepts seven pictures in all, including the opening frame.
+# https://fal.ai/models/fal-ai/kling-video/o3/pro/reference-to-video
+VIDEO_REFERENCES = "fal-ai/kling-video/o3/pro/reference-to-video"
+REFERENCE_VIDEO_USD_PER_SECOND = Decimal("0.112")
+MAX_VIDEO_PICTURES = 7
+
+
+def video_price(with_references):
+    return REFERENCE_VIDEO_USD_PER_SECOND if with_references else VIDEO_USD_PER_SECOND
+
+
+def reference_prompt(description, references):
+    tags = {}
+    names = {}
+    for number, (name, _) in enumerate(references, 1):
+        key = name.casefold()
+        tags.setdefault(key, []).append(f"@Image{number}")
+        names[key] = name
+
+    mentioned = set()
+
+    def tag(match):
+        key = match[0].casefold()
+        mentioned.add(key)
+        return " and ".join(tags[key])
+
+    choices = "|".join(re.escape(name) for name in sorted(names.values(), key=len, reverse=True))
+    prompt = re.sub(rf"(?<!\w)(?:{choices})(?!\w)", tag, description, flags=re.IGNORECASE)
+    unmentioned = [f"{name} ({', '.join(tags[key])})" for key, name in names.items() if key not in mentioned]
+    if unmentioned:
+        prompt += "\nUse these pictures for appearance: " + ", ".join(unmentioned) + "."
+    return prompt
 
 
 class FalError(Exception):
@@ -129,12 +163,16 @@ class Fal:
             if missing or len(images) < count:
                 raise FalError("Some pictures didn’t come through. Any pictures that arrived are below.")
 
-    async def submit_video(self, description, seconds, reference):
+    async def submit_video(self, description, seconds, start, references=()):
         headers = self.headers("The footage service needs a key before it can make a clip.")
-        model = VIDEO_IMAGE if reference else VIDEO_TEXT
+        model = VIDEO_IMAGE if start else VIDEO_TEXT
         payload = {"prompt": description, "duration": str(seconds), "generate_audio": False}
-        if reference:
-            payload["start_image_url"] = await asyncio.to_thread(reference_url, reference)
+        if start:
+            payload["start_image_url"] = await asyncio.to_thread(reference_url, start)
+        if references:
+            model = VIDEO_REFERENCES
+            payload["prompt"] = reference_prompt(description, references)
+            payload["image_urls"] = [await asyncio.to_thread(reference_url, path) for _, path in references]
         async with httpx.AsyncClient(transport=self.transport, timeout=45, follow_redirects=True) as client:
             response = await client.post(f"https://queue.fal.run/{model}", headers=headers, json=payload)
             job = response.raise_for_status().json()
