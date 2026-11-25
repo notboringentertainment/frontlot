@@ -30,6 +30,7 @@ SIZES = {
 FONT = Path(__file__).resolve().parents[1] / "assets/fonts/source-sans-3/SourceSans3-Semibold.otf"
 KEEP_FIRST = "Keep a clip first. You can also keep any voice lines, sound effects or music you want Claude to use."
 PLAN_ERROR = "Claude couldn't make that cut. Your last cut is still here."
+FIRST_PLAN_ERROR = "Claude couldn't make that cut. Try again, or say it another way."
 RENDER_ERROR = "The lab couldn’t make the file. Check that the kept clips and sounds still play, then try again."
 
 
@@ -156,13 +157,15 @@ entire revised cut using pieces still kept. Give times in seconds.
     return ask_claude(prompt + json.dumps(materials, ensure_ascii=False), CutPlan)
 
 
-def source_length(piece, trim, length):
+def source_length(piece, trim, length, *, clamp=False):
     remaining = piece["seconds"] - trim
     if not isfinite(trim) or trim < 0 or remaining < 1 / FPS - 0.000001:
         raise ValueError("Invalid source trim")
     if length is None:
         return remaining
-    if not isfinite(length) or length < 1 / FPS - 0.000001 or length > remaining + TOLERANCE:
+    if not isfinite(length) or length < 1 / FPS - 0.000001:
+        raise ValueError("Invalid source length")
+    if not clamp and length > remaining + TOLERANCE:
         raise ValueError("Invalid source length")
     return min(length, remaining)
 
@@ -178,9 +181,11 @@ def check_plan(result, pieces):
     plan = CutPlan.model_validate(result)
     if not plan.clips:
         raise ValueError("Missing picture")
-    cards = sorted(plan.cards, key=lambda card: card.start)
+    cards = iter(sorted(plan.cards, key=lambda card: card.start))
+    card = next(cards, None)
     picture = []
     cursor = 0
+    planned_start = 0.0
 
     def add_picture(item, length):
         nonlocal cursor
@@ -190,21 +195,22 @@ def check_plan(result, pieces):
         picture.append({**item, "start": cursor / FPS, "length": count / FPS})
         cursor += count
 
+    # Clips arrive in playback order. Place cards at the nearest boundary on
+    # the planner's clock so rounding the rendered clips can't shift their order.
     for clip in [*plan.clips, None]:
-        while cards and cards[0].start <= cursor / FPS + TOLERANCE:
-            card = cards.pop(0)
-            if (not isfinite(card.start) or card.start < 0 or abs(card.start - cursor / FPS) > TOLERANCE
-                    or not card.words.strip()):
-                raise ValueError("A title overlaps a clip or card")
+        while card and (clip is None or card.start <= planned_start + clip.length / 2):
+            if not isfinite(card.start) or not card.words.strip():
+                raise ValueError("Invalid title card")
             add_picture({"kind": "card", "words": card.words.strip()}, card.length)
+            planned_start += card.length
+            card = next(cards, None)
         if clip:
             piece = pieces.get(clip.id)
             if not piece or piece["kind"] != "clip":
                 raise ValueError("Unknown clip")
             add_picture({"kind": "clip", "id": clip.id, "trim": clip.trim,
                          "description": piece["description"]}, source_length(piece, clip.trim, clip.length))
-    if cards:
-        raise ValueError("A title starts after the cut")
+            planned_start += clip.length
     end = cursor / FPS
     sounds = []
     for sound in plan.sounds:
@@ -213,11 +219,9 @@ def check_plan(result, pieces):
             raise ValueError("Unknown sound")
         start = frames(sound.start) / FPS
         if start >= end:
-            raise ValueError("Sound starts after the cut")
+            continue
         trim = sound.trim if sound.trim is not None else 0
-        length = source_length(piece, trim, sound.length)
-        if sound.length is not None and sound.start + length > end + TOLERANCE:
-            raise ValueError("Sound ends after the cut")
+        length = source_length(piece, trim, sound.length, clamp=True)
         sounds.append({"id": sound.id, "kind": piece["kind"], "description": piece["description"],
                        "start": start, "trim": trim, "length": min(length, end - start), "level": sound.level})
     return {"picture": picture, "sounds": sorted(sounds, key=lambda cue: cue["start"]), "seconds": end}
@@ -270,7 +274,7 @@ def render_cut(timeline, pieces, shape, target, *, final=False):
         chain = (f"[{index}:a:0]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,"
                  f"atrim=start={trim}:duration={length},asetpts=PTS-STARTPTS,volume={cue['level']},"
                  f"adelay={delay}S:all=1")
-        if cue["kind"] == "music" and voices:
+        if cue["kind"] in ("music", "clip") and voices:
             # Use the placed voice lines as the ducking window, with a short ramp on each edge.
             windows = [f"clip(min((t-{v['start']}+0.1)/0.1,({v['start'] + v['length']}+0.1-t)/0.1),0,1)"
                        for v in voices]
@@ -327,7 +331,9 @@ def register_cut(app, library, kit_for):
     def view(project, state):
         cut = state.get("cut", {})
         if cut.get("job") and project not in active:
-            return {**cut, "job": None, "notice": "The lab stopped before finishing. Try making the cut again."}
+            cut.update(job=None, notice="")
+            library.save(project, state)
+            return {**cut, "notice": "The lab stopped before finishing. Try making the cut again."}
         return cut
 
     def update(project, **changes):
@@ -387,6 +393,8 @@ def register_cut(app, library, kit_for):
         except (OSError, subprocess.SubprocessError, KeyError, TypeError, ValueError, AttributeError):
             if target:
                 target.unlink(missing_ok=True)
+            if notice == PLAN_ERROR and not library.load(project).get("cut", {}).get("current"):
+                notice = FIRST_PLAN_ERROR
             update(project, job=None, notice=notice)
         finally:
             active.discard(project)

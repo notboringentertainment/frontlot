@@ -818,6 +818,8 @@ def test_cut_from_kept_pieces_makes_a_preview_and_numbered_finals(folders, cut_m
         failed = client.get(cut).json()
         assert failed["current"] == first
         assert "Your last cut is still here." in failed["notice"]
+        assert client.post(cut, json={"words": "A different trailer"}).status_code == 202
+        assert client.get(cut).json() == failed
         for number in (1, 2):
             assert client.post(f"{cut}/final").status_code == 202
             assert client.get(cut).json()["current"]["final"] == f"Final {number}.mp4"
@@ -867,3 +869,121 @@ def test_cut_can_trim_within_the_last_frame_of_slow_footage(tmp_path):
     render_cut(timeline, pieces, "1:1", output)
     video = probe(output)["streams"][0]
     assert (video["width"], video["height"], video["nb_frames"]) == (480, 480, "12")
+
+
+def test_cut_renders_a_closing_card_after_rounding_twenty_clips(tmp_path):
+    from lab.cut import check_plan, ffmpeg, measure, probe, render_cut
+
+    clip = tmp_path / "Red sky.mp4"
+    ffmpeg(["-f", "lavfi", "-i", "color=red:s=80x60:r=24:d=7", "-c:v", "libx264", str(clip)])
+    pieces = measure({"sky": {"kind": "clip", "description": "Red sky", "path": clip}})
+    timeline = check_plan({
+        "clips": [{"id": "sky", "trim": 0, "length": 6.03}] * 20,
+        "cards": [{"words": "THE SKY CLEARS", "start": 120.6, "length": 1}],
+        "sounds": [],
+    }, pieces)
+    assert timeline["picture"][-1]["kind"] == "card"
+    assert timeline["picture"][-1]["start"] == pytest.approx(120 + 20 / 24)
+
+    output = tmp_path / "cut.mp4"
+    render_cut(timeline, pieces, "16:9", output)
+    video = probe(output)["streams"][0]
+    assert int(video["nb_frames"]) == 2924
+    assert float(video["duration"]) == pytest.approx(121 + 20 / 24)
+
+
+def test_cut_trims_music_to_the_source_and_the_picture(tmp_path):
+    from lab.cut import check_plan, ffmpeg, measure, probe, render_cut
+
+    clip = tmp_path / "Blue sky.mp4"
+    music = tmp_path / "A rising note.wav"
+    short_music = tmp_path / "A low note.wav"
+    ffmpeg(["-f", "lavfi", "-i", "color=blue:s=80x60:r=24:d=5", "-c:v", "libx264", str(clip)])
+    ffmpeg(["-f", "lavfi", "-i", "sine=330:d=8", str(music)])
+    ffmpeg(["-f", "lavfi", "-i", "sine=440:d=1.5", str(short_music)])
+    pieces = measure({
+        "sky": {"kind": "clip", "description": "Blue sky", "path": clip},
+        "rising": {"kind": "music", "description": "A rising note", "path": music},
+        "low": {"kind": "music", "description": "A low note", "path": short_music},
+    })
+    timeline = check_plan({
+        "clips": [{"id": "sky", "trim": 0, "length": 5}], "cards": [],
+        "sounds": [
+            {"id": "rising", "start": 0, "length": 90, "level": 0.5},
+            {"id": "low", "start": 1, "trim": 0.5, "length": 90, "level": 0.5},
+            {"id": "low", "start": 6, "length": 90, "level": 0.5},
+        ],
+    }, pieces)
+    assert [(cue["id"], cue["length"]) for cue in timeline["sounds"]] == [("rising", 5), ("low", 1)]
+
+    output = tmp_path / "cut.mp4"
+    render_cut(timeline, pieces, "16:9", output)
+    assert float(probe(output)["format"]["duration"]) == pytest.approx(5)
+    mixed = ffmpeg(["-ss", "4.5", "-i", str(output), "-vn", "-f", "s16le", "-"])
+    assert any(mixed)
+
+
+def test_cut_preserves_clip_sound_and_lowers_it_under_voice(tmp_path, cut_media):
+    from array import array
+
+    from lab.cut import check_plan, ffmpeg, measure, probe, render_cut
+
+    fixtures = {
+        "lamp": ("clip", "A lamp comes on.mov"),
+        "rain": ("clip", "Rain over the inlet.webm"),
+        "voice": ("voice", "A low note.wav"),
+    }
+    pieces = {}
+    for name, (kind, filename) in fixtures.items():
+        path = tmp_path / filename
+        path.write_bytes(cut_media[filename])
+        pieces[name] = {"kind": kind, "description": path.stem, "path": path}
+    pieces = measure(pieces)
+    timeline = check_plan({
+        "clips": [{"id": "lamp", "trim": 0.25, "length": 1}, {"id": "rain", "trim": 0, "length": 1}],
+        "cards": [],
+        "sounds": [{"id": "voice", "start": 0.5, "length": 0.35, "level": 0.05}],
+    }, pieces)
+
+    output = tmp_path / "cut.mp4"
+    render_cut(timeline, pieces, "16:9", output)
+    assert [stream["codec_type"] for stream in probe(output)["streams"]] == ["video", "audio"]
+
+    def peak(start):
+        samples = ffmpeg(["-ss", start, "-i", str(output), "-t", "0.1", "-vn", "-f", "s16le", "-"])
+        return max(abs(sample) for sample in array("h", samples))
+
+    normal = peak("0.2")
+    assert normal > 1000
+    assert 0 < peak("0.65") < normal * 0.6
+    assert peak("1.4") == 0
+
+
+def test_first_cut_plan_failure_has_a_retry_message(folders, cut_media, monkeypatch):
+    monkeypatch.setattr("lab.cut.ask_claude", lambda *_: {"clips": [], "cards": [], "sounds": []})
+    with TestClient(create_app(*folders)) as client:
+        name = "Rain over the inlet.webm"
+        assert client.post(f"{SHOW}/footage/import", params={"filename": name}, content=cut_media[name]).is_success
+        assert client.post(f"{SHOW}/cut", json={"words": "An opening scene"}).status_code == 202
+        failed = client.get(f"{SHOW}/cut").json()
+        assert not failed.get("current")
+        assert failed["notice"] == "Claude couldn't make that cut. Try again, or say it another way."
+
+
+def test_restarted_lab_clears_an_interrupted_cut_after_one_notice(folders):
+    from lab.app import Library
+
+    library = Library(folders[1])
+    state = library.load(PROJECT)
+    state["cut"] = {"job": "preview", "notice": ""}
+    library.save(PROJECT, state)
+
+    with TestClient(create_app(*folders)) as client:
+        interrupted = client.get(SHOW).json()["cut"]
+        assert interrupted["job"] is None
+        assert interrupted["notice"] == "The lab stopped before finishing. Try making the cut again."
+        assert library.load(PROJECT)["cut"]["job"] is None
+        assert not client.get(f"{SHOW}/cut").json()["notice"]
+
+    with TestClient(create_app(*folders)) as client:
+        assert not client.get(SHOW).json()["cut"]["notice"]
