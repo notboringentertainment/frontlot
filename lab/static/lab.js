@@ -618,31 +618,94 @@ function pollFootage() {
     footagePoll = null;
     if (saved) {
       const {footage, spent, estimated} = saved;
-      const changed = JSON.stringify(show.footage.shots) !== JSON.stringify(footage.shots);
       Object.assign(show, {footage, spent, estimated});
       app.querySelector(".total").textContent = spendingText();
       const status = app.querySelector("#footage-status");
       if (status) status.textContent = footageStatus();
-      if (changed) app.querySelector("#footage-shots")?.replaceWith(footageShots());
+      updateFootageShots();
     }
     pollFootage();
   }, 3000);
 }
 
-function footageShots() {
-  return el("div", {id: "footage-shots"}, show.footage.shots.length ?
-    [...show.footage.shots].reverse().map(shot => el("section", {class: "shot"},
-      el("h3", {}, shot.title),
-      el("div", {class: "footage-grid"}, shot.clips.map((clip, index) =>
-        el("figure", {class: "audio-card"},
-          el("video", {src: clip.url, controls: true, playsinline: true, preload: "metadata",
-            "aria-label": shot.title + " Take " + (index + 1)}),
-          el("figcaption", {},
-            el("p", {class: "picture-caption"}, "Take " + (index + 1), clip.from ? " · From: " + clip.from : ""),
-            button(clip.kept ? "Unkeep" : "Keep", () => footageAction("Saving…", async () => {
-              Object.assign(clip, await request(clip.url, "PATCH", {kept: !clip.kept}));
-            }), clip.kept ? "quiet kept" : "quiet")))))))
-    : el("p", {class: "muted"}, "Make a clip or bring in one you already have."));
+function footageCard(title, clip, take) {
+  return el("figure", {class: "audio-card", "data-clip-id": clip.id},
+    el("video", {src: clip.url, controls: true, playsinline: true, preload: "metadata",
+      "aria-label": title + " Take " + take}),
+    el("figcaption", {},
+      el("p", {class: "picture-caption"}, "Take " + take, clip.from ? " · From: " + clip.from : ""),
+      button(clip.kept ? "Unkeep" : "Keep", () => footageAction("Saving…", async () => {
+        const shot = show.footage.shots.find(item => item.title === title);
+        const current = shot.clips.find(item => item.id === clip.id);
+        Object.assign(current, await request(current.url, "PATCH", {kept: !current.kept}));
+      }), clip.kept ? "quiet kept" : "quiet")));
+}
+
+function pendingFootageCard(job) {
+  return el("figure", {class: "audio-card pending-clip", "data-from": job.from ?? ""},
+    el("div", {class: "pending-clip-preview", role: "status"},
+      el("strong", {}, "Making your clip…"),
+      el("p", {}, "This usually takes a minute or two. You can keep working.")),
+    job.from ? el("figcaption", {class: "picture-caption"}, "From: " + job.from) : null);
+}
+
+function updateFootageShots(startingClip) {
+  const gallery = app.querySelector("#footage-shots");
+  if (!gallery) return;
+  const shots = new Map(show.footage.shots.map(shot => [shot.title, {...shot, jobs: []}]));
+  const jobs = [...show.footage.pending_jobs];
+  if (startingClip) jobs.push(startingClip);
+  for (const job of jobs) {
+    if (!shots.has(job.title)) shots.set(job.title, {title: job.title, clips: [], jobs: []});
+    shots.get(job.title).jobs.push(job);
+  }
+
+  const sections = new Map();
+  if (!shots.size) {
+    if (!gallery.querySelector(".muted")) {
+      gallery.replaceChildren(el("p", {class: "muted"}, "Make a clip or bring in one you already have."));
+    }
+    return;
+  }
+  for (const section of [...gallery.children]) {
+    const title = section.dataset.title;
+    if (shots.has(title)) sections.set(title, section);
+    else section.remove();
+  }
+
+  let next = null;
+  for (const shot of shots.values()) {
+    const section = sections.get(shot.title) ?? el("section", {class: "shot", "data-title": shot.title},
+      el("h3", {}, shot.title), el("div", {class: "footage-grid"}));
+    const grid = section.lastElementChild;
+    // Saved shots keep their relative order. Only move sections that have no video yet.
+    if (!grid.querySelector("video") && (!section.parentNode || section.nextElementSibling !== next)) {
+      gallery.insertBefore(section, next);
+    }
+    next = section;
+
+    const cards = new Map([...grid.querySelectorAll("[data-clip-id]")].map(card => [card.dataset.clipId, card]));
+    const placeholders = [...grid.querySelectorAll(".pending-clip")];
+    shot.clips.forEach((clip, index) => {
+      const card = cards.get(clip.id) ?? footageCard(shot.title, clip, index + 1);
+      if (!card.parentNode) grid.insertBefore(card, placeholders[0] ?? null);
+      const keep = card.querySelector("button");
+      const label = clip.kept ? "Unkeep" : "Keep";
+      if (keep.textContent !== label) {
+        keep.textContent = label;
+        keep.classList.toggle("kept", clip.kept);
+      }
+      keep.disabled = Boolean(busy);
+      cards.delete(clip.id);
+    });
+    for (const card of cards.values()) card.remove();
+    shot.jobs.forEach((job, index) => {
+      const card = placeholders[index];
+      if (!card) grid.append(pendingFootageCard(job));
+      else if (card.dataset.from !== (job.from ?? "")) card.replaceWith(pendingFootageCard(job));
+    });
+    for (const card of placeholders.slice(shot.jobs.length)) card.remove();
+  }
 }
 
 function footageSection() {
@@ -690,7 +753,11 @@ function footageSection() {
   }});
   const makeClip = button("Make a clip", () =>
     footageAction("Starting your clip…", async () => {
-      const saved = await request(path, "POST", {description: shotDraft.description, seconds: Number(shotDraft.seconds),
+      const startingClip = {title: shotDraft.description.trim(), from: startingPicture?.name ?? null};
+      updateFootageShots(startingClip);
+      const shot = app.querySelector(`#footage-shots [data-title="${CSS.escape(startingClip.title)}"]`);
+      shot.querySelector(".pending-clip:last-child").scrollIntoView({block: "nearest"});
+      const saved = await request(path, "POST", {description: startingClip.title, seconds: Number(shotDraft.seconds),
         picture: startingPicture?.id ?? null});
       Object.assign(show, saved);
     }), "primary", Boolean(busy) || !shotDraft.description.trim());
@@ -712,7 +779,7 @@ function footageSection() {
       el("div", {class: "actions"}, el("label", {for: length.id}, "Length"), length),
       el("div", {class: "actions"}, makeClip, price),
       status),
-    footageShots());
+    el("div", {id: "footage-shots"}));
 }
 
 function workspace() {
@@ -737,7 +804,20 @@ function render() {
   back.hidden = !show;
   back.disabled = Boolean(busy);
   document.querySelector("#home").disabled = Boolean(busy);
-  app.replaceChildren(show ? workspace() : showList());
+  const page = show ? workspace() : showList();
+  const footage = app.querySelector("#footage");
+  const nextFootage = page.querySelector("#footage");
+  if (footage && nextFootage) {
+    // Refresh the form and the rest of the page without detaching the playing videos.
+    while (footage.previousElementSibling) footage.previousElementSibling.remove();
+    footage.before(...[...page.children].slice(0, -1));
+    const gallery = footage.lastElementChild;
+    while (footage.firstElementChild !== gallery) footage.firstElementChild.remove();
+    gallery.before(...[...nextFootage.children].slice(0, -1));
+  } else {
+    app.replaceChildren(page);
+  }
+  updateFootageShots();
 }
 
 document.querySelector("#home").addEventListener("click", home);

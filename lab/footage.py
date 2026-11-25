@@ -32,9 +32,14 @@ class ShotInput(BaseModel):
 
 def footage_state(state):
     footage = state.get("footage", {})
+    pending_jobs = [
+        {"title": job["title"], "from": job["from"]}
+        for job in footage.get("jobs", {}).values()
+    ]
     return {
         "shots": footage.get("shots", []),
-        "pending": bool(footage.get("jobs")),
+        "pending": bool(pending_jobs),
+        "pending_jobs": pending_jobs,
         "notice": footage.get("notice", ""),
         "prices": {seconds: str(VIDEO_USD_PER_SECOND * seconds) for seconds in (5, 10)},
     }
